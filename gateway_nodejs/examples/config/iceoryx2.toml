@@ -1,0 +1,70 @@
+[global]
+root-path = 'C:\Users\max\AppData\Roaming\BPCE\Data\iceoryx2'
+prefix = "iox2_"
+
+[global.service]
+directory = "services"
+data-segment-suffix = ".data"
+static-config-storage-suffix = ".service"
+dynamic-config-storage-suffix = ".dynamic"
+connection-suffix = ".connection"
+event-connection-suffix = ".event"
+blackboard-mgmt-suffix = ".blackboard_mgmt"
+blackboard-data-suffix = ".blackboard_data"
+cleanup-dead-nodes-on-open = false
+
+[global.node]
+directory = "nodes"
+monitor-suffix = ".node_monitor"
+static-config-suffix = ".details"
+service-tag-suffix = ".service_tag"
+port-tag-suffix = ".port_tag"
+global-mgmt-suffix = ".global_mgmt"
+cleanup-dead-nodes-on-creation = true
+cleanup-dead-nodes-on-destruction = false
+
+[global.creation-timeout]
+secs = 0
+nanos = 500000000
+
+[defaults.publish-subscribe]
+max-subscribers = 8
+max-publishers = 2
+max-nodes = 20
+subscriber-max-buffer-size = 2
+subscriber-max-borrowed-samples = 2
+publisher-max-loaned-samples = 2
+publisher-history-size = 0
+enable-safe-overflow = true
+backpressure-strategy = "RetryUntilDelivered"
+subscriber-expired-connection-buffer = 128
+publisher-allocation-strategy = "Static"
+
+[defaults.event]
+max-listeners = 16
+max-notifiers = 16
+max-nodes = 36
+event-id-max-value = 255
+
+[defaults.request-response]
+enable-safe-overflow-for-requests = true
+enable-safe-overflow-for-responses = true
+max-active-requests-per-client = 4
+max-response-buffer-size = 2
+max-servers = 2
+max-clients = 8
+max-nodes = 20
+max-borrowed-responses-per-pending-response = 2
+max-loaned-requests = 2
+server-max-loaned-responses-per-request = 2
+client-backpressure-strategy = "RetryUntilDelivered"
+server-backpressure-strategy = "RetryUntilDelivered"
+client-expired-connection-buffer = 128
+enable-fire-and-forget-requests = true
+server-expired-connection-buffer = 128
+client-allocation-strategy = "Static"
+server-allocation-strategy = "Static"
+
+[defaults.blackboard]
+max-readers = 8
+max-nodes = 20

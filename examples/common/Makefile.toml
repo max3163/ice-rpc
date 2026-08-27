@@ -1,0 +1,2 @@
+# Makefile.toml — Extension du Makefile racine (common)
+extend = "../../Makefile.toml"

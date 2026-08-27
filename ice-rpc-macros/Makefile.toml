@@ -1,0 +1,2 @@
+# Makefile.toml — Extension du Makefile racine (ice-rpc-macros)
+extend = "../Makefile.toml"

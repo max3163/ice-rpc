@@ -1,0 +1,13 @@
+error: Service name 'ThisServiceNameIsVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLongVeryLong' too long (137 > 64 characters). Use #[service("ShortName")] to specify a shorter name.
+ --> tests/compile_fail/service_name_too_long.rs:5:11
+  |
+5 | pub trait LongNameService: Send + Sync + 'static {
+  |           ^^^^^^^^^^^^^^^
+
+warning: unused import: `Observable`
+ --> tests/compile_fail/service_name_too_long.rs:1:24
+  |
+1 | use ice_rpc::{service, Observable};
+  |                        ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

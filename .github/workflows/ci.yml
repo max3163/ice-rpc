@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build & test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
+      - name: Check (workspace, excluding the Node.js gateway)
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets
+
+      - name: Test (workspace, excluding the Node.js gateway)
+        run: cargo test --workspace --exclude gateway-nodejs

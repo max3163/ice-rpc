@@ -1,0 +1,13 @@
+error: Invalid service name '_UnderscoreStart': must start with a letter or a digit.
+ --> tests/compile_fail/service_name_underscore_start.rs:5:11
+  |
+5 | pub trait UnderscoreService: Send + Sync + 'static {
+  |           ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Observable`
+ --> tests/compile_fail/service_name_underscore_start.rs:1:24
+  |
+1 | use ice_rpc::{service, Observable};
+  |                        ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

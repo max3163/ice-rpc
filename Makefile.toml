@@ -1,0 +1,108 @@
+# =============================================================================
+# Makefile.toml — cargo-make tasks for the ice-rpc + gateway_nodejs workspace
+#
+# Installation : cargo install cargo-make
+# Usage :
+#   cargo make build-all              # Compile everything (Rust + Node.js addon)
+#   cargo make provider-context-nodejs # Run the Node.js provider example
+#   cargo make info                   # Show the available tasks
+# =============================================================================
+
+[env]
+GATEWAY_DIR = "gateway_nodejs"
+NODE = "node.exe"
+
+# =============================================================================
+# BUILD
+# =============================================================================
+
+[tasks.build-all]
+description = "Compile all Rust crates and the Node.js addon"
+dependencies = ["build-rust", "build-gateway"]
+
+[tasks.build-rust]
+description = "Compile all workspace crates"
+command = "cargo"
+args = ["build", "--workspace"]
+
+[tasks.build-rust-release]
+description = "Compile all workspace crates in release"
+command = "cargo"
+args = ["build", "--workspace", "--release"]
+
+[tasks.build-gateway]
+description = "Compile the NAPI-RS gateway-nodejs addon"
+command = "npm"
+args = ["run", "build"]
+cwd = "${GATEWAY_DIR}"
+
+[tasks.build-gateway-debug]
+description = "Compile the NAPI-RS addon in debug mode"
+command = "npm"
+args = ["run", "build:debug"]
+cwd = "${GATEWAY_DIR}"
+
+# =============================================================================
+# CHECK
+# =============================================================================
+
+[tasks.check-all]
+description = "Check the compilation of the whole workspace (without producing binaries)"
+command = "cargo"
+args = ["check", "--workspace", "--all-targets"]
+
+# =============================================================================
+# RUST EXAMPLES (ice-rpc)
+# =============================================================================
+
+[tasks.consumer-context-rust]
+description = "Run the Rust ContextService consumer (--service context)"
+command = "cargo"
+args = ["run", "--example", "consumer-app", "--", "--service", "context"]
+cwd = "ice-rpc"
+
+[tasks.consumer-database-rust]
+description = "Run the Rust DatabaseService consumer (default)"
+command = "cargo"
+args = ["run", "--example", "consumer-app", "--", "--service", "database"]
+cwd = "ice-rpc"
+
+# =============================================================================
+# NODE.JS EXAMPLES (gateway_nodejs)
+# =============================================================================
+
+[tasks.provider-context-nodejs]
+description = "Run the Node.js ContextService provider (ProviderNodeJs mode)"
+command = "${NODE}"
+args = ["gateway_nodejs/examples/provider-context.js"]
+
+# =============================================================================
+# CLEANUP
+# =============================================================================
+
+[tasks.clean-all]
+description = "Clean all build artifacts"
+dependencies = ["clean-rust"]
+
+[tasks.clean-rust]
+description = "Clean the Rust artifacts"
+command = "cargo"
+args = ["clean"]
+
+# =============================================================================
+# TESTS
+# =============================================================================
+
+[tasks.test-rust]
+description = "Run the Rust unit tests"
+command = "cargo"
+args = ["test", "--workspace"]
+
+[tasks.test-gateway]
+description = "Run the gateway tests"
+command = "cargo"
+args = ["test", "--package", "gateway-nodejs"]
+
+[tasks.test-all]
+description = "Run all tests"
+dependencies = ["test-rust", "test-gateway"]

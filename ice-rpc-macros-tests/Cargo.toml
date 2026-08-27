@@ -1,0 +1,18 @@
+[package]
+name = "ice-rpc-macros-tests"
+version = "0.1.0"
+edition = "2021"
+description = "Integration tests for the ice-rpc-macros procedural macros (not published)"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+ice-rpc = { path = "../ice-rpc" }
+ice-rpc-macros = { path = "../ice-rpc-macros" }
+async-trait = "0.1"
+rkyv = { version = "0.8", features = ["std"] }
+bytecheck = "0.8"
+log = "0.4"
+
+[dev-dependencies]
+trybuild = "1"

@@ -1,0 +1,11 @@
+error[E0428]: the name `__ICE_RPC_SVC_CollisionService` is defined multiple times
+ --> tests/compile_fail/service_name_collision.rs:9:1
+  |
+3 | #[service("CollisionService")]
+  | ------------------------------ previous definition of the value `__ICE_RPC_SVC_CollisionService` here
+...
+9 | #[service("CollisionService")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__ICE_RPC_SVC_CollisionService` redefined here
+  |
+  = note: `__ICE_RPC_SVC_CollisionService` must be defined only once in the value namespace of this module
+  = note: this error originates in the attribute macro `service` (in Nightly builds, run with -Z macro-backtrace for more info)

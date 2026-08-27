@@ -1,0 +1,2 @@
+# Makefile.toml — Extension du Makefile racine (gateway_nodejs)
+extend = "../Makefile.toml"

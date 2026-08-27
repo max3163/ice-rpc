@@ -1,0 +1,13 @@
+error: Invalid service name 'My Service': only ASCII alphanumeric characters, '_' and '-' are allowed.
+ --> tests/compile_fail/service_name_invalid_chars.rs:5:11
+  |
+5 | pub trait InvalidService: Send + Sync + 'static {
+  |           ^^^^^^^^^^^^^^
+
+warning: unused import: `Observable`
+ --> tests/compile_fail/service_name_invalid_chars.rs:1:24
+  |
+1 | use ice_rpc::{service, Observable};
+  |                        ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

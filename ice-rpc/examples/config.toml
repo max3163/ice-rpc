@@ -1,0 +1,15 @@
+[database]
+url      = "postgres://localhost:5432/mydb"
+max_pool = 10
+timeout  = 5
+
+[app]
+name    = "ice-rpc-demo"
+version = "1.0.0"
+
+# Per-user connection URLs — demonstrates the internal calls
+# DatabaseService → ConfigService on each get_user_age().
+[users]
+alice   = "postgres://alice:5432/mydb"
+bob     = "postgres://bob:5432/mydb"
+charlie = "postgres://charlie:5432/mydb"

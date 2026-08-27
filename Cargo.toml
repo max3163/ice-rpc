@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "ice-rpc",
+    "ice-rpc-macros",
+    "examples/common",
+    "gateway_nodejs",
+    "ice-rpc-macros-tests"
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3       # maximum optimization for speed (vs "z" for size)
+lto = true          # Link Time Optimization: better cross-crate inlining
+codegen-units = 1   # single codegen-unit: better inlining / dead code elimination
+panic = "abort"     # reduces the size and removes the unwind tables
+strip = false       # keep the symbols for profiling (set true in production)
+
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1
+

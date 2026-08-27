@@ -1,0 +1,13 @@
+# Build artifacts
+target/
+
+# Node.js
+node_modules/
+
+# Fichiers générés par napi-rs (peuvent être régénérés avec `npm run build`)
+index.js
+index.d.ts
+*.node
+
+# npm
+package-lock.json

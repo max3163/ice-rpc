@@ -12,10 +12,10 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi4", "napi8", "serde-json", "compat-mode"] }
 napi-derive = "3"
-log = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
 ice-rpc = { path = "../ice-rpc" }
 common = { path = "../examples/common", features = ["napi"] }
 

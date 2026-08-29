@@ -378,15 +378,40 @@ mod tests {
 
     #[test]
     fn acquire_then_detected_alive() {
-        let node_id = NodeId(0xABCD_EF01);
+        // Use a unique lock name (PID + monotonic counter) so this test is
+        // isolated from the global lock name shared by other tests running in
+        // parallel. Another test may call release_global_node_lock() and remove
+        // the lock file, which would otherwise race with this assertion.
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let unique = std::process::id() ^ (COUNTER.fetch_add(1, Ordering::SeqCst) << 16);
+        let node_id = NodeId(unique);
         let lock_name = format!("{}{}", LOCK_NAME_PREFIX, node_id.0);
-        match acquire_global_node_lock(node_id) {
-            Ok(name) => {
-                assert_eq!(name, lock_name);
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                assert!(is_node_alive(&name), "The node must be detected alive");
+
+        platform::acquire(&lock_name)
+            .unwrap_or_else(|e| panic!("failed to acquire node lock: {}", e));
+
+        // Bounded wait: the kernel lock must become observable shortly after
+        // acquisition. Retrying avoids flakiness on slow CI runners.
+        let alive = (0..10).any(|_| {
+            if is_node_alive(&lock_name) {
+                return true;
             }
-            Err(e) => log::debug!("acquire ignored (already acquired): {}", e),
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(alive, "The node must be detected alive (lock '{}')", lock_name);
+
+        platform::release(&lock_name);
+
+        // On Unix, release() removes the lock file, so the node must become
+        // undetectable. On Windows the kernel releases the mutex only at process
+        // end (the holding thread keeps it), so this check is Unix-only.
+        if cfg!(unix) {
+            assert!(
+                !is_node_alive(&lock_name),
+                "The node must be detected dead after release (lock '{}')",
+                lock_name
+            );
         }
     }
 
@@ -396,5 +421,22 @@ mod tests {
         assert!(running.load(Ordering::Relaxed));
         running.store(false, Ordering::Relaxed);
         assert!(!running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn watcher_detects_missing_lock_and_stops() {
+        let node_id = NodeId(0x0D1E_0002);
+        let lock_name = format!("{}{}", LOCK_NAME_PREFIX, node_id.0);
+        let watcher = NodeLockWatcher::spawn_std_thread(node_id, lock_name);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while watcher.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        assert!(
+            !watcher.is_running(),
+            "watcher must detect the missing lock and stop"
+        );
     }
 }

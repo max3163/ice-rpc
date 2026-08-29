@@ -9,10 +9,10 @@ publish = false
 [dependencies]
 ice-rpc = { path = "../ice-rpc" }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
-async-trait = "0.1"
-rkyv = { version = "0.8", features = ["std"] }
+async-trait = { workspace = true }
+rkyv = { workspace = true }
 bytecheck = "0.8"
-log = "0.4"
+log = { workspace = true }
 
 [dev-dependencies]
 trybuild = "1"

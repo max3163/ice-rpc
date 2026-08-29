@@ -189,6 +189,10 @@ fn apply_global_config(config_file_path: &std::path::Path) {
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate process-global state (current directory,
+    /// environment variables) which would otherwise race when run in parallel.
+    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn build_config_has_expected_structure() {
         let cfg = build_iceoryx2_config();
@@ -200,6 +204,7 @@ mod tests {
 
     #[test]
     fn build_config_returns_default_when_appdata_unset() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Save APPDATA, remove it, check the fallback, restore.
         let saved = std::env::var("APPDATA").ok();
         std::env::remove_var("APPDATA");
@@ -218,6 +223,7 @@ mod tests {
 
     #[test]
     fn write_config_toml_creates_file_when_missing() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Uses a temporary directory for the test.
         let tmp = std::env::temp_dir().join("ice_rpc_test_config");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -251,6 +257,7 @@ mod tests {
 
     #[test]
     fn write_config_toml_skips_when_file_exists() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join("ice_rpc_test_config_skip");
         let _ = std::fs::remove_dir_all(&tmp);
 

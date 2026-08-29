@@ -15,10 +15,10 @@ http = ["ice-rpc/http"]
 
 [dependencies]
 ice-rpc = { path = "../../ice-rpc" }
-log = "0.4"
-rkyv = { version = "0.8", features = ["std"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.23"
-async-trait = "0.1"
-tokio = { version = "1.30", features = ["full"] }
+log = { workspace = true }
+rkyv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }

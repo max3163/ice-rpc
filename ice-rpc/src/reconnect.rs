@@ -75,3 +75,41 @@ pub fn fire(node_id: u32) {
         cb(node_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const NODE_A: u32 = 0x0FEE_0001;
+    const NODE_B: u32 = 0x0FEE_0002;
+
+    #[test]
+    fn register_fire_then_unregister_stops_firing() {
+        let fired = Arc::new(AtomicU32::new(0));
+        let cb: ReconnectCallback = {
+            let fired = fired.clone();
+            Arc::new(move |id: u32| {
+                assert_eq!(id, NODE_A);
+                fired.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        register(NODE_A, cb);
+        fire(NODE_A);
+        assert_eq!(fired.load(Ordering::Relaxed), 1);
+        unregister(NODE_A);
+        fire(NODE_A);
+        assert_eq!(fired.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn register_once_accepts_only_first_registration() {
+        let cb1: ReconnectCallback = Arc::new(|_| {});
+        let cb2: ReconnectCallback = Arc::new(|_| {});
+        assert!(register_once(NODE_B, cb1));
+        assert!(!register_once(NODE_B, cb2.clone()));
+        unregister(NODE_B);
+        assert!(register_once(NODE_B, cb2));
+        unregister(NODE_B);
+    }
+}

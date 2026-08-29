@@ -85,3 +85,46 @@ impl<T, E> Future for MethodCall<T, E> {
         self.inner.as_mut().poll(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    type PendingResult = Result<crate::Stream<(), ()>, crate::RpcError>;
+
+    fn pending_future() -> impl Future<Output = PendingResult> + Send + 'static {
+        futures::future::pending::<PendingResult>()
+    }
+
+    #[test]
+    fn new_initializes_timeout() {
+        let call = MethodCall::new(pending_future(), 3);
+        assert_eq!(call.timeout_arc().load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn with_shared_timeout_shares_arc() {
+        let shared = Arc::new(AtomicU64::new(9));
+        let call = MethodCall::with_shared_timeout(pending_future(), shared.clone());
+        assert_eq!(call.timeout_arc().load(Ordering::Relaxed), 9);
+        shared.store(11, Ordering::Relaxed);
+        assert_eq!(call.timeout_arc().load(Ordering::Relaxed), 11);
+    }
+
+    #[test]
+    fn with_timeout_overrides_value() {
+        let call = MethodCall::new(pending_future(), 1).with_timeout(Duration::from_secs(5));
+        assert_eq!(call.timeout_arc().load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn poll_forwards_inner_ready_future() {
+        let (_tx, rx) = async_channel::unbounded::<crate::Event<(), ()>>();
+        let call = MethodCall::new(futures::future::ready(Ok(rx)), 1);
+        let result = futures::executor::block_on(call);
+        assert!(result.is_ok());
+    }
+}

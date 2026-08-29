@@ -520,3 +520,47 @@ impl crate::ServiceLocator {
         HUB.get_or_init(NodeHub::new)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_hub() -> NodeHub {
+        NodeHub::new()
+    }
+
+    #[test]
+    fn register_request_handlers_and_list_services() {
+        let hub = new_hub();
+        let handler: RequestHandler = Arc::new(|_, _| {});
+        hub.register_request_handler("DatabaseService", handler.clone());
+        hub.register_request_handler("ConfigService", handler);
+
+        let mut services = hub.registered_services();
+        services.sort();
+        assert_eq!(
+            services,
+            vec!["ConfigService".to_string(), "DatabaseService".to_string()]
+        );
+    }
+
+    #[test]
+    fn response_handler_register_and_remove_are_noop_safe() {
+        let hub = new_hub();
+        let cid = [1u8; 16];
+        let handler: ResponseHandler = Arc::new(|_| {});
+        hub.register_response_handler(cid, handler);
+        hub.remove_response_handler(&cid);
+        // Removing an unknown correlation id must not panic.
+        hub.remove_response_handler(&cid);
+    }
+
+    #[test]
+    fn publishers_start_empty_and_invalidate_is_noop() {
+        let hub = new_hub();
+        let node = NodeId(0x1234_5678);
+        assert!(!hub.has_publishers(node));
+        hub.invalidate_publishers(node);
+        assert!(!hub.has_publishers(node));
+    }
+}

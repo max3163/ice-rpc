@@ -31,17 +31,17 @@ smol = ["dep:trillium-smol"]
 
 [dependencies]
 ice-rpc-macros = { path = "../ice-rpc-macros", version = "0.1.0" }
-log = "0.4"
+log = { workspace = true }
 iceoryx2 = "0.9.3"
 iceoryx2-bb-system-types = "0.9.3"
 iceoryx2-bb-container = "0.9.3"
-rkyv = { version = "0.8", features = ["std"] }
-async-trait = "0.1"
+rkyv = { workspace = true }
+async-trait = { workspace = true }
 toml = "1.1"
 thiserror = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.23"
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
 # Runtime-agnostic primitives used by the core.
 futures = "0.3"
 futures-lite = "2"
@@ -51,7 +51,7 @@ async-lock = "3"
 async-global-executor = "3"
 ctrlc = "3"
 # Optional runtime adapters.
-tokio = { version = "1.30", features = ["full"], optional = true }
+tokio = { workspace = true, optional = true }
 # Optional runtime-agnostic HTTP gateway (trillium + runtime adapters).
 trillium = { version = "1.4", optional = true }
 trillium-smol = { version = "0.7", optional = true }
@@ -70,7 +70,7 @@ env_logger = "0.11"
 pollster = "0.4"
 # The examples still demonstrate a Tokio application; the core crate itself
 # remains runtime-agnostic.
-tokio = { version = "1.30", features = ["full"] }
+tokio = { workspace = true }
 smol = "2"
 
 [[example]]

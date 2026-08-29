@@ -1,5 +1,12 @@
 # ice-rpc — Inter-Process Communication via iceoryx2
 
+[![CI](https://github.com/max3163/ice-rpc/actions/workflows/ci.yml/badge.svg)](https://github.com/max3163/ice-rpc/actions/workflows/ci.yml)
+[![Security](https://github.com/max3163/ice-rpc/actions/workflows/security.yml/badge.svg)](https://github.com/max3163/ice-rpc/actions/workflows/security.yml)
+[![codecov](https://codecov.io/gh/max3163/ice-rpc/branch/main/graph/badge.svg)](https://codecov.io/gh/max3163/ice-rpc)
+[![REUSE](https://api.reuse.software/badge/github.com/max3163/ice-rpc)](https://api.reuse.software/info/github.com/max3163/ice-rpc)
+[![crates.io](https://img.shields.io/crates/v/ice-rpc.svg)](https://crates.io/crates/ice-rpc)
+[![docs.rs](https://docs.rs/ice-rpc/badge.svg)](https://docs.rs/ice-rpc)
+
 `ice-rpc` is a **zero-copy** Rust RPC (Remote Procedure Call) library built on [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) for inter-process communication (IPC) through shared memory.
 
 From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The library implements an **automatic reconnection** strategy after a provider crash, including hard kills (`SIGKILL`), thanks to a cross-platform kernel watchdog (Windows Mutex / Unix `flock`).

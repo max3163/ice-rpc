@@ -227,3 +227,28 @@ pub fn list_nodes() -> Vec<u32> {
     }
     nodes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_bb_name_uses_prefix() {
+        assert_eq!(node_bb_name(1234), "ice_rpc_node_1234");
+    }
+
+    #[test]
+    fn service_name_key_roundtrip() {
+        let key = service_name_to_key("DatabaseService");
+        assert_eq!(key_to_service_name(&key), "DatabaseService");
+    }
+
+    #[test]
+    fn service_name_key_truncates_long_names() {
+        let long = "A".repeat(REGISTRY_SERVICE_NAME_LEN + 10);
+        let key = service_name_to_key(&long);
+        let name = key_to_service_name(&key);
+        assert_eq!(name.len(), REGISTRY_SERVICE_NAME_LEN - 1);
+        assert!(long.starts_with(&name));
+    }
+}

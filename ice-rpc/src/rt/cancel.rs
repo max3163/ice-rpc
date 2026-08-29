@@ -154,4 +154,26 @@ mod tests {
         futures_lite::future::block_on(token.cancelled());
         assert!(token.is_cancelled());
     }
+
+    #[test]
+    fn default_is_not_cancelled() {
+        let token = CancellationToken::default();
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_is_idempotent() {
+        let token = CancellationToken::new();
+        token.cancel();
+        token.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn debug_format_contains_state() {
+        let token = CancellationToken::new();
+        let dbg = format!("{:?}", token);
+        assert!(dbg.contains("CancellationToken"));
+        assert!(dbg.contains("false"));
+    }
 }

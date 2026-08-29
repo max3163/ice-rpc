@@ -48,3 +48,33 @@ pub fn call(
         "NodeJS dispatch not initialized — call ice_rpc::nodejs_dispatch::set_dispatch() first",
     )(cid, service, method, args)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handler(
+        cid: [u8; 16],
+        service: &str,
+        method: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        assert_eq!(cid, [7u8; 16]);
+        assert_eq!(service, "DatabaseService");
+        assert_eq!(method, "get_user_age");
+        Ok(serde_json::json!({ "echo": args }))
+    }
+
+    #[test]
+    fn set_dispatch_then_call_roundtrip() {
+        set_dispatch(handler);
+        let result = call(
+            [7u8; 16],
+            "DatabaseService",
+            "get_user_age",
+            serde_json::json!({ "name": "Alice" }),
+        )
+        .expect("dispatch call should succeed");
+        assert_eq!(result, serde_json::json!({ "echo": { "name": "Alice" } }));
+    }
+}

@@ -171,3 +171,61 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 pub mod oneshot {
     pub use futures::channel::oneshot::{channel, Canceled, Receiver, Sender};
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn block_on_runs_future_to_completion() {
+        let value = block_on(async { 7 });
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn spawn_blocking_value_returns_result() {
+        let value = block_on(spawn_blocking_value(|| 21 * 2));
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn spawn_blocking_handle_completes() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        let handle = spawn_blocking(move || {
+            flag_clone.store(true, Ordering::SeqCst);
+        });
+        block_on(handle);
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn timeout_resolves_value_when_future_completes_first() {
+        let result = block_on(timeout(Duration::from_secs(5), async { 42 }));
+        assert_eq!(result, Ok(42));
+    }
+
+    #[test]
+    fn timeout_returns_elapsed_on_deadline() {
+        let result = block_on(timeout(Duration::from_millis(10), async {
+            futures::future::pending::<()>().await;
+        }));
+        assert_eq!(result, Err(Elapsed));
+    }
+
+    #[test]
+    fn spawn_runs_detached_future() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        spawn(async move {
+            flag_clone.store(true, Ordering::SeqCst);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !flag.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(flag.load(Ordering::SeqCst));
+    }
+}

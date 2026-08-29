@@ -132,3 +132,24 @@ fn handle_node_event(discovery: &NodeDiscovery, node_id: u32) {
         crate::reconnect::fire(node_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    const DEAD_NODE_ID: u32 = 0x0D1E_0001;
+
+    #[test]
+    fn handle_node_event_ignores_own_pid() {
+        let discovery = Arc::new(NodeDiscovery::new());
+        handle_node_event(&discovery, std::process::id());
+    }
+
+    #[test]
+    fn handle_node_event_dead_node_clears_without_panic() {
+        let discovery = Arc::new(NodeDiscovery::new());
+        assert_ne!(DEAD_NODE_ID, std::process::id());
+        handle_node_event(&discovery, DEAD_NODE_ID);
+    }
+}

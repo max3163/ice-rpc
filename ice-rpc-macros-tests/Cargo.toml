@@ -1,13 +1,16 @@
 [package]
 name = "ice-rpc-macros-tests"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Integration tests for the ice-rpc-macros procedural macros (not published)"
 license = "Apache-2.0"
 publish = false
 
 [dependencies]
-ice-rpc = { path = "../ice-rpc" }
+# The `cache` feature is required because the test suite exercises the
+# `#[cache(ttl = "60s")]` attribute, which generates code referencing
+# `ice_rpc::RpcCache`.
+ice-rpc = { path = "../ice-rpc", features = ["cache"] }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
 async-trait = { workspace = true }
 rkyv = { workspace = true }

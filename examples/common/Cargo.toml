@@ -1,6 +1,6 @@
 [package]
 name = "common"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Shared example services for ice-rpc (not published)"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ napi = []
 http = ["ice-rpc/http"]
 
 [dependencies]
-ice-rpc = { path = "../../ice-rpc" }
+ice-rpc = { path = "../../ice-rpc", features = ["cache"] }
 log = { workspace = true }
 rkyv = { workspace = true }
 serde = { workspace = true }

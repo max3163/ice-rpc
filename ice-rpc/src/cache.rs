@@ -3,6 +3,8 @@
 //! Provides a thread-safe hash table associating a hash key
 //! (derived from the RPC method arguments) with a value with a lifetime.
 //! Cleanup is performed lazily during lookups.
+//!
+//! This module is compiled only when the `cache` Cargo feature is enabled.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

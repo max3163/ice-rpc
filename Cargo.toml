@@ -8,6 +8,14 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+
+[workspace.metadata.release]
+tag-name = "v{{version}}"
+pre-release-commit-message = "release: ice-rpc v{{version}}"
+push = false
+
 [profile.release]
 opt-level = 3       # maximum optimization for speed (vs "z" for size)
 lto = true          # Link Time Optimization: better cross-crate inlining
@@ -21,6 +29,7 @@ lto = true
 codegen-units = 1
 
 [workspace.dependencies]
+ice-rpc-macros = { path = "ice-rpc-macros", version = "0.1.0" }
 rkyv = { version = "0.8.18", features = ["std"] }
 log = "0.4"
 async-trait = "0.1"

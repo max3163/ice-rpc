@@ -184,6 +184,7 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   │                              DiscoveryEvent, initial discovery
 │   ├── blackboard.rs           ← Registry : 1 Blackboard per node (ice_rpc_node_{pid}),
 │   │                              key = service name, value = NodeId
+│   ├── cache.rs                ← RpcCache : consumer-side TTL cache (feature `cache`)
 │   ├── registry_notify.rs      ← Event notifications : carries the NodeId via EventId
 │   ├── registry_listener.rs    ← WaitSet listener : receives Events, updates cache,
 │   │                              cleans dead nodes
@@ -1429,6 +1430,53 @@ The [`#[service]`](ice-rpc-macros/src/codegen/http.rs:28) procedural macro autom
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 13.10. Consumer-side cache (`cache` feature)
+
+The cache is a consumer-side TTL cache. Enable the `cache` Cargo feature:
+
+```toml
+[dependencies]
+ice-rpc = { features = ["cache"] }
+```
+
+Alternatively, use the `full` feature to enable `http`, `cache` and `tokio`
+together:
+
+```toml
+[dependencies]
+ice-rpc = { features = ["full"] }
+```
+
+Then annotate an idempotent service method with `#[cache(ttl = "60s")]`:
+
+```rust
+use ice_rpc::{cache, service, Observable};
+
+#[service("ConfigService")]
+pub trait ConfigService {
+    #[cache(ttl = "60s", max_entries = 128)]
+    async fn get(&self, key: String) -> Observable<String, ConfigError>;
+}
+```
+
+How it works:
+
+1. On the first call, the generated client serializes the request and computes
+   `ice_rpc::hash_bytes(&bytes)`.
+2. On cache miss, it performs the normal IPC call and stores successful `Next`
+   values in `ice_rpc::RpcCache` (keyed by the arguments hash).
+3. On cache hit, the response is deserialized from the cached rkyv bytes and
+   returned immediately, without any IPC round-trip.
+
+Attributes:
+
+- `ttl` — entry lifetime, e.g. `"60s"`, `"5min"`;
+- `max_entries` — optional capacity (default `1024`), evicts the oldest entries
+  when full.
+
+The underlying [`RpcCache`](ice-rpc/src/cache.rs:29) is thread-safe
+(`Mutex<HashMap<u64, CacheEntry<V>>>`) and performs lazy expiry on lookup.
+
 ---
 
 ## 14. iceoryx2 configuration
@@ -1473,6 +1521,53 @@ match result {
     Some(Err(e))  => println!("Error: {}", e),
 }
 ```
+
+---
+
+## Release (version bump)
+
+The project version lives in a single place: the `[workspace.package]` section of the root `Cargo.toml`. Every Rust crate inherits it through `version.workspace = true`, and the `ice-rpc` → `ice-rpc-macros` dependency version is shared via `[workspace.dependencies]`. The Node.js gateway version (`gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`) is kept in sync by `cargo release` through `pre-release-replacements`.
+
+### Prerequisites
+
+- [`cargo-make`](https://github.com/sagiegurari/cargo-make) : `cargo install cargo-make`
+- [`cargo-release`](https://github.com/crate-ci/cargo-release) : `cargo install cargo-release`
+
+The git working tree must be clean (all changes committed) before running a release.
+
+### Bump the version
+
+```bash
+# patch : 0.1.0 -> 0.1.1
+cargo make release-patch
+
+# minor : 0.1.0 -> 0.2.0
+cargo make release-minor
+
+# major : 0.1.0 -> 1.0.0
+cargo make release-major
+
+# default alias = patch
+cargo make release
+```
+
+Each task runs `cargo release <level> --workspace --no-publish --no-confirm --execute`, which:
+
+1. bumps the Rust version (single source in `[workspace.package]`) and the `ice-rpc-macros` dependency requirement;
+2. applies `pre-release-replacements` to `gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`;
+3. refreshes `Cargo.lock`;
+4. commits **everything** with the message configured in `[workspace.metadata.release]`;
+5. creates the git tag `vX.Y.Z`.
+
+`cargo release` never publishes to crates.io (`--no-publish`) nor pushes to the remote (`push = false` in `Cargo.toml`). Pushing the commit and the tag is done manually with `git push --follow-tags`.
+
+### Manual dry-run
+
+```bash
+cargo release patch --workspace --no-publish --no-confirm
+```
+
+> By default `cargo release` runs in dry-run mode; `--execute` (used by the `cargo make` tasks) actually performs the release.
 
 ---
 

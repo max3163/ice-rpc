@@ -1,6 +1,6 @@
 [package]
 name = "ice-rpc"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Zero-copy RPC over iceoryx2 with automatic reconnection, service discovery and HTTP gateway"
 license = "Apache-2.0"
@@ -21,6 +21,7 @@ all-features = true
 # async-io). Optional features switch the execution facade to a dedicated
 # runtime.
 default = []
+cache = []
 # The HTTP gateway is built on trillium (runtime-agnostic core). Its runtime
 # adapter follows the selected runtime feature:
 # - `tokio`             → trillium-tokio
@@ -28,9 +29,10 @@ default = []
 http = ["dep:trillium", "dep:trillium-smol"]
 tokio = ["dep:tokio", "dep:trillium-tokio"]
 smol = ["dep:trillium-smol"]
+full = ["http", "cache", "tokio"]
 
 [dependencies]
-ice-rpc-macros = { path = "../ice-rpc-macros", version = "0.1.0" }
+ice-rpc-macros = { workspace = true }
 log = { workspace = true }
 iceoryx2 = "0.9.3"
 iceoryx2-bb-system-types = "0.9.3"
@@ -76,6 +78,9 @@ smol = "2"
 [[example]]
 name = "benchmark-app"
 path = "examples/benchmark-app.rs"
+# The shared demo services define a `ConfigService` method annotated with
+# `#[cache]`, so the generated client references `RpcCache`.
+required-features = ["cache"]
 
 [[example]]
 name = "provider-app"
@@ -83,12 +88,18 @@ path = "examples/provider-app.rs"
 # The provider service implementations use Tokio primitives
 # (tokio::time::sleep, tokio::spawn), so the generated server handlers must
 # run on the Tokio runtime. Run with: cargo run --example provider-app --features tokio
-required-features = ["tokio"]
+required-features = ["tokio", "cache"]
 
 [[example]]
 name = "consumer-app"
 path = "examples/consumer-app.rs"
+# The shared demo services define a `ConfigService` method annotated with
+# `#[cache]`, so the generated client references `RpcCache`.
+required-features = ["cache"]
 
 [[example]]
 name = "consumer-http-app"
 path = "examples/consumer-http-app.rs"
+# The shared demo services define a `ConfigService` method annotated with
+# `#[cache]`, so the generated client references `RpcCache`.
+required-features = ["cache"]

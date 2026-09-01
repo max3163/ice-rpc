@@ -137,9 +137,12 @@
 //! | `reconnect` | Reconnection callbacks fired when a node is detected dead |
 //! | `node_lock` | Cross-platform kernel named lock (Windows Mutex / Unix flock) |
 //! | `macros` | `take_one!`, `take_one_or_cancel!`, `try_or_log!` utilities |
+//! | `cache` | `RpcCache` consumer-side TTL cache (`hash_bytes`, `hash_key`) — requires the `cache` feature |
 
 pub use base64;
-pub use ice_rpc_macros::{cache, service, timeout};
+pub use ice_rpc_macros::{service, timeout};
+#[cfg(feature = "cache")]
+pub use ice_rpc_macros::cache;
 pub use iceoryx2;
 pub use log;
 pub use rkyv;
@@ -152,6 +155,7 @@ pub use futures;
 pub use futures_lite;
 
 mod blackboard;
+#[cfg(feature = "cache")]
 mod cache;
 mod config;
 mod hub;
@@ -181,6 +185,7 @@ pub use service_traits::{
 };
 
 // ── Public API: cache ───────────────────────────────────────────────
+#[cfg(feature = "cache")]
 pub use cache::{hash_bytes, hash_key, RpcCache};
 // ── Public API: chainable method call ───────────────────────────────
 pub use method_call::MethodCall;

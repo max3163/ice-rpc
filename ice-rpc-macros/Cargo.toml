@@ -1,6 +1,6 @@
 [package]
 name = "ice-rpc-macros"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Procedural macros for ice-rpc: generates client, server, proxy and lifecycle from a #[service] trait"
 license = "Apache-2.0"

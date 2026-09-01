@@ -106,3 +106,26 @@ args = ["test", "--package", "gateway-nodejs"]
 [tasks.test-all]
 description = "Run all tests"
 dependencies = ["test-rust", "test-gateway"]
+
+# =============================================================================
+# RELEASE
+# =============================================================================
+
+[tasks.release]
+description = "Bump the whole project version (Rust + Node.js) — patch by default"
+dependencies = ["release-patch"]
+
+[tasks.release-patch]
+description = "Bump patch version: 0.1.0 -> 0.1.1"
+command = "cargo"
+args = ["release", "patch", "--workspace", "--no-publish", "--no-confirm", "--execute"]
+
+[tasks.release-minor]
+description = "Bump minor version: 0.1.0 -> 0.2.0"
+command = "cargo"
+args = ["release", "minor", "--workspace", "--no-publish", "--no-confirm", "--execute"]
+
+[tasks.release-major]
+description = "Bump major version: 0.1.0 -> 1.0.0"
+command = "cargo"
+args = ["release", "major", "--workspace", "--no-publish", "--no-confirm", "--execute"]

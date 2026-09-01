@@ -1,10 +1,16 @@
 [package]
 name = "gateway-nodejs"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Node.js napi gateway for ice-rpc"
 license = "Apache-2.0"
 publish = false
+
+[package.metadata.release]
+pre-release-replacements = [
+  { file = "package.json", search = '"version": "[0-9][^"]*"', replace = '"version": "{{version}}"', exactly = 1 },
+  { file = "package-lock.json", search = '("name": "gateway-nodejs",\s*"version": ")[0-9][^"]*', replace = '${1}{{version}}', exactly = 2 },
+]
 
 [lib]
 crate-type = ["cdylib"]

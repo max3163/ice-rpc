@@ -12,6 +12,7 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Crash detection & reconnection** without heartbeat (kernel named lock).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs`.
 - **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
+- **Optional consumer-side TTL cache** (`cache` feature) via the `#[cache(ttl = "60s")]` method attribute.
 
 ## Installation
 
@@ -41,7 +42,11 @@ ice-rpc = { version = "0.1" }                           # agnostic (default)
 ice-rpc = { version = "0.1", features = ["smol"] }      # smol (native facade)
 ice-rpc = { version = "0.1", features = ["tokio"] }     # tokio facade
 ice-rpc = { version = "0.1", features = ["http"] }      # trillium gateway (runtime-agnostic)
+ice-rpc = { version = "0.1", features = ["cache"] }     # consumer-side TTL cache
+ice-rpc = { version = "0.1", features = ["full"] }      # http + cache + tokio
 ```
+
+`full` is a convenience feature that enables `http`, `cache` and `tokio` in one shot.
 
 - Service methods return `ice_rpc::Stream<T, E>` — an `async_channel::Receiver`.
   Create the stream with `ice_rpc::channel::<T, E>(capacity)`.
@@ -179,6 +184,35 @@ let guard = ice_rpc::ShutdownGuard::new();
 // ... use ice-rpc ...
 guard.shutdown().await; // waits for the IPC threads and releases the iceoryx2 node
 ```
+
+## Consumer-side cache (optional)
+
+Enable the `cache` feature:
+
+```toml
+ice-rpc = { version = "0.1", features = ["cache"] }
+```
+
+Then annotate a service method with `#[cache(ttl = "60s")]`. On the consumer
+side, the generated client caches successful `Next` values keyed by the
+serialized arguments, so subsequent identical calls skip the IPC round-trip
+until the TTL expires.
+
+```rust,ignore
+use ice_rpc::{cache, service, Observable};
+
+#[service("MyService")]
+pub trait MyService: Send + Sync + 'static {
+    #[cache(ttl = "60s", max_entries = 128)]
+    async fn get(&self, key: String) -> Observable<String, MyError>;
+}
+```
+
+- `ttl` — lifetime of a cached entry (e.g. `"60s"`, `"5min"`);
+- `max_entries` — optional maximum number of entries (default `1024`).
+
+The cache is a local, thread-safe `RpcCache` (`ice_rpc::RpcCache`) with lazy
+expiry; it is intended for idempotent reads.
 
 ## HTTP gateway (optional)
 

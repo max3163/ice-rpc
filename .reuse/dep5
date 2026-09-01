@@ -1,7 +1,0 @@
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: ice-rpc
-Source: https://github.com/max3163/ice-rpc
-
-Files: *
-Copyright: 2026 ice-rpc contributors
-License: Apache-2.0

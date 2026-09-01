@@ -1,0 +1,9 @@
+version = 1
+SPDX-PackageName = "ice-rpc"
+SPDX-PackageDownloadLocation = "https://github.com/max3163/ice-rpc"
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 ice-rpc contributors"
+SPDX-License-Identifier = "Apache-2.0"

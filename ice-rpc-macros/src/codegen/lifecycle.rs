@@ -12,6 +12,8 @@ pub struct LifecycleGenInput<'a> {
     pub server_name: &'a Ident,
     pub mode_name: &'a Ident,
     pub logical_name_lit: &'a str,
+    pub allow_large_payload: bool,
+    pub default_size_message_kb: Option<u64>,
 }
 
 /// Generates the [`ServiceLifecycle`], [`ServiceInit`] and
@@ -23,12 +25,27 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         server_name,
         mode_name,
         logical_name_lit,
+        allow_large_payload,
+        default_size_message_kb,
     } = input;
+
+    let mut hub_config = TokenStream::new();
+    if *allow_large_payload {
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
+    }
+    if let Some(kb) = default_size_message_kb {
+        let bytes = *kb as usize * 1024;
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
+    }
 
     quote! {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceLifecycle for #proxy_name {
             async fn init(&self) -> bool {
+                #hub_config
+
                 let mut mode = self.mode.write().await;
                 match &mut *mode {
                     #mode_name::ProviderNodeJs => {

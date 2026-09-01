@@ -138,12 +138,12 @@
 //! | `node_lock` | Cross-platform kernel named lock (Windows Mutex / Unix flock) |
 //! | `macros` | `take_one!`, `take_one_or_cancel!`, `try_or_log!` utilities |
 
+pub use base64;
 pub use ice_rpc_macros::{cache, service, timeout};
 pub use iceoryx2;
 pub use log;
 pub use rkyv;
 pub use serde_json;
-pub use base64;
 
 // Runtime-agnostic building blocks re-exported for the generated code.
 pub use async_channel;
@@ -189,10 +189,10 @@ pub use method_call::MethodCall;
 pub use types::{
     caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, Event, EventKind,
     NodeId, Observable, RpcError, RpcHeader, Sender, StaticString, Stream, TakeOneError,
-    BLACKBOARD_MAX_READERS, INITIALIZE_ALL_TIMEOUT_SECS, INIT_RETRY_INTERVAL_MS,
-    LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN, PUBLISHER_INITIAL_MAX_SLICE_LEN,
-    PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS, SERVER_READY_POLL_MS,
-    SMALL_TOPIC_BUFFER_SIZE, WAITSET_TIMEOUT_US,
+    BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
+    INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN,
+    PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS,
+    SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
 };
 
 // ── Public API: configuration ───────────────────────────────────────

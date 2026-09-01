@@ -39,13 +39,8 @@ impl CancellationToken {
         if self.inner.cancelled.swap(true, Ordering::SeqCst) {
             return;
         }
-        let wakers = std::mem::take(
-            &mut *self
-                .inner
-                .wakers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
+        let wakers =
+            std::mem::take(&mut *self.inner.wakers.lock().unwrap_or_else(|e| e.into_inner()));
         for waker in wakers {
             waker.wake();
         }

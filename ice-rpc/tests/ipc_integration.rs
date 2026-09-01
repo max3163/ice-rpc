@@ -62,7 +62,7 @@ fn hub_send_and_dispatch_loopback() {
     locator.start_dispatch_if_needed();
 
     // Send to our own node id (loopback): the dispatch loop listens on
-    // `node_{pid}_small` and routes the request back to the handler.
+    // `node_{pid}_default` and routes the request back to the handler.
     let local = NodeId(std::process::id());
     hub.ensure_publishers_blocking(local)
         .expect("failed to ensure publishers");

@@ -15,7 +15,7 @@ const METHOD_NAME_LEN: usize = 64;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitStr, TraitItem};
+use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
 
 /// `#[cache(ttl = "60s")]` attribute for service trait methods.
 ///
@@ -54,18 +54,63 @@ use crate::codegen::{
 ///
 /// - `#[service]` → the logical name = the trait name in lowercase.
 /// - `#[service("MyService")]` → explicit logical name.
+/// - `#[service(allow_large_payload = true)]` → enables the second shared-memory
+///   segment (default: `false`).
+/// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
+///   default shared-memory segment.
+/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8)]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
+    allow_large_payload: bool,
+    default_size_message_kb: Option<u64>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut logical_name: Option<String> = None;
+        let mut allow_large_payload = false;
+        let mut default_size_message_kb: Option<u64> = None;
+
         if input.is_empty() {
-            return Ok(Self { logical_name: None });
+            return Ok(Self {
+                logical_name: None,
+                allow_large_payload: false,
+                default_size_message_kb: None,
+            });
         }
-        let name: LitStr = input.parse()?;
+
+        while !input.is_empty() {
+            if input.peek(syn::LitStr) {
+                let name: LitStr = input.parse()?;
+                logical_name = Some(name.value());
+            } else {
+                let ident: syn::Ident = input.parse()?;
+                if ident == "allow_large_payload" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitBool = input.parse()?;
+                    allow_large_payload = lit.value;
+                } else if ident == "default_size_message" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    default_size_message_kb = Some(lit.base10_parse::<u64>()?);
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown parameter `{}` for #[service]", ident),
+                    ));
+                }
+            }
+
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+
         Ok(Self {
-            logical_name: Some(name.value()),
+            logical_name,
+            allow_large_payload,
+            default_size_message_kb,
         })
     }
 }
@@ -227,6 +272,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let logical_name = service_attr
         .logical_name
         .unwrap_or_else(|| trait_name.to_string().to_lowercase());
+
+    let allow_large_payload = service_attr.allow_large_payload;
+    let default_size_message_kb = service_attr.default_size_message_kb;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -393,6 +441,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         client_name: &client_name,
         logical_name: &logical_name_lit,
         client_methods: &client_methods,
+        allow_large_payload,
+        default_size_message_kb,
     };
     let client_struct = gen_client_struct(&client_input);
     let client_lifecycle = gen_client_lifecycle(&client_input);
@@ -405,6 +455,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         topic_ready: &topic_ready,
         blackboard_key,
         server_match_arms: &server_match_arms,
+        allow_large_payload,
+        default_size_message_kb,
     };
     let server_output = gen_server(&server_input);
 
@@ -426,6 +478,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         server_name: &server_name,
         mode_name: &mode_name,
         logical_name_lit: &logical_name_lit,
+        allow_large_payload,
+        default_size_message_kb,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 

@@ -1,0 +1,36 @@
+# rustfmt configuration for the ice-rpc workspace.
+#
+# Run `cargo fmt --all` to apply this configuration to every workspace member.
+# Only STABLE options are used here, so the file works on the stable toolchain
+# without warnings. Unstable/nightly-only options (import grouping, comment
+# wrapping, doc-comment formatting, ...) are intentionally left out.
+
+# Rust edition used by the workspace (drives some default parsing rules).
+edition = "2021"
+
+# Maximum line width before rustfmt wraps the code.
+max_width = 100
+
+# Indentation: 4 spaces, never tabs.
+hard_tabs = false
+tab_spaces = 4
+
+# Line ending style: follow the platform ("Auto"), or force "Unix"/"Windows".
+newline_style = "Auto"
+
+# How aggressively rustfmt flattens/wraps structures.
+# "Default" is the standard heuristic; "Max" produces the least wrapping.
+use_small_heuristics = "Default"
+
+# Sort `use` statements and module declarations alphabetically.
+reorder_imports = true
+reorder_modules = true
+
+# Merge multiple `#[derive(...)]` attributes into a single attribute.
+merge_derives = true
+
+# Prefer the field-init shorthand `{ value }` over `{ value: value }`.
+use_field_init_shorthand = true
+
+# Remove unnecessary nested parentheses in expressions.
+remove_nested_parens = true

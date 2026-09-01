@@ -72,9 +72,9 @@ pub const SERVICE_NAME_LEN: usize = 64;
 /// Threshold above which a payload is published on the `_large` topic.
 pub const LARGE_PAYLOAD_THRESHOLD: usize = 1024;
 
-/// Returns the `"small"` topic name for a given node.
-pub fn node_small_topic(node_id: NodeId) -> String {
-    format!("node_{}_small", node_id.0)
+/// Returns the `"default"` topic name for a given node.
+pub fn node_default_topic(node_id: NodeId) -> String {
+    format!("node_{}_default", node_id.0)
 }
 
 /// Returns the `"large"` topic name for a given node.
@@ -90,8 +90,11 @@ pub fn node_notify_topic(node_id: NodeId) -> String {
 /// Maximum timeout for a single RPC call (seconds).
 pub const RPC_CALL_TIMEOUT_SECS: u64 = 30;
 
-/// Initial slice size for iceoryx2 publishers (`_small` topics).
-pub const PUBLISHER_INITIAL_MAX_SLICE_LEN: usize = 256;
+/// Initial slice size for iceoryx2 publishers (`_default` topics).
+///
+/// This is the fallback used when the `#[service]` macro does not override it
+/// through `default_size_message`.
+pub const PUBLISHER_DEFAULT_MAX_SLICE_LEN: usize = 256;
 /// Initial slice size for iceoryx2 publishers (`_large` topics).
 pub const PUBLISHER_LARGE_MAX_SLICE_LEN: usize = 4096;
 
@@ -108,8 +111,8 @@ pub const INITIALIZE_ALL_TIMEOUT_SECS: u16 = 30;
 /// Maximum number of readers on a Blackboard.
 pub const BLACKBOARD_MAX_READERS: usize = 64;
 
-/// Subscriber buffer size for the `_small` topics.
-pub const SMALL_TOPIC_BUFFER_SIZE: usize = 4096;
+/// Subscriber buffer size for the `_default` topics.
+pub const DEFAULT_TOPIC_BUFFER_SIZE: usize = 4096;
 
 /// Subscriber buffer size for the `_large` topics.
 ///

@@ -144,3 +144,69 @@ fn test_cache_attribute_compiles() {
     // Checks that the client is correctly generated (the method is annotated #[cache]).
     let _client = CachedServiceClient::new();
 }
+
+// -----------------------------------------------------------------------------
+// Test 7: `allow_large_payload` parameter
+// -----------------------------------------------------------------------------
+
+#[service(allow_large_payload = true)]
+#[async_trait::async_trait]
+pub trait LargePayloadService: Send + Sync + 'static {
+    async fn big(&self, data: String) -> Observable<String, String>;
+}
+
+#[service("DefaultPayloadService", allow_large_payload = false)]
+#[async_trait::async_trait]
+pub trait DefaultPayloadService: Send + Sync + 'static {
+    async fn small(&self, data: String) -> Observable<String, String>;
+}
+
+#[test]
+fn test_allow_large_payload_parameter_compiles() {
+    // The `allow_large_payload = true` service must generate a working client
+    // and enable the large-payload segment on the global hub.
+    let _large = LargePayloadServiceClient::new();
+    assert!(ice_rpc::ServiceLocator::global()
+        .hub()
+        .is_large_payload_enabled());
+
+    // `allow_large_payload = false` (explicit default) still compiles.
+    let _default = DefaultPayloadServiceClient::new();
+}
+
+// -----------------------------------------------------------------------------
+// Test 8: `default_size_message` parameter (in KiB)
+// -----------------------------------------------------------------------------
+
+#[service(default_size_message = 4)]
+#[async_trait::async_trait]
+pub trait SizedMessageService: Send + Sync + 'static {
+    async fn echo(&self, data: String) -> Observable<String, String>;
+}
+
+#[service("FullService", allow_large_payload = true, default_size_message = 8)]
+#[async_trait::async_trait]
+pub trait FullService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[test]
+fn test_default_size_message_parameter() {
+    // Creating the client must configure the default segment size in bytes.
+    let _sized = SizedMessageServiceClient::new();
+    assert!(
+        ice_rpc::ServiceLocator::global()
+            .hub()
+            .default_message_size_bytes()
+            >= 4 * 1024
+    );
+
+    // A larger value wins (the hub keeps the maximum requested size).
+    let _full = FullServiceClient::new();
+    assert!(
+        ice_rpc::ServiceLocator::global()
+            .hub()
+            .default_message_size_bytes()
+            >= 8 * 1024
+    );
+}

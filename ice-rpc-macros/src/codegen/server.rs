@@ -12,6 +12,8 @@ pub struct ServerGenInput<'a> {
     pub topic_ready: &'a str,
     pub blackboard_key: u8,
     pub server_match_arms: &'a [TokenStream],
+    pub allow_large_payload: bool,
+    pub default_size_message_kb: Option<u64>,
 }
 
 /// Generates the `{Trait}Server` and its `run()` method.
@@ -29,7 +31,20 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         topic_ready,
         blackboard_key,
         server_match_arms,
+        allow_large_payload,
+        default_size_message_kb,
     } = input;
+
+    let mut hub_config = TokenStream::new();
+    if *allow_large_payload {
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
+    }
+    if let Some(kb) = default_size_message_kb {
+        let bytes = *kb as usize * 1024;
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
+    }
 
     quote! {
         #[derive(Clone)]
@@ -52,6 +67,8 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                 &self,
                 ready_tx: ice_rpc::rt::oneshot::Sender<Result<(), String>>,
             ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                #hub_config
+
                 use ice_rpc::futures::FutureExt;
 
                 let svc_name: &'static str = stringify!(#trait_name);

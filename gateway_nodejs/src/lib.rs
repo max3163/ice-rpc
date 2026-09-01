@@ -77,7 +77,9 @@ pub fn init(callback: Function<'_, serde_json::Value, Unknown<'static>>) -> bool
     }
 
     ice_rpc::nodejs_dispatch::set_dispatch(|cid, service, method, args| {
-        runtime::block_on(nodejs_bridge::NodeJsBridge::global().call_async(cid, service, method, args))
+        runtime::block_on(
+            nodejs_bridge::NodeJsBridge::global().call_async(cid, service, method, args),
+        )
     });
 
     ice_rpc::init_without_ctrl_c();

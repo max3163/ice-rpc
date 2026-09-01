@@ -109,8 +109,7 @@ mod tests {
         pollster::block_on(tx.send(Event::Next(42))).unwrap();
         drop(tx);
 
-        let result: Result<i32, crate::TakeOneError<String>> =
-            pollster::block_on(take_one(Ok(rx)));
+        let result: Result<i32, crate::TakeOneError<String>> = pollster::block_on(take_one(Ok(rx)));
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -120,8 +119,7 @@ mod tests {
         pollster::block_on(tx.send(Event::Error("oops".to_string()))).unwrap();
         drop(tx);
 
-        let result: Result<i32, crate::TakeOneError<String>> =
-            pollster::block_on(take_one(Ok(rx)));
+        let result: Result<i32, crate::TakeOneError<String>> = pollster::block_on(take_one(Ok(rx)));
         match result {
             Err(crate::TakeOneError::Service(e)) => assert_eq!(e, "oops"),
             other => panic!("Expected TakeOneError::Service, got {:?}", other),
@@ -134,8 +132,7 @@ mod tests {
         pollster::block_on(tx.send(Event::Complete)).unwrap();
         drop(tx);
 
-        let result: Result<i32, crate::TakeOneError<String>> =
-            pollster::block_on(take_one(Ok(rx)));
+        let result: Result<i32, crate::TakeOneError<String>> = pollster::block_on(take_one(Ok(rx)));
         match result {
             Err(crate::TakeOneError::Empty) => {}
             other => panic!("Expected TakeOneError::Empty, got {:?}", other),
@@ -147,8 +144,7 @@ mod tests {
         let (_tx, rx) = crate::channel::<i32, String>(1);
         drop(_tx);
 
-        let result: Result<i32, crate::TakeOneError<String>> =
-            pollster::block_on(take_one(Ok(rx)));
+        let result: Result<i32, crate::TakeOneError<String>> = pollster::block_on(take_one(Ok(rx)));
         match result {
             Err(crate::TakeOneError::Empty) => {}
             other => panic!("Expected TakeOneError::Empty, got {:?}", other),

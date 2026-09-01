@@ -206,7 +206,7 @@ impl std::fmt::Display for HttpError {
 }
 
 /// HTTP transfer service with large zero-copy payloads.
-#[service("HttpService")]
+#[service("HttpService", allow_large_payload = true)]
 pub trait HttpService {
     /// Sends an HTTP request and returns the response.
     async fn send_request(

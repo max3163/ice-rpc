@@ -145,13 +145,10 @@ where
         TimedOut,
     }
 
-    match futures_lite::future::race(
-        async { Outcome::Value(fut.await) },
-        async {
-            sleep(dur).await;
-            Outcome::TimedOut
-        },
-    )
+    match futures_lite::future::race(async { Outcome::Value(fut.await) }, async {
+        sleep(dur).await;
+        Outcome::TimedOut
+    })
     .await
     {
         Outcome::Value(output) => Ok(output),

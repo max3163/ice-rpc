@@ -36,6 +36,22 @@ pub trait MyService: Send + Sync + 'static {
 }
 ```
 
+## Service parameters
+
+`#[service]` accepts two optional parameters, combinable in any order:
+
+```rust,ignore
+#[service("MyService", allow_large_payload = true, default_size_message = 8)]
+pub trait MyService: Send + Sync + 'static {
+    async fn hello(&self, name: String) -> Observable<String, MyError>;
+}
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `allow_large_payload` | `bool` | `false` | Creates the second shared-memory segment (`_large`) used for payloads above `LARGE_PAYLOAD_THRESHOLD`. |
+| `default_size_message` | integer (KiB) | `256` bytes | Initial slice size of the `_default` shared-memory segment publisher. |
+
 ## Method attributes
 
 ```rust,ignore

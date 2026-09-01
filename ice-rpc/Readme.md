@@ -69,6 +69,18 @@ pub trait MyService: Send + Sync + 'static {
 
 The macro generates `MyServiceRequest`, `MyServiceClient`, `MyServiceServer`, `MyServiceProxy` and `MyServiceMode`.
 
+`#[service]` also accepts two optional parameters:
+
+- `allow_large_payload` (`bool`, default `false`) — creates the second shared-memory segment (`_large`) for payloads above `LARGE_PAYLOAD_THRESHOLD`;
+- `default_size_message` (integer, in KiB) — initial slice size of the `_default` shared-memory segment publisher.
+
+```rust,ignore
+#[service("MyService", allow_large_payload = true, default_size_message = 8)]
+pub trait MyService: Send + Sync + 'static {
+    async fn hello(&self, name: String) -> Observable<String, MyError>;
+}
+```
+
 ### 2. Start a provider
 
 ```rust,ignore

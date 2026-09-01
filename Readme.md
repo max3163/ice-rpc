@@ -37,7 +37,7 @@ sequenceDiagram
     Hub->>SHM: loan_slice_uninit() → write → send()
     Hub->>SHM: notifier.notify()
     SHM-->>Hub2: WaitSet woken up
-    Hub2->>Hub2: drain_subscriber(small_sub)
+    Hub2->>Hub2: drain_subscriber(default_sub)
     Hub2->>Server: handler(hdr, payload) via dispatch_tx
     Server->>Server: rkyv::from_bytes(Request)
     Server->>Impl: get_user_age("Alice")
@@ -45,7 +45,7 @@ sequenceDiagram
     Server->>Hub2: send_to_node(NodeId(1000), resp_hdr, bytes)
     Hub2->>SHM: loan_slice_uninit() → write → send()
     SHM-->>Hub: WaitSet woken up
-    Hub->>Hub: drain_subscriber(small_sub)
+    Hub->>Hub: drain_subscriber(default_sub)
     Hub->>Client: response_handler(Ok(payload))
     Client-->>App: Ok(30)
 ```
@@ -155,7 +155,7 @@ sequenceDiagram
 │  │             │   │                                 │   │         │         │
 │  │  NodeHub ◄──┼───┤          iceoryx2 SHM           │   ▼         │         │
 │  │   │         │   │    ┌─────────────────────┐      │  NodeHub    │         │
-│  │   │         │   │    │  node_{pid}_small   │      │   ▲         │         │
+│  │   │         │   │    │  node_{pid}_default│      │   ▲         │         │
 │  │   │         │   └───►│  node_{pid}_large   │──────┼───┘         │         │
 │  │   │         │        │  node_{pid}_notify  │      │             │         │
 │  │   │         │        └─────────────────────┘      │             │         │
@@ -298,12 +298,20 @@ pub trait DatabaseService: Send + Sync + 'static {
 | `DatabaseServiceProxy` | Single entry point (Smart Proxy Node, 3 modes) |
 | `DatabaseServiceMode` | `Provider` / `Consumer` / `ProviderNodeJs` enum |
 
-### 3.2. Optional parameter
+### 3.2. Optional parameters
 
 ```rust
-#[service]                        // logical name = trait name in lowercase
-#[service("MyService")]           // explicit logical name
+#[service]                                                       // logical name = trait name in lowercase
+#[service("MyService")]                                          // explicit logical name
+#[service(allow_large_payload = true)]                           // creates the _large segment
+#[service(default_size_message = 8)]                             // default segment size, in KiB
+#[service("MyService", allow_large_payload = true, default_size_message = 8)]
 ```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `allow_large_payload` | `bool` | `false` | Creates the second shared-memory segment (`_large`) for payloads above `LARGE_PAYLOAD_THRESHOLD`. |
+| `default_size_message` | integer (KiB) | `256` bytes | Initial slice size of the `_default` shared-memory segment publisher. |
 
 ---
 
@@ -319,7 +327,7 @@ Each process (Node) owns exactly **3 iceoryx2 topics** :
 │                                                                 │
 │  Process PID=1000                     Process PID=2000           │
 │  ┌──────────────────────┐             ┌──────────────────────┐  │
-│  │ node_1000_small      │             │ node_2000_small      │  │
+│  │ node_1000_default   │             │ node_2000_default   │  │
 │  │  ↕ messages ≤ 1 KB   │             │  ↕ messages ≤ 1 KB   │  │
 │  │                      │             │                      │  │
 │  │ node_1000_large      │             │ node_2000_large      │  │
@@ -350,12 +358,12 @@ Each process (Node) owns exactly **3 iceoryx2 topics** :
 │  │  1. WaitSet::wait_and_process_once_with_timeout(500µs)     │  │
 │  │     │                                                     │  │
 │  │     ├─ listener.try_wait_one() → empties the notifier     │  │
-│  │     ├─ drain_subscriber(small_sub)                        │  │
+│  │     ├─ drain_subscriber(default_sub)                      │  │
 │  │     └─ drain_subscriber(large_sub)                        │  │
 │  │                                                           │  │
 │  │  2. Continuous drain (while loop)                         │  │
 │  │     │                                                     │  │
-│  │     ├─ drain_subscriber_has_work(small_sub)               │  │
+│  │     ├─ drain_subscriber_has_work(default_sub)             │  │
 │  │     └─ drain_subscriber_has_work(large_sub)               │  │
 │  │                                                           │  │
 │  │  3. If no more messages → back to WaitSet (sleep)         │  │
@@ -812,7 +820,7 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │    ▼                                                       WaitSet       │
 │  rx.recv() waits...                                       woken up       │
 │                                                           │               │
-│                                              drain_subscriber(small_sub)  │
+│                                              drain_subscriber(default_sub)│
 │                                                           │               │
 │                                              hdr.service() = "DatabaseSvc"│
 │                                              → REQUEST                     │
@@ -849,11 +857,11 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │                                              }                            │
 │                                                           │               │
 │                                              send_to_node(1000)           │
-│                                              → node_1000_small            │
+│                                              → node_1000_default         │
 │                                              → notifier.notify() ────►    │
 │                                                                           │
 │  WaitSet woken up                                           │             │
-│  drain_subscriber(small_sub)                                │             │
+│  drain_subscriber(default_sub)                              │             │
 │    │                                                                      │
 │  hdr.service() = "" → RESPONSE                                            │
 │  hdr.correlation_id → response_handlers[cid]                              │

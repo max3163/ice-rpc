@@ -399,7 +399,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
             false
         });
-        assert!(alive, "The node must be detected alive (lock '{}')", lock_name);
+        assert!(
+            alive,
+            "The node must be detected alive (lock '{}')",
+            lock_name
+        );
 
         platform::release(&lock_name);
 

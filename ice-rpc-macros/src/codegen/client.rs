@@ -23,6 +23,8 @@ pub struct ClientGenInput<'a> {
     pub client_name: &'a Ident,
     pub logical_name: &'a str,
     pub client_methods: &'a [TokenStream],
+    pub allow_large_payload: bool,
+    pub default_size_message_kb: Option<u64>,
 }
 
 /// Generates the `{Trait}Client` struct with the `new()` constructor.
@@ -35,8 +37,21 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
         client_name,
         logical_name,
         client_methods,
+        allow_large_payload,
+        default_size_message_kb,
         ..
     } = input;
+
+    let mut hub_config = TokenStream::new();
+    if *allow_large_payload {
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
+    }
+    if let Some(kb) = default_size_message_kb {
+        let bytes = *kb as usize * 1024;
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
+    }
 
     quote! {
         #visibility struct #client_name {
@@ -48,6 +63,8 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
 
         impl #client_name {
             #visibility fn new() -> std::sync::Arc<Self> {
+                #hub_config
+
                 let reconnecting       = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let server_ready       = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let cached_target_node = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -123,13 +140,28 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput {
         trait_name,
         client_name,
+        allow_large_payload,
+        default_size_message_kb,
         ..
     } = input;
+
+    let mut hub_config = TokenStream::new();
+    if *allow_large_payload {
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
+    }
+    if let Some(kb) = default_size_message_kb {
+        let bytes = *kb as usize * 1024;
+        hub_config
+            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
+    }
 
     quote! {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
+                #hub_config
+
                 match ice_rpc::ServiceLocator::global().get_node().await {
                     Ok(_) => {}
                     Err(e) => {

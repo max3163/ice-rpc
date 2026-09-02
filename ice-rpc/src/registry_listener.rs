@@ -88,14 +88,7 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
                 },
                 std::time::Duration::from_millis(REGISTRY_WAITSET_TIMEOUT_MS),
             );
-            // Extra drain after timeout.
-            while let Ok(Some(event_id)) = listener.try_wait_one() {
-                let node_id_raw = event_id.as_value() as u32;
-                if node_id_raw > 0 {
-                    handle_node_event(&discovery, node_id_raw);
-                }
-            }
-
+            // Check Termination Request 
             if let Err(_) | Ok(iceoryx2::waitset::WaitSetRunResult::TerminationRequest) = result {
                 break;
             }

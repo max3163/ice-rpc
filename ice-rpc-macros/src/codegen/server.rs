@@ -196,6 +196,10 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// Receives the request in native form, calls the business implementation,
 /// and for each stream event, serializes the response via the shared
 /// `scratch_ref` buffer and sends it via `send_to_node`.
+///
+/// The scratch lock is acquired only around `serialize -> send`, never while
+/// the business implementation or the stream `recv().await` is running, so
+/// concurrent RPCs of the same server are no longer serialized.
 pub fn gen_server_match_arm(
     trait_name: &Ident,
     logical_name: &str,
@@ -208,10 +212,6 @@ pub fn gen_server_match_arm(
         #req_enum_name::#var_name { #(#arg_names),* } => {
             use ice_rpc::rkyv::{api::high::to_bytes_in, util::AlignedVec, rancor::Error as RkyvError};
 
-            let mut guard = scratch_ref.lock().await;
-            if guard.capacity() < size_hint + 4096 {
-                *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
-            }
             let client_pid = ice_rpc::caller_pid_from_cid(&cid);
             let client_node = ice_rpc::NodeId(client_pid);
             let hub = ice_rpc::ServiceLocator::global().hub();
@@ -224,6 +224,10 @@ pub fn gen_server_match_arm(
                             ice_rpc::Event::Complete => ice_rpc::EventKind::Complete,
                             ice_rpc::Event::Error(_) => ice_rpc::EventKind::Error,
                         };
+                        let mut guard = scratch_ref.lock().await;
+                        if guard.capacity() < size_hint + 4096 {
+                            *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
+                        }
                         guard.clear();
                         if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
 
@@ -240,11 +244,16 @@ pub fn gen_server_match_arm(
                             event_kind: kind,
                         };
                         let _ = hub.send_to_node(client_node, resp_header, &*guard);
+                        drop(guard);
                         if kind.is_terminal() { break; }
                     }
                 }
                 Err(e) => {
                     ::log::error!("[{}] IPC error on '{}': {}", stringify!(#trait_name), stringify!(#fn_name), e);
+                    let mut guard = scratch_ref.lock().await;
+                    if guard.capacity() < size_hint + 4096 {
+                        *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
+                    }
                     guard.clear();
                     let complete_event: ice_rpc::Event<(), ()> = ice_rpc::Event::Complete;
                     if to_bytes_in::<_, RkyvError>(&complete_event, &mut *guard).is_ok() {
@@ -264,7 +273,6 @@ pub fn gen_server_match_arm(
                     }
                 }
             }
-            drop(guard);
         }
     }
 }

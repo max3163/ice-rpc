@@ -1,6 +1,6 @@
 {
   "name": "gateway-nodejs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NAPI-RS gateway for the ice-rpc communication library",
   "main": "index.js",
   "types": "index.d.ts",

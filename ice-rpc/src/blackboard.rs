@@ -55,12 +55,9 @@ fn key_to_service_name(key: &ServiceKey) -> String {
 // KeepAlive
 // ---------------------------------------------------------------------------
 
-trait KeepAlive: Send + 'static {}
-impl<T: Send + 'static> KeepAlive for T {}
+static BB_WRITERS: OnceLock<Mutex<HashMap<String, Box<dyn std::any::Any + Send>>>> = OnceLock::new();
 
-static BB_WRITERS: OnceLock<Mutex<HashMap<String, Box<dyn KeepAlive>>>> = OnceLock::new();
-
-fn keep_writer_alive(bb_name: &str, writer: Box<dyn KeepAlive>) {
+fn keep_writer_alive(bb_name: &str, writer: Box<dyn std::any::Any + Send>) {
     if let Ok(mut map) = BB_WRITERS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
         map.insert(bb_name.to_string(), writer);
     }

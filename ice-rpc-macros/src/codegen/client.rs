@@ -277,6 +277,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             }
 
             hub.register_response_handler(correlation_id, handler);
+            hub.register_pending_call(correlation_id, target_node.0);
 
             if let Err(e) = hub.send_to_node(target_node, rpc_header, &bytes) {
                 hub.remove_response_handler(&correlation_id);

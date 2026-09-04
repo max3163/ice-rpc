@@ -43,6 +43,7 @@ type IpcPublisher = iceoryx2::port::publisher::Publisher<
 pub struct NodeHub {
     request_handlers: RwLock<HashMap<String, Vec<RequestHandler>>>,
     response_handlers: Mutex<HashMap<[u8; 16], ResponseHandler>>,
+    pending_calls: Mutex<HashMap<[u8; 16], u32>>,
     dispatch_started: std::sync::atomic::AtomicBool,
     publishers: RwLock<HashMap<u32, NodePublishersArc>>,
     publishers_create_lock: Mutex<()>,
@@ -55,6 +56,7 @@ impl NodeHub {
         Self {
             request_handlers: RwLock::new(HashMap::new()),
             response_handlers: Mutex::new(HashMap::new()),
+            pending_calls: Mutex::new(HashMap::new()),
             dispatch_started: std::sync::atomic::AtomicBool::new(false),
             publishers: RwLock::new(HashMap::new()),
             publishers_create_lock: Mutex::new(()),
@@ -93,12 +95,65 @@ impl NodeHub {
             .insert(correlation_id, handler);
     }
 
+    /// Registers a pending call for a target node.
+    ///
+    /// When the node dies, every pending call is notified with
+    /// `RpcError::ProviderUnavailable`.
+    pub fn register_pending_call(&self, correlation_id: [u8; 16], node_id: u32) {
+        self.pending_calls
+            .lock()
+            .expect("pending_calls lock poisoning")
+            .insert(correlation_id, node_id);
+    }
+
     /// Removes the response handler associated with a correlation_id.
     pub fn remove_response_handler(&self, correlation_id: &[u8; 16]) {
         self.response_handlers
             .lock()
             .expect("response_handlers lock poisoning")
             .remove(correlation_id);
+        self.pending_calls
+            .lock()
+            .expect("pending_calls lock poisoning")
+            .remove(correlation_id);
+    }
+
+    /// Notifies every pending call of a node that it is no longer reachable.
+    fn fail_pending_calls(&self, node_id: u32) {
+        let cids: Vec<[u8; 16]> = {
+            let pending = self
+                .pending_calls
+                .lock()
+                .expect("pending_calls lock poisoning");
+            pending
+                .iter()
+                .filter(|(_, node)| **node == node_id)
+                .map(|(cid, _)| *cid)
+                .collect()
+        };
+        for cid in &cids {
+            self.pending_calls
+                .lock()
+                .expect("pending_calls lock poisoning")
+                .remove(cid);
+        }
+
+        let mut to_fail = Vec::new();
+        {
+            let mut handlers = self
+                .response_handlers
+                .lock()
+                .expect("response_handlers lock poisoning");
+            for cid in cids {
+                if let Some(handler) = handlers.remove(&cid) {
+                    to_fail.push(handler);
+                }
+            }
+        }
+
+        for handler in to_fail {
+            handler(Err(crate::RpcError::ProviderUnavailable { node: node_id }));
+        }
     }
 
     /// Checks whether publishers already exist for a target node.
@@ -214,6 +269,7 @@ impl NodeHub {
             .write()
             .expect("publishers write lock poisoning")
             .remove(&target_node_id.0);
+        self.fail_pending_calls(target_node_id.0);
         log::warn!("Publishers invalidated for {}", target_node_id);
     }
 
@@ -607,6 +663,29 @@ mod tests {
         hub.remove_response_handler(&cid);
         // Removing an unknown correlation id must not panic.
         hub.remove_response_handler(&cid);
+    }
+
+    #[test]
+    fn invalidate_publishers_notifies_pending_calls() {
+        let hub = new_hub();
+        let node = NodeId(0xF00D);
+        let cid = [7u8; 16];
+        let notified = Arc::new(std::sync::Mutex::new(None));
+        let handler: ResponseHandler = {
+            let notified = notified.clone();
+            Arc::new(move |result| {
+                *notified.lock().unwrap() = result.err();
+            })
+        };
+        hub.register_response_handler(cid, handler);
+        hub.register_pending_call(cid, node.0);
+        hub.invalidate_publishers(node);
+
+        let guard = notified.lock().unwrap();
+        match guard.as_ref() {
+            Some(crate::RpcError::ProviderUnavailable { node: n }) => assert_eq!(*n, node.0),
+            other => panic!("Expected ProviderUnavailable, got {:?}", other),
+        }
     }
 
     #[test]

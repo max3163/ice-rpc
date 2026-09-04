@@ -111,6 +111,8 @@ sequenceDiagram
     participant S as NodeSupervisor
     participant RM as ReconnectManager
     participant Client as DatabaseServiceClient
+    participant H as NodeHub
+    participant C as In-flight Caller
 
     P->>Kernel: Mutex creation "ice_rpc_node_2000" (or flock)
     Note over P: Hard crash (SIGKILL)
@@ -122,6 +124,9 @@ sequenceDiagram
     S-->>Client: notify every subscribed client (one per service)
     Client->>Client: transition Ready → Dead → Reconnecting
     Client->>RM: schedule(2000, service)
+    RM->>H: invalidate_publishers(2000)
+    H->>H: fail_pending_calls(2000)
+    H-->>C: Err(RpcError::ProviderUnavailable)
     loop Rediscovery (single worker, every 1s)
         RM->>ND: locate_service("DatabaseService")
         ND-->>RM: None (not restarted yet)
@@ -897,6 +902,10 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │  SOURCE 1 : IPC send failure   → invalidate_publishers() + fire()       │
 │  SOURCE 2 : NodeLockWatcher    → invalidate_node_services() + fire()    │
 │  SOURCE 3 : DEAD notification  → fire()                                  │
+│                                                                          │
+│  invalidate_publishers() → fail_pending_calls(node_id)                  │
+│     └─ every in-flight call of the node is failed with                  │
+│        RpcError::ProviderUnavailable                                    │
 │                                                                          │
 │  fire(node_id) → NodeSupervisor.notify_node_dead(node_id)               │
 │     └─ broadcasts to every subscribed ClientCore (one per service)      │

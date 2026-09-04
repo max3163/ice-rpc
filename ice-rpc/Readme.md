@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|---|
 | `TransportError` | iceoryx2 I/O failure | yes |
 | `DiscoveryError` | discovery cycle failure | yes |
-| `ProviderUnavailable` | provider node unreachable | yes |
+| `ProviderUnavailable` | provider node unreachable — also fails in-flight calls on node death | yes |
 | `Timeout` | deadline exceeded | yes |
 | `ServiceNotFound` | service not registered on any node | no |
 | `Cancelled` | global shutdown (Ctrl+C) | no |

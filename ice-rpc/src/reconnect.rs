@@ -4,7 +4,7 @@
 //! by the crash watcher ([`crate::node_lock`]) or the hub
 //! ([`crate::hub::NodeHub`]) when a send error is detected.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Type of the reconnection callback fired when a node is detected as dead.
@@ -14,12 +14,6 @@ pub type ReconnectCallback = Arc<dyn Fn(u32) + Send + Sync>;
 fn callbacks() -> &'static Mutex<HashMap<u32, Vec<ReconnectCallback>>> {
     static CALLBACKS: OnceLock<Mutex<HashMap<u32, Vec<ReconnectCallback>>>> = OnceLock::new();
     CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Set of NodeIds for which a reconnection callback has already been registered.
-fn registered() -> &'static Mutex<HashSet<u32>> {
-    static REGISTERED: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-    REGISTERED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Registers a reconnection callback.
@@ -34,18 +28,21 @@ pub fn register(node_id: u32, cb: ReconnectCallback) {
 
 /// Registers a reconnection callback only once per NodeId.
 ///
+/// The deduplication relies on the callback registry itself: if the node
+/// already has at least one callback, the new one is discarded.
+///
 /// # Returns
 /// `true` if the callback was registered (first call for this NodeId).
 pub fn register_once(node_id: u32, cb: ReconnectCallback) -> bool {
-    let mut reg = registered()
+    let mut map = callbacks()
         .lock()
-        .expect("reconnect registered lock poisoning");
-    if reg.contains(&node_id) {
-        return false;
+        .expect("reconnect callbacks lock poisoning");
+    if let Some(existing) = map.get(&node_id) {
+        if !existing.is_empty() {
+            return false;
+        }
     }
-    reg.insert(node_id);
-    drop(reg);
-    register(node_id, cb);
+    map.entry(node_id).or_default().push(cb);
     true
 }
 
@@ -54,10 +51,6 @@ pub fn unregister(node_id: u32) {
     callbacks()
         .lock()
         .expect("reconnect callbacks lock poisoning")
-        .remove(&node_id);
-    registered()
-        .lock()
-        .expect("reconnect registered lock poisoning")
         .remove(&node_id);
 }
 

@@ -263,10 +263,11 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
             self.core.subscribe(target_node.0);
 
-            let rpc_header = ice_rpc::RpcHeader::new(
+            let rpc_header = ice_rpc::RpcHeader::request(
                 svc_name,
                 #method_name_str,
-            ).with_service_version(#service_version);
+                #service_version,
+            );
             let correlation_id = rpc_header.correlation_id;
 
             let (tx, rx) = ice_rpc::channel::<#ok_type, #err_type>(8);

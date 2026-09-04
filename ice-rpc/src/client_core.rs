@@ -97,8 +97,16 @@ impl ClientCore {
     }
 
     /// Marks the client as connected to `node_id` after a successful lookup.
+    ///
+    /// A successful transition also subscribes to the node supervisor so the
+    /// client is notified when the new node dies.
     pub fn store_target_node(&self, node_id: u32) -> bool {
-        transition(&self.state, ConnectionState::Ready(node_id))
+        if transition(&self.state, ConnectionState::Ready(node_id)) {
+            self.subscribe(node_id);
+            true
+        } else {
+            false
+        }
     }
 
     /// Marks `node_id` as dead, if allowed by the state machine.

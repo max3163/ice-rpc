@@ -210,6 +210,30 @@ impl RpcHeader {
         self
     }
 
+    /// Creates a **request** header with a service interface version.
+    #[inline]
+    pub fn request(service: &str, method: &str, service_version: u16) -> Self {
+        Self::new(service, method).with_service_version(service_version)
+    }
+
+    /// Creates a **response** header from a request header.
+    ///
+    /// Reuses the correlation id, service and method names of the request and
+    /// stamps the protocol/service versions and the current timestamp.
+    #[inline]
+    pub fn response_from(request: &RpcHeader, event_kind: EventKind, service_version: u16) -> Self {
+        Self {
+            correlation_id: request.correlation_id,
+            sent_at_ns: RpcHeader::now_ns(),
+            caller_pid: std::process::id(),
+            service_name: request.service_name,
+            method_name: request.method_name,
+            event_kind,
+            protocol_version: PROTOCOL_VERSION,
+            service_version,
+        }
+    }
+
     /// Returns `true` if this header is a request (client → server).
     #[inline]
     pub fn is_request(&self) -> bool {

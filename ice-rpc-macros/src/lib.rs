@@ -424,7 +424,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             server_match_arms.push(gen_server_match_arm(
                 trait_name,
-                &logical_name_lit,
                 fn_name,
                 &var_name,
                 &arg_names,

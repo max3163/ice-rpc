@@ -109,16 +109,11 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                         }
                                     }
 
-                                    let resp_hdr = ice_rpc::RpcHeader {
-                                        correlation_id: cid,
-                                        sent_at_ns: ice_rpc::RpcHeader::now_ns(),
-                                        caller_pid: std::process::id(),
-                                        service_name: ice_rpc::StaticString::from_bytes_truncated(svc_static.as_bytes()).unwrap_or_default(),
-                                        method_name: ice_rpc::StaticString::from_bytes_truncated(method_owned.as_bytes()).unwrap_or_default(),
+                                    let resp_hdr = ice_rpc::RpcHeader::response_from(
+                                        &hdr,
                                         event_kind,
-                                        protocol_version: ice_rpc::PROTOCOL_VERSION,
-                                        service_version: #service_version,
-                                    };
+                                        #service_version,
+                                    );
 
                                     if let Err(e) = hub.send_to_node(client_node, resp_hdr, &response_bytes) {
                                         ::log::error!("[{}::{}] send_to_node: {:?}", svc_static, method_owned, e);

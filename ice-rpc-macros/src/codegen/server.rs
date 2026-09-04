@@ -73,7 +73,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                 let scratch = self.scratch.clone();
 
                 let (dispatch_tx, mut dispatch_rx) =
-                    ice_rpc::async_channel::bounded::<([u8; 16], #req_enum_name, usize)>(1024);
+                    ice_rpc::async_channel::bounded::<(ice_rpc::RpcHeader, #req_enum_name, usize)>(1024);
 
                 let dispatch_tx_clone = dispatch_tx.clone();
                 std::thread::spawn(move || {
@@ -88,7 +88,6 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                     let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                         let tx = dispatch_tx_clone;
                         move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
-                            let cid = hdr.correlation_id;
                             if hdr.protocol_version != ice_rpc::PROTOCOL_VERSION
                                 || hdr.service_version != #service_version
                             {
@@ -117,16 +116,11 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                     ice_rpc::rkyv::rancor::Error,
                                 >(&error_event, &mut buf).is_ok()
                                 {
-                                    let resp_header = ice_rpc::RpcHeader {
-                                        correlation_id: hdr.correlation_id,
-                                        sent_at_ns: ice_rpc::RpcHeader::now_ns(),
-                                        caller_pid: std::process::id(),
-                                        service_name: hdr.service_name,
-                                        method_name: hdr.method_name,
-                                        event_kind: ice_rpc::EventKind::Error,
-                                        protocol_version: ice_rpc::PROTOCOL_VERSION,
-                                        service_version: #service_version,
-                                    };
+                                    let resp_header = ice_rpc::RpcHeader::response_from(
+                                        &hdr,
+                                        ice_rpc::EventKind::Error,
+                                        #service_version,
+                                    );
                                     let _ = ice_rpc::ServiceLocator::global()
                                         .hub()
                                         .send_to_node(client_node, resp_header, &buf);
@@ -157,7 +151,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                 }
                             };
 
-                            if tx.try_send((cid, native_req, raw_len)).is_err() {
+                            if tx.try_send((hdr, native_req, raw_len)).is_err() {
                                 ::log::warn!("[{}Server] channel saturated — request rejected", svc_name);
                             }
                         }
@@ -219,7 +213,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         msg = dispatch_rx.recv().fuse() => {
                             match msg {
                                 Err(_) => break,
-                                Ok((cid, req_val, size_hint)) => {
+                                Ok((hdr, req_val, size_hint)) => {
                                     let impl_ref = svc_impl.clone();
                                     let scratch_ref = scratch.clone();
                                     ice_rpc::rt::spawn(async move {
@@ -248,7 +242,6 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// concurrent RPCs of the same server are no longer serialized.
 pub fn gen_server_match_arm(
     trait_name: &Ident,
-    logical_name: &str,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
@@ -259,7 +252,7 @@ pub fn gen_server_match_arm(
         #req_enum_name::#var_name { #(#arg_names),* } => {
             use ice_rpc::rkyv::{api::high::to_bytes_in, util::AlignedVec, rancor::Error as RkyvError};
 
-            let client_pid = ice_rpc::caller_pid_from_cid(&cid);
+            let client_pid = hdr.caller_pid;
             let client_node = ice_rpc::NodeId(client_pid);
             let hub = ice_rpc::ServiceLocator::global().hub();
 
@@ -279,20 +272,7 @@ pub fn gen_server_match_arm(
                         guard.clear();
                         if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
 
-                        let resp_header = ice_rpc::RpcHeader {
-                            correlation_id: cid,
-                            sent_at_ns: ice_rpc::RpcHeader::now_ns(),
-                            caller_pid: std::process::id(),
-                            service_name: ice_rpc::StaticString::from_bytes_truncated(
-                                #logical_name.as_bytes()
-                            ).unwrap_or_default(),
-                            method_name: ice_rpc::StaticString::from_bytes_truncated(
-                                stringify!(#fn_name).as_bytes()
-                            ).unwrap_or_default(),
-                            event_kind: kind,
-                            protocol_version: ice_rpc::PROTOCOL_VERSION,
-                            service_version: #service_version,
-                        };
+                        let resp_header = ice_rpc::RpcHeader::response_from(&hdr, kind, #service_version);
                         let _ = hub.send_to_node(client_node, resp_header, &*guard);
                         drop(guard);
                         if kind.is_terminal() { break; }
@@ -307,20 +287,11 @@ pub fn gen_server_match_arm(
                     guard.clear();
                     let complete_event: ice_rpc::Event<(), ()> = ice_rpc::Event::Complete;
                     if to_bytes_in::<_, RkyvError>(&complete_event, &mut *guard).is_ok() {
-                        let resp_header = ice_rpc::RpcHeader {
-                            correlation_id: cid,
-                            sent_at_ns: ice_rpc::RpcHeader::now_ns(),
-                            caller_pid: std::process::id(),
-                            service_name: ice_rpc::StaticString::from_bytes_truncated(
-                                #logical_name.as_bytes()
-                            ).unwrap_or_default(),
-                            method_name: ice_rpc::StaticString::from_bytes_truncated(
-                                stringify!(#fn_name).as_bytes()
-                            ).unwrap_or_default(),
-                            event_kind: ice_rpc::EventKind::Complete,
-                            protocol_version: ice_rpc::PROTOCOL_VERSION,
-                            service_version: #service_version,
-                        };
+                        let resp_header = ice_rpc::RpcHeader::response_from(
+                            &hdr,
+                            ice_rpc::EventKind::Complete,
+                            #service_version,
+                        );
                         let _ = hub.send_to_node(client_node, resp_header, &*guard);
                     }
                 }

@@ -123,6 +123,17 @@ fn worker_loop() {
                         service.service_name,
                         nid.0
                     );
+                    // Rebuild the publishers before declaring the client ready:
+                    // `Ready` means the client can actually send to the node.
+                    let hub = crate::ServiceLocator::global().hub();
+                    if let Err(e) = hub.ensure_publishers(nid) {
+                        log::warn!(
+                            "[ReconnectManager] ensure_publishers for Node {} failed: {:?}",
+                            nid,
+                            e
+                        );
+                        continue;
+                    }
                     let mut state = service
                         .state
                         .lock()

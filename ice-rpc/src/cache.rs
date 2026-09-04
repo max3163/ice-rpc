@@ -31,7 +31,7 @@ impl<V> CacheEntry<V> {
 pub struct RpcCache<V> {
     inner: Mutex<HashMap<u64, CacheEntry<V>>>,
     ttl: Duration,
-    /// Maximum number of entries before eviction of the oldest ones.
+    /// Maximum number of entries before eviction of arbitrary entries.
     max_entries: usize,
 }
 
@@ -60,7 +60,7 @@ impl<V: Clone> RpcCache<V> {
     /// Inserts a value into the cache for the given key.
     ///
     /// If the cache is full, expired entries are cleaned up first.
-    /// If still full, the oldest entries are removed.
+    /// If still full, arbitrary entries are evicted.
     pub fn insert(&self, key: u64, value: V) {
         let mut guard = self.inner.lock().expect("RpcCache lock poisoning");
         let now = Instant::now();
@@ -68,11 +68,11 @@ impl<V: Clone> RpcCache<V> {
         // Lazy cleanup: remove expired entries.
         guard.retain(|_, entry| !entry.is_expired(now));
 
-        // If the cache is full, remove the oldest entries.
+        // If the cache is full, evict arbitrary entries.
         while guard.len() >= self.max_entries {
             // Remove an arbitrary entry (the first in the iterator).
-            if let Some(oldest_key) = guard.keys().next().copied() {
-                guard.remove(&oldest_key);
+            if let Some(evicted_key) = guard.keys().next().copied() {
+                guard.remove(&evicted_key);
             } else {
                 break;
             }

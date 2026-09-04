@@ -5,6 +5,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
+use super::helpers::gen_hub_config;
+
 /// Generation parameters of the lifecycle code.
 pub struct LifecycleGenInput<'a> {
     pub trait_name: &'a Ident,
@@ -29,16 +31,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         default_size_message_kb,
     } = input;
 
-    let mut hub_config = TokenStream::new();
-    if *allow_large_payload {
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
-    }
-    if let Some(kb) = default_size_message_kb {
-        let bytes = *kb as usize * 1024;
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
-    }
+    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
 
     quote! {
         #[async_trait::async_trait]

@@ -1,6 +1,32 @@
 //! Helpers for manipulating names and types for code generation.
 
+use proc_macro2::TokenStream;
+use quote::quote;
 use syn::{GenericArgument, PathArguments, Type};
+
+/// Generates the hub configuration statements for the `#[service]` attributes
+/// `allow_large_payload` and `default_size_message`.
+///
+/// Shared by the server, client and lifecycle generators to avoid duplicating
+/// the same block in each code path.
+pub(crate) fn gen_hub_config(
+    allow_large_payload: bool,
+    default_size_message_kb: Option<u64>,
+) -> TokenStream {
+    let mut hub_config = TokenStream::new();
+    if allow_large_payload {
+        hub_config.extend(quote! {
+            ice_rpc::ServiceLocator::global().hub().enable_large_payload();
+        });
+    }
+    if let Some(kb) = default_size_message_kb {
+        let bytes = kb as usize * 1024;
+        hub_config.extend(quote! {
+            ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes);
+        });
+    }
+    hub_config
+}
 
 /// Converts a `snake_case` method name into `PascalCase` for the enum variants.
 ///

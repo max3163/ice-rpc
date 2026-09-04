@@ -7,6 +7,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, Type, Visibility};
 
+use super::helpers::gen_hub_config;
+
 /// Cache configuration for an RPC method.
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
@@ -42,16 +44,7 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
         ..
     } = input;
 
-    let mut hub_config = TokenStream::new();
-    if *allow_large_payload {
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
-    }
-    if let Some(kb) = default_size_message_kb {
-        let bytes = *kb as usize * 1024;
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
-    }
+    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
 
     quote! {
         #visibility struct #client_name {
@@ -146,16 +139,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
         ..
     } = input;
 
-    let mut hub_config = TokenStream::new();
-    if *allow_large_payload {
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
-    }
-    if let Some(kb) = default_size_message_kb {
-        let bytes = *kb as usize * 1024;
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
-    }
+    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
 
     quote! {
         #[async_trait::async_trait]

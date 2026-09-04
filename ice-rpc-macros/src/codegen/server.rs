@@ -4,6 +4,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, Visibility};
 
+use super::helpers::gen_hub_config;
+
 pub struct ServerGenInput<'a> {
     pub trait_name: &'a Ident,
     pub logical_name: &'a str,
@@ -37,16 +39,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         default_size_message_kb,
     } = input;
 
-    let mut hub_config = TokenStream::new();
-    if *allow_large_payload {
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().enable_large_payload(); });
-    }
-    if let Some(kb) = default_size_message_kb {
-        let bytes = *kb as usize * 1024;
-        hub_config
-            .extend(quote! { ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes); });
-    }
+    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
 
     quote! {
         #[derive(Clone)]

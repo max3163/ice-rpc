@@ -13,7 +13,7 @@
 //! ```rust,ignore
 //! fn main() {
 //!     // Initializes the framework (without a global service registry).
-//!     ice_rpc::init_consumer();
+//!     ice_rpc::init();
 //!
 //!     smol::block_on(async {
 //!         // Starts the HTTP gateway exposing the chosen services.

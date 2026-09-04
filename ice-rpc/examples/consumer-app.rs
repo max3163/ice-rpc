@@ -515,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // This process consumes services via locator().get().
-    ice_rpc::init_consumer();
+    ice_rpc::init();
 
     let cancel = ice_rpc::global_cancel_token();
     let stdin = tokio::io::stdin();

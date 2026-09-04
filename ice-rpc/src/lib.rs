@@ -52,7 +52,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Pure provider: no implementation calls locator().get().
-//!     ice_rpc::init_provider();
+//!     ice_rpc::init();
 //!
 //!     ice_rpc::run_provider!(
 //!         MyServiceProxy::provide(MyServiceImpl),
@@ -66,7 +66,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // This provider also consumes services via locator().get().
-//!     ice_rpc::init_consumer();
+//!     ice_rpc::init();
 //!
 //!     ice_rpc::run_provider!(
 //!         ServiceAProxy::provide_with_init(ServiceAImpl::new()),
@@ -83,7 +83,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // This process consumes services via locator().get().
-//!     ice_rpc::init_consumer();
+//!     ice_rpc::init();
 //!
 //!     // RAII guard: cancels the tokens on Drop, even on panic.
 //!     let guard = ice_rpc::ShutdownGuard::new();
@@ -321,42 +321,26 @@ pub async fn wait_for_shutdown() {
 // Initialization functions
 // ────────────────────────────────────────────────────────────────────
 
-/// Initializes a **consumer** (or provider+consumer): configures iceoryx2 and
-/// installs the Ctrl+C handler.
+/// Initializes the framework: configures iceoryx2 and installs the Ctrl+C
+/// handler.
 ///
-/// To use when the process consumes services via
-/// [`locator().get()`](ServiceLocator::get). No service registry is
-/// needed: proxies are instantiated on demand from their type.
+/// Suitable for consumers, providers and provider+consumer processes alike:
+/// no service registry is needed, proxies are instantiated on demand from
+/// their type.
 ///
 /// # Example
 /// ```rust,ignore
-/// ice_rpc::init_consumer();
+/// ice_rpc::init();
 /// let proxy = ice_rpc::locator().get::<MyServiceProxy>().await.unwrap();
 /// ```
-pub fn init_consumer() {
-    setup_iceoryx2_global_config();
-    spawn_ctrl_c_handler();
-}
-
-/// Initializes a **pure provider**: configures iceoryx2 and installs the
-/// Ctrl+C handler. No service registry is injected.
-///
-/// To use when the process exposes its own services but
-/// consumes none via [`locator().get()`](ServiceLocator::get).
-///
-/// # Example
-/// ```rust,ignore
-/// ice_rpc::init_provider();
-/// ice_rpc::run_provider!(MyServiceProxy::provide(MyServiceImpl)).await
-/// ```
-pub fn init_provider() {
+pub fn init() {
     setup_iceoryx2_global_config();
     spawn_ctrl_c_handler();
 }
 
 /// Initializes the framework **without** a Ctrl+C handler (Node.js gateway, tests…).
 ///
-/// Variant of [`init_consumer`] for contexts that must manage shutdown
+/// Variant of [`init`] for contexts that must manage shutdown
 /// manually (N-API thread, tests, embedded executors).
 ///
 /// # Example
@@ -369,7 +353,7 @@ pub fn init_without_ctrl_c() {
 
 /// Installs the Ctrl+C handler that triggers [`global_cancel_token`].
 ///
-/// Available separately if needed (already called by `init_consumer`/`init_provider`).
+/// Available separately if needed (already called by [`init`]).
 /// The handler is installed through the [`ctrlc`] crate, so it works from any
 /// context, without an async runtime.
 pub fn spawn_ctrl_c_handler() {
@@ -408,7 +392,7 @@ pub async fn start_http_server(
 ///
 /// # Example
 /// ```rust,ignore
-/// ice_rpc::init_consumer();
+/// ice_rpc::init();
 /// ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 /// ```
 #[cfg(feature = "http")]
@@ -493,7 +477,7 @@ pub async fn run_provider_inner(
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     env_logger::init();
-///     ice_rpc::init_provider();
+///     ice_rpc::init();
 ///     ice_rpc::run_provider!(
 ///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.toml")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
@@ -507,7 +491,7 @@ pub async fn run_provider_inner(
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     env_logger::init();
 ///     // DatabaseServiceImpl calls ConfigService via get()
-///     ice_rpc::init_consumer();
+///     ice_rpc::init();
 ///     ice_rpc::run_provider!(
 ///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.toml")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),

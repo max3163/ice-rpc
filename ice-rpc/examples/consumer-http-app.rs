@@ -288,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_guard = ice_rpc::ShutdownGuard::new();
 
     // This process consumes HttpService via locator().get().
-    ice_rpc::init_consumer();
+    ice_rpc::init();
 
     let cancel = ice_rpc::global_cancel_token();
     let stdin = tokio::io::stdin();

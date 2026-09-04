@@ -380,7 +380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // DatabaseServiceImpl::on_init() calls locator().get::<ConfigServiceProxy>()
     // — this provider also consumes a service internally.
-    ice_rpc::init_consumer();
+    ice_rpc::init();
 
     // ── HTTP REST gateway (optional, requires the `http` feature) ──
     #[cfg(feature = "http")]

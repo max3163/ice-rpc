@@ -382,7 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("");
 
     // This process consumes services via locator().get().
-    ice_rpc::init_consumer();
+    ice_rpc::init();
 
     let db_proxy = if cfg.service == "db" || cfg.service == "person" || cfg.service == "all" {
         ice_rpc::locator().get::<DatabaseServiceProxy>().await

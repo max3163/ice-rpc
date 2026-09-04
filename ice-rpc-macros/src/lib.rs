@@ -30,8 +30,9 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// `#[timeout("30s")]` attribute for service trait methods.
 ///
-/// Defines a custom timeout for the service location.
-/// Can be overridden per call with `.with_timeout(Duration)`.
+/// Defines a custom timeout (in seconds) for locating the service
+/// before the first RPC call. Defaults to
+/// `ice_rpc::RPC_CALL_TIMEOUT_SECS` (30s) when omitted.
 #[proc_macro_attribute]
 pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item

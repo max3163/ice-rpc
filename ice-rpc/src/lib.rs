@@ -161,7 +161,6 @@ mod config;
 mod hub;
 mod locator;
 mod macros;
-mod method_call;
 mod node_discovery;
 mod node_lock;
 mod reconnect;
@@ -187,8 +186,6 @@ pub use service_traits::{
 // ── Public API: cache ───────────────────────────────────────────────
 #[cfg(feature = "cache")]
 pub use cache::{hash_bytes, hash_key, RpcCache};
-// ── Public API: chainable method call ───────────────────────────────
-pub use method_call::MethodCall;
 
 // ── Public API: fundamental types ──────────────────────────────────
 pub use types::{

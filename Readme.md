@@ -120,7 +120,7 @@ sequenceDiagram
     WL->>S: fire(2000)
     S->>S: notify_node_dead(2000) → broadcast
     S-->>Client: notify every subscribed client (one per service)
-    Client->>Client: reset flags, cached_target_node = 0
+    Client->>Client: transition Ready → Dead → Reconnecting
     Client->>RM: schedule(2000, service)
     loop Rediscovery (single worker, every 1s)
         RM->>ND: locate_service("DatabaseService")
@@ -129,7 +129,7 @@ sequenceDiagram
     Note over P: Provider restarts
     P->>ND: notify_with_custom_event_id(CHANGE)
     ND-->>RM: locate_service() → Some(NodeId(2000))
-    RM-->>Client: restore cached_node / server_ready
+    RM-->>Client: transition Reconnecting → Ready
     Client->>P: RPC calls resume
 ```
 
@@ -205,7 +205,7 @@ ice-rpc-macros/                 ← Procedural macros crate
 │   ├── lib.rs                  ← Entry point : parses the trait, orchestrates the 6 modules
 │   └── codegen/
 │       ├── helpers.rs          ← g_variant_name(), extract_rpc_result_types()
-│       ├── client.rs           ← {Trait}Client : AtomicU64 NodeId cache, reconnect_cb
+│       ├── client.rs           ← {Trait}Client : ConnectionState state machine, core.subscribe
 │       ├── server.rs           ← {Trait}Server : oneshot ready_tx, dispatch channel
 │       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderNodeJs modes
 │       ├── lifecycle.rs        ← ServiceLifecycle/ServiceInit/ServiceNamed
@@ -235,7 +235,7 @@ patches/                        ← Unused archive (local iceoryx2-pal-posix 0.9
 | Module | Responsibility |
 |---|---|
 | `helpers.rs` | `g_variant_name` (snake→Pascal), `extract_rpc_result_types` |
-| `client.rs` | Generates `{Trait}Client` : `AtomicU64` NodeId cache (hot path ~1 ns), `core.subscribe(node_id)` (NodeSupervisor subscription), `reconnecting` flag, `spawn_blocking` fallback if publishers are invalidated |
+| `client.rs` | Generates `{Trait}Client` : `ConnectionState` state machine (Unknown/Discovering/Ready/Dead/Reconnecting), `core.subscribe(node_id)` (NodeSupervisor subscription), `spawn_blocking` fallback if publishers are invalidated |
 | `server.rs` | Generates `{Trait}Server::run()` : `dispatch_tx/rx` channel (capacity 1024), handler registration in `NodeHub`, `server_ready` Blackboard with writer kept alive via `OnceLock`, `ready_tx` oneshot signal |
 | `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_nodejs` constructors, Provider/Consumer/ProviderNodeJs delegation |
 | `lifecycle.rs` | Generates `impl ServiceLifecycle` (exponential backoff 200ms→5s), `impl ServiceNamed` (const + method), `impl ServiceInit`, ProviderNodeJs case (handler registration + JS dispatch) |
@@ -906,7 +906,8 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │                                                                          │
 │  ReconnectManager : a SINGLE worker thread (registered in the           │
 │  ShutdownRegistry) polls locate_service() for every pending service     │
-│  until it is found again, then restores cached_node / server_ready.     │
+│  until it is found again, then restores ConnectionState (Reconnecting →│
+│  Ready).                                                                │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 

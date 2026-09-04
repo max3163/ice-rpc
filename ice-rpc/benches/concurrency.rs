@@ -8,12 +8,14 @@
 //! Run with: `cargo bench -p ice-rpc`.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 
 use ice_rpc::async_lock::Mutex as AsyncMutex;
 use ice_rpc::futures_lite::future::block_on;
-use ice_rpc::gen::{NodeSupervisor, PendingService, ReconnectCallback, ReconnectManager};
+use ice_rpc::gen::{
+    ConnectionState, NodeSupervisor, PendingService, ReconnectCallback, ReconnectManager,
+};
 use ice_rpc::rkyv::api::high::to_bytes_in;
 use ice_rpc::rkyv::rancor::Error as RkyvError;
 use ice_rpc::rkyv::util::AlignedVec;
@@ -188,9 +190,7 @@ fn bench_reconnect_manager_dedup(c: &mut Criterion) {
                 for _ in 0..services {
                     let service = Arc::new(PendingService::new(
                         "bench-service",
-                        Arc::new(AtomicU64::new(0)),
-                        Arc::new(AtomicBool::new(false)),
-                        Arc::new(AtomicBool::new(false)),
+                        Arc::new(std::sync::Mutex::new(ConnectionState::Unknown)),
                     ));
                     manager.insert_pending(1, service);
                 }

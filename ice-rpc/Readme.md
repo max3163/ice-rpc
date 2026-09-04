@@ -140,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `NodeId` | Process identity (PID), unique across the machine. |
 | `Observable<T, E>` | RPC stream: `Result<Receiver<Event<T, E>>, RpcError>`. |
 | `Event<T, E>` | `Next(T)` / `Complete` / `Error(E)` / `RpcError(RpcError)`. |
+| `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
 | `ServiceLocator` | Global registry, dependency resolution and initialization. |
 | `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |

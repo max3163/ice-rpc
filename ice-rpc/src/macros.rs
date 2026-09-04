@@ -164,6 +164,19 @@ mod tests {
     }
 
     #[test]
+    fn take_one_rpc_error_event() {
+        let (tx, rx) = crate::channel::<i32, String>(1);
+        pollster::block_on(tx.send(Event::RpcError(crate::RpcError::Timeout))).unwrap();
+        drop(tx);
+
+        let result: Result<i32, crate::TakeOneError<String>> = pollster::block_on(take_one(Ok(rx)));
+        match result {
+            Err(crate::TakeOneError::Ipc(crate::RpcError::Timeout)) => {}
+            other => panic!("Expected TakeOneError::Ipc(Timeout), got {:?}", other),
+        }
+    }
+
+    #[test]
     fn take_one_or_cancel_next_value() {
         let cancel = crate::rt::CancellationToken::new();
         let (tx, rx) = crate::channel::<i32, String>(1);
@@ -194,6 +207,23 @@ mod tests {
         match result {
             Some(Err(crate::TakeOneError::Ipc(_))) => {}
             other => panic!("Expected Some(Err(TakeOneError::Ipc(_))), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn take_one_or_cancel_rpc_error_event() {
+        let cancel = crate::rt::CancellationToken::new();
+        let (tx, rx) = crate::channel::<i32, String>(1);
+        pollster::block_on(tx.send(Event::RpcError(crate::RpcError::Timeout))).unwrap();
+        drop(tx);
+
+        let result = pollster::block_on(take_one_or_cancel(Ok(rx), &cancel));
+        match result {
+            Some(Err(crate::TakeOneError::Ipc(crate::RpcError::Timeout))) => {}
+            other => panic!(
+                "Expected Some(Err(TakeOneError::Ipc(Timeout))), got {:?}",
+                other
+            ),
         }
     }
 

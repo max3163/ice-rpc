@@ -7,32 +7,21 @@
 //! interval for every service waiting for reconnection.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+use crate::client_core::{is_valid_transition, ConnectionState};
 
 /// State of a service waiting for reconnection.
 pub struct PendingService {
     service_name: &'static str,
-    cached_target_node: Arc<AtomicU64>,
-    server_ready: Arc<AtomicBool>,
-    reconnecting: Arc<AtomicBool>,
+    state: Arc<Mutex<ConnectionState>>,
 }
 
 impl PendingService {
-    /// Creates a pending-service record sharing the client's atomics.
-    pub fn new(
-        service_name: &'static str,
-        cached_target_node: Arc<AtomicU64>,
-        server_ready: Arc<AtomicBool>,
-        reconnecting: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            service_name,
-            cached_target_node,
-            server_ready,
-            reconnecting,
-        }
+    /// Creates a pending-service record sharing the client's state machine.
+    pub fn new(service_name: &'static str, state: Arc<Mutex<ConnectionState>>) -> Self {
+        Self { service_name, state }
     }
 }
 
@@ -134,11 +123,13 @@ fn worker_loop() {
                         service.service_name,
                         nid.0
                     );
-                    service
-                        .cached_target_node
-                        .store(nid.0 as u64, Ordering::SeqCst);
-                    service.server_ready.store(true, Ordering::SeqCst);
-                    service.reconnecting.store(false, Ordering::SeqCst);
+                    let mut state = service
+                        .state
+                        .lock()
+                        .expect("reconnect manager state lock poisoning");
+                    if is_valid_transition(*state, ConnectionState::Ready(nid.0)) {
+                        *state = ConnectionState::Ready(nid.0);
+                    }
                     resolved.push((node_id, service.service_name));
                 }
             }
@@ -166,13 +157,12 @@ fn worker_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client_core::ConnectionState;
 
     fn pending_service(name: &'static str) -> Arc<PendingService> {
         Arc::new(PendingService::new(
             name,
-            Arc::new(AtomicU64::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(ConnectionState::Unknown)),
         ))
     }
 

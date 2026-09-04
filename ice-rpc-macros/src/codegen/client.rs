@@ -239,6 +239,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 if cached != 0 {
                     ice_rpc::NodeId(cached as u32)
                 } else {
+                    self.core.start_discovery();
                     let discovery = ice_rpc::ServiceLocator::global().node_discovery();
                     let mut node = discovery.locate_service(svc_name);
                     let deadline = std::time::Instant::now()

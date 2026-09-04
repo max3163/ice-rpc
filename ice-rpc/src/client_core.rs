@@ -6,27 +6,60 @@
 //! emitted into every generated client. They are factored here so the
 //! generated code only holds a [`ClientCore`] and delegates to it.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Runtime state shared by every generated client.
+/// Connection state machine of a generated client.
 ///
-/// Owns the reconnection callback and the cached id of the provider node.
+/// Replaces the former trio of independent atomics (`reconnecting`,
+/// `server_ready`, `cached_target_node`) whose combinations were not all
+/// valid. Transitions are validated by [`is_valid_transition`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    /// No target node known yet.
+    Unknown,
+    /// A discovery/lookup is in progress.
+    Discovering,
+    /// The client is connected to a provider node.
+    Ready(u32),
+    /// The provider node was detected dead.
+    Dead(u32),
+    /// Waiting for the provider to be rediscovered.
+    Reconnecting,
+}
+
+/// Returns `true` when `from -> to` is an allowed connection transition.
+pub fn is_valid_transition(from: ConnectionState, to: ConnectionState) -> bool {
+    match (from, to) {
+        (ConnectionState::Unknown, ConnectionState::Discovering) => true,
+        (ConnectionState::Dead(_), ConnectionState::Discovering) => true,
+        (ConnectionState::Reconnecting, ConnectionState::Discovering) => true,
+        (ConnectionState::Discovering, ConnectionState::Ready(_)) => true,
+        (ConnectionState::Discovering, ConnectionState::Dead(_)) => true,
+        (ConnectionState::Ready(_), ConnectionState::Dead(_)) => true,
+        (ConnectionState::Dead(_), ConnectionState::Reconnecting) => true,
+        (ConnectionState::Reconnecting, ConnectionState::Ready(_)) => true,
+        (ConnectionState::Reconnecting, ConnectionState::Dead(_)) => true,
+        (ConnectionState::Ready(a), ConnectionState::Ready(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Runtime state shared by every generated client.
 pub struct ClientCore {
     reconnect_cb: Arc<dyn Fn(u32) + Send + Sync>,
-    cached_target_node: Arc<AtomicU64>,
+    state: Arc<Mutex<ConnectionState>>,
     subscription: Mutex<Option<crate::node_supervisor::Subscription>>,
 }
 
 impl ClientCore {
     /// Builds the shared state and the reconnection callback for a service.
     pub fn new(service_name: &'static str) -> Self {
-        let cached_target_node = Arc::new(AtomicU64::new(0));
-        let reconnect_cb = build_reconnect_cb(service_name, cached_target_node.clone());
+        let state = Arc::new(Mutex::new(ConnectionState::Unknown));
+        let reconnect_cb = build_reconnect_cb(service_name, state.clone());
 
         Self {
             reconnect_cb,
-            cached_target_node,
+            state,
             subscription: Mutex::new(None),
         }
     }
@@ -50,15 +83,37 @@ impl ClientCore {
             Some(crate::node_supervisor::NodeSupervisor::global().subscribe(node_id, cb));
     }
 
-    /// Reads the cached target node id (`0` when unknown).
+    /// Reads the cached target node id (`0` unless the state is `Ready`).
     pub fn cached_target_node(&self) -> u64 {
-        self.cached_target_node.load(Ordering::Acquire)
+        match *self.state.lock().expect("client core state lock poisoning") {
+            ConnectionState::Ready(n) => n as u64,
+            _ => 0,
+        }
     }
 
-    /// Caches the target node id after a successful lookup or bootstrap.
-    pub fn store_target_node(&self, node_id: u32) {
-        self.cached_target_node
-            .store(node_id as u64, Ordering::Release);
+    /// Starts (or restarts) a discovery, if allowed by the state machine.
+    pub fn start_discovery(&self) -> bool {
+        transition(&self.state, ConnectionState::Discovering)
+    }
+
+    /// Marks the client as connected to `node_id` after a successful lookup.
+    pub fn store_target_node(&self, node_id: u32) -> bool {
+        transition(&self.state, ConnectionState::Ready(node_id))
+    }
+
+    /// Marks `node_id` as dead, if allowed by the state machine.
+    pub fn mark_dead(&self, node_id: u32) -> bool {
+        transition(&self.state, ConnectionState::Dead(node_id))
+    }
+
+    /// Marks the client as reconnecting, if allowed by the state machine.
+    pub fn mark_reconnecting(&self) -> bool {
+        transition(&self.state, ConnectionState::Reconnecting)
+    }
+
+    /// Returns the current connection state.
+    pub fn state(&self) -> ConnectionState {
+        *self.state.lock().expect("client core state lock poisoning")
     }
 
     /// Bootstraps the client: creates the node, starts discovery, locates the
@@ -82,6 +137,8 @@ impl ClientCore {
             })
             .await;
         }
+
+        self.start_discovery();
 
         let discovery = crate::ServiceLocator::global().node_discovery();
         let target_node = match discovery.locate_service(service_name) {
@@ -130,36 +187,103 @@ impl ClientCore {
     }
 }
 
+/// Applies a connection transition after validating it.
+fn transition(state: &Mutex<ConnectionState>, to: ConnectionState) -> bool {
+    let mut guard = state.lock().expect("client core state lock poisoning");
+    if is_valid_transition(*guard, to) {
+        *guard = to;
+        true
+    } else {
+        false
+    }
+}
+
 /// Builds the reconnection callback fired when the provider node dies.
 ///
-/// The callback only resets the service state and delegates the retry loop to
-/// the centralized [`crate::reconnect_manager::ReconnectManager`], which runs
-/// a single worker thread for every pending service.
+/// The callback only transitions the state machine to `Dead` then
+/// `Reconnecting`, and delegates the retry loop to the centralized
+/// [`crate::reconnect_manager::ReconnectManager`], which runs a single worker
+/// thread for every pending service.
 fn build_reconnect_cb(
     service_name: &'static str,
-    cached_target_node: Arc<AtomicU64>,
+    state: Arc<Mutex<ConnectionState>>,
 ) -> Arc<dyn Fn(u32) + Send + Sync> {
-    let reconnecting = Arc::new(AtomicBool::new(false));
-    let server_ready = Arc::new(AtomicBool::new(false));
     let pending = Arc::new(crate::reconnect_manager::PendingService::new(
         service_name,
-        cached_target_node.clone(),
-        server_ready.clone(),
-        reconnecting.clone(),
+        state.clone(),
     ));
 
     Arc::new(move |dead_node_id: u32| {
-        if reconnecting.swap(true, Ordering::SeqCst) {
-            return;
+        {
+            let mut guard = state.lock().expect("client core state lock poisoning");
+            if !is_valid_transition(*guard, ConnectionState::Dead(dead_node_id)) {
+                return;
+            }
+            *guard = ConnectionState::Dead(dead_node_id);
         }
         log::warn!(
             "[{}Client] Node {} detected dead — reconnecting",
             service_name,
             dead_node_id
         );
-        server_ready.store(false, Ordering::SeqCst);
-        cached_target_node.store(0, Ordering::SeqCst);
+
+        {
+            let mut guard = state.lock().expect("client core state lock poisoning");
+            if is_valid_transition(*guard, ConnectionState::Reconnecting) {
+                *guard = ConnectionState::Reconnecting;
+            }
+        }
 
         crate::reconnect_manager::ReconnectManager::global().schedule(dead_node_id, pending.clone());
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ConnectionState::*;
+
+    #[test]
+    fn valid_transition_path() {
+        assert!(is_valid_transition(Unknown, Discovering));
+        assert!(is_valid_transition(Discovering, Ready(1)));
+        assert!(is_valid_transition(Ready(1), Dead(1)));
+        assert!(is_valid_transition(Dead(1), Reconnecting));
+        assert!(is_valid_transition(Reconnecting, Ready(2)));
+    }
+
+    #[test]
+    fn invalid_transitions() {
+        // Dead -> Ready directly, without going through Reconnecting/Discovering.
+        assert!(!is_valid_transition(Dead(1), Ready(2)));
+        // Unknown -> Ready without discovery.
+        assert!(!is_valid_transition(Unknown, Ready(1)));
+        // Switching provider node without a reconnection.
+        assert!(!is_valid_transition(Ready(1), Ready(2)));
+        // Starting a discovery while already discovering is a no-op.
+        assert!(!is_valid_transition(Discovering, Discovering));
+    }
+
+    #[test]
+    fn client_core_rejects_ready_without_discovery() {
+        let core = ClientCore::new("svc");
+        assert_eq!(core.state(), Unknown);
+        assert!(!core.store_target_node(1));
+        assert!(core.start_discovery());
+        assert!(core.store_target_node(1));
+        assert_eq!(core.state(), Ready(1));
+    }
+
+    #[test]
+    fn client_core_rejects_dead_to_ready_directly() {
+        let core = ClientCore::new("svc");
+        core.start_discovery();
+        core.store_target_node(1);
+        core.mark_dead(1);
+        assert_eq!(core.state(), Dead(1));
+        assert!(!core.store_target_node(2));
+        assert!(core.mark_reconnecting());
+        assert!(core.store_target_node(2));
+        assert_eq!(core.state(), Ready(2));
+    }
 }

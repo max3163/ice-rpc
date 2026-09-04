@@ -28,6 +28,7 @@ use crate::service_traits::{ServiceConsumer, ServiceInit, ServiceLifecycle, Serv
 ///
 /// Merges the former separate maps (instance, lifecycle, init_hook)
 /// to guarantee consistency and reduce contention.
+#[derive(Clone)]
 struct ServiceEntry {
     instance: Arc<dyn Any + Send + Sync>,
     lifecycle: Arc<dyn ServiceLifecycle>,
@@ -348,17 +349,12 @@ impl ServiceLocator {
             }
         }
 
-        let entries = self.entries.read().await;
-        let lifecycles: HashMap<&'static str, Arc<dyn ServiceLifecycle>> = entries
-            .iter()
-            .map(|(n, e)| (*n, e.lifecycle.clone()))
-            .collect();
-        let init_hooks: HashMap<&'static str, Arc<dyn ServiceInit>> = entries
-            .iter()
-            .map(|(n, e)| (*n, e.init_hook.clone()))
-            .collect();
+        // Snapshot of the registered services (cheap: only the `Arc` refcounts
+        // are cloned). The read lock is released before the initialization
+        // loop so that a potential `register()` during `init()` is not blocked.
+        let entries: HashMap<&'static str, ServiceEntry> = self.entries.read().await.clone();
 
-        let ordered_names = topological_sort(&lifecycles, &init_hooks, &active_ipc)?;
+        let ordered_names = topological_sort(&entries, &active_ipc)?;
 
         log::info!(
             "Resolved initialization order ({} service(s)):",
@@ -373,9 +369,10 @@ impl ServiceLocator {
         let started_at = std::time::Instant::now();
 
         for name in &ordered_names {
-            let lifecycle = lifecycles
+            let entry = entries
                 .get(name)
-                .ok_or_else(|| format!("Service '{}' not found in lifecycles", name))?;
+                .ok_or_else(|| format!("Service '{}' not found in the service registry", name))?;
+            let lifecycle = &entry.lifecycle;
 
             loop {
                 if crate::global_cancel_token().is_cancelled() {
@@ -449,8 +446,7 @@ impl ServiceLocator {
 /// Topological sort of the services according to their dependencies (Kahn's algorithm).
 ///
 /// # Arguments
-/// * `lifecycles` — Map of the locally registered services (name → lifecycle).
-/// * `init_hooks` — Map of the initialization hooks (name → `ServiceInit`).
+/// * `entries` — Map of the locally registered services (name → `ServiceEntry`).
 /// * `active_ipc` — Names of the services already active in IPC. A dependency
 ///   present in this list is considered satisfied.
 ///
@@ -458,18 +454,17 @@ impl ServiceLocator {
 /// * `Ok(Vec<&'static str>)` — Names in topological order.
 /// * `Err(String)` — Missing dependency or detected cycle.
 fn topological_sort(
-    lifecycles: &HashMap<&'static str, Arc<dyn ServiceLifecycle>>,
-    init_hooks: &HashMap<&'static str, Arc<dyn ServiceInit>>,
+    entries: &HashMap<&'static str, ServiceEntry>,
     active_ipc: &[String],
 ) -> Result<Vec<&'static str>, String> {
     let mut in_degree: HashMap<&'static str, usize> =
-        lifecycles.keys().map(|&name| (name, 0)).collect();
+        entries.keys().map(|&name| (name, 0)).collect();
 
     let mut dependents: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
 
-    for (&name, hook) in init_hooks {
-        for dep in hook.dependencies() {
-            if lifecycles.contains_key(dep) {
+    for (&name, entry) in entries {
+        for dep in entry.init_hook.dependencies() {
+            if entries.contains_key(dep) {
                 *in_degree.entry(name).or_insert(0) += 1;
                 dependents.entry(dep).or_default().push(name);
             } else if active_ipc.iter().any(|s| s == dep) {
@@ -494,7 +489,7 @@ fn topological_sort(
         .map(|(&name, _)| name)
         .collect();
 
-    let mut ordered = Vec::with_capacity(lifecycles.len());
+    let mut ordered = Vec::with_capacity(entries.len());
 
     while let Some(name) = queue.pop_front() {
         ordered.push(name);
@@ -511,7 +506,7 @@ fn topological_sort(
         }
     }
 
-    if ordered.len() != lifecycles.len() {
+    if ordered.len() != entries.len() {
         return Err("Dependency cycle detected between services. \
              Check the ServiceInit::dependencies() implementations."
             .to_string());
@@ -551,30 +546,29 @@ mod tests {
         }
     }
 
-    fn make_lifecycles(
+    fn make_entries(
         services: &[Arc<TestService>],
-    ) -> HashMap<&'static str, Arc<dyn ServiceLifecycle>> {
+    ) -> HashMap<&'static str, ServiceEntry> {
         services
             .iter()
-            .map(|s| (s.name, s.clone() as Arc<dyn ServiceLifecycle>))
-            .collect()
-    }
-
-    fn make_init_hooks(
-        services: &[Arc<TestService>],
-    ) -> HashMap<&'static str, Arc<dyn ServiceInit>> {
-        services
-            .iter()
-            .map(|s| (s.name, s.clone() as Arc<dyn ServiceInit>))
+            .map(|s| {
+                (
+                    s.name,
+                    ServiceEntry {
+                        instance: s.clone(),
+                        lifecycle: s.clone(),
+                        init_hook: s.clone(),
+                    },
+                )
+            })
             .collect()
     }
 
     #[test]
     fn topological_sort_no_services() {
-        let lifecycles: HashMap<&str, Arc<dyn ServiceLifecycle>> = HashMap::new();
-        let init_hooks: HashMap<&str, Arc<dyn ServiceInit>> = HashMap::new();
+        let entries: HashMap<&'static str, ServiceEntry> = HashMap::new();
         let active: Vec<String> = vec![];
-        let result = topological_sort(&lifecycles, &init_hooks, &active);
+        let result = topological_sort(&entries, &active);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -585,9 +579,8 @@ mod tests {
             name: "A",
             deps: vec![],
         });
-        let lifecycles = make_lifecycles(std::slice::from_ref(&svc));
-        let init_hooks = make_init_hooks(std::slice::from_ref(&svc));
-        let result = topological_sort(&lifecycles, &init_hooks, &[]);
+        let entries = make_entries(std::slice::from_ref(&svc));
+        let result = topological_sort(&entries, &[]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec!["A"]);
     }
@@ -606,9 +599,8 @@ mod tests {
             name: "C",
             deps: vec!["B"],
         });
-        let lifecycles = make_lifecycles(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
-        let init_hooks = make_init_hooks(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
-        let result = topological_sort(&lifecycles, &init_hooks, &[]);
+        let entries = make_entries(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
+        let result = topological_sort(&entries, &[]);
         assert!(result.is_ok());
         let order = result.unwrap();
         let pos_a = order.iter().position(|&n| n == "A").unwrap();
@@ -632,9 +624,8 @@ mod tests {
             name: "C",
             deps: vec!["A", "B"],
         });
-        let lifecycles = make_lifecycles(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
-        let init_hooks = make_init_hooks(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
-        let result = topological_sort(&lifecycles, &init_hooks, &[]);
+        let entries = make_entries(&[svc_a.clone(), svc_b.clone(), svc_c.clone()]);
+        let result = topological_sort(&entries, &[]);
         assert!(result.is_ok());
         let order = result.unwrap();
         let pos_a = order.iter().position(|&n| n == "A").unwrap();
@@ -654,9 +645,8 @@ mod tests {
             name: "B",
             deps: vec!["A"],
         });
-        let lifecycles = make_lifecycles(&[svc_a.clone(), svc_b.clone()]);
-        let init_hooks = make_init_hooks(&[svc_a.clone(), svc_b.clone()]);
-        let result = topological_sort(&lifecycles, &init_hooks, &[]);
+        let entries = make_entries(&[svc_a.clone(), svc_b.clone()]);
+        let result = topological_sort(&entries, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cycle"));
     }
@@ -667,9 +657,8 @@ mod tests {
             name: "A",
             deps: vec!["UnknownService"],
         });
-        let lifecycles = make_lifecycles(std::slice::from_ref(&svc_a));
-        let init_hooks = make_init_hooks(std::slice::from_ref(&svc_a));
-        let result = topological_sort(&lifecycles, &init_hooks, &[]);
+        let entries = make_entries(std::slice::from_ref(&svc_a));
+        let result = topological_sort(&entries, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("UnknownService"));
     }
@@ -680,10 +669,9 @@ mod tests {
             name: "A",
             deps: vec!["ExternalService"],
         });
-        let lifecycles = make_lifecycles(std::slice::from_ref(&svc_a));
-        let init_hooks = make_init_hooks(std::slice::from_ref(&svc_a));
+        let entries = make_entries(std::slice::from_ref(&svc_a));
         let active = vec!["ExternalService".to_string()];
-        let result = topological_sort(&lifecycles, &init_hooks, &active);
+        let result = topological_sort(&entries, &active);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec!["A"]);
     }

@@ -122,7 +122,7 @@ fn handle_node_event(discovery: &NodeDiscovery, node_id: u32) {
         log::warn!("[listener] Node {} DEAD, clearing cache", node_id);
         discovery.invalidate_node_services(NodeId(node_id));
         crate::node_lock::unregister_node_lock_watcher(NodeId(node_id));
-        crate::reconnect::fire(node_id);
+        crate::node_supervisor::fire(node_id);
     }
 }
 

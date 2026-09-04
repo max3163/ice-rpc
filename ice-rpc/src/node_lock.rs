@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crate::reconnect::fire as fire_reconnect_callbacks;
+use crate::node_supervisor::fire as fire_reconnect_callbacks;
 use crate::types::NodeId;
 
 /// Polling interval of the watcher (ms).

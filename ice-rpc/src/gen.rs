@@ -15,10 +15,8 @@ pub use crate::node_lock::{
     acquire_global_node_lock, is_node_alive, register_node_lock_watcher, release_global_node_lock,
     unregister_node_lock_watcher, NodeLockWatcher, LOCK_WATCHER_POLL_MS,
 };
-pub use crate::reconnect::{
-    fire as fire_reconnect_callbacks, register as register_reconnect_callback,
-    register_once as register_reconnect_callback_once,
-    unregister as unregister_reconnect_callbacks, ReconnectCallback,
+pub use crate::node_supervisor::{
+    fire as fire_reconnect_callbacks, NodeSupervisor, ReconnectCallback, Subscription, SubscriberId,
 };
 pub use crate::registry_listener::spawn as spawn_node_registry_listener;
 pub use crate::registry_notify::{announce_dead_node, announce_node_ready};

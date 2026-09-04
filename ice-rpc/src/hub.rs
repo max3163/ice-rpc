@@ -205,7 +205,7 @@ impl NodeHub {
                 e
             );
             self.invalidate_publishers(target_node_id);
-            crate::reconnect::fire(target_node_id.0);
+            crate::node_supervisor::fire(target_node_id.0);
         }
         send_result
     }

@@ -7,7 +7,7 @@
 //! generated code only holds a [`ClientCore`] and delegates to it.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Runtime state shared by every generated client.
 ///
@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub struct ClientCore {
     reconnect_cb: Arc<dyn Fn(u32) + Send + Sync>,
     cached_target_node: Arc<AtomicU64>,
+    subscription: Mutex<Option<crate::node_supervisor::Subscription>>,
 }
 
 impl ClientCore {
@@ -26,12 +27,27 @@ impl ClientCore {
         Self {
             reconnect_cb,
             cached_target_node,
+            subscription: Mutex::new(None),
         }
     }
 
-    /// Returns the reconnection callback to register with the hub.
-    pub fn reconnect_cb(&self) -> Arc<dyn Fn(u32) + Send + Sync> {
-        self.reconnect_cb.clone()
+    /// Subscribes to the node supervisor for a target node (idempotent).
+    ///
+    /// Replaces the previous subscription when the target node changes. The
+    /// old subscription is removed via `Drop`.
+    pub fn subscribe(&self, node_id: u32) {
+        let mut subscription = self
+            .subscription
+            .lock()
+            .expect("client core subscription lock poisoning");
+        if let Some(existing) = subscription.as_ref() {
+            if existing.node_id() == node_id {
+                return;
+            }
+        }
+        let cb = self.reconnect_cb.clone();
+        *subscription =
+            Some(crate::node_supervisor::NodeSupervisor::global().subscribe(node_id, cb));
     }
 
     /// Reads the cached target node id (`0` when unknown).
@@ -104,6 +120,7 @@ impl ClientCore {
         }
 
         self.store_target_node(target_node.0);
+        self.subscribe(target_node.0);
 
         log::info!(
             "[{}Client] Ready (publishers pre-created, centralized hub).",

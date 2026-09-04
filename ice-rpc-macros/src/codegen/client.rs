@@ -263,9 +263,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 }
             };
 
-            {
-                ice_rpc::gen::register_reconnect_callback_once(target_node.0, self.core.reconnect_cb());
-            }
+            self.core.subscribe(target_node.0);
 
             let rpc_header = ice_rpc::RpcHeader::new(
                 svc_name,

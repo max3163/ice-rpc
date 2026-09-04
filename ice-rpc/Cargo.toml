@@ -68,6 +68,7 @@ libc = "0.2"
 [dev-dependencies]
 env_logger = "0.11"
 pollster = "1.0"
+criterion = "0.5"
 # The examples still demonstrate a Tokio application; the core crate itself
 # remains runtime-agnostic.
 tokio = { workspace = true }
@@ -101,3 +102,7 @@ path = "examples/consumer-http-app.rs"
 # The shared demo services define a `ConfigService` method annotated with
 # `#[cache]`, so the generated client references `RpcCache`.
 required-features = ["cache"]
+
+[[bench]]
+name = "concurrency"
+harness = false

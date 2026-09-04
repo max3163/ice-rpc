@@ -18,5 +18,6 @@ pub use crate::node_lock::{
 pub use crate::node_supervisor::{
     fire as fire_reconnect_callbacks, NodeSupervisor, ReconnectCallback, Subscription, SubscriberId,
 };
+pub use crate::reconnect_manager::{PendingService, ReconnectManager};
 pub use crate::registry_listener::spawn as spawn_node_registry_listener;
 pub use crate::registry_notify::{announce_dead_node, announce_node_ready};

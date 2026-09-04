@@ -11,6 +11,10 @@
 [env]
 GATEWAY_DIR = "gateway_nodejs"
 NODE = "node.exe"
+# Bash executable. "bash" resolves through the PATH (Linux, macOS, Git Bash).
+# On Windows cmd.exe, override with:
+#   cargo make bench-load --env BASH="C:/Program Files/Git/bin/bash.exe"
+BASH = "bash"
 
 # =============================================================================
 # BUILD
@@ -106,6 +110,23 @@ args = ["test", "--package", "gateway-nodejs"]
 [tasks.test-all]
 description = "Run all tests"
 dependencies = ["test-rust", "test-gateway"]
+
+# =============================================================================
+# BENCHMARKS
+# =============================================================================
+
+[tasks.bench-load]
+description = "Run the end-to-end concurrent load benchmark (provider + consumer)"
+workspace = false
+command = "${BASH}"
+args = ["scripts/bench-load.sh"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.bench-micro]
+description = "Run the Criterion micro-benchmarks"
+workspace = false
+command = "cargo"
+args = ["bench", "-p", "ice-rpc"]
 
 # =============================================================================
 # RELEASE

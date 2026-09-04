@@ -42,8 +42,7 @@ pub struct ReconnectManager {
 }
 
 impl ReconnectManager {
-    /// Creates an empty manager (used by tests).
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
         }
@@ -79,8 +78,11 @@ impl ReconnectManager {
     ///
     /// Returns `true` when the node had no pending entry before the insert
     /// (i.e. this is the first service registered for that node).
-    fn insert_pending(&self, node_id: u32, service: Arc<PendingService>) -> bool {
-        let mut pending = self.pending.lock().expect("reconnect manager lock poisoning");
+    pub fn insert_pending(&self, node_id: u32, service: Arc<PendingService>) -> bool {
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("reconnect manager lock poisoning");
         let existed = pending.contains_key(&node_id);
         let list = pending.entry(node_id).or_default();
         if !list.iter().any(|s| Arc::ptr_eq(s, &service)) {

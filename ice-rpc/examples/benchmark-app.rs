@@ -19,6 +19,9 @@ struct BenchConfig {
     warmup_per_worker: usize,
     service: String,
     pipeline_depth: usize,
+    json: bool,
+    min_success_rate: f64,
+    min_rps: f64,
 }
 
 impl BenchConfig {
@@ -30,6 +33,9 @@ impl BenchConfig {
             warmup_per_worker: 20,
             service: "db".into(),
             pipeline_depth: 1,
+            json: false,
+            min_success_rate: 0.95,
+            min_rps: 0.0,
         };
         let mut i = 1;
         while i < args.len() {
@@ -56,6 +62,17 @@ impl BenchConfig {
                 }
                 "--blast" => {
                     cfg.pipeline_depth = usize::MAX;
+                }
+                "--json" => {
+                    cfg.json = true;
+                }
+                "--min-success-rate" => {
+                    i += 1;
+                    cfg.min_success_rate = args[i].parse().unwrap_or(cfg.min_success_rate);
+                }
+                "--min-rps" => {
+                    i += 1;
+                    cfg.min_rps = args[i].parse().unwrap_or(cfg.min_rps);
                 }
                 _ => {}
             }
@@ -362,6 +379,42 @@ fn print_stats(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
     println!("{sep}\n");
 }
 
+fn print_json(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
+    let mode_key = if cfg.pipeline_depth == 1 {
+        "sequential"
+    } else if cfg.pipeline_depth == usize::MAX {
+        "blast"
+    } else {
+        "pipeline"
+    };
+
+    let out = serde_json::json!({
+        "service": cfg.service,
+        "mode": cfg.mode_label(),
+        "mode_key": mode_key,
+        "workers": cfg.workers,
+        "requests_per_worker": cfg.requests_per_worker,
+        "total_requests": cfg.total_requests(),
+        "count": stats.count,
+        "success": stats.ok,
+        "success_rate": if stats.count > 0 { stats.ok as f64 / stats.count as f64 } else { 0.0 },
+        "err_ipc": stats.err_ipc,
+        "err_svc": stats.err_svc,
+        "err_empty": stats.err_empty,
+        "latency_us": {
+            "min": stats.min_us,
+            "p50": stats.p50_us,
+            "mean": stats.mean_us,
+            "p95": stats.p95_us,
+            "p99": stats.p99_us,
+            "max": stats.max_us,
+        },
+        "throughput_rps": stats.throughput,
+        "duration_s": wall.as_secs_f64(),
+    });
+    println!("{}", serde_json::to_string(&out).unwrap_or_default());
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -438,9 +491,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wall = wall_start.elapsed();
 
     let stats = compute_stats(&mut all_outcomes, wall);
-    print_stats(&cfg, &stats, wall);
+    if cfg.json {
+        print_json(&cfg, &stats, wall);
+    } else {
+        print_stats(&cfg, &stats, wall);
+    }
 
-    {
+    let success_rate = if stats.count > 0 {
+        stats.ok as f64 / stats.count as f64
+    } else {
+        0.0
+    };
+    let mut failed = success_rate < cfg.min_success_rate;
+    if failed {
+        log::error!(
+            "[benchmark] success rate {:.1}% below threshold {:.1}%",
+            success_rate * 100.0,
+            cfg.min_success_rate * 100.0
+        );
+    }
+    if cfg.min_rps > 0.0 && stats.throughput < cfg.min_rps {
+        log::error!(
+            "[benchmark] throughput {:.0} req/s below threshold {:.0} req/s",
+            stats.throughput,
+            cfg.min_rps
+        );
+        failed = true;
+    }
+
+    if !cfg.json {
         log::info!("");
         log::info!("=== get_person DEMO (3 calls) ===");
         let demo_queries: &[(&str, &str)] = &[
@@ -481,6 +560,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The guard guarantees the token cancellation even on panic before this line.
     log::info!("Stopping benchmark...");
     shutdown_guard.shutdown().await;
+
+    if failed {
+        std::process::exit(1);
+    }
 
     Ok(())
 }

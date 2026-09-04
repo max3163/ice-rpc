@@ -150,6 +150,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `take_one!(observable)` and `take_one_or_cancel!(observable, cancel)` extract the first value of a stream.
 - `#[timeout("30s")]` on a method sets the service-location timeout (default `RPC_CALL_TIMEOUT_SECS` = 30s).
 
+## Error semantics
+
+`RpcError` classifies technical failures so callers can choose a policy
+(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types.rs:333).
+
+| Variant | Meaning | Retryable |
+|---|---|---|
+| `TransportError` | iceoryx2 I/O failure | yes |
+| `DiscoveryError` | discovery cycle failure | yes |
+| `ProviderUnavailable` | provider node unreachable | yes |
+| `Timeout` | deadline exceeded | yes |
+| `ServiceNotFound` | service not registered on any node | no |
+| `Cancelled` | global shutdown (Ctrl+C) | no |
+| `SerializationError` | rkyv serialization/deserialization failure | no |
+| `PayloadTooLarge` | payload above the shared-memory limit | no |
+| `ProtocolMismatch` | incompatible protocol/service version | no |
+| `Internal` | unexpected internal error | no |
+
 ## Service initialization
 
 Implement `ServiceInit` on your service type to declare dependencies and run an initialization hook:

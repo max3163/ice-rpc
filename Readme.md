@@ -621,7 +621,7 @@ impl DatabaseService for DatabaseServiceProxy {
             Mode::ProviderNodeJs => {
                 // Calls arrive via IPC and are handled by the handler
                 // (registered in ServiceLifecycle::init())
-                Err(RpcError::IpcError("ProviderNodeJs: use IPC".into()))
+                Err(RpcError::Internal("ProviderNodeJs: direct calls are not supported — use IPC".into()))
             }
         }
     }

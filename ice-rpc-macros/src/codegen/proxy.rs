@@ -142,7 +142,7 @@ pub fn gen_proxy_method(
                     ipc_client.#fn_name(#(#arg_names),*).await
                 }
                 #mode_name::ProviderNodeJs => {
-                    Err(ice_rpc::RpcError::IpcError(
+                    Err(ice_rpc::RpcError::Internal(
                         "ProviderNodeJs: direct calls are not supported — use IPC".into()
                     ))
                 }

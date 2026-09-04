@@ -282,28 +282,64 @@ pub fn fmt_correlation_id_short(cid: &[u8; 16]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", cid[0], cid[1], cid[2], cid[3])
 }
 
-/// Technical RPC error (IPC or serialization).
+/// Technical RPC error, categorized so callers can choose a policy
+/// (retry / fallback / log / fatal) via [`RpcError::is_retryable`].
 #[derive(Debug, Clone, Archive, Serialize, Deserialize, thiserror::Error)]
 pub enum RpcError {
     /// Payload serialization/deserialization failure.
     #[error("RPC error: serialization failure")]
     SerializationError,
-    /// iceoryx2 IPC communication error.
-    #[error("RPC IPC error: {0}")]
-    IpcError(String),
+    /// iceoryx2 transport failure (loan, send, receive, publisher creation).
+    #[error("RPC transport error: {0}")]
+    TransportError(String),
+    /// Service discovery failed (registry/blackboard unavailable).
+    #[error("RPC discovery error: {0}")]
+    DiscoveryError(String),
+    /// The requested service is not registered on any node.
+    #[error("RPC service not found: {service}")]
+    ServiceNotFound { service: String },
+    /// The provider node is unreachable (publishers missing/invalidated).
+    #[error("RPC provider unavailable (node {node})")]
+    ProviderUnavailable { node: u32 },
     /// Waiting deadline exceeded.
     #[error("RPC error: timeout exceeded")]
     Timeout,
+    /// The call was cancelled by a global shutdown (Ctrl+C).
+    #[error("RPC error: call cancelled")]
+    Cancelled,
+    /// Payload exceeds the configured shared-memory limit.
+    #[error("RPC payload too large: {size} bytes (limit {limit})")]
+    PayloadTooLarge { size: usize, limit: usize },
     /// Peer uses an incompatible protocol or service version.
     #[error(
-        "RPC error: incompatible version (protocol {received_protocol} != {expected_protocol}, service {received_service} != {expected_service})"
+        "RPC protocol mismatch (protocol {received_protocol} != {expected_protocol}, service {received_service} != {expected_service})"
     )]
-    IncompatibleVersion {
+    ProtocolMismatch {
         expected_protocol: u16,
         received_protocol: u16,
         expected_service: u16,
         received_service: u16,
     },
+    /// Unexpected internal error / invariant violation.
+    #[error("RPC internal error: {0}")]
+    Internal(String),
+}
+
+impl RpcError {
+    /// Returns `true` when retrying the same call may succeed.
+    ///
+    /// Transient failures (transport, discovery, provider availability,
+    /// timeout) are retryable. Deterministic failures (serialization, missing
+    /// service, payload size, protocol mismatch) and internal errors are not.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            RpcError::TransportError(_)
+                | RpcError::DiscoveryError(_)
+                | RpcError::ProviderUnavailable { .. }
+                | RpcError::Timeout
+        )
+    }
 }
 
 /// Error returned by `take_one`.
@@ -492,8 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn rpc_error_display_ipc_error() {
-        let err = RpcError::IpcError("connection refused".into());
+    fn rpc_error_display_transport_error() {
+        let err = RpcError::TransportError("connection refused".into());
         assert!(err.to_string().contains("connection refused"));
     }
 
@@ -504,14 +540,35 @@ mod tests {
     }
 
     #[test]
-    fn rpc_error_incompatible_version_display() {
-        let err = RpcError::IncompatibleVersion {
+    fn rpc_error_protocol_mismatch_display() {
+        let err = RpcError::ProtocolMismatch {
             expected_protocol: 1,
             received_protocol: 2,
             expected_service: 3,
             received_service: 4,
         };
-        assert!(err.to_string().contains("incompatible version"));
+        assert!(err.to_string().contains("protocol mismatch"));
+    }
+
+    #[test]
+    fn rpc_error_is_retryable_classification() {
+        assert!(RpcError::TransportError("boom".into()).is_retryable());
+        assert!(RpcError::DiscoveryError("boom".into()).is_retryable());
+        assert!(RpcError::ProviderUnavailable { node: 1 }.is_retryable());
+        assert!(RpcError::Timeout.is_retryable());
+
+        assert!(!RpcError::SerializationError.is_retryable());
+        assert!(!RpcError::ServiceNotFound {
+            service: "svc".into()
+        }
+        .is_retryable());
+        assert!(!RpcError::Cancelled.is_retryable());
+        assert!(!RpcError::PayloadTooLarge {
+            size: 1,
+            limit: 1
+        }
+        .is_retryable());
+        assert!(!RpcError::Internal("boom".into()).is_retryable());
     }
 
     #[test]

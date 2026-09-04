@@ -103,7 +103,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                 );
                                 let client_node = ice_rpc::NodeId(hdr.caller_pid);
                                 let error_event: ice_rpc::Event<(), ()> = ice_rpc::Event::RpcError(
-                                    ice_rpc::RpcError::IncompatibleVersion {
+                                    ice_rpc::RpcError::ProtocolMismatch {
                                         expected_protocol: ice_rpc::PROTOCOL_VERSION,
                                         received_protocol: hdr.protocol_version,
                                         expected_service: #service_version,

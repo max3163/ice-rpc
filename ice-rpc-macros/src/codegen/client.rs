@@ -247,20 +247,15 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                     while node.is_none() && std::time::Instant::now() < deadline {
                         ice_rpc::futures::select! {
                             _ = ice_rpc::global_cancel_token().cancelled().fuse() => {
-                                return Err(ice_rpc::RpcError::IpcError(
-                                    "Call cancelled (Ctrl+C)".into()
-                                ));
+                                return Err(ice_rpc::RpcError::Cancelled);
                             }
                             _ = ice_rpc::rt::sleep(std::time::Duration::from_millis(ice_rpc::SERVER_READY_POLL_MS)).fuse() => {}
                         }
                         node = discovery.locate_service(svc_name);
                     }
-                    let nid = node.ok_or_else(|| ice_rpc::RpcError::IpcError(
-                        format!(
-                            "Service '{}' not found (no Node hosts it after {}s)",
-                            svc_name, #locate_timeout
-                        )
-                    ))?;
+                    let nid = node.ok_or_else(|| ice_rpc::RpcError::ServiceNotFound {
+                        service: svc_name.to_string(),
+                    })?;
                     self.core.store_target_node(nid.0);
                     nid
                 }

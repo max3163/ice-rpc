@@ -201,7 +201,7 @@ mod tests {
     fn take_one_or_cancel_ipc_error() {
         let cancel = crate::rt::CancellationToken::new();
         let result = pollster::block_on(take_one_or_cancel::<i32, String>(
-            Err(crate::RpcError::IpcError("boom".into())),
+            Err(crate::RpcError::TransportError("boom".into())),
             &cancel,
         ));
         match result {

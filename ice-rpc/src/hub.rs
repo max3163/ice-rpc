@@ -162,10 +162,8 @@ impl NodeHub {
                 .expect("publishers read lock poisoning");
             publishers
                 .get(&target_node_id.0)
-                .ok_or_else(|| {
-                    crate::RpcError::IpcError(
-                        "publisher not found — ensure_publishers not called".into(),
-                    )
+                .ok_or_else(|| crate::RpcError::ProviderUnavailable {
+                    node: target_node_id.0,
                 })?
                 .clone()
         };
@@ -228,7 +226,7 @@ impl NodeHub {
     ) -> Result<(), crate::RpcError> {
         match pub_guard
             .loan_slice_uninit(payload.len())
-            .map_err(|e| crate::RpcError::IpcError(format!("loan_slice_uninit: {:?}", e)))
+            .map_err(|e| crate::RpcError::TransportError(format!("loan_slice_uninit: {:?}", e)))
         {
             Ok(mut sample) => {
                 *sample.user_header_mut() = header;
@@ -236,7 +234,7 @@ impl NodeHub {
                 sample
                     .send()
                     .map(|_| ())
-                    .map_err(|e| crate::RpcError::IpcError(format!("send failed: {:?}", e)))
+                    .map_err(|e| crate::RpcError::TransportError(format!("send failed: {:?}", e)))
             }
             Err(e) => Err(e),
         }
@@ -270,7 +268,7 @@ impl NodeHub {
 
         let node = crate::ServiceLocator::global()
             .get_node_sync()
-            .map_err(|e| crate::RpcError::IpcError(format!("get_node_sync: {}", e)))?;
+            .map_err(|e| crate::RpcError::TransportError(format!("get_node_sync: {}", e)))?;
         let np = Arc::new(Self::create_node_publishers(
             &node,
             target_node_id,
@@ -322,7 +320,7 @@ impl NodeHub {
         initial_max_slice_len: usize,
     ) -> Result<IpcPublisher, crate::RpcError> {
         let name = ServiceName::new(topic)
-            .map_err(|e| crate::RpcError::IpcError(format!("ServiceName({topic}): {e:?}")))?;
+            .map_err(|e| crate::RpcError::TransportError(format!("ServiceName({topic}): {e:?}")))?;
 
         let is_large_topic = topic.ends_with("_large");
         let subscriber_buffer = if is_large_topic {
@@ -338,13 +336,13 @@ impl NodeHub {
             .subscriber_max_buffer_size(subscriber_buffer)
             .max_publishers(16)
             .open_or_create()
-            .map_err(|e| crate::RpcError::IpcError(format!("open_or_create({topic}): {e:?}")))?;
+            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
         svc.publisher_builder()
             .initial_max_slice_len(initial_max_slice_len)
             .allocation_strategy(AllocationStrategy::PowerOfTwo)
             .set_degradation_handler(|_, _| DegradationAction::DegradeAndFail)
             .create()
-            .map_err(|e| crate::RpcError::IpcError(format!("publisher create({topic}): {e:?}")))
+            .map_err(|e| crate::RpcError::TransportError(format!("publisher create({topic}): {e:?}")))
     }
 
     /// Creates an iceoryx2 notifier on a given topic.
@@ -356,15 +354,15 @@ impl NodeHub {
         crate::RpcError,
     > {
         let name = ServiceName::new(topic)
-            .map_err(|e| crate::RpcError::IpcError(format!("ServiceName({topic}): {e:?}")))?;
+            .map_err(|e| crate::RpcError::TransportError(format!("ServiceName({topic}): {e:?}")))?;
         let svc = node
             .service_builder(&name)
             .event()
             .open_or_create()
-            .map_err(|e| crate::RpcError::IpcError(format!("open_or_create({topic}): {e:?}")))?;
+            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
         svc.notifier_builder()
             .create()
-            .map_err(|e| crate::RpcError::IpcError(format!("notifier create({topic}): {e:?}")))
+            .map_err(|e| crate::RpcError::TransportError(format!("notifier create({topic}): {e:?}")))
     }
 
     /// Starts the dispatch loop (IPC message pump) in a `spawn_blocking`.

@@ -374,7 +374,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             };
 
             {
-                ice_rpc::register_reconnect_callback_once(target_node.0, self.reconnect_cb.clone());
+                ice_rpc::gen::register_reconnect_callback_once(target_node.0, self.reconnect_cb.clone());
             }
 
             let rpc_header = ice_rpc::RpcHeader::new(

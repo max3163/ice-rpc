@@ -29,9 +29,9 @@ fn blackboard_create_and_list_services_roundtrip() {
     let node_id = std::process::id() ^ 0x5EED_0001;
 
     let services = vec!["DatabaseService".to_string(), "ConfigService".to_string()];
-    ice_rpc::create_node_blackboard(node_id, &services);
+    ice_rpc::gen::create_node_blackboard(node_id, &services);
 
-    let mut listed = ice_rpc::list_services(node_id);
+    let mut listed = ice_rpc::gen::list_services(node_id);
     listed.sort();
     assert_eq!(
         listed,

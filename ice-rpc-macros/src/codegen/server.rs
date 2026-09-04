@@ -83,7 +83,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         }
                     };
 
-                    let handler: ice_rpc::RequestHandler = std::sync::Arc::new({
+                    let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                         let tx = dispatch_tx_clone;
                         move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
                             let cid = hdr.correlation_id;

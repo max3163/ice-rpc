@@ -59,7 +59,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             return false;
                         }
 
-                        let handler: ice_rpc::RequestHandler = std::sync::Arc::new({
+                        let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                             let svc = svc_name;
                             move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
                                 let cid = hdr.correlation_id;

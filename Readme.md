@@ -205,7 +205,7 @@ ice-rpc-macros/                 ← Procedural macros crate
 │   ├── lib.rs                  ← Entry point : parses the trait, orchestrates the 6 modules
 │   └── codegen/
 │       ├── helpers.rs          ← g_variant_name(), extract_rpc_result_types()
-│       ├── client.rs           ← {Trait}Client : ConnectionState state machine, core.subscribe
+│       ├── client.rs           ← {Trait}Client : ConnectionState state machine, core.resolve_target
 │       ├── server.rs           ← {Trait}Server : oneshot ready_tx, dispatch channel
 │       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderNodeJs modes
 │       ├── lifecycle.rs        ← ServiceLifecycle/ServiceInit/ServiceNamed
@@ -235,7 +235,7 @@ patches/                        ← Unused archive (local iceoryx2-pal-posix 0.9
 | Module | Responsibility |
 |---|---|
 | `helpers.rs` | `g_variant_name` (snake→Pascal), `extract_rpc_result_types` |
-| `client.rs` | Generates `{Trait}Client` : `ConnectionState` state machine (Unknown/Discovering/Ready/Dead/Reconnecting), `core.subscribe(node_id)` (NodeSupervisor subscription), `spawn_blocking` fallback if publishers are invalidated |
+| `client.rs` | Generates `{Trait}Client` : calls `core.resolve_target(service, timeout)` which encapsulates the `ConnectionState` machine, discovery, `ensure_publishers` and `NodeSupervisor` subscription |
 | `server.rs` | Generates `{Trait}Server::run()` : `dispatch_tx/rx` channel (capacity 1024), handler registration in `NodeHub`, `server_ready` Blackboard with writer kept alive via `OnceLock`, `ready_tx` oneshot signal |
 | `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_nodejs` constructors, Provider/Consumer/ProviderNodeJs delegation |
 | `lifecycle.rs` | Generates `impl ServiceLifecycle` (exponential backoff 200ms→5s), `impl ServiceNamed` (const + method), `impl ServiceInit`, ProviderNodeJs case (handler registration + JS dispatch) |

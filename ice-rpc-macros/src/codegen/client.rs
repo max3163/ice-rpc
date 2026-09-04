@@ -221,8 +221,6 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         #visibility async fn #fn_name(&self, #(#arg_names: #arg_types),*)
             -> Result<ice_rpc::Stream<#ok_type, #err_type>, ice_rpc::RpcError>
         {
-            use ice_rpc::futures::FutureExt;
-
             let req_val = #req_enum_name::#var_name { #(#arg_names),* };
 
             let bytes = ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&req_val)
@@ -234,34 +232,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             // ── IPC call ─────────────────────────────────────────────
             let svc_name = #logical_name;
 
-            let target_node = {
-                let cached = self.core.cached_target_node();
-                if cached != 0 {
-                    ice_rpc::NodeId(cached as u32)
-                } else {
-                    self.core.start_discovery();
-                    let discovery = ice_rpc::ServiceLocator::global().node_discovery();
-                    let mut node = discovery.locate_service(svc_name);
-                    let deadline = std::time::Instant::now()
-                        + std::time::Duration::from_secs(#locate_timeout);
-                    while node.is_none() && std::time::Instant::now() < deadline {
-                        ice_rpc::futures::select! {
-                            _ = ice_rpc::global_cancel_token().cancelled().fuse() => {
-                                return Err(ice_rpc::RpcError::Cancelled);
-                            }
-                            _ = ice_rpc::rt::sleep(std::time::Duration::from_millis(ice_rpc::SERVER_READY_POLL_MS)).fuse() => {}
-                        }
-                        node = discovery.locate_service(svc_name);
-                    }
-                    let nid = node.ok_or_else(|| ice_rpc::RpcError::ServiceNotFound {
-                        service: svc_name.to_string(),
-                    })?;
-                    self.core.store_target_node(nid.0);
-                    nid
-                }
-            };
-
-            self.core.subscribe(target_node.0);
+            let target_node = self.core.resolve_target(svc_name, #locate_timeout).await?;
 
             let rpc_header = ice_rpc::RpcHeader::request(
                 svc_name,

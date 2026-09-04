@@ -8,6 +8,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::futures::FutureExt;
+
 /// Connection state machine of a generated client.
 ///
 /// Replaces the former trio of independent atomics (`reconnecting`,
@@ -89,6 +91,58 @@ impl ClientCore {
             ConnectionState::Ready(n) => n as u64,
             _ => 0,
         }
+    }
+
+    /// Resolves the target node for an RPC call, encapsulating the state
+    /// machine, discovery, publisher availability and node supervision
+    /// subscription.
+    ///
+    /// Returns the cached node when already `Ready`. Otherwise it runs the
+    /// discovery loop, ensures the publishers and subscribes before declaring
+    /// the client ready.
+    pub async fn resolve_target(
+        &self,
+        service_name: &str,
+        timeout_secs: u64,
+    ) -> Result<crate::NodeId, crate::RpcError> {
+        let cached = self.cached_target_node();
+        if cached != 0 {
+            let node_id = cached as u32;
+            self.subscribe(node_id);
+            return Ok(crate::NodeId(node_id));
+        }
+
+        self.start_discovery();
+
+        let discovery = crate::ServiceLocator::global().node_discovery();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let mut node = discovery.locate_service(service_name);
+        while node.is_none() && std::time::Instant::now() < deadline {
+            crate::futures::select! {
+                _ = crate::global_cancel_token().cancelled().fuse() => {
+                    return Err(crate::RpcError::Cancelled);
+                }
+                _ = crate::rt::sleep(
+                    std::time::Duration::from_millis(crate::SERVER_READY_POLL_MS)
+                ).fuse() => {}
+            }
+            node = discovery.locate_service(service_name);
+        }
+
+        let nid = node.ok_or_else(|| crate::RpcError::ServiceNotFound {
+            service: service_name.to_string(),
+        })?;
+
+        crate::ServiceLocator::global()
+            .hub()
+            .ensure_publishers(nid)
+            .map_err(|e| {
+                log::warn!("[{}Client] ensure_publishers failed: {}", service_name, e);
+                crate::RpcError::ProviderUnavailable { node: nid.0 }
+            })?;
+
+        self.store_target_node(nid.0);
+        Ok(nid)
     }
 
     /// Starts (or restarts) a discovery, if allowed by the state machine.
@@ -293,5 +347,14 @@ mod tests {
         assert!(core.mark_reconnecting());
         assert!(core.store_target_node(2));
         assert_eq!(core.state(), Ready(2));
+    }
+
+    #[test]
+    fn resolve_target_returns_cached_node_when_ready() {
+        let core = ClientCore::new("svc");
+        core.start_discovery();
+        core.store_target_node(42);
+        let node = pollster::block_on(core.resolve_target("svc", 30)).unwrap();
+        assert_eq!(node.0, 42);
     }
 }

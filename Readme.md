@@ -1537,29 +1537,30 @@ The git working tree must be clean (all changes committed) before running a rele
 
 ### Bump the version
 
+Run `cargo release` **directly from the workspace root**. Do **not** use the
+`cargo make release-*` tasks: cargo-make's workspace flow runs the task once
+per member, re-bumping the whole workspace each time and ending with
+`Task "release-patch" not found` on `ice-rpc-macros-tests`.
+
 ```bash
 # patch : 0.1.0 -> 0.1.1
-cargo make release-patch
+cargo release patch --workspace --no-publish --no-confirm --execute
 
 # minor : 0.1.0 -> 0.2.0
-cargo make release-minor
+cargo release minor --workspace --no-publish --no-confirm --execute
 
 # major : 0.1.0 -> 1.0.0
-cargo make release-major
-
-# default alias = patch
-cargo make release
+cargo release major --workspace --no-publish --no-confirm --execute
 ```
 
-Each task runs `cargo release <level> --workspace --no-publish --no-confirm --execute`, which:
+This:
 
 1. bumps the Rust version (single source in `[workspace.package]`) and the `ice-rpc-macros` dependency requirement;
-2. applies `pre-release-replacements` to `gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`;
-3. refreshes `Cargo.lock`;
-4. commits **everything** with the message configured in `[workspace.metadata.release]`;
-5. creates the git tag `vX.Y.Z`.
+2. refreshes `Cargo.lock`;
+3. commits **everything** with the message configured in `[workspace.metadata.release]`;
+4. creates the git tag `vX.Y.Z`.
 
-`cargo release` never publishes to crates.io (`--no-publish`) nor pushes to the remote (`push = false` in `Cargo.toml`). Pushing the commit and the tag is done manually with `git push --follow-tags`.
+`cargo release` never publishes to crates.io (`--no-publish`) nor pushes to the remote (`push = false` in `Cargo.toml`).
 
 ### Manual dry-run
 
@@ -1567,7 +1568,30 @@ Each task runs `cargo release <level> --workspace --no-publish --no-confirm --ex
 cargo release patch --workspace --no-publish --no-confirm
 ```
 
-> By default `cargo release` runs in dry-run mode; `--execute` (used by the `cargo make` tasks) actually performs the release.
+> By default `cargo release` runs in dry-run mode; `--execute` actually performs the release.
+
+### Publish to crates.io
+
+Publish the two crates **in dependency order** (macros first, since `ice-rpc`
+depends on `ice-rpc-macros` by version):
+
+```bash
+cargo login                       # once per machine
+
+cargo publish -p ice-rpc-macros
+cargo publish -p ice-rpc
+```
+
+Do **not** publish `gateway_nodejs`, `examples/common` or `ice-rpc-macros-tests`.
+
+### Push the commit and the tag
+
+`push = false` keeps the release commit/tag local; push them manually:
+
+```bash
+git push origin main
+git push origin vX.Y.Z
+```
 
 ---
 

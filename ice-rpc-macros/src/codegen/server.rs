@@ -6,6 +6,7 @@ use syn::{Ident, Visibility};
 
 pub struct ServerGenInput<'a> {
     pub trait_name: &'a Ident,
+    pub logical_name: &'a str,
     pub visibility: &'a Visibility,
     pub server_name: &'a Ident,
     pub req_enum_name: &'a Ident,
@@ -25,6 +26,7 @@ pub struct ServerGenInput<'a> {
 pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
     let ServerGenInput {
         trait_name,
+        logical_name,
         visibility,
         server_name,
         req_enum_name,
@@ -71,7 +73,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
                 use ice_rpc::futures::FutureExt;
 
-                let svc_name: &'static str = stringify!(#trait_name);
+                let svc_name: &'static str = #logical_name;
                 let svc_impl = self.service_impl.clone();
                 let scratch = self.scratch.clone();
 
@@ -203,6 +205,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// `scratch_ref` buffer and sends it via `send_to_node`.
 pub fn gen_server_match_arm(
     trait_name: &Ident,
+    logical_name: &str,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
@@ -236,7 +239,7 @@ pub fn gen_server_match_arm(
                             sent_at_ns: ice_rpc::RpcHeader::now_ns(),
                             caller_pid: std::process::id(),
                             service_name: ice_rpc::StaticString::from_bytes_truncated(
-                                stringify!(#trait_name).as_bytes()
+                                #logical_name.as_bytes()
                             ).unwrap_or_default(),
                             method_name: ice_rpc::StaticString::from_bytes_truncated(
                                 stringify!(#fn_name).as_bytes()
@@ -257,7 +260,7 @@ pub fn gen_server_match_arm(
                             sent_at_ns: ice_rpc::RpcHeader::now_ns(),
                             caller_pid: std::process::id(),
                             service_name: ice_rpc::StaticString::from_bytes_truncated(
-                                stringify!(#trait_name).as_bytes()
+                                #logical_name.as_bytes()
                             ).unwrap_or_default(),
                             method_name: ice_rpc::StaticString::from_bytes_truncated(
                                 stringify!(#fn_name).as_bytes()

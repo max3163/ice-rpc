@@ -410,6 +410,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             server_match_arms.push(gen_server_match_arm(
                 trait_name,
+                &logical_name_lit,
                 fn_name,
                 &var_name,
                 &arg_names,
@@ -449,6 +450,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let server_input = ServerGenInput {
         trait_name,
+        logical_name: &logical_name_lit,
         visibility,
         server_name: &server_name,
         req_enum_name: &req_enum_name,

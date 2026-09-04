@@ -139,6 +139,7 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
 pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput {
         trait_name,
+        logical_name,
         client_name,
         allow_large_payload,
         default_size_message_kb,
@@ -177,7 +178,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
                     }).await;
                 }
 
-                let svc_name = stringify!(#trait_name);
+                let svc_name: &'static str = #logical_name;
                 let discovery = ice_rpc::ServiceLocator::global().node_discovery();
                 let target_node = match discovery.locate_service(svc_name) {
                     Some(n) => n,

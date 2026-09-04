@@ -182,18 +182,27 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 std::sync::Arc::new(move |result: Result<&[u8], ice_rpc::RpcError>| {
                     match result {
                         Ok(response_bytes) => {
-                            if let Ok(event) = ice_rpc::rkyv::from_bytes::<
+                            match ice_rpc::rkyv::from_bytes::<
                                 ice_rpc::Event<#ok_type, #err_type>,
                                 ice_rpc::rkyv::rancor::Error
                             >(response_bytes) {
-                                // Only cache Next values (not Complete/Error).
-                                if matches!(event, ice_rpc::Event::Next(_)) {
-                                    cache_ref.insert(cache_key_store, response_bytes.to_vec());
+                                Ok(event) => {
+                                    // Only cache Next values (not Complete/Error).
+                                    if matches!(event, ice_rpc::Event::Next(_)) {
+                                        cache_ref.insert(cache_key_store, response_bytes.to_vec());
+                                    }
+                                    let _ = tx.try_send(event);
                                 }
-                                let _ = tx.try_send(event);
+                                Err(_) => {
+                                    let _ = tx.try_send(ice_rpc::Event::RpcError(
+                                        ice_rpc::RpcError::SerializationError
+                                    ));
+                                }
                             }
                         }
-                        Err(_e) => {}
+                        Err(e) => {
+                            let _ = tx.try_send(ice_rpc::Event::RpcError(e));
+                        }
                     }
                 })
             }
@@ -203,14 +212,23 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             std::sync::Arc::new(move |result: Result<&[u8], ice_rpc::RpcError>| {
                 match result {
                     Ok(bytes) => {
-                        if let Ok(event) = ice_rpc::rkyv::from_bytes::<
+                        match ice_rpc::rkyv::from_bytes::<
                             ice_rpc::Event<#ok_type, #err_type>,
                             ice_rpc::rkyv::rancor::Error
                         >(bytes) {
-                            let _ = tx.try_send(event);
+                            Ok(event) => {
+                                let _ = tx.try_send(event);
+                            }
+                            Err(_) => {
+                                let _ = tx.try_send(ice_rpc::Event::RpcError(
+                                    ice_rpc::RpcError::SerializationError
+                                ));
+                            }
                         }
                     }
-                    Err(_e) => {}
+                    Err(e) => {
+                        let _ = tx.try_send(ice_rpc::Event::RpcError(e));
+                    }
                 }
             })
         }

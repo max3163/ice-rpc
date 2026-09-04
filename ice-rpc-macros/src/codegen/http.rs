@@ -141,6 +141,9 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
                     Ok(ice_rpc::Event::Error(e)) => {
                         Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
                     }
+                    Ok(ice_rpc::Event::RpcError(e)) => {
+                        Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
+                    }
                     Err(_) => {
                         Err("No response received from the service".to_string())
                     }

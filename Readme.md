@@ -108,6 +108,8 @@ sequenceDiagram
     participant Kernel as OS Kernel
     participant WL as NodeLockWatcher (Consumer)
     participant ND as NodeDiscovery (Consumer)
+    participant S as NodeSupervisor
+    participant RM as ReconnectManager
     participant Client as DatabaseServiceClient
 
     P->>Kernel: Mutex creation "ice_rpc_node_2000" (or flock)
@@ -115,20 +117,19 @@ sequenceDiagram
     Kernel->>Kernel: Automatic release of the mutex/flock
     WL->>Kernel: Poll: is_node_alive("ice_rpc_node_2000") → false
     WL->>ND: invalidate_node_services(NodeId(2000))
-    WL->>WL: fire_reconnect_callbacks(2000)
-    Client->>Client: reconnect_cb triggered
-    Client->>Client: reconnecting.store(true)
-    Client->>Client: server_ready.store(false)
-    Client->>Client: spawn OS thread → rediscovery loop
-    loop Rediscovery (every 1s)
-        Client->>ND: locate_service("DatabaseService")
-        ND-->>Client: None (not restarted yet)
+    WL->>S: fire(2000)
+    S->>S: notify_node_dead(2000) → broadcast
+    S-->>Client: notify every subscribed client (one per service)
+    Client->>Client: reset flags, cached_target_node = 0
+    Client->>RM: schedule(2000, service)
+    loop Rediscovery (single worker, every 1s)
+        RM->>ND: locate_service("DatabaseService")
+        ND-->>RM: None (not restarted yet)
     end
     Note over P: Provider restarts
     P->>ND: notify_with_custom_event_id(CHANGE)
-    ND-->>Client: locate_service() → Some(NodeId(2000))
-    Client->>Client: reconnecting.store(false)
-    Client->>Client: server_ready.store(true)
+    ND-->>RM: locate_service() → Some(NodeId(2000))
+    RM-->>Client: restore cached_node / server_ready
     Client->>P: RPC calls resume
 ```
 
@@ -188,7 +189,8 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── registry_notify.rs      ← Event notifications : carries the NodeId via EventId
 │   ├── registry_listener.rs    ← WaitSet listener : receives Events, updates cache,
 │   │                              cleans dead nodes
-│   ├── reconnect.rs            ← Reconnection callbacks (triggered by crashes)
+│   ├── node_supervisor.rs     ← Node supervisor: broadcasts node death to subscribers
+│   ├── reconnect_manager.rs   ← Centralized reconnection retry (single worker thread)
 │   ├── node_lock.rs            ← Kernel Named Lock (Windows Mutex / Unix flock)
 │   │                              for heartbeat-free crash detection
 │   ├── http_gateway.rs         ← HTTP REST gateway (trillium) : exposes the services
@@ -233,7 +235,7 @@ patches/                        ← Unused archive (local iceoryx2-pal-posix 0.9
 | Module | Responsibility |
 |---|---|
 | `helpers.rs` | `g_variant_name` (snake→Pascal), `extract_rpc_result_types` |
-| `client.rs` | Generates `{Trait}Client` : `AtomicU64` NodeId cache (hot path ~1 ns), `reconnect_cb` (crash detection + Blackboard loop), `reconnecting` flag, `spawn_blocking` fallback if publishers are invalidated |
+| `client.rs` | Generates `{Trait}Client` : `AtomicU64` NodeId cache (hot path ~1 ns), `core.subscribe(node_id)` (NodeSupervisor subscription), `reconnecting` flag, `spawn_blocking` fallback if publishers are invalidated |
 | `server.rs` | Generates `{Trait}Server::run()` : `dispatch_tx/rx` channel (capacity 1024), handler registration in `NodeHub`, `server_ready` Blackboard with writer kept alive via `OnceLock`, `ready_tx` oneshot signal |
 | `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_nodejs` constructors, Provider/Consumer/ProviderNodeJs delegation |
 | `lifecycle.rs` | Generates `impl ServiceLifecycle` (exponential backoff 200ms→5s), `impl ServiceNamed` (const + method), `impl ServiceInit`, ProviderNodeJs case (handler registration + JS dispatch) |
@@ -799,7 +801,7 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │    │     └─ AtomicU64 → NodeId (0 if not cached yet)                     │
 │    │   Slow path : locate_service() + retry 100ms (30s max)              │
 │    │                                                                     │
-│    ├─3. register_reconnect_callback_once()   ← idempotent (built-in HashSet) │
+│    ├─3. core.subscribe(node_id)   ← idempotent (NodeSupervisor subscription) │
 │    │                                                                     │
 │    ├─4. RpcHeader::new("DatabaseService", "get_user_age")                │
 │    │     → correlation_id = [PID(4B) | counter(8B) | padding(4B)]        │
@@ -888,58 +890,23 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│               AUTOMATIC RECONNECTION — UNIFIED CALLBACKS                  │
+│              AUTOMATIC RECONNECTION — NODE SUPERVISOR                     │
 │                                                                          │
-│  A single central point : register_reconnect_callback_once()             │
-│  in node_discovery, called by the client on the first RPC.               │
-│  The callbacks are triggered by 3 independent sources :                  │
+│  3 sources detect a node death :                                        │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ SOURCE 1 : IPC send failure (NodeHub)                              │  │
-│  │                                                                    │  │
-│  │  send_to_node() ──FAILURE──► invalidate_publishers()               │  │
-│  │                         └─ fire_reconnect_callbacks()              │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
+│  SOURCE 1 : IPC send failure   → invalidate_publishers() + fire()       │
+│  SOURCE 2 : NodeLockWatcher    → invalidate_node_services() + fire()    │
+│  SOURCE 3 : DEAD notification  → fire()                                  │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ SOURCE 2 : NodeLockWatcher (kernel lock)                           │  │
-│  │                                                                    │  │
-│  │  Dedicated thread polling is_node_alive(lock_name) every 100ms     │  │
-│  │  is_alive() returns false →                                        │  │
-│  │    ├─ invalidate_node_services()  ← clears the local cache         │  │
-│  │    ├─ fire_reconnect_callbacks()  ← unified callback               │  │
-│  │    └─ stops (running = false)                                      │  │
-│  │                                                                    │  │
-│  │  The lock is released by the kernel on crash (SIGKILL included).   │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
+│  fire(node_id) → NodeSupervisor.notify_node_dead(node_id)               │
+│     └─ broadcasts to every subscribed ClientCore (one per service)      │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ SOURCE 3 : DEAD notification via registry_notify event             │  │
-│  │                                                                    │  │
-│  │  When a Node stops cleanly (release_node) :                        │  │
-│  │    → announce_dead_node(NodeId::current())                         │  │
-│  │    → notify_with_custom_event_id(REGISTRY_EVENT_DEAD)              │  │
-│  │    → The listeners receive the DEAD event                          │  │
-│  │    → fire_reconnect_callbacks()                                    │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
+│  Each subscribed callback only resets its own state and delegates :     │
+│     └─ ReconnectManager.schedule(node_id, service)                      │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ UNIFIED CALLBACK (reconnect_cb — in the generated client)          │  │
-│  │                                                                    │  │
-│  │  Triggered by one of the 3 sources above :                         │  │
-│  │  ├─ reconnecting.store(true)                                       │  │
-│  │  ├─ server_ready.store(false)                                      │  │
-│  │  ├─ cached_target_node.store(0)                                    │  │
-│  │  ├─ invalidate_node_services()                                     │  │
-│  │  ├─ invalidate_publishers()                                        │  │
-│  │  └─ spawn OS thread → rediscovery loop                             │  │
-│  │       ├─ locate_service(svc_name)                                  │  │
-│  │       ├─ sleep(1000ms)                                             │  │
-│  │       └─ if found :                                                │  │
-│  │            ├─ cached_node.store(new_id)                            │  │
-│  │            ├─ ready.store(true)                                    │  │
-│  │            └─ reconnecting.store(false)                            │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
+│  ReconnectManager : a SINGLE worker thread (registered in the           │
+│  ShutdownRegistry) polls locate_service() for every pending service     │
+│  until it is found again, then restores cached_node / server_ready.     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 

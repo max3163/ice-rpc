@@ -16,6 +16,7 @@ pub struct LifecycleGenInput<'a> {
     pub logical_name_lit: &'a str,
     pub allow_large_payload: bool,
     pub default_size_message_kb: Option<u64>,
+    pub service_version: u16,
 }
 
 /// Generates the [`ServiceLifecycle`], [`ServiceInit`] and
@@ -29,6 +30,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         logical_name_lit,
         allow_large_payload,
         default_size_message_kb,
+        service_version,
     } = input;
 
     let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
@@ -114,6 +116,8 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                         service_name: ice_rpc::StaticString::from_bytes_truncated(svc_static.as_bytes()).unwrap_or_default(),
                                         method_name: ice_rpc::StaticString::from_bytes_truncated(method_owned.as_bytes()).unwrap_or_default(),
                                         event_kind,
+                                        protocol_version: ice_rpc::PROTOCOL_VERSION,
+                                        service_version: #service_version,
                                     };
 
                                     if let Err(e) = hub.send_to_node(client_node, resp_hdr, &response_bytes) {

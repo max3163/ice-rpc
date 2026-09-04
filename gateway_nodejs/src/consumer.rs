@@ -64,6 +64,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                     Err("NotFound: unknown name in database".to_string())
                 }
                 Ok(Event::Error(e)) => Err(format!("Database business error: {}", e)),
+                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
                 Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
             }
         }
@@ -89,6 +90,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                     Err("NotFound: person not found".to_string())
                 }
                 Ok(Event::Error(e)) => Err(format!("Database business error: {}", e)),
+                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
                 Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
             }
         }
@@ -112,6 +114,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 Ok(Event::Error(common::ConfigError::KeyNotFound)) => {
                     Err("KeyNotFound: key not found".to_string())
                 }
+                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
                 Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
             }
         }
@@ -135,6 +138,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 Ok(Event::Next(response)) => Ok(serde_json::to_value(&response)
                     .map_err(|e| format!("Failed to serialize HttpResponseParams: {}", e))?),
                 Ok(Event::Error(e)) => Err(format!("Http business error: {}", e)),
+                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
                 Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
             }
         }

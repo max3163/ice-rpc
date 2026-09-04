@@ -210,3 +210,19 @@ fn test_default_size_message_parameter() {
             >= 8 * 1024
     );
 }
+
+// -----------------------------------------------------------------------------
+// Test 9: #[service(version = N)]
+// -----------------------------------------------------------------------------
+
+#[service(version = 2)]
+#[async_trait::async_trait]
+pub trait VersionedService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[test]
+fn test_versioned_service_compiles() {
+    let client = VersionedServiceClient::new();
+    let _ = &client;
+}

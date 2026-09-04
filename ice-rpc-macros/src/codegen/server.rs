@@ -17,6 +17,7 @@ pub struct ServerGenInput<'a> {
     pub server_match_arms: &'a [TokenStream],
     pub allow_large_payload: bool,
     pub default_size_message_kb: Option<u64>,
+    pub service_version: u16,
 }
 
 /// Generates the `{Trait}Server` and its `run()` method.
@@ -37,6 +38,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         server_match_arms,
         allow_large_payload,
         default_size_message_kb,
+        service_version,
     } = input;
 
     let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
@@ -87,6 +89,50 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         let tx = dispatch_tx_clone;
                         move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
                             let cid = hdr.correlation_id;
+                            if hdr.protocol_version != ice_rpc::PROTOCOL_VERSION
+                                || hdr.service_version != #service_version
+                            {
+                                ::log::error!(
+                                    "[{}Server] incompatible version from Node {} (protocol {} != {}, service {} != {})",
+                                    svc_name,
+                                    hdr.caller_pid,
+                                    hdr.protocol_version,
+                                    ice_rpc::PROTOCOL_VERSION,
+                                    hdr.service_version,
+                                    #service_version,
+                                );
+                                let client_node = ice_rpc::NodeId(hdr.caller_pid);
+                                let error_event: ice_rpc::Event<(), ()> = ice_rpc::Event::RpcError(
+                                    ice_rpc::RpcError::IncompatibleVersion {
+                                        expected_protocol: ice_rpc::PROTOCOL_VERSION,
+                                        received_protocol: hdr.protocol_version,
+                                        expected_service: #service_version,
+                                        received_service: hdr.service_version,
+                                    },
+                                );
+                                let mut buf =
+                                    ice_rpc::rkyv::util::AlignedVec::<8>::with_capacity(4096);
+                                if ice_rpc::rkyv::api::high::to_bytes_in::<
+                                    _,
+                                    ice_rpc::rkyv::rancor::Error,
+                                >(&error_event, &mut buf).is_ok()
+                                {
+                                    let resp_header = ice_rpc::RpcHeader {
+                                        correlation_id: hdr.correlation_id,
+                                        sent_at_ns: ice_rpc::RpcHeader::now_ns(),
+                                        caller_pid: std::process::id(),
+                                        service_name: hdr.service_name,
+                                        method_name: hdr.method_name,
+                                        event_kind: ice_rpc::EventKind::Error,
+                                        protocol_version: ice_rpc::PROTOCOL_VERSION,
+                                        service_version: #service_version,
+                                    };
+                                    let _ = ice_rpc::ServiceLocator::global()
+                                        .hub()
+                                        .send_to_node(client_node, resp_header, &buf);
+                                }
+                                return;
+                            }
                             let client_pid = hdr.caller_pid;
                             let client_node = ice_rpc::NodeId(client_pid);
 
@@ -207,6 +253,7 @@ pub fn gen_server_match_arm(
     var_name: &Ident,
     arg_names: &[&Ident],
     req_enum_name: &Ident,
+    service_version: u16,
 ) -> TokenStream {
     quote! {
         #req_enum_name::#var_name { #(#arg_names),* } => {
@@ -223,6 +270,7 @@ pub fn gen_server_match_arm(
                             ice_rpc::Event::Next(_)  => ice_rpc::EventKind::Next,
                             ice_rpc::Event::Complete => ice_rpc::EventKind::Complete,
                             ice_rpc::Event::Error(_) => ice_rpc::EventKind::Error,
+                            ice_rpc::Event::RpcError(_) => ice_rpc::EventKind::Error,
                         };
                         let mut guard = scratch_ref.lock().await;
                         if guard.capacity() < size_hint + 4096 {
@@ -242,6 +290,8 @@ pub fn gen_server_match_arm(
                                 stringify!(#fn_name).as_bytes()
                             ).unwrap_or_default(),
                             event_kind: kind,
+                            protocol_version: ice_rpc::PROTOCOL_VERSION,
+                            service_version: #service_version,
                         };
                         let _ = hub.send_to_node(client_node, resp_header, &*guard);
                         drop(guard);
@@ -268,6 +318,8 @@ pub fn gen_server_match_arm(
                                 stringify!(#fn_name).as_bytes()
                             ).unwrap_or_default(),
                             event_kind: ice_rpc::EventKind::Complete,
+                            protocol_version: ice_rpc::PROTOCOL_VERSION,
+                            service_version: #service_version,
                         };
                         let _ = hub.send_to_node(client_node, resp_header, &*guard);
                     }

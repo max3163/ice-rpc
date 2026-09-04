@@ -59,11 +59,13 @@ use crate::codegen::{
 ///   segment (default: `false`).
 /// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
 ///   default shared-memory segment.
-/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8)]` → all.
+/// - `#[service(version = 1)]` → service interface version (default: `1`).
+/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2)]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
     allow_large_payload: bool,
     default_size_message_kb: Option<u64>,
+    service_version: u16,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -71,12 +73,14 @@ impl syn::parse::Parse for ServiceAttr {
         let mut logical_name: Option<String> = None;
         let mut allow_large_payload = false;
         let mut default_size_message_kb: Option<u64> = None;
+        let mut service_version: u16 = 1;
 
         if input.is_empty() {
             return Ok(Self {
                 logical_name: None,
                 allow_large_payload: false,
                 default_size_message_kb: None,
+                service_version,
             });
         }
 
@@ -94,6 +98,10 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     default_size_message_kb = Some(lit.base10_parse::<u64>()?);
+                } else if ident == "version" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    service_version = lit.base10_parse::<u16>()?;
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -112,6 +120,7 @@ impl syn::parse::Parse for ServiceAttr {
             logical_name,
             allow_large_payload,
             default_size_message_kb,
+            service_version,
         })
     }
 }
@@ -276,6 +285,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let allow_large_payload = service_attr.allow_large_payload;
     let default_size_message_kb = service_attr.default_size_message_kb;
+    let service_version = service_attr.service_version;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -339,6 +349,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
+    let mut variant_discriminant: u8 = 0;
     let mut server_match_arms = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
@@ -392,8 +403,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
             let timeout_secs = parse_timeout_attr(&method.attrs);
 
             req_variants.push(quote! {
-                #var_name { #(#arg_names: #arg_types),* }
+                #var_name { #(#arg_names: #arg_types),* } = #variant_discriminant
             });
+            variant_discriminant += 1;
 
             client_methods.push(gen_client_method(&ClientMethodGenInput {
                 visibility,
@@ -407,6 +419,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 logical_name: &logical_name_lit,
                 cache_config: cache_config.as_ref(),
                 timeout_secs,
+                service_version,
             }));
 
             server_match_arms.push(gen_server_match_arm(
@@ -416,6 +429,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &var_name,
                 &arg_names,
                 &req_enum_name,
+                service_version,
             ));
 
             node_methods.push(gen_proxy_method(
@@ -459,6 +473,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         server_match_arms: &server_match_arms,
         allow_large_payload,
         default_size_message_kb,
+        service_version,
     };
     let server_output = gen_server(&server_input);
 
@@ -482,6 +497,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         logical_name_lit: &logical_name_lit,
         allow_large_payload,
         default_size_message_kb,
+        service_version,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
@@ -515,6 +531,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(unexpected_cfgs)]
         #input_trait
 
+        #[repr(u8)]
         #[derive(ice_rpc::rkyv::Archive, ice_rpc::rkyv::Deserialize, ice_rpc::rkyv::Serialize, Debug)]
         #visibility enum #req_enum_name { #(#req_variants),* }
 

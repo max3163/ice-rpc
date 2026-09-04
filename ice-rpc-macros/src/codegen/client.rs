@@ -121,6 +121,7 @@ pub struct ClientMethodGenInput<'a> {
     pub logical_name: &'a str,
     pub cache_config: Option<&'a CacheConfig>,
     pub timeout_secs: Option<u64>,
+    pub service_version: u16,
 }
 
 pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
@@ -135,6 +136,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let logical_name = input.logical_name;
     let cache_config = input.cache_config;
     let timeout_secs = input.timeout_secs;
+    let service_version = input.service_version;
 
     let method_name_str = fn_name.to_string();
     let locate_timeout = timeout_secs.unwrap_or(30); // RPC_CALL_TIMEOUT_SECS default
@@ -268,7 +270,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             let rpc_header = ice_rpc::RpcHeader::new(
                 svc_name,
                 #method_name_str,
-            );
+            ).with_service_version(#service_version);
             let correlation_id = rpc_header.correlation_id;
 
             let (tx, rx) = ice_rpc::channel::<#ok_type, #err_type>(8);

@@ -38,10 +38,10 @@ pub trait MyService: Send + Sync + 'static {
 
 ## Service parameters
 
-`#[service]` accepts two optional parameters, combinable in any order:
+`#[service]` accepts three optional parameters, combinable in any order:
 
 ```rust,ignore
-#[service("MyService", allow_large_payload = true, default_size_message = 8)]
+#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 1)]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -51,6 +51,7 @@ pub trait MyService: Send + Sync + 'static {
 |---|---|---|---|
 | `allow_large_payload` | `bool` | `false` | Creates the second shared-memory segment (`_large`) used for payloads above `LARGE_PAYLOAD_THRESHOLD`. |
 | `default_size_message` | integer (KiB) | `256` bytes | Initial slice size of the `_default` shared-memory segment publisher. |
+| `version` | integer | `1` | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`. |
 
 ## Method attributes
 

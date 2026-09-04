@@ -74,13 +74,14 @@ pub trait MyService: Send + Sync + 'static {
 
 The macro generates `MyServiceRequest`, `MyServiceClient`, `MyServiceServer`, `MyServiceProxy` and `MyServiceMode`.
 
-`#[service]` also accepts two optional parameters:
+`#[service]` also accepts three optional parameters:
 
 - `allow_large_payload` (`bool`, default `false`) — creates the second shared-memory segment (`_large`) for payloads above `LARGE_PAYLOAD_THRESHOLD`;
-- `default_size_message` (integer, in KiB) — initial slice size of the `_default` shared-memory segment publisher.
+- `default_size_message` (integer, in KiB) — initial slice size of the `_default` shared-memory segment publisher;
+- `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.
 
 ```rust,ignore
-#[service("MyService", allow_large_payload = true, default_size_message = 8)]
+#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 1)]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -138,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `NodeId` | Process identity (PID), unique across the machine. |
 | `Observable<T, E>` | RPC stream: `Result<Receiver<Event<T, E>>, RpcError>`. |
-| `Event<T, E>` | `Next(T)` / `Complete` / `Error(E)`. |
+| `Event<T, E>` | `Next(T)` / `Complete` / `Error(E)` / `RpcError(RpcError)`. |
 | `ServiceLocator` | Global registry, dependency resolution and initialization. |
 | `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |

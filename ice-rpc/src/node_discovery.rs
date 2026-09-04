@@ -56,12 +56,8 @@ impl NodeDiscovery {
 
     pub fn upsert(&self, node_id: NodeId, status: u8, service_name: &str) {
         let is_new_node = {
-            let map = self.records.lock().expect("records lock poisoning");
-            !map.contains_key(&node_id.0)
-        };
-
-        {
             let mut map = self.records.lock().expect("records lock poisoning");
+            let is_new = !map.contains_key(&node_id.0);
             map.insert(
                 node_id.0,
                 NodeRecord {
@@ -70,7 +66,8 @@ impl NodeDiscovery {
                     last_seen: std::time::Instant::now(),
                 },
             );
-        }
+            is_new
+        };
 
         let mut events: Vec<DiscoveryEvent> = Vec::new();
 

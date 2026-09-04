@@ -167,6 +167,7 @@ mod macros;
 mod node_discovery;
 mod node_lock;
 mod node_supervisor;
+mod reconnect_manager;
 mod registry_listener;
 mod registry_notify;
 pub mod rt;

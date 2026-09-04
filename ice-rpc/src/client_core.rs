@@ -131,12 +131,22 @@ impl ClientCore {
 }
 
 /// Builds the reconnection callback fired when the provider node dies.
+///
+/// The callback only resets the service state and delegates the retry loop to
+/// the centralized [`crate::reconnect_manager::ReconnectManager`], which runs
+/// a single worker thread for every pending service.
 fn build_reconnect_cb(
     service_name: &'static str,
     cached_target_node: Arc<AtomicU64>,
 ) -> Arc<dyn Fn(u32) + Send + Sync> {
     let reconnecting = Arc::new(AtomicBool::new(false));
     let server_ready = Arc::new(AtomicBool::new(false));
+    let pending = Arc::new(crate::reconnect_manager::PendingService::new(
+        service_name,
+        cached_target_node.clone(),
+        server_ready.clone(),
+        reconnecting.clone(),
+    ));
 
     Arc::new(move |dead_node_id: u32| {
         if reconnecting.swap(true, Ordering::SeqCst) {
@@ -150,36 +160,6 @@ fn build_reconnect_cb(
         server_ready.store(false, Ordering::SeqCst);
         cached_target_node.store(0, Ordering::SeqCst);
 
-        crate::ServiceLocator::global()
-            .node_discovery()
-            .invalidate_node_services(crate::NodeId(dead_node_id));
-        crate::ServiceLocator::global()
-            .hub()
-            .invalidate_publishers(crate::NodeId(dead_node_id));
-
-        let reconnecting_loop = reconnecting.clone();
-        let ready_loop = server_ready.clone();
-        let cached_node_loop = cached_target_node.clone();
-        let cancel = crate::global_cancel_token().clone();
-        std::thread::spawn(move || {
-            let discovery = crate::ServiceLocator::global().node_discovery();
-            let poll = std::time::Duration::from_millis(crate::INIT_RETRY_INTERVAL_MS);
-            loop {
-                if cancel.is_cancelled() {
-                    break;
-                }
-                if let Some(nid) = discovery.locate_service(service_name) {
-                    log::info!(
-                        "[{}Client] Service found again — reconnection ok",
-                        service_name
-                    );
-                    cached_node_loop.store(nid.0 as u64, Ordering::SeqCst);
-                    ready_loop.store(true, Ordering::SeqCst);
-                    reconnecting_loop.store(false, Ordering::SeqCst);
-                    break;
-                }
-                std::thread::sleep(poll);
-            }
-        });
+        crate::reconnect_manager::ReconnectManager::global().schedule(dead_node_id, pending.clone());
     })
 }

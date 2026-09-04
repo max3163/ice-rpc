@@ -282,24 +282,6 @@ impl NodeLockWatcher {
         }
     }
 
-    /// Launches a watcher in a std thread (outside a Tokio runtime).
-    pub fn spawn_std_thread(node_id: NodeId, lock_name: String) -> Self {
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = running.clone();
-        let lock_name_clone = lock_name.clone();
-        let cancel = crate::global_cancel_token().clone();
-
-        std::thread::spawn(move || {
-            watcher_loop(node_id, &lock_name_clone, &running_clone, &cancel);
-        });
-
-        Self {
-            node_id,
-            lock_name,
-            running,
-        }
-    }
-
     /// Stops the watcher.
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
@@ -438,7 +420,7 @@ mod tests {
     fn watcher_detects_missing_lock_and_stops() {
         let node_id = NodeId(0x0D1E_0002);
         let lock_name = format!("{}{}", LOCK_NAME_PREFIX, node_id.0);
-        let watcher = NodeLockWatcher::spawn_std_thread(node_id, lock_name);
+        let watcher = NodeLockWatcher::spawn(node_id, lock_name);
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while watcher.is_running() && std::time::Instant::now() < deadline {

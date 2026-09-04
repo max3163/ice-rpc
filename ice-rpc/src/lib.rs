@@ -157,6 +157,7 @@ pub use futures_lite;
 mod blackboard;
 #[cfg(feature = "cache")]
 mod cache;
+mod client_core;
 mod config;
 mod hub;
 mod locator;

@@ -438,7 +438,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let client_input = ClientGenInput {
-        trait_name,
         visibility,
         client_name: &client_name,
         logical_name: &logical_name_lit,

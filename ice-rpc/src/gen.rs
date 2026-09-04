@@ -8,6 +8,7 @@
 //! This module is `#[doc(hidden)]` and is **not** part of the public API.
 
 pub use crate::blackboard::{create_node_blackboard, list_services};
+pub use crate::client_core::ClientCore;
 pub use crate::hub::{NodeHub, RequestHandler, ResponseHandler};
 pub use crate::node_discovery::{DiscoveryEvent, NodeDiscovery, NodeRecord};
 pub use crate::node_lock::{

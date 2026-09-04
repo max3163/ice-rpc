@@ -20,7 +20,6 @@ pub struct CacheConfig {
 
 /// Client generation parameters.
 pub struct ClientGenInput<'a> {
-    pub trait_name: &'a Ident,
     pub visibility: &'a Visibility,
     pub client_name: &'a Ident,
     pub logical_name: &'a str,
@@ -48,70 +47,15 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
 
     quote! {
         #visibility struct #client_name {
-            server_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
-            reconnecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
-            reconnect_cb: std::sync::Arc<dyn Fn(u32) + Send + Sync>,
-            cached_target_node: std::sync::Arc<std::sync::atomic::AtomicU64>,
+            core: ice_rpc::gen::ClientCore,
         }
 
         impl #client_name {
             #visibility fn new() -> std::sync::Arc<Self> {
                 #hub_config
 
-                let reconnecting       = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let server_ready       = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let cached_target_node = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-                let reconnecting_cb    = reconnecting.clone();
-                let ready_cb           = server_ready.clone();
-                let cached_node_cb     = cached_target_node.clone();
-                let svc_name_for_cb: &'static str = #logical_name;
-
-                let reconnect_cb: std::sync::Arc<dyn Fn(u32) + Send + Sync> =
-                    std::sync::Arc::new(move |dead_node_id: u32| {
-                        if reconnecting_cb.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                            return;
-                        }
-                        ::log::warn!(
-                            "[{}Client] Node {} detected dead — reconnecting",
-                            svc_name_for_cb, dead_node_id
-                        );
-                        ready_cb.store(false, std::sync::atomic::Ordering::SeqCst);
-                        cached_node_cb.store(0, std::sync::atomic::Ordering::SeqCst);
-
-                        ice_rpc::ServiceLocator::global()
-                            .node_discovery()
-                            .invalidate_node_services(ice_rpc::NodeId(dead_node_id));
-                        ice_rpc::ServiceLocator::global()
-                            .hub()
-                            .invalidate_publishers(ice_rpc::NodeId(dead_node_id));
-
-                        let reconnecting_loop = reconnecting_cb.clone();
-                        let ready_loop        = ready_cb.clone();
-                        let cached_node_loop  = cached_node_cb.clone();
-                        let cancel            = ice_rpc::global_cancel_token().clone();
-                        std::thread::spawn(move || {
-                            let discovery = ice_rpc::ServiceLocator::global().node_discovery();
-                            let poll = std::time::Duration::from_millis(ice_rpc::INIT_RETRY_INTERVAL_MS);
-                            loop {
-                                if cancel.is_cancelled() { break; }
-                                if let Some(nid) = discovery.locate_service(svc_name_for_cb) {
-                                    ::log::info!("[{}Client] Service found again — reconnection ok", svc_name_for_cb);
-                                    cached_node_loop.store(nid.0 as u64, std::sync::atomic::Ordering::SeqCst);
-                                    ready_loop.store(true, std::sync::atomic::Ordering::SeqCst);
-                                    reconnecting_loop.store(false, std::sync::atomic::Ordering::SeqCst);
-                                    break;
-                                }
-                                std::thread::sleep(poll);
-                            }
-                        });
-                    });
-
                 std::sync::Arc::new(Self {
-                    server_ready,
-                    reconnecting,
-                    reconnect_cb,
-                    cached_target_node,
+                    core: ice_rpc::gen::ClientCore::new(#logical_name),
                 })
             }
 
@@ -131,7 +75,6 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
 /// 6. Populate the atomic cache of the target NodeId.
 pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput {
-        trait_name,
         logical_name,
         client_name,
         allow_large_payload,
@@ -146,60 +89,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
         impl ice_rpc::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
                 #hub_config
-
-                match ice_rpc::ServiceLocator::global().get_node().await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        ::log::error!("[{}Client] get_node failed: {}", stringify!(#trait_name), e);
-                        return false;
-                    }
-                };
-
-                {
-                    let locator = ice_rpc::ServiceLocator::global();
-                    let _ = ice_rpc::rt::spawn_blocking(move || {
-                        locator.start_discovery();
-                    }).await;
-                }
-
-                let svc_name: &'static str = #logical_name;
-                let discovery = ice_rpc::ServiceLocator::global().node_discovery();
-                let target_node = match discovery.locate_service(svc_name) {
-                    Some(n) => n,
-                    None => {
-                        ::log::warn!("[{}Client] Service '{}' not detected yet (empty cache+Blackboard).", svc_name, svc_name);
-                        return false;
-                    }
-                };
-
-                {
-                    let locator = ice_rpc::ServiceLocator::global();
-                    let _ = ice_rpc::rt::spawn_blocking(move || {
-                        locator.start_dispatch_if_needed();
-                    }).await;
-                }
-
-                let result = ice_rpc::rt::spawn_blocking_value(move || {
-                    ice_rpc::ServiceLocator::global()
-                        .hub()
-                        .ensure_publishers_blocking(target_node)
-                }).await;
-
-                match result {
-                    Ok(()) => {}
-                    Err(e) => {
-                        ::log::error!("[{}Client] ensure_publishers failed: {}", svc_name, e);
-                        return false;
-                    }
-                }
-
-                self.cached_target_node.store(
-                    target_node.0 as u64,
-                    std::sync::atomic::Ordering::Release,
-                );
-
-                ::log::info!("[{}Client] Ready (publishers pre-created, centralized hub).", svc_name);
-                true
+                self.core.init(#logical_name).await
             }
         }
     }
@@ -343,7 +233,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             let svc_name = #logical_name;
 
             let target_node = {
-                let cached = self.cached_target_node.load(std::sync::atomic::Ordering::Acquire);
+                let cached = self.core.cached_target_node();
                 if cached != 0 {
                     ice_rpc::NodeId(cached as u32)
                 } else {
@@ -368,13 +258,13 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                             svc_name, #locate_timeout
                         )
                     ))?;
-                    self.cached_target_node.store(nid.0 as u64, std::sync::atomic::Ordering::Release);
+                    self.core.store_target_node(nid.0);
                     nid
                 }
             };
 
             {
-                ice_rpc::gen::register_reconnect_callback_once(target_node.0, self.reconnect_cb.clone());
+                ice_rpc::gen::register_reconnect_callback_once(target_node.0, self.core.reconnect_cb());
             }
 
             let rpc_header = ice_rpc::RpcHeader::new(

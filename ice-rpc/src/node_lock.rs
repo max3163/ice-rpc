@@ -212,6 +212,13 @@ pub fn release_global_node_lock() {
     }
 }
 
+/// Returns `true` when this process acquired the global node lock, i.e. when
+/// it published a discovery registry as a Provider. Pure consumers never
+/// acquire the lock and therefore have nothing to announce on shutdown.
+pub fn has_global_node_lock() -> bool {
+    GLOBAL_LOCK_NAME.get().is_some()
+}
+
 /// Checks whether a provider node is still alive through its kernel lock.
 pub fn is_node_alive(lock_name: &str) -> bool {
     platform::is_alive(lock_name)

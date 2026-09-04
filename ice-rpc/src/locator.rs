@@ -111,8 +111,15 @@ impl ServiceLocator {
     ///
     /// Must be called from an async context (Tokio runtime).
     pub async fn release_node(&self) {
+        // Only a Provider (which published a discovery registry and acquired
+        // the global lock) has to announce its own death. A pure consumer has
+        // nothing to announce and must not try to create a notifier during
+        // teardown.
+        let was_provider = crate::node_lock::has_global_node_lock();
         crate::node_lock::release_global_node_lock();
-        announce_dead_node(std::process::id());
+        if was_provider {
+            announce_dead_node(std::process::id());
+        }
 
         self.shutdown_registry.join_all().await;
 

@@ -1311,8 +1311,8 @@ ice-rpc = { features = ["http"] }
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initializes the ice-rpc consumer
-    ice_rpc::init_consumer(common::init_service_registry);
+    // 1. Initializes the ice-rpc framework
+    ice_rpc::init();
 
     // 2. Injects the HTTP registry (name → proxy table)
     common::init_http_registry();

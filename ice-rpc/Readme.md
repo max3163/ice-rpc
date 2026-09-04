@@ -105,7 +105,7 @@ impl MyService for MyServiceImpl {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init_provider();
+    ice_rpc::init();
     ice_rpc::run_provider!(
         MyServiceProxy::provide(MyServiceImpl),
     ).await
@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust,ignore
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init_consumer();
+    ice_rpc::init();
     let guard = ice_rpc::ShutdownGuard::new();
 
     let proxy = ice_rpc::locator()
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Consumption helpers
 
 - `take_one!(observable)` and `take_one_or_cancel!(observable, cancel)` extract the first value of a stream.
-- `MethodCall::with_timeout(Duration)` overrides the per-call timeout (chainable before `.await`).
+- `#[timeout("30s")]` on a method sets the service-location timeout (default `RPC_CALL_TIMEOUT_SECS` = 30s).
 
 ## Service initialization
 
@@ -166,10 +166,10 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
 }
 ```
 
-For services that consume other services, initialize with `init_consumer()` and register with `provide_with_init`:
+For services that consume other services, initialize with `init()` and register with `provide_with_init`:
 
 ```rust,ignore
-ice_rpc::init_consumer();
+ice_rpc::init();
 ice_rpc::run_provider!(
     MyServiceProxy::provide_with_init(MyServiceImpl),
 ).await
@@ -223,7 +223,7 @@ ice-rpc = { version = "0.1", features = ["http"] }
 ```
 
 ```rust,ignore
-ice_rpc::init_consumer();
+ice_rpc::init();
 ice_rpc::start_http_gateway!(8080, MyServiceProxy).await;
 ```
 

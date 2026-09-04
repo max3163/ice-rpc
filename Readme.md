@@ -1588,4 +1588,8 @@ git push origin vX.Y.Z
 │    │                                                                  │
 │    ├─ Waits for all the registered spawn_blocking JoinHandles        │
 │    │   (via register_shutdown_handle)                                │
-│    │                                          
+│    ├─ Announces DEAD for the provider (if applicable)                │
+│    ├─ Drops the iceoryx2 node                                        │
+│    └─ ShutdownGuard (RAII) guarantees cancellation on panic          │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘

@@ -284,8 +284,8 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 let hub2 = ice_rpc::ServiceLocator::global().hub();
                 let node = target_node;
                 ice_rpc::rt::spawn_blocking(move || {
-                    if let Err(e) = hub2.ensure_publishers_blocking(node) {
-                        ::log::error!("[{}Client] ensure_publishers_blocking (fallback): {}", #logical_name, e);
+                    if let Err(e) = hub2.ensure_publishers(node) {
+                        ::log::error!("[{}Client] ensure_publishers (fallback): {}", #logical_name, e);
                     }
                 }).await;
             }

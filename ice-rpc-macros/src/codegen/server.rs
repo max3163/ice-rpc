@@ -92,7 +92,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
                             if !ice_rpc::ServiceLocator::global().hub().has_publishers(client_node) {
                                 if let Err(e) = ice_rpc::ServiceLocator::global()
-                                    .hub().ensure_publishers_blocking(client_node)
+                                    .hub().ensure_publishers(client_node)
                                 {
                                     ::log::error!("[{}Server] ensure_publishers: {}", svc_name, e);
                                     return;

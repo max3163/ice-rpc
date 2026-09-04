@@ -143,14 +143,6 @@ impl NodeHub {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Blocking version of `ensure_publishers` for non-async contexts.
-    pub fn ensure_publishers_blocking(
-        &self,
-        target_node_id: NodeId,
-    ) -> Result<(), crate::RpcError> {
-        self.ensure_publishers(target_node_id)
-    }
-
     /// Sends an RPC message to a target node through the appropriate publisher.
     ///
     /// On failure, the publishers are invalidated and the node_down callbacks
@@ -252,7 +244,7 @@ impl NodeHub {
 
     /// Creates the publishers towards a target node if they do not exist yet
     /// (double-checked locking).
-    fn ensure_publishers(&self, target_node_id: NodeId) -> Result<(), crate::RpcError> {
+    pub fn ensure_publishers(&self, target_node_id: NodeId) -> Result<(), crate::RpcError> {
         if self
             .publishers
             .read()

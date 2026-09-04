@@ -318,16 +318,6 @@ impl ServiceLocator {
         self.hub().start_dispatch_loop();
     }
 
-    /// Async version of [`get_node_sync`](Self::get_node_sync).
-    pub async fn get_node(
-        &self,
-    ) -> Result<
-        Arc<iceoryx2::node::Node<iceoryx2::service::ipc_threadsafe::Service>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        self.get_node_sync()
-    }
-
     /// Initializes all the registered services in topological order
     /// with the default timeout ([`crate::INITIALIZE_ALL_TIMEOUT_SECS`]).
     pub async fn initialize_all(&self) -> Result<(), String> {

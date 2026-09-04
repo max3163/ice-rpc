@@ -64,7 +64,7 @@ fn hub_send_and_dispatch_loopback() {
     // Send to our own node id (loopback): the dispatch loop listens on
     // `node_{pid}_default` and routes the request back to the handler.
     let local = NodeId(std::process::id());
-    hub.ensure_publishers_blocking(local)
+    hub.ensure_publishers(local)
         .expect("failed to ensure publishers");
 
     let header = RpcHeader::new("DatabaseService", "get_user_age");

@@ -101,7 +101,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
 
                                     let hub = ice_rpc::ServiceLocator::global().hub();
                                     if !hub.has_publishers(client_node) {
-                                        if let Err(e) = hub.ensure_publishers_blocking(client_node) {
+                                        if let Err(e) = hub.ensure_publishers(client_node) {
                                             ::log::error!("[{}::{}] ensure_publishers: {:?}", svc_static, method_owned, e);
                                             return;
                                         }

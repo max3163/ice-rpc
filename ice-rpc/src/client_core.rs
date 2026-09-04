@@ -51,7 +51,7 @@ impl ClientCore {
     /// # Returns
     /// `true` when the target provider is ready; `false` otherwise.
     pub async fn init(&self, service_name: &'static str) -> bool {
-        match crate::ServiceLocator::global().get_node().await {
+        match crate::ServiceLocator::global().get_node_sync() {
             Ok(_) => {}
             Err(e) => {
                 log::error!("[{}Client] get_node failed: {}", service_name, e);
@@ -91,7 +91,7 @@ impl ClientCore {
         let result = crate::rt::spawn_blocking_value(move || {
             crate::ServiceLocator::global()
                 .hub()
-                .ensure_publishers_blocking(target_node)
+                .ensure_publishers(target_node)
         })
         .await;
 

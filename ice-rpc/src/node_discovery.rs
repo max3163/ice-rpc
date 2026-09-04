@@ -168,17 +168,6 @@ impl NodeDiscovery {
         self.discover_live_nodes().into_values().flatten().collect()
     }
 
-    pub fn remove(&self, node_id: NodeId) {
-        let mut map = self.records.lock().expect("records lock poisoning");
-        map.remove(&node_id.0);
-        drop(map);
-        let mut smap = self
-            .service_map
-            .write()
-            .expect("service_map write lock poisoning");
-        smap.retain(|_, v| v.0 != node_id.0);
-    }
-
     pub fn active_nodes(&self) -> Vec<NodeId> {
         let map = self.records.lock().expect("records lock poisoning");
         map.values()
@@ -315,20 +304,6 @@ mod tests {
         nd.upsert(NodeId(100), NodeRecord::STATUS_DEAD, "ConfigService");
         assert_eq!(nd.locate_service("ConfigService"), None);
         assert!(!nd.is_node_ok(NodeId(100)));
-    }
-
-    #[test]
-    fn node_discovery_remove() {
-        let nd = NodeDiscovery::new();
-        nd.upsert(NodeId(100), NodeRecord::STATUS_OK, "Svc1");
-        nd.upsert(NodeId(100), NodeRecord::STATUS_OK, "Svc2");
-        nd.upsert(NodeId(200), NodeRecord::STATUS_OK, "Svc3");
-        nd.remove(NodeId(100));
-        assert!(!nd.is_node_ok(NodeId(100)));
-        assert!(nd.is_node_ok(NodeId(200)));
-        assert_eq!(nd.locate_service("Svc1"), None);
-        assert_eq!(nd.locate_service("Svc2"), None);
-        assert_eq!(nd.locate_service("Svc3"), Some(NodeId(200)));
     }
 
     #[test]

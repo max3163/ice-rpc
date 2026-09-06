@@ -2,6 +2,7 @@
 members = [
     "ice-rpc",
     "ice-rpc-macros",
+    "ice-rpc-rx",
     "examples/common",
     "gateway_nodejs",
     "ice-rpc-macros-tests"

@@ -1028,6 +1028,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ice-rpc-rx"
+version = "0.2.2"
+dependencies = [
+ "async-trait",
+ "ice-rpc",
+ "log",
+ "pollster",
+ "rkyv",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "iceoryx2"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

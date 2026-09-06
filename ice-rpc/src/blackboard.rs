@@ -63,6 +63,27 @@ fn keep_writer_alive(bb_name: &str, writer: Box<dyn std::any::Any + Send>) {
     }
 }
 
+/// Drops all the cached blackboard writers (called at shutdown).
+///
+/// The writers live in a process-lifetime singleton; dropping them releases
+/// the iceoryx2 blackboard shared-memory segments (`blackboard_mgmt` and
+/// `blackboard_data`).
+pub fn clear_registry_writers() {
+    if let Some(map) = BB_WRITERS.get() {
+        let count = match map.lock() {
+            Ok(mut guard) => {
+                let count = guard.len();
+                guard.clear();
+                count
+            }
+            Err(_) => 0,
+        };
+        if count > 0 {
+            log::info!("[ice-rpc] registry: dropped {count} blackboard writer(s).");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // API: creation (Provider)
 // ---------------------------------------------------------------------------

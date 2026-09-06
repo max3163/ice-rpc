@@ -22,3 +22,4 @@ pub use crate::client_core::ConnectionState;
 pub use crate::reconnect_manager::{PendingService, ReconnectManager};
 pub use crate::registry_listener::spawn as spawn_node_registry_listener;
 pub use crate::registry_notify::{announce_dead_node, announce_node_ready};
+pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};

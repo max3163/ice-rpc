@@ -123,6 +123,22 @@ impl ServiceLocator {
 
         self.shutdown_registry.join_all().await;
 
+        self.hub().clear_ipc_resources();
+        crate::blackboard::clear_registry_writers();
+        crate::registry_notify::clear_notifier();
+        crate::shutdown::clear_ipc_cleanup();
+
+        self.entries.write().await.clear();
+
+        {
+            let mut lazy = self.lazy_cache.write().await;
+            let lazy_count = lazy.len();
+            lazy.clear();
+            if lazy_count > 0 {
+                log::debug!("[ice-rpc] locator: dropped {lazy_count} cached proxy(ies).");
+            }
+        }
+
         crate::rt::sleep(std::time::Duration::from_millis(50)).await;
         if let Ok(mut guard) = self.iceoryx2_node.write() {
             if guard.is_some() {
@@ -338,6 +354,21 @@ impl ServiceLocator {
     ///
     /// Ctrl+C is detected at each step for a clean interruption.
     pub async fn initialize_all_with_timeout(&self, timeout_secs: u16) -> Result<(), String> {
+        // Purge resources of dead nodes BEFORE discovering services. Discovery
+        // opens the blackboards of dead nodes, which on Windows keeps their
+        // shared-memory segments mapped and prevents their deletion.
+        {
+            let cleanup_config = crate::config::build_iceoryx2_config();
+            let cleanup = iceoryx2::node::Node::<
+                iceoryx2::service::ipc_threadsafe::Service,
+            >::try_cleanup_dead_nodes(&cleanup_config);
+            log::info!(
+                "[ice-rpc] dead-node cleanup at startup: {} cleaned, {} failed",
+                cleanup.cleanups,
+                cleanup.failed_cleanups
+            );
+        }
+
         let active_ipc = Self::discover_active_ipc_services();
         if !active_ipc.is_empty() {
             log::info!("IPC services already active detected:");
@@ -543,9 +574,7 @@ mod tests {
         }
     }
 
-    fn make_entries(
-        services: &[Arc<TestService>],
-    ) -> HashMap<&'static str, ServiceEntry> {
+    fn make_entries(services: &[Arc<TestService>]) -> HashMap<&'static str, ServiceEntry> {
         services
             .iter()
             .map(|s| {

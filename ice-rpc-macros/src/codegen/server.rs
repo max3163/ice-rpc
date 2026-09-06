@@ -195,13 +195,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         entry.update_with_copy(true);
                     }
 
-                    {
-                        use std::sync::OnceLock;
-                        static READY_WRITER: OnceLock<
-                            Box<dyn std::any::Any + Send + Sync>
-                        > = OnceLock::new();
-                        let _ = READY_WRITER.set(Box::new(ready_writer));
-                    }
+                    ice_rpc::gen::register_ipc_cleanup(Box::new(ready_writer));
 
                     let _ = ready_tx.send(Ok(()));
                 });

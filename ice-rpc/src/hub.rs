@@ -273,6 +273,43 @@ impl NodeHub {
         log::warn!("Publishers invalidated for {}", target_node_id);
     }
 
+    /// Drops all the iceoryx2 ports cached by the hub (publishers + notifiers)
+    /// and clears the handler maps.
+    ///
+    /// The hub is a process-lifetime singleton, so these ports are never
+    /// dropped automatically. Their `Drop` is what triggers iceoryx2's
+    /// `shm_unlink` cleanup of the shared-memory backing files.
+    pub fn clear_ipc_resources(&self) {
+        let publisher_count = {
+            let mut map = self
+                .publishers
+                .write()
+                .expect("publishers write lock poisoning");
+            let count = map.len();
+            map.clear();
+            count
+        };
+
+        self.request_handlers
+            .write()
+            .expect("request_handlers write lock poisoning")
+            .clear();
+        self.response_handlers
+            .lock()
+            .expect("response_handlers lock poisoning")
+            .clear();
+        self.pending_calls
+            .lock()
+            .expect("pending_calls lock poisoning")
+            .clear();
+
+        if publisher_count > 0 {
+            log::info!(
+                "[ice-rpc] NodeHub: dropped {publisher_count} cached publisher set(s)."
+            );
+        }
+    }
+
     /// Performs the low-level send: `loan_slice_uninit` → write → send.
     #[inline]
     fn do_send(

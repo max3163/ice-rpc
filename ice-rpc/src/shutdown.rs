@@ -5,7 +5,8 @@
 //! [`ShutdownRegistry::join_all`] waits for all threads to finish before
 //! dropping the iceoryx2 node.
 
-use std::sync::Mutex;
+use std::any::Any;
+use std::sync::{Mutex, OnceLock};
 
 /// Registry of blocking IPC thread handles.
 ///
@@ -55,6 +56,47 @@ impl ShutdownRegistry {
             log::info!("[ShutdownRegistry] All IPC threads terminated.");
         }
         count
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Process-lifetime IPC resources
+// ---------------------------------------------------------------------------
+
+static IPC_CLEANUP_RESOURCES: OnceLock<Mutex<Vec<Box<dyn Any + Send>>>> = OnceLock::new();
+
+/// Registers an iceoryx2 resource (port, writer, notifier, ...) that must be
+/// dropped during shutdown.
+///
+/// Some generated code stores iceoryx2 ports in `static OnceLock`s for the
+/// whole process lifetime. Dropping them is mandatory to trigger iceoryx2's
+/// `shm_unlink` cleanup of the `.shm_state` backing files.
+pub fn register_ipc_cleanup(resource: Box<dyn Any + Send>) {
+    if let Ok(mut resources) = IPC_CLEANUP_RESOURCES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        resources.push(resource);
+    }
+}
+
+/// Drops all resources registered via [`register_ipc_cleanup`].
+pub fn clear_ipc_cleanup() {
+    let Some(resources) = IPC_CLEANUP_RESOURCES.get() else {
+        return;
+    };
+
+    let count = match resources.lock() {
+        Ok(mut guard) => {
+            let count = guard.len();
+            guard.clear();
+            count
+        }
+        Err(_) => return,
+    };
+
+    if count > 0 {
+        log::info!("[ice-rpc] dropped {count} registered IPC resource(s).");
     }
 }
 

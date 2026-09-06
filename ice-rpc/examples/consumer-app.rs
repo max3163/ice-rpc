@@ -1,4 +1,4 @@
-//! ice-rpc Consumer (DatabaseService, ContextService or ConfigService).
+//! ice-rpc Consumer (DatabaseService or ContextService).
 //!
 //! Starts an IPC consumer, runs demonstration queries, then
 //! waits for [Enter] to replay the queries or Ctrl+C to quit.
@@ -17,9 +17,8 @@ mod shared;
 
 use ice_rpc::{take_one_or_cancel, TakeOneError};
 use shared::{
-    ConfigError, ConfigService, ConfigServiceProxy, ContextEntry, ContextError, ContextService,
-    ContextServiceProxy, DatabaseError, DatabaseService, DatabaseServiceProxy, PersonneInfo,
-    PersonneQuery,
+    ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError, DatabaseService,
+    DatabaseServiceProxy, PersonneInfo, PersonneQuery,
 };
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -38,7 +37,6 @@ fn fmt_latency(ms: f64) -> String {
 enum ServiceType {
     Database,
     Context,
-    ConfigCache,
 }
 
 impl ServiceType {
@@ -50,7 +48,6 @@ impl ServiceType {
                 if found {
                     return match arg.as_str() {
                         "context" | "ContextService" => ServiceType::Context,
-                        "config" | "ConfigService" => ServiceType::ConfigCache,
                         _ => {
                             log::warn!(
                                 "Unknown service '{}', using DatabaseService by default.",
@@ -415,70 +412,6 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
     true
 }
 
-// ── TTL cache test on ConfigService ────────────────────────────────
-
-async fn run_config_cache_test(config: &ConfigServiceProxy) -> bool {
-    let cancel = ice_rpc::global_cancel_token();
-
-    macro_rules! cached_get {
-        ($label:expr, $key:expr) => {{
-            log::info!("-> {}", $label);
-            let t0 = Instant::now();
-            let observable = config.get($key.into()).await;
-            match take_one_or_cancel!(observable, cancel) {
-                None => {
-                    log::info!("   (cancelled by Ctrl+C)");
-                    return false;
-                }
-                Some(result) => {
-                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    match result {
-                        Ok(value) => {
-                            log::info!("<- {} = \"{}\"  [{}]", $key, value, fmt_latency(ms))
-                        }
-                        Err(TakeOneError::Service(ConfigError::KeyNotFound)) => {
-                            log::warn!("<- Key '{}' not found  [{}]", $key, fmt_latency(ms))
-                        }
-                        Err(TakeOneError::Ipc(e)) => {
-                            log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms))
-                        }
-                        Err(TakeOneError::Empty) => {
-                            log::warn!("<- No value received  [{}]", fmt_latency(ms))
-                        }
-                    }
-                }
-            }
-        }};
-    }
-
-    log::info!("=== TTL CACHE TEST (ConfigService) ===");
-    log::info!("The following calls benefit from #[cache(ttl = \"60s\")]");
-    log::info!("The 1st call does IPC, the following ones (same key) use the cache.");
-    log::info!("");
-
-    // First call: cache miss → IPC
-    cached_get!("GET database.url (1st call → cache miss)", "database.url");
-
-    // Second call same key: cache hit → no IPC, near-zero latency
-    cached_get!("GET database.url (2nd call → cache hit)", "database.url");
-
-    // Third call same key: cache hit
-    cached_get!("GET database.url (3rd call → cache hit)", "database.url");
-
-    // Different key: cache miss → IPC
-    cached_get!("GET app.name (new key → cache miss)", "app.name");
-
-    // Second call app.name: cache hit
-    cached_get!("GET app.name (2nd call → cache hit)", "app.name");
-
-    log::info!("");
-    log::info!("End of cache test. [ENTER] to replay, [Ctrl+C] to quit.");
-    log::info!("(Replaying verifies that the cache survives between runs)");
-    log::info!("");
-
-    true
-}
-
 /// Reads a line from stdin asynchronously.
 /// Returns `None` if stdin is closed or the cancellation token is triggered.
 async fn read_line_or_cancel(
@@ -509,9 +442,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match service_type {
         ServiceType::Database => log::info!("=== CONSUMER STARTUP (DatabaseService) ==="),
         ServiceType::Context => log::info!("=== CONSUMER STARTUP (ContextService) ==="),
-        ServiceType::ConfigCache => {
-            log::info!("=== CONSUMER STARTUP (ConfigService — cache test) ===")
-        }
     }
 
     // This process consumes services via locator().get().
@@ -568,29 +498,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                         log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
-                    }
-                }
-            }
-        }
-        ServiceType::ConfigCache => {
-            let config = ice_rpc::locator()
-                .get::<ConfigServiceProxy>()
-                .await
-                .expect("ConfigService unknown in the registry");
-
-            log::info!("--- Initial execution ---");
-            if !run_config_cache_test(&config).await {
-                return shutdown(&shutdown_guard).await;
-            }
-
-            loop {
-                match read_line_or_cancel(&mut reader, cancel).await {
-                    None => break,
-                    Some(_) => {
-                        log::info!("\n--- Relaunching the cache test ---");
-                        if !run_config_cache_test(&config).await {
-                            break;
-                        }
                     }
                 }
             }

@@ -14,7 +14,7 @@ napi = []
 http = ["ice-rpc/http"]
 
 [dependencies]
-ice-rpc = { path = "../../ice-rpc", features = ["cache"] }
+ice-rpc = { path = "../../ice-rpc" }
 log = { workspace = true }
 rkyv = { workspace = true }
 serde = { workspace = true }

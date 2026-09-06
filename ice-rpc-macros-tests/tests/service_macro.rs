@@ -10,7 +10,7 @@
 //      is `Send + Sync` and compatible with `RwLock<Mode>`.
 // =============================================================================
 
-use ice_rpc::{self, cache, Event, Observable, ServiceInit, ServiceNamed};
+use ice_rpc::{self, Event, Observable, ServiceInit, ServiceNamed};
 use ice_rpc_macros::service;
 
 // -----------------------------------------------------------------------------
@@ -126,23 +126,6 @@ fn test_client_struct_is_send_sync() {
     let client = CalculatorClient::new();
     let _: &dyn Send = &client;
     let _: &dyn Sync = &client;
-}
-
-// -----------------------------------------------------------------------------
-// Test 6: #[cache(ttl)] attribute on a method
-// -----------------------------------------------------------------------------
-
-#[service]
-#[async_trait::async_trait]
-pub trait CachedService: Send + Sync + 'static {
-    #[cache(ttl = "60s")]
-    async fn get(&self, key: String) -> Observable<String, String>;
-}
-
-#[test]
-fn test_cache_attribute_compiles() {
-    // Checks that the client is correctly generated (the method is annotated #[cache]).
-    let _client = CachedServiceClient::new();
 }
 
 // -----------------------------------------------------------------------------

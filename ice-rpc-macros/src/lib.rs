@@ -17,17 +17,6 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
 
-/// `#[cache(ttl = "60s")]` attribute for service trait methods.
-///
-/// This attribute is a pass-through: the real cache logic is implemented
-/// by the `#[service]` macro which reads this attribute on the trait methods.
-/// It is exported only so that the Rust compiler recognizes it
-/// as a valid attribute.
-#[proc_macro_attribute]
-pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
 /// `#[timeout("30s")]` attribute for service trait methods.
 ///
 /// Defines a custom timeout (in seconds) for locating the service
@@ -40,7 +29,7 @@ pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 use crate::codegen::{
     client::{
-        gen_client_lifecycle, gen_client_method, gen_client_struct, CacheConfig, ClientGenInput,
+        gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
         ClientMethodGenInput,
     },
     helpers::{extract_rpc_result_types, g_variant_name},
@@ -145,55 +134,6 @@ fn parse_timeout_attr(attrs: &[syn::Attribute]) -> Option<u64> {
         // Also supports #[timeout("30s")] without ttl=
         if let Ok(lit_str) = attr.parse_args::<syn::LitStr>() {
             return parse_duration_str(&lit_str.value());
-        }
-    }
-    None
-}
-
-/// Extracts the cache configuration from a method's attributes.
-///
-/// Parses `#[cache(ttl = "60s")]` or `#[cache(ttl = "60s", max_entries = 256)]`.
-/// Returns `None` if the `#[cache]` attribute is absent.
-fn parse_cache_config(attrs: &[syn::Attribute]) -> Option<CacheConfig> {
-    for attr in attrs {
-        if !attr.path().is_ident("cache") {
-            continue;
-        }
-        // Parses the attribute content: ttl = "60s", max_entries = 256
-        let mut ttl_secs: Option<u64> = None;
-        let mut max_entries: usize = 1024;
-
-        if let Ok(list) = attr.parse_args_with(
-            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_separated_nonempty,
-        ) {
-            for nv in list {
-                if nv.path.is_ident("ttl") {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit_str),
-                        ..
-                    }) = nv.value
-                    {
-                        ttl_secs = parse_duration_str(&lit_str.value());
-                    }
-                } else if nv.path.is_ident("max_entries") {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Int(lit_int),
-                        ..
-                    }) = nv.value
-                    {
-                        if let Ok(v) = lit_int.base10_parse::<usize>() {
-                            max_entries = v;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(ttl) = ttl_secs {
-            return Some(CacheConfig {
-                ttl_secs: ttl,
-                max_entries,
-            });
         }
     }
     None
@@ -397,8 +337,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let (ok_type, err_type) = extract_rpc_result_types(&output_type);
 
-            // Extracts the cache configuration for this method.
-            let cache_config = parse_cache_config(&method.attrs);
             // Extracts the custom timeout.
             let timeout_secs = parse_timeout_attr(&method.attrs);
 
@@ -417,7 +355,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 err_type: &err_type,
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
-                cache_config: cache_config.as_ref(),
                 timeout_secs,
                 service_version,
             }));

@@ -3,7 +3,7 @@
 //! Exposes a single method [`ConfigService::get`] returning the value
 //! associated with a key of the form `"section.field"` (e.g. `"database.url"`).
 
-use ice_rpc::{cache, service, Observable};
+use ice_rpc::{service, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Error returned when a key is not found in the configuration.
@@ -32,6 +32,5 @@ pub trait ConfigService {
     /// # Returns
     /// * `Ok(stream)` emitting `Next(value)` then `Complete`.
     /// * `Err(KeyNotFound)` if the key is absent.
-    #[cache(ttl = "60s", max_entries = 128)]
     async fn get(&self, key: String) -> Observable<String, ConfigError>;
 }

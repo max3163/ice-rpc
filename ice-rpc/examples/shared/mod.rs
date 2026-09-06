@@ -12,7 +12,7 @@
 // the examples never enable.
 #![allow(dead_code)]
 
-use ice_rpc::{cache, service, timeout, Observable};
+use ice_rpc::{service, timeout, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
 
 // ── ConfigService ───────────────────────────────────────────────────
@@ -36,7 +36,6 @@ impl std::fmt::Display for ConfigError {
 #[service("ConfigService")]
 pub trait ConfigService {
     /// Returns the value associated with a configuration key.
-    #[cache(ttl = "60s", max_entries = 128)]
     async fn get(&self, key: String) -> Observable<String, ConfigError>;
 }
 

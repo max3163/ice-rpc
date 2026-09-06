@@ -139,6 +139,7 @@ async fn send_one_db(db: Arc<DatabaseServiceProxy>, name: String) -> ReqOutcome 
     match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
+        Ok(Ok(ice_rpc::Event::CompleteWith(_))) => ReqOutcome::Ok(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Error(_))) => ReqOutcome::ErrService(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::RpcError(_))) => ReqOutcome::ErrIpc(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
@@ -154,6 +155,7 @@ async fn send_one_person(db: Arc<DatabaseServiceProxy>, query: PersonneQuery) ->
     match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
+        Ok(Ok(ice_rpc::Event::CompleteWith(_))) => ReqOutcome::Ok(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Error(_))) => ReqOutcome::ErrService(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::RpcError(_))) => ReqOutcome::ErrIpc(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),

@@ -82,3 +82,20 @@ fn hub_send_and_dispatch_loopback() {
         "the request handler must be invoked by the dispatch loop"
     );
 }
+
+#[test]
+fn normalize_stream_replays_complete_with_as_next_then_complete() {
+    let (tx, rx) = ice_rpc::channel::<i32, String>(4);
+    pollster::block_on(tx.send(ice_rpc::Event::CompleteWith(42))).unwrap();
+    drop(tx);
+
+    let normalized = ice_rpc::normalize_stream(rx);
+    match pollster::block_on(normalized.recv()) {
+        Ok(ice_rpc::Event::Next(v)) => assert_eq!(v, 42),
+        other => panic!("expected Next, got {:?}", other),
+    }
+    assert!(matches!(
+        pollster::block_on(normalized.recv()),
+        Ok(ice_rpc::Event::Complete)
+    ));
+}

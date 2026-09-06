@@ -190,7 +190,6 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   │                              DiscoveryEvent, initial discovery
 │   ├── blackboard.rs           ← Registry : 1 Blackboard per node (ice_rpc_node_{pid}),
 │   │                              key = service name, value = NodeId
-│   ├── cache.rs                ← RpcCache : consumer-side TTL cache (feature `cache`)
 │   ├── registry_notify.rs      ← Event notifications : carries the NodeId via EventId
 │   ├── registry_listener.rs    ← WaitSet listener : receives Events, updates cache,
 │   │                              cleans dead nodes
@@ -1406,53 +1405,6 @@ The [`#[service]`](ice-rpc-macros/src/codegen/http.rs:28) procedural macro autom
 │  {"status":"ok","data":30}                                                │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
-
-### 13.10. Consumer-side cache (`cache` feature)
-
-The cache is a consumer-side TTL cache. Enable the `cache` Cargo feature:
-
-```toml
-[dependencies]
-ice-rpc = { features = ["cache"] }
-```
-
-Alternatively, use the `full` feature to enable `http`, `cache` and `tokio`
-together:
-
-```toml
-[dependencies]
-ice-rpc = { features = ["full"] }
-```
-
-Then annotate an idempotent service method with `#[cache(ttl = "60s")]`:
-
-```rust
-use ice_rpc::{cache, service, Observable};
-
-#[service("ConfigService")]
-pub trait ConfigService {
-    #[cache(ttl = "60s", max_entries = 128)]
-    async fn get(&self, key: String) -> Observable<String, ConfigError>;
-}
-```
-
-How it works:
-
-1. On the first call, the generated client serializes the request and computes
-   `ice_rpc::hash_bytes(&bytes)`.
-2. On cache miss, it performs the normal IPC call and stores successful `Next`
-   values in `ice_rpc::RpcCache` (keyed by the arguments hash).
-3. On cache hit, the response is deserialized from the cached rkyv bytes and
-   returned immediately, without any IPC round-trip.
-
-Attributes:
-
-- `ttl` — entry lifetime, e.g. `"60s"`, `"5min"`;
-- `max_entries` — optional capacity (default `1024`), evicts the oldest entries
-  when full.
-
-The underlying [`RpcCache`](ice-rpc/src/cache.rs:29) is thread-safe
-(`Mutex<HashMap<u64, CacheEntry<V>>>`) and performs lazy expiry on lookup.
 
 ---
 

@@ -68,8 +68,7 @@ impl ConfigService for ConfigServiceImpl {
         tokio::spawn(async move {
             match value {
                 Some(v) => {
-                    let _ = tx.send(Event::Next(v)).await;
-                    let _ = tx.send(Event::Complete).await;
+                    let _ = tx.send(Event::CompleteWith(v)).await;
                 }
                 None => {
                     let _ = tx.send(Event::Error(ConfigError::KeyNotFound)).await;
@@ -175,9 +174,8 @@ impl DatabaseService for DatabaseServiceImpl {
             }
         };
 
-        let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(2);
-        let _ = tx.try_send(Event::Next(age));
-        let _ = tx.try_send(Event::Complete);
+        let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(1);
+        let _ = tx.try_send(Event::CompleteWith(age));
         Ok(rx)
     }
 
@@ -235,9 +233,8 @@ impl DatabaseService for DatabaseServiceImpl {
             }
         };
 
-        let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(2);
-        let _ = tx.try_send(Event::Next(personne));
-        let _ = tx.try_send(Event::Complete);
+        let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(1);
+        let _ = tx.try_send(Event::CompleteWith(personne));
         Ok(rx)
     }
 }
@@ -348,10 +345,9 @@ impl HttpService for HttpServiceImpl {
             body: request.body,
         };
 
-        let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(2);
+        let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(1);
         tokio::spawn(async move {
-            let _ = tx.send(Event::Next(response)).await;
-            let _ = tx.send(Event::Complete).await;
+            let _ = tx.send(Event::CompleteWith(response)).await;
         });
         Ok(rx)
     }

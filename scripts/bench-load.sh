@@ -16,11 +16,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # iceoryx2 config (`./config/iceoryx2.toml`) relative to the crate directory.
 cd "$ROOT/ice-rpc"
 
-WORKERS="${WORKERS:-3}"
-REQUESTS="${REQUESTS:-2000}"
+WORKERS="${WORKERS:-4}"
+REQUESTS="${REQUESTS:-20000}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/bench-results}"
 WAIT_READY="${WAIT_READY:-6}"
-FEATURES="tokio,cache"
+FEATURES="tokio"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;;

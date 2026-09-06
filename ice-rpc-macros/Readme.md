@@ -9,7 +9,6 @@ This crate provides the `#[service]` attribute macro: from a single annotated tr
 | Macro | Role |
 |---|---|
 | `#[service]` / `#[service("Name")]` | Generates Request, Client, Server, Proxy, Mode and lifecycle implementations. |
-| `#[cache(ttl = "60s")]` | Enables a local TTL cache on a client method. |
 | `#[timeout("30s")]` | Defines a custom service-location timeout for a method. |
 
 ## Generated types
@@ -25,7 +24,7 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 
 ## Usage
 
-Normally you do not depend on this crate directly: `ice-rpc` re-exports `service`, `cache` and `timeout`.
+Normally you do not depend on this crate directly: `ice-rpc` re-exports `service` and `timeout`.
 
 ```rust,ignore
 use ice_rpc::{service, Observable};
@@ -56,18 +55,12 @@ pub trait MyService: Send + Sync + 'static {
 ## Method attributes
 
 ```rust,ignore
-#[service("CachedService")]
-pub trait CachedService: Send + Sync + 'static {
-    #[cache(ttl = "60s", max_entries = 256)]
+#[service("MyService")]
+pub trait MyService: Send + Sync + 'static {
     #[timeout("30s")]
     async fn get(&self, key: String) -> Observable<String, MyError>;
 }
 ```
-
-`#[cache]` accepts:
-
-- `ttl = "60s"` (or `"5m"`, `"1h"`) — cache lifetime;
-- `max_entries = 256` — maximum number of cached responses (default 1024).
 
 `#[timeout]` accepts a duration string and overrides the default service-location timeout.
 

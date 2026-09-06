@@ -60,6 +60,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
 
             match rx.recv().await {
                 Ok(Event::Next(age)) => Ok(serde_json::json!(age)),
+                Ok(Event::CompleteWith(age)) => Ok(serde_json::json!(age)),
                 Ok(Event::Error(common::DatabaseError::NotFound)) => {
                     Err("NotFound: unknown name in database".to_string())
                 }
@@ -86,6 +87,8 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
             match rx.recv().await {
                 Ok(Event::Next(info)) => Ok(serde_json::to_value(&info)
                     .map_err(|e| format!("Failed to serialize PersonneInfo: {}", e))?),
+                Ok(Event::CompleteWith(info)) => Ok(serde_json::to_value(&info)
+                    .map_err(|e| format!("Failed to serialize PersonneInfo: {}", e))?),
                 Ok(Event::Error(common::DatabaseError::NotFound)) => {
                     Err("NotFound: person not found".to_string())
                 }
@@ -111,6 +114,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
 
             match rx.recv().await {
                 Ok(Event::Next(value)) => Ok(serde_json::json!(value)),
+                Ok(Event::CompleteWith(value)) => Ok(serde_json::json!(value)),
                 Ok(Event::Error(common::ConfigError::KeyNotFound)) => {
                     Err("KeyNotFound: key not found".to_string())
                 }
@@ -136,6 +140,8 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
 
             match rx.recv().await {
                 Ok(Event::Next(response)) => Ok(serde_json::to_value(&response)
+                    .map_err(|e| format!("Failed to serialize HttpResponseParams: {}", e))?),
+                Ok(Event::CompleteWith(response)) => Ok(serde_json::to_value(&response)
                     .map_err(|e| format!("Failed to serialize HttpResponseParams: {}", e))?),
                 Ok(Event::Error(e)) => Err(format!("Http business error: {}", e)),
                 Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),

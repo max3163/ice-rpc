@@ -131,7 +131,15 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                         ice_rpc::rkyv::rancor::Error
                     >(bytes) {
                         Ok(event) => {
-                            let _ = tx.try_send(event);
+                            match event {
+                                ice_rpc::Event::CompleteWith(v) => {
+                                    let _ = tx.try_send(ice_rpc::Event::Next(v));
+                                    let _ = tx.try_send(ice_rpc::Event::Complete);
+                                }
+                                other => {
+                                    let _ = tx.try_send(other);
+                                }
+                            }
                         }
                         Err(_) => {
                             let _ = tx.try_send(ice_rpc::Event::RpcError(

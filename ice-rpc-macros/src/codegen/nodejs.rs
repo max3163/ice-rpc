@@ -180,7 +180,16 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                             };
                             (ice_rpc::Event::Next(data), ice_rpc::EventKind::Next)
                         }
-                        "complete" => (ice_rpc::Event::Complete, ice_rpc::EventKind::Complete),
+                        "complete" => match value.get("data") {
+                            Some(d) => {
+                                let data: #ok_type = match ice_rpc::serde_json::from_value(d.clone()) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                };
+                                (ice_rpc::Event::CompleteWith(data), ice_rpc::EventKind::Complete)
+                            }
+                            None => (ice_rpc::Event::Complete, ice_rpc::EventKind::Complete),
+                        },
                         "error" => {
                             let err: #err_type = match value.get("data") {
                                 Some(d) => match ice_rpc::serde_json::from_value(d.clone()) {

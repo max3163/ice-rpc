@@ -42,8 +42,7 @@
 //!     async fn hello(&self, name: String) -> Observable<String, MyError> {
 //!         let (tx, rx) = ice_rpc::channel::<String, MyError>(2);
 //!         ice_rpc::rt::spawn(async move {
-//!             let _ = tx.send(ice_rpc::Event::Next(format!("Hello {} !", name))).await;
-//!             let _ = tx.send(ice_rpc::Event::Complete).await;
+//!             let _ = tx.send(ice_rpc::Event::CompleteWith(format!("Hello {} !", name))).await;
 //!         });
 //!         Ok(rx)
 //!     }
@@ -117,7 +116,7 @@
 //!
 //! - **Service** : Rust trait annotated with `#[service("Name")]` defining RPC methods
 //! - **Node** : process hosting one or more services, identified by its PID
-//! - **Observable** : RPC event stream (`Next` / `Complete` / `Error`)
+//! - **Observable** : RPC event stream (`Next` / `Complete` / `CompleteWith` / `Error`)
 //! - **NodeHub** : central communication hub managing the IPC publishers/subscribers
 //! - **ServiceLocator** : service registry with dependency resolution and topological sort
 //! - **NodeDiscovery** : local service→NodeId cache, initial discovery + Event-based updates
@@ -190,6 +189,7 @@ pub use service_traits::{
 pub use types::{
     caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, Event, EventKind,
     NodeId, Observable, RpcError, RpcHeader, Sender, StaticString, Stream, TakeOneError,
+    normalize_event, normalize_observable, normalize_stream,
     BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
     INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN, PROTOCOL_VERSION,
     PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS,

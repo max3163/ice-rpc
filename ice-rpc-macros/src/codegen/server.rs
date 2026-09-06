@@ -260,10 +260,11 @@ pub fn gen_server_match_arm(
                 Ok(mut stream) => {
                     while let Ok(event) = stream.recv().await {
                         let kind = match &event {
-                            ice_rpc::Event::Next(_)  => ice_rpc::EventKind::Next,
-                            ice_rpc::Event::Complete => ice_rpc::EventKind::Complete,
-                            ice_rpc::Event::Error(_) => ice_rpc::EventKind::Error,
-                            ice_rpc::Event::RpcError(_) => ice_rpc::EventKind::Error,
+                            ice_rpc::Event::Next(_)         => ice_rpc::EventKind::Next,
+                            ice_rpc::Event::Complete        => ice_rpc::EventKind::Complete,
+                            ice_rpc::Event::CompleteWith(_) => ice_rpc::EventKind::Complete,
+                            ice_rpc::Event::Error(_)        => ice_rpc::EventKind::Error,
+                            ice_rpc::Event::RpcError(_)     => ice_rpc::EventKind::Error,
                         };
                         let mut guard = scratch_ref.lock().await;
                         if guard.capacity() < size_hint + 4096 {

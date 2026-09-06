@@ -48,6 +48,7 @@ pub async fn take_one<T, E: std::fmt::Display>(
         Err(rpc_err) => Err(crate::TakeOneError::Ipc(rpc_err)),
         Ok(stream) => match stream.recv().await {
             Ok(crate::Event::Next(value)) => Ok(value),
+            Ok(crate::Event::CompleteWith(value)) => Ok(value),
             Ok(crate::Event::Error(e)) => Err(crate::TakeOneError::Service(e)),
             Ok(crate::Event::RpcError(e)) => Err(crate::TakeOneError::Ipc(e)),
             Ok(crate::Event::Complete) | Err(_) => Err(crate::TakeOneError::Empty),
@@ -83,6 +84,7 @@ pub async fn take_one_or_cancel<T, E: std::fmt::Display>(
                 _ = crate::global_cancel_token().cancelled().fuse() => None,
                 event = stream.recv().fuse() => Some(match event {
                     Ok(crate::Event::Next(v))  => Ok(v),
+                    Ok(crate::Event::CompleteWith(v)) => Ok(v),
                     Ok(crate::Event::Error(e)) => Err(crate::TakeOneError::Service(e)),
                     Ok(crate::Event::RpcError(e)) => Err(crate::TakeOneError::Ipc(e)),
                     Ok(crate::Event::Complete) | Err(_) => Err(crate::TakeOneError::Empty),

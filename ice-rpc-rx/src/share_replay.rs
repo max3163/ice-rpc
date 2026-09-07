@@ -171,4 +171,96 @@ mod tests {
             other => panic!("expected replayed Next, got {:?}", other),
         }
     }
+
+    #[test]
+    fn share_replay_replays_only_last_value() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        pollster::block_on(tx.send(Event::Next(2))).unwrap();
+        drop(tx);
+
+        let shared = ShareReplay::new(rx);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rx = pollster::block_on(shared.subscribe());
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Next(v) => assert_eq!(v, 2),
+            other => panic!("expected replayed Next(2), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn share_replay_replays_complete_state() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        drop(tx);
+
+        let shared = ShareReplay::new(rx);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rx = pollster::block_on(shared.subscribe());
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Complete => {}
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn share_replay_replays_error_state() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        drop(tx);
+
+        let shared = ShareReplay::new(rx);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rx = pollster::block_on(shared.subscribe());
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Error(e) => assert_eq!(e, "boom"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn share_replay_replays_complete_with_as_value_then_complete() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        pollster::block_on(tx.send(Event::CompleteWith(7))).unwrap();
+        drop(tx);
+
+        let shared = ShareReplay::new(rx);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rx = pollster::block_on(shared.subscribe());
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Next(v) => assert_eq!(v, 7),
+            other => panic!("expected replayed Next(7), got {:?}", other),
+        }
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Complete => {}
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn share_replay_multicasts_live_events() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let shared = ShareReplay::new(rx);
+        let rx1 = pollster::block_on(shared.subscribe());
+        let rx2 = pollster::block_on(shared.subscribe());
+
+        pollster::block_on(tx.send(Event::Next(11))).unwrap();
+        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        drop(tx);
+
+        for rx in [rx1, rx2] {
+            match pollster::block_on(rx.recv()).unwrap() {
+                Event::Next(v) => assert_eq!(v, 11),
+                other => panic!("expected Next(11), got {:?}", other),
+            }
+            match pollster::block_on(rx.recv()).unwrap() {
+                Event::Complete => {}
+                other => panic!("expected Complete, got {:?}", other),
+            }
+        }
+    }
 }

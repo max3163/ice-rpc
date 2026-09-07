@@ -543,4 +543,212 @@ mod tests {
         });
         assert_eq!(events, vec![1, -1]);
     }
+
+    /// Collects every event until the operator closes its output channel.
+    async fn drain<T, E>(stream: &ice_rpc::Stream<T, E>) -> Vec<Event<T, E>> {
+        let mut out = Vec::new();
+        while let Ok(ev) = stream.recv().await {
+            out.push(ev);
+        }
+        out
+    }
+
+    #[test]
+    fn map_maps_complete_with_value() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.map(|v| v * 2);
+
+        pollster::block_on(tx.send(Event::CompleteWith(5))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::CompleteWith(v) if *v == 10));
+    }
+
+    #[test]
+    fn map_forwards_terminal_events_unchanged() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.map(|v| v * 2);
+
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        pollster::block_on(tx.send(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(&events[1], Event::RpcError(_)));
+    }
+
+    #[test]
+    fn filter_forwards_terminal_events_unchanged() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.filter(|v| *v % 2 == 1);
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        pollster::block_on(tx.send(Event::Next(2))).unwrap();
+        pollster::block_on(tx.send(Event::CompleteWith(9))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::CompleteWith(v) if *v == 9));
+    }
+
+    #[test]
+    fn take_zero_completes_without_forwarding() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.take(0);
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Complete));
+    }
+
+    #[test]
+    fn take_forwards_source_terminal_before_limit() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.take(5);
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        pollster::block_on(tx.send(Event::Next(2))).unwrap();
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+        assert!(matches!(&events[2], Event::Error(e) if e.as_str() == "boom"));
+    }
+
+    #[test]
+    fn finalize_runs_on_source_channel_close() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let finalized = Arc::new(AtomicBool::new(false));
+        let flag = finalized.clone();
+        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finalize_runs_on_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let finalized = Arc::new(AtomicBool::new(false));
+        let flag = finalized.clone();
+        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
+
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tap_does_not_touch_terminal_events() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let seen = Arc::new(AtomicI32::new(0));
+        let flag = seen.clone();
+        let stream = rx.tap(move |_| {
+            flag.fetch_add(1, Ordering::SeqCst);
+        });
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Error(e) if e.as_str() == "boom"));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn delay_forwards_terminal_events() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.delay(std::time::Duration::from_millis(20));
+
+        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        drop(tx);
+
+        let start = std::time::Instant::now();
+        let event = pollster::block_on(stream.recv());
+        let elapsed = start.elapsed();
+
+        assert!(matches!(event, Ok(Event::Complete)));
+        assert!(elapsed >= std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn catch_error_forwards_rpc_error_unchanged() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let stream = rx.catch_error(move |_| {
+            flag.store(true, Ordering::SeqCst);
+            -1
+        });
+
+        pollster::block_on(tx.send(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::RpcError(_)));
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn catch_error_passthrough_when_no_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let stream = rx.catch_error(move |_| {
+            flag.store(true, Ordering::SeqCst);
+            -1
+        });
+
+        pollster::block_on(tx.send(Event::Next(1))).unwrap();
+        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Complete));
+        assert!(!called.load(Ordering::SeqCst));
+    }
 }

@@ -166,4 +166,49 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn subject_completes_subscribers() {
+        let subject = Subject::<i32, String>::new();
+        let rx = pollster::block_on(subject.subscribe());
+        pollster::block_on(subject.complete());
+
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Complete => {}
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn subject_errors_subscribers() {
+        let subject = Subject::<i32, String>::new();
+        let rx = pollster::block_on(subject.subscribe());
+        pollster::block_on(subject.error("boom".to_string()));
+
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Error(e) => assert_eq!(e, "boom"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn subject_prunes_dead_subscribers() {
+        let subject = Subject::<i32, String>::new();
+        {
+            // Dropping the receiver closes the channel, turning the sender dead.
+            let _rx = pollster::block_on(subject.subscribe());
+        }
+
+        // Broadcasting to a dead subscriber prunes it without panicking, and
+        // later subscribers still receive events.
+        pollster::block_on(subject.next(1));
+        pollster::block_on(subject.complete());
+
+        let rx = pollster::block_on(subject.subscribe());
+        pollster::block_on(subject.next(2));
+        match pollster::block_on(rx.recv()).unwrap() {
+            Event::Next(v) => assert_eq!(v, 2),
+            other => panic!("expected Next, got {:?}", other),
+        }
+    }
 }

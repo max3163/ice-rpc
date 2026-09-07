@@ -5,8 +5,8 @@
 //! This crate extends the native [`ice_rpc::Stream`] type with composable
 //! operators and provides two multicast primitives:
 //!
-//! - [`RxStreamExt`] — `map`, `filter` and `take` operators applied directly
-//!   on [`ice_rpc::Stream`].
+//! - [`RxStreamExt`] — `map`, `filter`, `take`, `finalize`, `tap`, `delay` and
+//!   `catch_error` operators applied directly on [`ice_rpc::Stream`].
 //! - [`Subject`] — a multi-producer / multi-consumer multicast source.
 //! - [`ShareReplay`] — a multicast source that replays the last value to late
 //!   subscribers (equivalent to RxJS `shareReplay(1)`).
@@ -44,3 +44,9 @@ mod subject;
 pub use operators::RxStreamExt;
 pub use share_replay::ShareReplay;
 pub use subject::Subject;
+
+/// Default capacity of the intermediate channels created by the operators.
+///
+/// A bounded channel provides backpressure: a producer waits when the queue is
+/// full, which keeps memory usage bounded in reactive pipelines.
+pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;

@@ -25,7 +25,15 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// Status of a service or component.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Archive, Serialize, Deserialize, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum Status {
     /// Nominal.

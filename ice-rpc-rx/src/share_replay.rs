@@ -28,15 +28,31 @@ struct ShareState<T, E> {
 }
 
 impl<T, E> ShareReplay<T, E> {
-    /// Creates a share-replay from a source stream.
+    /// Creates a [`ShareReplay`] from a source stream.
     ///
-    /// The source is consumed on a background task; the last `Next` value is
-    /// kept and replayed to new subscribers.
+    /// The source is consumed on a background task as soon as this function is
+    /// called. The last emitted `Next` value is kept in shared state and
+    /// replayed to every new subscriber.
+    ///
+    /// # Arguments
+    /// * `source` - The stream to multicast.
+    ///
+    /// # Returns
+    /// A [`ShareReplay`] handle used to create subscriptions.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ice_rpc_rx::ShareReplay;
+    ///
+    /// let shared = ShareReplay::new(source_stream);
+    /// ```
     pub fn new(source: Stream<T, E>) -> Self
     where
         T: Clone + Send + 'static,
         E: Clone + Send + 'static,
     {
+        // Shared state is guarded by a mutex because the background source task
+        // and `subscribe` both mutate it concurrently.
         let state = std::sync::Arc::new(ice_rpc::async_lock::Mutex::new(ShareState {
             last: None,
             completed: false,
@@ -49,6 +65,8 @@ impl<T, E> ShareReplay<T, E> {
                 let mut st = state_clone.lock().await;
                 match event {
                     Event::Next(v) => {
+                        // Keep the latest value and multicast it to every
+                        // current subscriber.
                         st.last = Some(v.clone());
                         for tx in st.subscribers.iter() {
                             let _ = tx.send(Event::Next(v.clone())).await;
@@ -93,16 +111,30 @@ impl<T, E> ShareReplay<T, E> {
 
     /// Subscribes to the shared stream.
     ///
-    /// If a value was emitted before this call, it is replayed first, followed
-    /// by the current terminal state (if any) and then the live stream.
+    /// The returned [`Stream`] first replays the last value (if any) and the
+    /// current terminal state, then receives every subsequent live event.
+    ///
+    /// # Returns
+    /// A [`Stream`] observing the replayed snapshot followed by the live
+    /// events.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let rx = shared.subscribe().await;
+    /// while let Ok(event) = rx.recv().await {
+    ///     // handle the event
+    /// }
+    /// ```
     pub async fn subscribe(&self) -> Stream<T, E>
     where
         T: Clone,
         E: Clone,
     {
-        let (tx, rx) = ice_rpc::channel::<T, E>(8);
+        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
         {
             let mut state = self.state.lock().await;
+            // Replay the snapshot first: last value, then terminal state.
+            // The subscriber is registered afterwards to receive live events.
             if let Some(last) = &state.last {
                 let _ = tx.send(Event::Next(last.clone())).await;
             }
@@ -125,7 +157,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_last_value() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(8);
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
         pollster::block_on(tx.send(Event::Next(42))).unwrap();
         drop(tx);
 

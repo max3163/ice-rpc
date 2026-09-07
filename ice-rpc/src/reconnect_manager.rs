@@ -21,7 +21,16 @@ pub struct PendingService {
 impl PendingService {
     /// Creates a pending-service record sharing the client's state machine.
     pub fn new(service_name: &'static str, state: Arc<Mutex<ConnectionState>>) -> Self {
-        Self { service_name, state }
+        Self {
+            service_name,
+            state,
+        }
+    }
+}
+
+impl Default for ReconnectManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

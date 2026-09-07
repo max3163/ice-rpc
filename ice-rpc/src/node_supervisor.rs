@@ -134,8 +134,10 @@ mod tests {
     fn fire_notifies_all_services_of_the_node() {
         let fired_a = Arc::new(AtomicU32::new(0));
         let fired_b = Arc::new(AtomicU32::new(0));
-        let _sub_a = NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_a.clone()));
-        let _sub_b = NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_b.clone()));
+        let _sub_a =
+            NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_a.clone()));
+        let _sub_b =
+            NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_b.clone()));
 
         fire(NODE_MULTI_SVC);
 
@@ -147,8 +149,10 @@ mod tests {
     fn fire_notifies_multiple_instances_of_the_node() {
         let fired_a = Arc::new(AtomicU32::new(0));
         let fired_b = Arc::new(AtomicU32::new(0));
-        let _sub_a = NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_a.clone()));
-        let _sub_b = NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_b.clone()));
+        let _sub_a =
+            NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_a.clone()));
+        let _sub_b =
+            NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_b.clone()));
 
         fire(NODE_MULTI_INST);
 

@@ -106,7 +106,7 @@ fn run_shared(threads: usize) {
             for _ in 0..PER_THREAD {
                 let mut guard = block_on(scratch.lock());
                 guard.clear();
-                serialize_into(&mut *guard);
+                serialize_into(&mut guard);
             }
         }));
     }

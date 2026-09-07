@@ -9,6 +9,7 @@
 
 pub use crate::blackboard::{create_node_blackboard, list_services};
 pub use crate::client_core::ClientCore;
+pub use crate::client_core::ConnectionState;
 pub use crate::hub::{NodeHub, RequestHandler, ResponseHandler};
 pub use crate::node_discovery::{DiscoveryEvent, NodeDiscovery, NodeRecord};
 pub use crate::node_lock::{
@@ -16,9 +17,8 @@ pub use crate::node_lock::{
     unregister_node_lock_watcher, NodeLockWatcher, LOCK_WATCHER_POLL_MS,
 };
 pub use crate::node_supervisor::{
-    fire as fire_reconnect_callbacks, NodeSupervisor, ReconnectCallback, Subscription, SubscriberId,
+    fire as fire_reconnect_callbacks, NodeSupervisor, ReconnectCallback, SubscriberId, Subscription,
 };
-pub use crate::client_core::ConnectionState;
 pub use crate::reconnect_manager::{PendingService, ReconnectManager};
 pub use crate::registry_listener::spawn as spawn_node_registry_listener;
 pub use crate::registry_notify::{announce_dead_node, announce_node_ready};

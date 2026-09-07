@@ -679,11 +679,7 @@ mod tests {
         }
         .is_retryable());
         assert!(!RpcError::Cancelled.is_retryable());
-        assert!(!RpcError::PayloadTooLarge {
-            size: 1,
-            limit: 1
-        }
-        .is_retryable());
+        assert!(!RpcError::PayloadTooLarge { size: 1, limit: 1 }.is_retryable());
         assert!(!RpcError::Internal("boom".into()).is_retryable());
     }
 

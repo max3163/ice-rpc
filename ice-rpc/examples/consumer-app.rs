@@ -17,8 +17,8 @@ mod shared;
 
 use ice_rpc::{take_one_or_cancel, TakeOneError};
 use shared::{
-    ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError, DatabaseService,
-    DatabaseServiceProxy, PersonneInfo, PersonneQuery,
+    ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError,
+    DatabaseService, DatabaseServiceProxy, PersonneInfo, PersonneQuery,
 };
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};

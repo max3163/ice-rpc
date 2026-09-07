@@ -46,6 +46,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use trillium::{Conn, Handler, Method};
 
+/// Factory creating an [`HttpCallable`] proxy.
+type HttpCallableFactory = fn() -> Arc<dyn HttpCallable>;
+
 /// Shared state of the HTTP gateway.
 ///
 /// Contains the cache of [`HttpCallable`] proxies indexed by service name.
@@ -53,13 +56,13 @@ use trillium::{Conn, Handler, Method};
 #[derive(Clone)]
 struct HttpGatewayState {
     /// HTTP proxy factories (logical name → factory).
-    factories: Arc<HashMap<&'static str, fn() -> Arc<dyn HttpCallable>>>,
+    factories: Arc<HashMap<&'static str, HttpCallableFactory>>,
     /// HTTP proxy cache (name → proxy).
     cache: Arc<RwLock<HashMap<String, Arc<dyn HttpCallable>>>>,
 }
 
 impl HttpGatewayState {
-    fn new(factories: HashMap<&'static str, fn() -> Arc<dyn HttpCallable>>) -> Self {
+    fn new(factories: HashMap<&'static str, HttpCallableFactory>) -> Self {
         Self {
             factories: Arc::new(factories),
             cache: Arc::new(RwLock::new(HashMap::new())),

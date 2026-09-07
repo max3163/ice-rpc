@@ -296,7 +296,8 @@ fn build_reconnect_cb(
             }
         }
 
-        crate::reconnect_manager::ReconnectManager::global().schedule(dead_node_id, pending.clone());
+        crate::reconnect_manager::ReconnectManager::global()
+            .schedule(dead_node_id, pending.clone());
     })
 }
 

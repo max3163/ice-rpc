@@ -217,7 +217,7 @@ impl NodeHub {
                 .expect("publishers read lock poisoning");
             publishers
                 .get(&target_node_id.0)
-                .ok_or_else(|| crate::RpcError::ProviderUnavailable {
+                .ok_or(crate::RpcError::ProviderUnavailable {
                     node: target_node_id.0,
                 })?
                 .clone()
@@ -304,9 +304,7 @@ impl NodeHub {
             .clear();
 
         if publisher_count > 0 {
-            log::info!(
-                "[ice-rpc] NodeHub: dropped {publisher_count} cached publisher set(s)."
-            );
+            log::info!("[ice-rpc] NodeHub: dropped {publisher_count} cached publisher set(s).");
         }
     }
 
@@ -429,13 +427,17 @@ impl NodeHub {
             .subscriber_max_buffer_size(subscriber_buffer)
             .max_publishers(16)
             .open_or_create()
-            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}"))
+            })?;
         svc.publisher_builder()
             .initial_max_slice_len(initial_max_slice_len)
             .allocation_strategy(AllocationStrategy::PowerOfTwo)
             .set_degradation_handler(|_, _| DegradationAction::DegradeAndFail)
             .create()
-            .map_err(|e| crate::RpcError::TransportError(format!("publisher create({topic}): {e:?}")))
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("publisher create({topic}): {e:?}"))
+            })
     }
 
     /// Creates an iceoryx2 notifier on a given topic.
@@ -452,10 +454,12 @@ impl NodeHub {
             .service_builder(&name)
             .event()
             .open_or_create()
-            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
-        svc.notifier_builder()
-            .create()
-            .map_err(|e| crate::RpcError::TransportError(format!("notifier create({topic}): {e:?}")))
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}"))
+            })?;
+        svc.notifier_builder().create().map_err(|e| {
+            crate::RpcError::TransportError(format!("notifier create({topic}): {e:?}"))
+        })
     }
 
     /// Starts the dispatch loop (IPC message pump) in a `spawn_blocking`.

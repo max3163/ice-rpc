@@ -88,7 +88,7 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
                 },
                 std::time::Duration::from_millis(REGISTRY_WAITSET_TIMEOUT_MS),
             );
-            // Check Termination Request 
+            // Check Termination Request
             if let Err(_) | Ok(iceoryx2::waitset::WaitSetRunResult::TerminationRequest) = result {
                 break;
             }

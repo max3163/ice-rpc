@@ -17,7 +17,7 @@
 //! subject.complete().await;
 //! ```
 
-use ice_rpc::{Event, Sender, Stream};
+use ice_rpc::{Sender, Stream};
 
 /// A multi-producer / multi-consumer multicast source.
 pub struct Subject<T, E> {
@@ -80,7 +80,7 @@ impl<T, E> Subject<T, E> {
         // list never grows with dead receivers.
         let mut dead = Vec::new();
         for (i, tx) in subs.iter().enumerate() {
-            if tx.send(Event::Next(value.clone())).await.is_err() {
+            if tx.send_next(value.clone()).await.is_err() {
                 dead.push(i);
             }
         }
@@ -103,7 +103,7 @@ impl<T, E> Subject<T, E> {
         // Prune dead receivers whose channel already closed.
         let mut dead = Vec::new();
         for (i, tx) in subs.iter().enumerate() {
-            if tx.send(Event::Complete).await.is_err() {
+            if tx.send_complete().await.is_err() {
                 dead.push(i);
             }
         }
@@ -131,7 +131,7 @@ impl<T, E> Subject<T, E> {
         // Prune dead receivers whose channel already closed.
         let mut dead = Vec::new();
         for (i, tx) in subs.iter().enumerate() {
-            if tx.send(Event::Error(err.clone())).await.is_err() {
+            if tx.send_error(err.clone()).await.is_err() {
                 dead.push(i);
             }
         }

@@ -27,7 +27,7 @@
 mod shared;
 
 use async_trait::async_trait;
-use ice_rpc::{Event, Observable, ServiceInit};
+use ice_rpc::{Observable, ServiceInit, StreamError};
 use shared::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
@@ -68,10 +68,10 @@ impl ConfigService for ConfigServiceImpl {
         tokio::spawn(async move {
             match value {
                 Some(v) => {
-                    let _ = tx.send(Event::CompleteWith(v)).await;
+                    let _ = tx.send_complete_with(v).await;
                 }
                 None => {
-                    let _ = tx.send(Event::Error(ConfigError::KeyNotFound)).await;
+                    let _ = tx.send_error(ConfigError::KeyNotFound).await;
                 }
             }
         });
@@ -169,13 +169,13 @@ impl DatabaseService for DatabaseServiceImpl {
             "Judy" => 33,
             _ => {
                 let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(1);
-                let _ = tx.try_send(Event::Error(DatabaseError::NotFound));
+                let _ = tx.try_send_error(DatabaseError::NotFound);
                 return Ok(rx);
             }
         };
 
         let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(1);
-        let _ = tx.try_send(Event::CompleteWith(age));
+        let _ = tx.try_send_complete_with(age);
         Ok(rx)
     }
 
@@ -228,13 +228,13 @@ impl DatabaseService for DatabaseServiceImpl {
             },
             _ => {
                 let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(1);
-                let _ = tx.try_send(Event::Error(DatabaseError::NotFound));
+                let _ = tx.try_send_error(DatabaseError::NotFound);
                 return Ok(rx);
             }
         };
 
         let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(1);
-        let _ = tx.try_send(Event::CompleteWith(personne));
+        let _ = tx.try_send_complete_with(personne);
         Ok(rx)
     }
 }
@@ -267,13 +267,13 @@ impl ServiceInit for DatabaseServiceImpl {
             }
         };
 
-        let db_url = match rx.recv().await {
-            Ok(Event::Next(url)) => url,
-            Ok(Event::Error(ConfigError::KeyNotFound)) => {
+        let db_url = match rx.first_value().await {
+            Ok(url) => url,
+            Err(StreamError::Business(ConfigError::KeyNotFound)) => {
                 log::error!("[DatabaseService] Key \"database.url\" missing from the config.");
                 return false;
             }
-            _ => {
+            Err(_) => {
                 log::error!("[DatabaseService] Unexpected response from ConfigService.");
                 return false;
             }
@@ -322,10 +322,10 @@ impl HttpService for HttpServiceImpl {
             let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(2);
             tokio::spawn(async move {
                 let _ = tx
-                    .send(Event::Error(HttpError::PayloadTooLarge {
+                    .send_error(HttpError::PayloadTooLarge {
                         max_bytes: max_payload,
                         actual_bytes: req_body_len,
-                    }))
+                    })
                     .await;
             });
             return Ok(rx);
@@ -347,7 +347,7 @@ impl HttpService for HttpServiceImpl {
 
         let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(1);
         tokio::spawn(async move {
-            let _ = tx.send(Event::CompleteWith(response)).await;
+            let _ = tx.send_complete_with(response).await;
         });
         Ok(rx)
     }

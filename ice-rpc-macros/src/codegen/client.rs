@@ -127,29 +127,35 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             match result {
                 Ok(bytes) => {
                     match ice_rpc::rkyv::from_bytes::<
-                        ice_rpc::Event<#ok_type, #err_type>,
+                        ice_rpc::WireEvent<#ok_type, #err_type>,
                         ice_rpc::rkyv::rancor::Error
                     >(bytes) {
-                        Ok(event) => {
-                            match event {
-                                ice_rpc::Event::CompleteWith(v) => {
-                                    let _ = tx.try_send(ice_rpc::Event::Next(v));
-                                    let _ = tx.try_send(ice_rpc::Event::Complete);
-                                }
-                                other => {
-                                    let _ = tx.try_send(other);
-                                }
-                            }
+                        Ok(ice_rpc::WireEvent::CompleteWith(v)) => {
+                            // Transport shortcut: single sample carrying the last value.
+                            let _ = tx.try_send_next(v);
+                            let _ = tx.try_send_complete();
+                        }
+                        Ok(ice_rpc::WireEvent::Next(v)) => {
+                            let _ = tx.try_send_next(v);
+                        }
+                        Ok(ice_rpc::WireEvent::Complete) => {
+                            let _ = tx.try_send_complete();
+                        }
+                        Ok(ice_rpc::WireEvent::Error(e)) => {
+                            let _ = tx.try_send_error(e);
+                        }
+                        Ok(ice_rpc::WireEvent::RpcError(e)) => {
+                            let _ = tx.try_send_event(ice_rpc::Event::RpcError(e));
                         }
                         Err(_) => {
-                            let _ = tx.try_send(ice_rpc::Event::RpcError(
+                            let _ = tx.try_send_event(ice_rpc::Event::RpcError(
                                 ice_rpc::RpcError::SerializationError
                             ));
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.try_send(ice_rpc::Event::RpcError(e));
+                    let _ = tx.try_send_event(ice_rpc::Event::RpcError(e));
                 }
             }
         })

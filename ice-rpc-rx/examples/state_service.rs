@@ -80,7 +80,7 @@ impl StateService for StateServiceImpl {
         self.subject.next(status).await;
         // Acknowledge with a single terminal value.
         let (tx, rx) = ice_rpc::channel::<(), String>(1);
-        let _ = tx.try_send(ice_rpc::Event::CompleteWith(()));
+        let _ = tx.try_send_complete_with(());
         Ok(rx)
     }
 }
@@ -128,7 +128,9 @@ async fn run_consumer() {
     // Program A sends new states and is notified of each change.
     for status in [Status::Ok, Status::Nok, Status::Nc, Status::Ok] {
         println!("[consumer] set_state({:?})", status);
-        let _ = ice_rpc::take_one!(proxy.set_state(status).await);
+        if let Ok(rx) = proxy.set_state(status).await {
+            let _ = rx.first_value().await;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
 

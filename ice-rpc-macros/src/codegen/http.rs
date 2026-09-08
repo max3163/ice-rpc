@@ -135,11 +135,6 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
                             .map_err(|e| format!("Failed to serialize the response: {}", e))?;
                         Ok(ice_rpc::serde_json::json!({"status":"ok","data":data}))
                     }
-                    Ok(ice_rpc::Event::CompleteWith(value)) => {
-                        let data = ice_rpc::serde_json::to_value(&value)
-                            .map_err(|e| format!("Failed to serialize the response: {}", e))?;
-                        Ok(ice_rpc::serde_json::json!({"status":"ok","data":data}))
-                    }
                     Ok(ice_rpc::Event::Complete) => {
                         Ok(ice_rpc::serde_json::json!({"status":"ok"}))
                     }

@@ -21,7 +21,9 @@
 //!     .get::<ContextServiceProxy>()
 //!     .await
 //!     .expect("unknown service");
-//! let val = take_one!(proxy.get("my.key".into()))?;
+//! if let Ok(val) = proxy.get("my.key".into()).await?.first_value().await {
+//!     // use `val` here
+//! }
 //! ```
 //!
 

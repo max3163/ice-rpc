@@ -101,7 +101,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                     #service_version,
                                 );
                                 let client_node = ice_rpc::NodeId(hdr.caller_pid);
-                                let error_event: ice_rpc::Event<(), ()> = ice_rpc::Event::RpcError(
+                                let error_event: ice_rpc::WireEvent<(), ()> = ice_rpc::WireEvent::RpcError(
                                     ice_rpc::RpcError::ProtocolMismatch {
                                         expected_protocol: ice_rpc::PROTOCOL_VERSION,
                                         received_protocol: hdr.protocol_version,
@@ -252,13 +252,13 @@ pub fn gen_server_match_arm(
 
             match impl_ref.#fn_name(#(#arg_names),*).await {
                 Ok(mut stream) => {
-                    while let Ok(event) = stream.recv().await {
+                    while let Ok(event) = stream.recv_wire().await {
                         let kind = match &event {
-                            ice_rpc::Event::Next(_)         => ice_rpc::EventKind::Next,
-                            ice_rpc::Event::Complete        => ice_rpc::EventKind::Complete,
-                            ice_rpc::Event::CompleteWith(_) => ice_rpc::EventKind::Complete,
-                            ice_rpc::Event::Error(_)        => ice_rpc::EventKind::Error,
-                            ice_rpc::Event::RpcError(_)     => ice_rpc::EventKind::Error,
+                            ice_rpc::WireEvent::Next(_)         => ice_rpc::EventKind::Next,
+                            ice_rpc::WireEvent::Complete        => ice_rpc::EventKind::Complete,
+                            ice_rpc::WireEvent::CompleteWith(_) => ice_rpc::EventKind::Complete,
+                            ice_rpc::WireEvent::Error(_)        => ice_rpc::EventKind::Error,
+                            ice_rpc::WireEvent::RpcError(_)     => ice_rpc::EventKind::Error,
                         };
                         let mut guard = scratch_ref.lock().await;
                         if guard.capacity() < size_hint + 4096 {
@@ -280,7 +280,7 @@ pub fn gen_server_match_arm(
                         *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
                     }
                     guard.clear();
-                    let complete_event: ice_rpc::Event<(), ()> = ice_rpc::Event::Complete;
+                    let complete_event: ice_rpc::WireEvent<(), ()> = ice_rpc::WireEvent::Complete;
                     if to_bytes_in::<_, RkyvError>(&complete_event, &mut *guard).is_ok() {
                         let resp_header = ice_rpc::RpcHeader::response_from(
                             &hdr,

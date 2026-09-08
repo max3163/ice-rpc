@@ -13,13 +13,31 @@ tokio = ["ice-rpc/tokio"]
 ice-rpc = { path = "../ice-rpc" }
 
 [dev-dependencies]
+env_logger = "0.11"
 pollster = "1.0"
 tokio = { workspace = true }
 async-trait = { workspace = true }
 rkyv = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 log = { workspace = true }
 
 [[example]]
 name = "state_service"
+required-features = ["tokio"]
+
+[[example]]
+name = "provider-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-http-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "benchmark-app"
 required-features = ["tokio"]

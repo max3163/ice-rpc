@@ -10,7 +10,7 @@
 //      is `Send + Sync` and compatible with `RwLock<Mode>`.
 // =============================================================================
 
-use ice_rpc::{self, Event, Observable, ServiceInit, ServiceNamed};
+use ice_rpc::{self, Observable, ServiceInit, ServiceNamed};
 use ice_rpc_macros::service;
 
 // -----------------------------------------------------------------------------
@@ -85,7 +85,7 @@ struct CalcImpl;
 impl Calculator for CalcImpl {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         let (tx, rx) = ice_rpc::channel::<i32, String>(1);
-        tx.send(Event::Next(a + b)).await.ok();
+        tx.send_next(a + b).await.ok();
         drop(tx);
         Ok(rx)
     }

@@ -178,7 +178,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::Event::Next(data), ice_rpc::EventKind::Next)
+                            (ice_rpc::WireEvent::Next(data), ice_rpc::EventKind::Next)
                         }
                         "complete" => match value.get("data") {
                             Some(d) => {
@@ -186,9 +186,9 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                (ice_rpc::Event::CompleteWith(data), ice_rpc::EventKind::Complete)
+                                (ice_rpc::WireEvent::CompleteWith(data), ice_rpc::EventKind::Complete)
                             }
-                            None => (ice_rpc::Event::Complete, ice_rpc::EventKind::Complete),
+                            None => (ice_rpc::WireEvent::Complete, ice_rpc::EventKind::Complete),
                         },
                         "error" => {
                             let err: #err_type = match value.get("data") {
@@ -198,7 +198,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::Event::Error(err), ice_rpc::EventKind::Error)
+                            (ice_rpc::WireEvent::Error(err), ice_rpc::EventKind::Error)
                         }
                         _ => return None,
                     };

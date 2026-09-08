@@ -180,7 +180,9 @@ impl ServiceLocator {
     ///     .get::<ContextServiceProxy>()
     ///     .await
     ///     .expect("ContextService unknown");
-    /// let value = take_one!(proxy.get("my.key".into()))?;
+    /// if let Ok(value) = proxy.get("my.key".into()).await?.first_value().await {
+    ///     // use `value` here
+    /// }
     /// ```
     pub async fn get<T: ServiceConsumer>(&self) -> Option<Arc<T>> {
         let name = T::SERVICE_NAME;

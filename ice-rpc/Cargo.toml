@@ -73,26 +73,6 @@ criterion = "0.8"
 tokio = { workspace = true }
 smol = "2"
 
-[[example]]
-name = "benchmark-app"
-path = "examples/benchmark-app.rs"
-
-[[example]]
-name = "provider-app"
-path = "examples/provider-app.rs"
-# The provider service implementations use Tokio primitives
-# (tokio::time::sleep, tokio::spawn), so the generated server handlers must
-# run on the Tokio runtime. Run with: cargo run --example provider-app --features tokio
-required-features = ["tokio"]
-
-[[example]]
-name = "consumer-app"
-path = "examples/consumer-app.rs"
-
-[[example]]
-name = "consumer-http-app"
-path = "examples/consumer-http-app.rs"
-
 [[bench]]
 name = "concurrency"
 harness = false

@@ -95,7 +95,7 @@ impl MyService for MyServiceImpl {
     async fn hello(&self, name: String) -> Observable<String, MyError> {
         let (tx, rx) = ice_rpc::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
-            let _ = tx.send(ice_rpc::Event::CompleteWith(format!("Hello {} !", name))).await;
+            let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
         });
         Ok(rx)
     }
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get::<MyServiceProxy>().await
         .expect("MyService unknown");
 
-    let response: String = ice_rpc::take_one!(proxy.hello("Alice".into()))?;
+    let response: String = proxy.hello("Alice".into()).await?.first_value().await?;
     println!("Response: {}", response);
 
     guard.shutdown().await;
@@ -136,15 +136,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `NodeId` | Process identity (PID), unique across the machine. |
 | `Observable<T, E>` | RPC stream: `Result<Receiver<Event<T, E>>, RpcError>`. |
-| `Event<T, E>` | `Next(T)` / `Complete` / `CompleteWith(T)` / `Error(E)` / `RpcError(RpcError)`. |
+| `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(E)` / `RpcError(RpcError)`. |
 | `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
 | `ServiceLocator` | Global registry, dependency resolution and initialization. |
 | `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
 
-## Consumption helpers
+## Consumption
 
-- `take_one!(observable)` and `take_one_or_cancel!(observable, cancel)` extract the first value of a stream.
+Consuming the first value of a stream is done natively on `ice_rpc::Stream`:
+
+```rust,ignore
+let value = proxy.hello("Alice".into()).await?.first_value().await?;
+```
+
 - `#[timeout("30s")]` on a method sets the service-location timeout (default `RPC_CALL_TIMEOUT_SECS` = 30s).
 
 ## Error semantics

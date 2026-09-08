@@ -136,7 +136,7 @@ pub fn gen_proxy_method(
             let mode = self.mode.read().await;
             match &*mode {
                 #mode_name::Provider { local_impl, .. } => {
-                    ice_rpc::normalize_observable(local_impl.#fn_name(#(#arg_names),*).await)
+                    local_impl.#fn_name(#(#arg_names),*).await
                 },
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#fn_name(#(#arg_names),*).await

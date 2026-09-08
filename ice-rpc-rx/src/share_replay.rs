@@ -69,37 +69,26 @@ impl<T, E> ShareReplay<T, E> {
                         // current subscriber.
                         st.last = Some(v.clone());
                         for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::Next(v.clone())).await;
+                            let _ = tx.send_next(v.clone()).await;
                         }
                     }
                     Event::Complete => {
                         st.completed = true;
                         for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::Complete).await;
-                        }
-                        break;
-                    }
-                    Event::CompleteWith(v) => {
-                        st.last = Some(v.clone());
-                        for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::Next(v.clone())).await;
-                        }
-                        st.completed = true;
-                        for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::Complete).await;
+                            let _ = tx.send_complete().await;
                         }
                         break;
                     }
                     Event::Error(e) => {
                         st.error = Some(e.clone());
                         for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::Error(e.clone())).await;
+                            let _ = tx.send_error(e.clone()).await;
                         }
                         break;
                     }
                     Event::RpcError(e) => {
                         for tx in st.subscribers.iter() {
-                            let _ = tx.send(Event::RpcError(e.clone())).await;
+                            let _ = tx.send_event(Event::RpcError(e.clone())).await;
                         }
                         break;
                     }
@@ -136,13 +125,13 @@ impl<T, E> ShareReplay<T, E> {
             // Replay the snapshot first: last value, then terminal state.
             // The subscriber is registered afterwards to receive live events.
             if let Some(last) = &state.last {
-                let _ = tx.send(Event::Next(last.clone())).await;
+                let _ = tx.send_next(last.clone()).await;
             }
             if let Some(err) = &state.error {
-                let _ = tx.send(Event::Error(err.clone())).await;
+                let _ = tx.send_error(err.clone()).await;
             }
             if state.completed {
-                let _ = tx.send(Event::Complete).await;
+                let _ = tx.send_complete().await;
             }
             state.subscribers.push(tx);
         }
@@ -158,7 +147,7 @@ mod tests {
     #[test]
     fn share_replay_replays_last_value() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        pollster::block_on(tx.send(Event::Next(42))).unwrap();
+        pollster::block_on(tx.send_next(42)).unwrap();
         drop(tx);
 
         let shared = ShareReplay::new(rx);
@@ -175,8 +164,8 @@ mod tests {
     #[test]
     fn share_replay_replays_only_last_value() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        pollster::block_on(tx.send(Event::Next(1))).unwrap();
-        pollster::block_on(tx.send(Event::Next(2))).unwrap();
+        pollster::block_on(tx.send_next(1)).unwrap();
+        pollster::block_on(tx.send_next(2)).unwrap();
         drop(tx);
 
         let shared = ShareReplay::new(rx);
@@ -192,7 +181,7 @@ mod tests {
     #[test]
     fn share_replay_replays_complete_state() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
         let shared = ShareReplay::new(rx);
@@ -208,7 +197,7 @@ mod tests {
     #[test]
     fn share_replay_replays_error_state() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
         drop(tx);
 
         let shared = ShareReplay::new(rx);
@@ -224,7 +213,7 @@ mod tests {
     #[test]
     fn share_replay_replays_complete_with_as_value_then_complete() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        pollster::block_on(tx.send(Event::CompleteWith(7))).unwrap();
+        pollster::block_on(tx.send_complete_with(7)).unwrap();
         drop(tx);
 
         let shared = ShareReplay::new(rx);
@@ -248,8 +237,8 @@ mod tests {
         let rx1 = pollster::block_on(shared.subscribe());
         let rx2 = pollster::block_on(shared.subscribe());
 
-        pollster::block_on(tx.send(Event::Next(11))).unwrap();
-        pollster::block_on(tx.send(Event::Complete)).unwrap();
+        pollster::block_on(tx.send_next(11)).unwrap();
+        pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
         for rx in [rx1, rx2] {

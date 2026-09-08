@@ -10,8 +10,8 @@
 
 mod shared;
 
-use ice_rpc::{take_one_or_cancel, TakeOneError};
-use shared::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+use ice_rpc::StreamError;
+use shared::{first_or_cancel, HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -111,7 +111,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
     let t_send = Instant::now();
 
-    let result = take_one_or_cancel!(http.send_request(request).await, cancel);
+    let result = first_or_cancel(http.send_request(request).await, cancel).await;
 
     match result {
         None => {
@@ -150,7 +150,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
             true
         }
-        Some(Err(TakeOneError::Service(HttpError::PayloadTooLarge {
+        Some(Err(StreamError::Business(HttpError::PayloadTooLarge {
             max_bytes,
             actual_bytes,
         }))) => {
@@ -164,7 +164,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Service(e))) => {
+        Some(Err(StreamError::Business(e))) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Business error: {:?}  [{}]",
@@ -174,7 +174,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Ipc(e))) => {
+        Some(Err(StreamError::Rpc(e))) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] IPC error: {}  [{}]",
@@ -184,7 +184,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Empty)) => {
+        Some(Err(StreamError::Empty)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::warn!(
                 "  ✗ [{}] No value received  [{}]",

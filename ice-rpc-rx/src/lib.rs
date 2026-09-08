@@ -3,15 +3,21 @@
 //! Reactive extensions for [`ice_rpc`] event streams, inspired by RxJS.
 //!
 //! This crate extends the native [`ice_rpc::Stream`] type with composable
-//! operators and provides two multicast primitives:
+//! operators and provides multicast primitives, constructors and terminal
+//! consumption helpers:
 //!
-//! - [`RxStreamExt`] — `map`, `filter`, `take`, `finalize`, `tap`, `delay` and
-//!   `catch_error` operators applied directly on [`ice_rpc::Stream`].
+//! - [`RxStreamExt`] — `map`, `filter`, `map_err`, `scan`, `take`, `skip`,
+//!   `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`, `timeout`
+//!   and `catch_error` operators applied directly on [`ice_rpc::Stream`].
+//! - [`merge`] — merges several streams into one.
+//! - [`retry`] — retries the underlying call on a business `Error`.
+//! - [`from`] — builds a stream from an iterator.
+//! - [`of`] — builds a single-value stream.
+//! - [`ice_rpc::Stream::first_value`] — awaits the first value of a stream.
+//! - [`ice_rpc::Stream::collect`] — gathers every value into a `Vec`.
 //! - [`Subject`] — a multi-producer / multi-consumer multicast source.
 //! - [`ShareReplay`] — a multicast source that replays the last value to late
 //!   subscribers (equivalent to RxJS `shareReplay(1)`).
-//! - [`from`] — builds a stream from an iterator;
-//! - [`of`] — builds a single-value stream via `CompleteWith`.
 //!
 //! ## Quick example
 //!
@@ -28,24 +34,36 @@
 //!     .take(5);
 //! ```
 //!
+//! ## Consuming the first value
+//!
+//! Terminal consumption is provided natively by [`ice_rpc::Stream`]:
+//!
+//! ```rust,ignore
+//! let value = proxy.get("my.key".into()).await?.first_value().await?;
+//! let all = proxy.list().await?.collect().await?; // Vec<T>
+//! ```
+//!
 //! ## Normalization
 //!
-//! ice-rpc can transport a single response as [`ice_rpc::Event::CompleteWith`].
-//! All operators in this crate treat `CompleteWith` exactly like `Next`, so
-//! consuming code always observes a uniform stream of `Next` values followed by
-//! a terminal event (`Complete`, `Error` or `RpcError`).
+//! ice-rpc can transport a single response as an internal `CompleteWith`
+//! sample. [`ice_rpc::Stream::recv`] normalizes it into `Next` followed by
+//! `Complete`, so consuming code always observes a uniform stream of `Next`
+//! values followed by a terminal event (`Complete`, `Error` or `RpcError`).
 //!
 //! [`ice_rpc`]: ../ice_rpc
 //! [`ice_rpc::Stream`]: ../ice_rpc/type.Stream.html
-//! [`ice_rpc::Event::CompleteWith`]: ../ice_rpc/enum.Event.html
 
-mod operators;
+mod creation;
+mod join;
 mod share_replay;
 mod subject;
+mod transform;
 
-pub use operators::RxStreamExt;
+pub use creation::{from, of};
+pub use join::{merge, retry, retry_with, retry_with_delay};
 pub use share_replay::ShareReplay;
 pub use subject::Subject;
+pub use transform::RxStreamExt;
 
 /// Error type for local reactive sources and operators.
 ///
@@ -60,62 +78,6 @@ pub enum RxError {}
 /// A bounded channel provides backpressure: a producer waits when the queue is
 /// full, which keeps memory usage bounded in reactive pipelines.
 pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;
-
-/// Creates a [`Stream`] from an iterator, emitting each value as `Next` then
-/// `Complete`.
-///
-/// Equivalent to RxJS `from`.
-///
-/// # Example
-/// ```rust,ignore
-/// use ice_rpc_rx::from;
-///
-/// let stream = from([1, 2, 3]);
-/// ```
-pub fn from<T, I>(iter: I) -> ice_rpc::Stream<T, RxError>
-where
-    I: IntoIterator<Item = T>,
-    T: Send + 'static,
-{
-    // Collect upfront so the iterator itself does not need to be `Send`: only
-    // the resulting `Vec<T>` is moved into the spawned task.
-    let values: Vec<T> = iter.into_iter().collect();
-    let (tx, rx) = ice_rpc::channel::<T, RxError>(OPERATOR_CHANNEL_CAPACITY);
-    ice_rpc::rt::spawn(async move {
-        for value in values {
-            if tx.send(ice_rpc::Event::Next(value)).await.is_err() {
-                return;
-            }
-        }
-        let _ = tx.send(ice_rpc::Event::Complete).await;
-    });
-    rx
-}
-
-/// Creates a single-value [`Stream`].
-///
-/// Consumers observe the value as `Next` followed by `Complete`: the transport
-/// optimization `CompleteWith` is used internally and normalized away.
-/// Equivalent to RxJS `of`.
-///
-/// # Example
-/// ```rust,ignore
-/// use ice_rpc_rx::of;
-///
-/// let stream = of(42);
-/// ```
-pub fn of<T>(value: T) -> ice_rpc::Stream<T, RxError>
-where
-    T: Send + 'static,
-{
-    // `of` emits the value as a transport-level `CompleteWith`, then the
-    // returned stream is normalized so consumers observe `Next` + `Complete`.
-    let (tx, rx) = ice_rpc::channel::<T, RxError>(1);
-    ice_rpc::rt::spawn(async move {
-        let _ = tx.send(ice_rpc::Event::CompleteWith(value)).await;
-    });
-    ice_rpc::normalize_stream(rx)
-}
 
 #[cfg(test)]
 mod tests {
@@ -156,5 +118,11 @@ mod tests {
             out
         });
         assert_eq!(events, vec![42]);
+    }
+
+    #[test]
+    fn collect_gathers_all_values() {
+        let values = pollster::block_on(from([1, 2, 3]).collect()).unwrap();
+        assert_eq!(values, vec![1, 2, 3]);
     }
 }

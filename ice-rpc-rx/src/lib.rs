@@ -10,6 +10,8 @@
 //! - [`Subject`] — a multi-producer / multi-consumer multicast source.
 //! - [`ShareReplay`] — a multicast source that replays the last value to late
 //!   subscribers (equivalent to RxJS `shareReplay(1)`).
+//! - [`from`] — builds a stream from an iterator;
+//! - [`of`] — builds a single-value stream via `CompleteWith`.
 //!
 //! ## Quick example
 //!
@@ -50,3 +52,103 @@ pub use subject::Subject;
 /// A bounded channel provides backpressure: a producer waits when the queue is
 /// full, which keeps memory usage bounded in reactive pipelines.
 pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;
+
+/// Creates a [`Stream`] from an iterator, emitting each value as `Next` then
+/// `Complete`.
+///
+/// Equivalent to RxJS `from`.
+///
+/// # Example
+/// ```rust,ignore
+/// use ice_rpc_rx::from;
+///
+/// let stream: ice_rpc::Stream<i32, String> = from([1, 2, 3]);
+/// ```
+pub fn from<T, E, I>(iter: I) -> ice_rpc::Stream<T, E>
+where
+    I: IntoIterator<Item = T>,
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    // Collect upfront so the iterator itself does not need to be `Send`: only
+    // the resulting `Vec<T>` is moved into the spawned task.
+    let values: Vec<T> = iter.into_iter().collect();
+    let (tx, rx) = ice_rpc::channel::<T, E>(OPERATOR_CHANNEL_CAPACITY);
+    ice_rpc::rt::spawn(async move {
+        for value in values {
+            if tx.send(ice_rpc::Event::Next(value)).await.is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(ice_rpc::Event::Complete).await;
+    });
+    rx
+}
+
+/// Creates a single-value [`Stream`].
+///
+/// Consumers observe the value as `Next` followed by `Complete`: the transport
+/// optimization `CompleteWith` is used internally and normalized away.
+/// Equivalent to RxJS `of`.
+///
+/// # Example
+/// ```rust,ignore
+/// use ice_rpc_rx::of;
+///
+/// let stream: ice_rpc::Stream<i32, String> = of(42);
+/// ```
+pub fn of<T, E>(value: T) -> ice_rpc::Stream<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    // `of` emits the value as a transport-level `CompleteWith`, then the
+    // returned stream is normalized so consumers observe `Next` + `Complete`.
+    let (tx, rx) = ice_rpc::channel::<T, E>(1);
+    ice_rpc::rt::spawn(async move {
+        let _ = tx.send(ice_rpc::Event::CompleteWith(value)).await;
+    });
+    ice_rpc::normalize_stream(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{from, of};
+    use ice_rpc::Event;
+
+    #[test]
+    fn from_emits_values_then_complete() {
+        let stream = from::<i32, String, _>([1, 2, 3]);
+
+        let events = pollster::block_on(async {
+            let mut out = Vec::new();
+            while let Ok(ev) = stream.recv().await {
+                match ev {
+                    Event::Next(v) => out.push(v),
+                    Event::Complete => break,
+                    other => panic!("unexpected event: {:?}", other),
+                }
+            }
+            out
+        });
+        assert_eq!(events, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn of_emits_next_then_complete() {
+        let stream = of::<i32, String>(42);
+
+        let events = pollster::block_on(async {
+            let mut out = Vec::new();
+            while let Ok(ev) = stream.recv().await {
+                match ev {
+                    Event::Next(v) => out.push(v),
+                    Event::Complete => break,
+                    other => panic!("unexpected event: {:?}", other),
+                }
+            }
+            out
+        });
+        assert_eq!(events, vec![42]);
+    }
+}

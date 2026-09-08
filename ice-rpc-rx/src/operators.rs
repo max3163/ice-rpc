@@ -8,6 +8,9 @@
 //!   predicate;
 //! - [`take`](RxStreamExt::take) — emits at most `n` `Next` values and then
 //!   completes;
+//! - [`first`](RxStreamExt::first) — emits only the first `Next` value;
+//! - [`first_with`](RxStreamExt::first_with) — emits the first `Next` value
+//!   matching a predicate;
 //! - [`finalize`](RxStreamExt::finalize) — runs a callback once the stream
 //!   terminates;
 //! - [`tap`](RxStreamExt::tap) — runs a side effect on each value without
@@ -104,6 +107,54 @@ pub trait RxStreamExt<T, E>: Sized {
     where
         T: Send + 'static,
         E: Send + 'static;
+
+    /// Emits only the first `Next` value, then forces a `Complete`.
+    ///
+    /// Equivalent to [`first_with`](RxStreamExt::first_with) with an
+    /// always-true predicate. Terminal events are forwarded unchanged; if the
+    /// source completes without emitting a value, a bare `Complete` is emitted.
+    ///
+    /// # Returns
+    /// A new [`Stream`] of the same type `(T, E)`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ice_rpc_rx::RxStreamExt;
+    ///
+    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
+    /// let first = stream.first();
+    /// ```
+    fn first(self) -> Stream<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static;
+
+    /// Emits the first `Next` value for which `predicate` returns `true`, then
+    /// forces a `Complete`.
+    ///
+    /// Non-matching values are dropped. If the source terminates without a
+    /// matching value, a bare `Complete` is emitted: the equivalent RxJS
+    /// `EmptyError` is not representable while [`crate::RxError`] remains
+    /// uninhabited.
+    ///
+    /// # Arguments
+    /// * `predicate` - Predicate applied to each value by reference.
+    ///
+    /// # Returns
+    /// A new [`Stream`] of the same type `(T, E)`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ice_rpc_rx::RxStreamExt;
+    ///
+    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
+    /// let first_positive = stream.first_with(|v| *v > 0);
+    /// ```
+    fn first_with<F>(self, predicate: F) -> Stream<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnMut(&T) -> bool + Send + 'static;
 
     /// Runs `f` exactly once when the stream terminates.
     ///
@@ -305,6 +356,64 @@ impl<T, E> RxStreamExt<T, E> for Stream<T, E> {
         rx
     }
 
+    /// See [`RxStreamExt::first`].
+    fn first(self) -> Stream<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        // `first` is `first_with` with an always-true predicate: the first
+        // value observed is the one emitted.
+        self.first_with(|_| true)
+    }
+
+    /// See [`RxStreamExt::first_with`].
+    fn first_with<F>(self, mut predicate: F) -> Stream<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnMut(&T) -> bool + Send + 'static,
+    {
+        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
+        ice_rpc::rt::spawn(async move {
+            while let Ok(event) = self.recv().await {
+                match event {
+                    Event::Next(v) => {
+                        // First matching value: emit it, then complete.
+                        if predicate(&v) {
+                            let _ = tx.send(Event::Next(v)).await;
+                            let _ = tx.send(Event::Complete).await;
+                            return;
+                        }
+                        // Non-matching value: drop it and keep scanning.
+                    }
+                    Event::CompleteWith(v) => {
+                        // Terminal single value: emit it only if it matches.
+                        if predicate(&v) {
+                            let _ = tx.send(Event::Next(v)).await;
+                        }
+                        let _ = tx.send(Event::Complete).await;
+                        return;
+                    }
+                    Event::Complete => {
+                        // Source completed before any value: complete empty.
+                        let _ = tx.send(Event::Complete).await;
+                        return;
+                    }
+                    Event::Error(e) => {
+                        let _ = tx.send(Event::Error(e)).await;
+                        return;
+                    }
+                    Event::RpcError(e) => {
+                        let _ = tx.send(Event::RpcError(e)).await;
+                        return;
+                    }
+                }
+            }
+        });
+        rx
+    }
+
     /// See [`RxStreamExt::finalize`].
     fn finalize<F>(self, f: F) -> Stream<T, E>
     where
@@ -423,6 +532,7 @@ impl<T, E> RxStreamExt<T, E> for Stream<T, E> {
 #[cfg(test)]
 mod tests {
     use super::RxStreamExt;
+    use crate::{from, of};
     use ice_rpc::Event;
 
     #[test]
@@ -750,5 +860,66 @@ mod tests {
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Complete));
         assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn first_emits_only_first_value() {
+        let stream = from([1, 2, 3]).first();
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Complete));
+    }
+
+    #[test]
+    fn first_with_emits_first_matching_value() {
+        let stream = from([1, 2, 3]).first_with(|v| *v >= 2);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 2));
+        assert!(matches!(&events[1], Event::Complete));
+    }
+
+    #[test]
+    fn first_forwards_error_before_any_value() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.first();
+
+        pollster::block_on(tx.send(Event::Error("boom".to_string()))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+    }
+
+    #[test]
+    fn first_completes_empty_when_no_value() {
+        let stream = from(std::iter::empty::<i32>()).first();
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Complete));
+    }
+
+    #[test]
+    fn first_with_completes_empty_when_no_match() {
+        let stream = from([1, 2, 3]).first_with(|v| *v > 10);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Complete));
+    }
+
+    #[test]
+    fn first_with_matches_single_of_value() {
+        let stream = of(7).first_with(|v| *v > 5);
+
+        let events = pollster::block_on(drain(&stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 7));
+        assert!(matches!(&events[1], Event::Complete));
     }
 }

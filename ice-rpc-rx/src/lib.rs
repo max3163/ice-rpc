@@ -47,6 +47,14 @@ pub use operators::RxStreamExt;
 pub use share_replay::ShareReplay;
 pub use subject::Subject;
 
+/// Error type for local reactive sources and operators.
+///
+/// Currently uninhabited: local constructors such as [`from`] and [`of`] never
+/// fail. Future fallible operators (e.g. `timeout`, `retry`) will add variants
+/// to this enum.
+#[derive(Debug)]
+pub enum RxError {}
+
 /// Default capacity of the intermediate channels created by the operators.
 ///
 /// A bounded channel provides backpressure: a producer waits when the queue is
@@ -62,18 +70,17 @@ pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;
 /// ```rust,ignore
 /// use ice_rpc_rx::from;
 ///
-/// let stream: ice_rpc::Stream<i32, String> = from([1, 2, 3]);
+/// let stream = from([1, 2, 3]);
 /// ```
-pub fn from<T, E, I>(iter: I) -> ice_rpc::Stream<T, E>
+pub fn from<T, I>(iter: I) -> ice_rpc::Stream<T, RxError>
 where
     I: IntoIterator<Item = T>,
     T: Send + 'static,
-    E: Send + 'static,
 {
     // Collect upfront so the iterator itself does not need to be `Send`: only
     // the resulting `Vec<T>` is moved into the spawned task.
     let values: Vec<T> = iter.into_iter().collect();
-    let (tx, rx) = ice_rpc::channel::<T, E>(OPERATOR_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::channel::<T, RxError>(OPERATOR_CHANNEL_CAPACITY);
     ice_rpc::rt::spawn(async move {
         for value in values {
             if tx.send(ice_rpc::Event::Next(value)).await.is_err() {
@@ -95,16 +102,15 @@ where
 /// ```rust,ignore
 /// use ice_rpc_rx::of;
 ///
-/// let stream: ice_rpc::Stream<i32, String> = of(42);
+/// let stream = of(42);
 /// ```
-pub fn of<T, E>(value: T) -> ice_rpc::Stream<T, E>
+pub fn of<T>(value: T) -> ice_rpc::Stream<T, RxError>
 where
     T: Send + 'static,
-    E: Send + 'static,
 {
     // `of` emits the value as a transport-level `CompleteWith`, then the
     // returned stream is normalized so consumers observe `Next` + `Complete`.
-    let (tx, rx) = ice_rpc::channel::<T, E>(1);
+    let (tx, rx) = ice_rpc::channel::<T, RxError>(1);
     ice_rpc::rt::spawn(async move {
         let _ = tx.send(ice_rpc::Event::CompleteWith(value)).await;
     });
@@ -118,7 +124,7 @@ mod tests {
 
     #[test]
     fn from_emits_values_then_complete() {
-        let stream = from::<i32, String, _>([1, 2, 3]);
+        let stream = from([1, 2, 3]);
 
         let events = pollster::block_on(async {
             let mut out = Vec::new();
@@ -136,7 +142,7 @@ mod tests {
 
     #[test]
     fn of_emits_next_then_complete() {
-        let stream = of::<i32, String>(42);
+        let stream = of(42);
 
         let events = pollster::block_on(async {
             let mut out = Vec::new();

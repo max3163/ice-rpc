@@ -8,9 +8,13 @@ publish = false
 
 [features]
 tokio = ["ice-rpc/tokio"]
+http = ["ice-rpc/http"]
+http-tokio = ["ice-rpc/http-tokio"]
 
 [dependencies]
 ice-rpc = { path = "../ice-rpc" }
+futures-lite = "2"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 env_logger = "0.11"
@@ -20,6 +24,7 @@ async-trait = { workspace = true }
 rkyv = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = "1"
 log = { workspace = true }
 
 [[example]]
@@ -40,4 +45,8 @@ required-features = ["tokio"]
 
 [[example]]
 name = "benchmark-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "pipeline_bench"
 required-features = ["tokio"]

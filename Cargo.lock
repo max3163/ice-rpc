@@ -1012,6 +1012,7 @@ dependencies = [
  "iceoryx2-bb-system-types",
  "libc",
  "log",
+ "pin-project-lite",
  "pollster",
  "rkyv",
  "serde",
@@ -1055,13 +1056,16 @@ version = "0.2.2"
 dependencies = [
  "async-trait",
  "env_logger",
+ "futures-lite",
  "ice-rpc",
  "log",
+ "pin-project-lite",
  "pollster",
  "rkyv",
  "serde",
  "serde_json",
  "tokio",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

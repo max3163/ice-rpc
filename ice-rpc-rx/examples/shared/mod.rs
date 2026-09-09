@@ -12,7 +12,7 @@
 // the examples never enable.
 #![allow(dead_code)]
 
-use ice_rpc::{service, timeout, Observable, StreamError};
+use ice_rpc::{service, timeout, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
 
 // ── ConfigService ───────────────────────────────────────────────────
@@ -212,20 +212,4 @@ pub trait HttpService {
         &self,
         request: HttpRequestParams,
     ) -> Observable<HttpResponseParams, HttpError>;
-}
-
-/// Consumes the first value of an `Observable`, racing against the
-/// cancellation token.
-pub async fn first_or_cancel<T, E>(
-    observable: ice_rpc::Observable<T, E>,
-    cancel: &ice_rpc::CancellationToken,
-) -> Option<Result<T, StreamError<E>>> {
-    let stream = match observable {
-        Err(e) => return Some(Err(StreamError::Rpc(e))),
-        Ok(s) => s,
-    };
-    tokio::select! {
-        _ = cancel.cancelled() => None,
-        result = stream.first_value() => Some(result),
-    }
 }

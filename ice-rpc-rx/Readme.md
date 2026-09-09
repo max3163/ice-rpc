@@ -27,8 +27,9 @@ ice-rpc-rx = { path = "../ice-rpc-rx" }
 
 ## Operators
 
-Operators chain directly on the native `ice_rpc::Stream` type and return the
-native type, so they compose without any wrapper:
+Operators chain directly on the native `ice_rpc::Stream` type (or any poll-based
+stream of `ice_rpc::Event`) and return pull-based combinator streams, so they
+compose without any wrapper, channel allocation or spawned task:
 
 ```rust,ignore
 use ice_rpc_rx::RxStreamExt;
@@ -49,6 +50,8 @@ let top = stream
 - `map_err(f)` — maps the error type `E` to another one (`Fn(E) -> E2`); useful
   to adapt errors across layers.
 - `scan(initial, f)` — emits a running accumulator state after each value.
+- `switch_map(f)` — projects each value to an inner `Stream` and emits from the
+  latest one, cancelling previous subscriptions (RxJS `switchMap`).
 - `take(n)` — emits at most `n` values, then completes.
 - `skip(n)` — ignores the first `n` values (symmetric of `take`).
 - `first()` / `first_with(pred)` — emits only the first (matching) value.

@@ -11,7 +11,8 @@
 mod shared;
 
 use ice_rpc::StreamError;
-use shared::{first_or_cancel, HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+use ice_rpc_rx::RxStreamExt;
+use shared::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -111,14 +112,17 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
     let t_send = Instant::now();
 
-    let result = first_or_cancel(http.send_request(request).await, cancel).await;
+    let result = match http.send_request(request).await {
+        Ok(stream) => stream.take_until(cancel).first_value().await,
+        Err(e) => Err(StreamError::Rpc(e)),
+    };
 
     match result {
-        None => {
+        Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
             log::info!("   (cancelled by Ctrl+C)");
             false
         }
-        Some(Ok(response)) => {
+        Ok(response) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             let res_size = response.body.len()
                 + response.status_text.len()
@@ -150,10 +154,10 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
             true
         }
-        Some(Err(StreamError::Business(HttpError::PayloadTooLarge {
+        Err(StreamError::Business(HttpError::PayloadTooLarge {
             max_bytes,
             actual_bytes,
-        }))) => {
+        })) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Payload too large: {} max, {} sent  [{}]",
@@ -164,7 +168,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(StreamError::Business(e))) => {
+        Err(StreamError::Business(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Business error: {:?}  [{}]",
@@ -174,7 +178,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(StreamError::Rpc(e))) => {
+        Err(StreamError::Rpc(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] IPC error: {}  [{}]",
@@ -184,7 +188,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(StreamError::Empty)) => {
+        Err(StreamError::Empty) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::warn!(
                 "  ✗ [{}] No value received  [{}]",

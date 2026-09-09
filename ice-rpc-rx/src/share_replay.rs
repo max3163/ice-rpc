@@ -46,8 +46,9 @@ impl<T, E> ShareReplay<T, E> {
     ///
     /// let shared = ShareReplay::new(source_stream);
     /// ```
-    pub fn new(source: Stream<T, E>) -> Self
+    pub fn new<S>(source: S) -> Self
     where
+        S: futures_lite::Stream<Item = Event<T, E>> + Send + 'static,
         T: Clone + Send + 'static,
         E: Clone + Send + 'static,
     {
@@ -61,7 +62,12 @@ impl<T, E> ShareReplay<T, E> {
         }));
         let state_clone = state.clone();
         ice_rpc::rt::spawn(async move {
-            while let Ok(event) = source.recv().await {
+            let mut source = Box::pin(source);
+            while let Some(event) = futures_lite::future::poll_fn(|cx| {
+                futures_lite::Stream::poll_next(source.as_mut(), cx)
+            })
+            .await
+            {
                 let mut st = state_clone.lock().await;
                 match event {
                     Event::Next(v) => {

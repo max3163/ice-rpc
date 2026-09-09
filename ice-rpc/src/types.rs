@@ -11,6 +11,9 @@ use iceoryx2::prelude::*;
 pub use iceoryx2_bb_container::string::StaticString;
 use rkyv::{Archive, Deserialize, Serialize};
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 /// Compact identifier of an ice-rpc node on the iceoryx2 bus.
 ///
 /// Corresponds to the PID of the host process, guaranteeing uniqueness
@@ -214,15 +217,18 @@ impl<T, E> Sender<T, E> {
     }
 }
 
-/// Consumer-side receiver of RPC events.
-///
-/// [`Stream::recv`] yields user-facing [`Event`] values only — the transport
-/// `CompleteWith` optimization is normalized away. Raw transport events are
-/// available through [`Stream::recv_wire`] (used by the server relay).
-pub struct Stream<T, E> {
-    inner: async_channel::Receiver<WireEvent<T, E>>,
-    /// Buffered `Complete` left over after expanding a `CompleteWith`.
-    pending: std::sync::Arc<std::sync::Mutex<Option<Event<T, E>>>>,
+pin_project_lite::pin_project! {
+    /// Consumer-side receiver of RPC events.
+    ///
+    /// [`Stream::recv`] yields user-facing [`Event`] values only — the transport
+    /// `CompleteWith` optimization is normalized away. Raw transport events are
+    /// available through [`Stream::recv_wire`] (used by the server relay).
+    pub struct Stream<T, E> {
+        #[pin]
+        inner: async_channel::Receiver<WireEvent<T, E>>,
+        // Buffered `Complete` left over after expanding a `CompleteWith`.
+        pending: std::sync::Arc<std::sync::Mutex<Option<Event<T, E>>>>,
+    }
 }
 
 impl<T, E> Clone for Stream<T, E> {
@@ -307,6 +313,39 @@ impl<T, E> Stream<T, E> {
         }
         // Source closed without a terminal event: return what was collected.
         Ok(values)
+    }
+}
+
+impl<T, E> futures_lite::Stream for Stream<T, E> {
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        // A previous `CompleteWith` left a trailing `Complete` behind.
+        if let Some(event) = this
+            .pending
+            .lock()
+            .expect("stream pending lock poisoning")
+            .take()
+        {
+            return Poll::Ready(Some(event));
+        }
+
+        match futures_lite::Stream::poll_next(this.inner.as_mut(), cx) {
+            Poll::Ready(Some(WireEvent::CompleteWith(v))) => {
+                // Expand the single-sample optimization into `Next` + `Complete`.
+                *this.pending.lock().expect("stream pending lock poisoning") =
+                    Some(Event::Complete);
+                Poll::Ready(Some(Event::Next(v)))
+            }
+            Poll::Ready(Some(WireEvent::Next(v))) => Poll::Ready(Some(Event::Next(v))),
+            Poll::Ready(Some(WireEvent::Complete)) => Poll::Ready(Some(Event::Complete)),
+            Poll::Ready(Some(WireEvent::Error(e))) => Poll::Ready(Some(Event::Error(e))),
+            Poll::Ready(Some(WireEvent::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -703,6 +742,30 @@ mod tests {
             WireEvent::CompleteWith(v) => assert_eq!(v, 42),
             other => panic!("expected CompleteWith, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn stream_poll_next_normalizes_complete_with() {
+        let (tx, rx) = channel::<i32, String>(2);
+        pollster::block_on(tx.send_complete_with(5)).unwrap();
+        drop(tx);
+
+        let mut stream = Box::pin(rx);
+
+        let first = pollster::block_on(futures_lite::future::poll_fn(|cx| {
+            futures_lite::Stream::poll_next(stream.as_mut(), cx)
+        }));
+        assert!(matches!(first, Some(Event::Next(5))));
+
+        let second = pollster::block_on(futures_lite::future::poll_fn(|cx| {
+            futures_lite::Stream::poll_next(stream.as_mut(), cx)
+        }));
+        assert!(matches!(second, Some(Event::Complete)));
+
+        let third = pollster::block_on(futures_lite::future::poll_fn(|cx| {
+            futures_lite::Stream::poll_next(stream.as_mut(), cx)
+        }));
+        assert!(third.is_none());
     }
 
     #[test]

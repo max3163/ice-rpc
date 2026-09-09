@@ -2,13 +2,16 @@
 //!
 //! Reactive extensions for [`ice_rpc`] event streams, inspired by RxJS.
 //!
-//! This crate extends the native [`ice_rpc::Stream`] type with composable
-//! operators and provides multicast primitives, constructors and terminal
-//! consumption helpers:
+//! This crate extends any poll-based stream of [`ice_rpc::Event`] with
+//! composable operators and provides multicast primitives, constructors and
+//! terminal consumption helpers. Operators are pull-based combinators: a
+//! pipeline composes without allocating an intermediate channel or spawning a
+//! task per operator.
 //!
-//! - [`RxStreamExt`] — `map`, `filter`, `map_err`, `scan`, `take`, `skip`,
-//!   `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`, `timeout`
-//!   and `catch_error` operators applied directly on [`ice_rpc::Stream`].
+//! - [`RxStreamExt`] — `map`, `filter`, `map_err`, `scan`, `switch_map`, `take`,
+//!   `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`,
+//!   `timeout` and `catch_error` operators applied directly on
+//!   [`ice_rpc::Stream`].
 //! - [`merge`] — merges several streams into one.
 //! - [`retry`] — retries the underlying call on a business `Error`.
 //! - [`from`] — builds a stream from an iterator.
@@ -27,7 +30,7 @@
 //! // `stream` is the native type returned by an ice-rpc service.
 //! let stream: ice_rpc::Stream<i32, String> = proxy.foo().await?;
 //!
-//! // Operators chain on the native type and return the native type.
+//! // Operators chain on the native type and return poll-based combinator streams.
 //! let odds = stream
 //!     .filter(|v| *v % 2 == 1)
 //!     .map(|v| v * 10)
@@ -81,43 +84,40 @@ pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;
 
 #[cfg(test)]
 mod tests {
-    use super::{from, of};
+    use super::{from, of, RxStreamExt};
     use ice_rpc::Event;
+
+    async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
+    where
+        S: futures_lite::Stream<Item = Event<T, E>>,
+    {
+        let mut stream = Box::pin(stream);
+        let mut out = Vec::new();
+        while let Some(event) =
+            futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx))
+                .await
+        {
+            out.push(event);
+        }
+        out
+    }
 
     #[test]
     fn from_emits_values_then_complete() {
-        let stream = from([1, 2, 3]);
-
-        let events = pollster::block_on(async {
-            let mut out = Vec::new();
-            while let Ok(ev) = stream.recv().await {
-                match ev {
-                    Event::Next(v) => out.push(v),
-                    Event::Complete => break,
-                    other => panic!("unexpected event: {:?}", other),
-                }
-            }
-            out
-        });
-        assert_eq!(events, vec![1, 2, 3]);
+        let events = pollster::block_on(drain(from([1, 2, 3])));
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+        assert!(matches!(&events[2], Event::Next(v) if *v == 3));
+        assert!(matches!(&events[3], Event::Complete));
     }
 
     #[test]
     fn of_emits_next_then_complete() {
-        let stream = of(42);
-
-        let events = pollster::block_on(async {
-            let mut out = Vec::new();
-            while let Ok(ev) = stream.recv().await {
-                match ev {
-                    Event::Next(v) => out.push(v),
-                    Event::Complete => break,
-                    other => panic!("unexpected event: {:?}", other),
-                }
-            }
-            out
-        });
-        assert_eq!(events, vec![42]);
+        let events = pollster::block_on(drain(of(42)));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 42));
+        assert!(matches!(&events[1], Event::Complete));
     }
 
     #[test]

@@ -421,7 +421,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ice_rpc::run_provider!(
         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
-        ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("examples/config.toml")),
+        ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/config.toml"
+        ))),
         HttpServiceProxy::provide_with_init(HttpServiceImpl::new(100 * 1024 * 1024)),
     )
     .await

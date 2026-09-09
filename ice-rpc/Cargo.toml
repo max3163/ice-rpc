@@ -22,13 +22,14 @@ all-features = true
 # runtime.
 default = []
 # The HTTP gateway is built on trillium (runtime-agnostic core). Its runtime
-# adapter follows the selected runtime feature:
-# - `tokio`             → trillium-tokio
-# - `smol` / no feature → trillium-smol (async-global-executor)
+# adapter is selected by the `http-tokio` feature:
+# - `http` (alone)         → trillium-smol (async-global-executor, no tokio)
+# - `http` + `http-tokio`  → trillium-tokio (requires the `tokio` feature)
 http = ["dep:trillium", "dep:trillium-smol"]
-tokio = ["dep:tokio", "dep:trillium-tokio"]
+tokio = ["dep:tokio"]
 smol = ["dep:trillium-smol"]
-full = ["http", "tokio"]
+http-tokio = ["http", "tokio", "dep:trillium-tokio"]
+full = ["http", "tokio", "http-tokio"]
 
 [dependencies]
 ice-rpc-macros = { workspace = true }
@@ -46,6 +47,7 @@ base64 = { workspace = true }
 # Runtime-agnostic primitives used by the core.
 futures = "0.3"
 futures-lite = "2"
+pin-project-lite = "0.2"
 futures-timer = "3"
 async-channel = "2"
 async-lock = "3"

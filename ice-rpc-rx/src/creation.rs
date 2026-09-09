@@ -1,11 +1,16 @@
 //! Stream creation helpers.
 //!
-//! [`from`] and [`of`] build local [`ice_rpc::Stream`] values, mirroring the
-//! RxJS constructors of the same name.
+//! [`from`] and [`of`] build local poll-based streams, mirroring the RxJS
+//! constructors of the same name. They are lazy: values are emitted only once
+//! the consumer starts polling.
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::RxError;
+use ice_rpc::Event;
 
-/// Creates a [`ice_rpc::Stream`] from an iterator, emitting each value as `Next` then
+/// Creates a stream from an iterator, emitting each value as `Next` then
 /// `Complete`.
 ///
 /// Equivalent to RxJS `from`.
@@ -16,31 +21,46 @@ use crate::RxError;
 ///
 /// let stream = from([1, 2, 3]);
 /// ```
-pub fn from<T, I>(iter: I) -> ice_rpc::Stream<T, RxError>
+pub fn from<T, I>(iter: I) -> From<T>
 where
     I: IntoIterator<Item = T>,
-    T: Send + 'static,
 {
-    // Collect upfront so the iterator itself does not need to be `Send`: only
-    // the resulting `Vec<T>` is moved into the spawned task.
-    let values: Vec<T> = iter.into_iter().collect();
-    let (tx, rx) = ice_rpc::channel::<T, RxError>(crate::OPERATOR_CHANNEL_CAPACITY);
-    ice_rpc::rt::spawn(async move {
-        for value in values {
-            if tx.send_next(value).await.is_err() {
-                return;
-            }
-        }
-        let _ = tx.send_complete().await;
-    });
-    rx
+    From {
+        values: iter.into_iter().collect::<Vec<_>>().into_iter(),
+        done: false,
+    }
 }
 
-/// Creates a single-value [`ice_rpc::Stream`].
+pin_project_lite::pin_project! {
+    /// See [`from`].
+    pub struct From<T> {
+        values: std::vec::IntoIter<T>,
+        done: bool,
+    }
+}
+
+impl<T> futures_lite::Stream for From<T> {
+    type Item = Event<T, RxError>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        match this.values.next() {
+            Some(v) => Poll::Ready(Some(Event::Next(v))),
+            None => {
+                *this.done = true;
+                Poll::Ready(Some(Event::Complete))
+            }
+        }
+    }
+}
+
+/// Creates a single-value stream.
 ///
-/// Consumers observe the value as `Next` followed by `Complete`: the transport
-/// optimization `CompleteWith` is used internally and normalized away.
-/// Equivalent to RxJS `of`.
+/// Consumers observe the value as `Next` followed by `Complete`. Equivalent to
+/// RxJS `of`.
 ///
 /// # Example
 /// ```rust,ignore
@@ -48,16 +68,33 @@ where
 ///
 /// let stream = of(42);
 /// ```
-pub fn of<T>(value: T) -> ice_rpc::Stream<T, RxError>
-where
-    T: Send + 'static,
-{
-    // `of` emits the value as a transport-level `CompleteWith`, then the
-    // returned stream is normalized so consumers observe `Next` + `Complete`.
-    let (tx, rx) = ice_rpc::channel::<T, RxError>(1);
-    ice_rpc::rt::spawn(async move {
-        let _ = tx.send_complete_with(value).await;
-    });
-    // `Stream::recv` already normalizes `CompleteWith` into `Next` + `Complete`.
-    rx
+pub fn of<T>(value: T) -> Of<T> {
+    Of {
+        value: Some(value),
+        completed: false,
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`of`].
+    pub struct Of<T> {
+        value: Option<T>,
+        completed: bool,
+    }
+}
+
+impl<T> futures_lite::Stream for Of<T> {
+    type Item = Event<T, RxError>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if let Some(v) = this.value.take() {
+            return Poll::Ready(Some(Event::Next(v)));
+        }
+        if *this.completed {
+            return Poll::Ready(None);
+        }
+        *this.completed = true;
+        Poll::Ready(Some(Event::Complete))
+    }
 }

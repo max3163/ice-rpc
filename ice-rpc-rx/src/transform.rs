@@ -1,786 +1,998 @@
 //! Composable operators for [`ice_rpc::Stream`].
 //!
-//! The [`RxStreamExt`] trait extends the native [`ice_rpc::Stream`] type with
-//! several classic operators:
+//! The [`RxStreamExt`] trait extends any poll-based stream of [`ice_rpc::Event`]
+//! with the classic reactive operators. Operators are implemented as pull-based
+//! combinators: they wrap the source and implement `futures_lite::Stream`, so a
+//! pipeline `take(filter(map(source)))` pulls events through a call stack with
+//! no intermediate channel allocation and no spawned task.
 //!
+//! Available operators:
 //! - [`map`](RxStreamExt::map) — transforms every `Next` value;
 //! - [`filter`](RxStreamExt::filter) — keeps only the `Next` values matching a
 //!   predicate;
-//! - [`take`](RxStreamExt::take) — emits at most `n` `Next` values and then
+//! - [`take`](RxStreamExt::take) — emits at most `n` `Next` values then
 //!   completes;
+//! - [`skip`](RxStreamExt::skip) — ignores the first `n` values;
 //! - [`first`](RxStreamExt::first) — emits only the first `Next` value;
 //! - [`first_with`](RxStreamExt::first_with) — emits the first `Next` value
 //!   matching a predicate;
-//! - [`finalize`](RxStreamExt::finalize) — runs a callback once the stream
-//!   terminates;
-//! - [`tap`](RxStreamExt::tap) — runs a side effect on each value without
-//!   altering it;
-//! - [`delay`](RxStreamExt::delay) — delays every event by a duration;
-//! - [`catch_error`](RxStreamExt::catch_error) — replaces an `Error` with a
-//!   fallback value and completes;
+//! - [`start_with`](RxStreamExt::start_with) — prefixes the stream with a value;
 //! - [`map_err`](RxStreamExt::map_err) — maps the error type to another one;
 //! - [`scan`](RxStreamExt::scan) — emits a running accumulator state;
-//! - [`start_with`](RxStreamExt::start_with) — prefixes the stream with a value.
-//!
-//! Every operator returns the native [`ice_rpc::Stream`] type, so they compose
-//! without any wrapper or conversion.
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use ice_rpc_rx::RxStreamExt;
-//!
-//! let stream: ice_rpc::Stream<i32, String> = proxy.list().await?;
-//! let top = stream.filter(|v| *v > 0).map(|v| v * 2).take(3);
-//! ```
+//! - [`tap`](RxStreamExt::tap) — runs a side effect per value;
+//! - [`finalize`](RxStreamExt::finalize) — runs a callback once at termination;
+//! - [`catch_error`](RxStreamExt::catch_error) — replaces an `Error` with a
+//!   fallback value and completes;
+//! - [`delay`](RxStreamExt::delay) — delays every event;
+//! - [`timeout`](RxStreamExt::timeout) — emits `RpcError::Timeout` on silence;
+//! - [`switch_map`](RxStreamExt::switch_map) — projects each value to an inner
+//!   stream and emits from the latest one.
 
-use ice_rpc::{Event, Stream};
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-/// Extension trait adding reactive operators to the native [`ice_rpc::Stream`].
-pub trait RxStreamExt<T, E>: Sized {
-    /// Transforms every `Next` value with the mapping function `f`.
-    ///
-    /// `CompleteWith` is normalized to a mapped value as well, so consumers
-    /// always observe a uniform `Next` stream. Terminal events (`Complete`,
-    /// `Error`, `RpcError`) are forwarded unchanged.
-    ///
-    /// # Arguments
-    /// * `f` - Synchronous function applied to each emitted value.
-    ///
-    /// # Returns
-    /// A new [`Stream`] whose values are of type `U`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let doubled = stream.map(|v| v * 2);
-    /// ```
-    fn map<U, F>(self, f: F) -> Stream<U, E>
+use futures_lite::future::FutureExt;
+use ice_rpc::Event;
+
+/// Extension trait adding reactive operators to any poll-based stream of
+/// [`ice_rpc::Event`].
+pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
+    /// Transforms every `Next` value with `f`. Terminal events are forwarded
+    /// unchanged.
+    fn map<U, F>(self, f: F) -> Map<Self, F, T, U, E>
     where
-        T: Send + 'static,
-        E: Send + 'static,
-        U: Send + 'static,
-        F: Fn(T) -> U + Send + 'static;
+        F: FnMut(T) -> U,
+    {
+        Map::new(self, f)
+    }
 
-    /// Keeps only the `Next` values for which the predicate `f` returns `true`.
-    ///
-    /// Filtered values are simply dropped. Terminal events (`Complete`,
-    /// `Error`, `RpcError`, `CompleteWith`) are forwarded unchanged.
-    ///
-    /// # Arguments
-    /// * `f` - Predicate applied to each value by reference.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let positives = stream.filter(|v| *v > 0);
-    /// ```
-    fn filter<F>(self, f: F) -> Stream<T, E>
+    /// Keeps only the `Next` values for which `f` returns `true`.
+    fn filter<F>(self, f: F) -> Filter<Self, F, T, E>
     where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: Fn(&T) -> bool + Send + 'static;
+        F: FnMut(&T) -> bool,
+    {
+        Filter::new(self, f)
+    }
 
     /// Emits at most `n` `Next` values, then forces a `Complete`.
-    ///
-    /// If the source terminates before `n` values are emitted, the source
-    /// terminal event is forwarded as-is.
-    ///
-    /// # Arguments
-    /// * `n` - Maximum number of values to forward.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let first_three = stream.take(3);
-    /// ```
-    fn take(self, n: usize) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static;
-
-    /// Emits only the first `Next` value, then forces a `Complete`.
-    ///
-    /// Equivalent to [`first_with`](RxStreamExt::first_with) with an
-    /// always-true predicate. Terminal events are forwarded unchanged; if the
-    /// source completes without emitting a value, a bare `Complete` is emitted.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let first = stream.first();
-    /// ```
-    fn first(self) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static;
-
-    /// Emits the first `Next` value for which `predicate` returns `true`, then
-    /// forces a `Complete`.
-    ///
-    /// Non-matching values are dropped. If the source terminates without a
-    /// matching value, a bare `Complete` is emitted: the equivalent RxJS
-    /// `EmptyError` is not representable while [`crate::RxError`] remains
-    /// uninhabited.
-    ///
-    /// # Arguments
-    /// * `predicate` - Predicate applied to each value by reference.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let first_positive = stream.first_with(|v| *v > 0);
-    /// ```
-    fn first_with<F>(self, predicate: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnMut(&T) -> bool + Send + 'static;
-
-    /// Runs `f` exactly once when the stream terminates.
-    ///
-    /// The callback runs on `Complete`, `CompleteWith`, `Error`, `RpcError`,
-    /// or when the channel is closed (consumer dropped). It is the equivalent
-    /// of RxJS `finalize`.
-    ///
-    /// # Arguments
-    /// * `f` - Callback executed once at termination.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let stream = stream.finalize(|| println!("done"));
-    /// ```
-    fn finalize<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce() + Send + 'static;
-
-    /// Runs a side effect for every `Next` value without altering the stream.
-    ///
-    /// The callback is invoked by mutable reference, so it can maintain state.
-    /// Terminal events are forwarded unchanged.
-    ///
-    /// # Arguments
-    /// * `f` - Side effect applied to each value by reference.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let logged = stream.tap(|v| println!("value: {v}"));
-    /// ```
-    fn tap<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnMut(&T) + Send + 'static;
-
-    /// Delays every event by `duration` before forwarding it.
-    ///
-    /// # Arguments
-    /// * `duration` - Delay applied before each event is emitted.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use std::time::Duration;
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let delayed = stream.delay(Duration::from_millis(50));
-    /// ```
-    fn delay(self, duration: std::time::Duration) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static;
-
-    /// Replaces an `Error` with a fallback value and completes.
-    ///
-    /// When the source emits `Error(e)`, this operator emits `Next(f(e))`
-    /// followed by `Complete`, then stops. All other events are forwarded
-    /// unchanged.
-    ///
-    /// # Arguments
-    /// * `f` - Handler producing the recovery value from the error.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let safe = stream.catch_error(|e| {
-    ///     eprintln!("error: {e}");
-    ///     -1
-    /// });
-    /// ```
-    fn catch_error<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce(E) -> T + Send + 'static;
-
-    /// Transforms the error type `E` into `E2` with the mapping function `f`.
-    ///
-    /// Only `Error(e)` events are mapped; `Next`, `Complete` and `RpcError`
-    /// are forwarded unchanged. Useful to adapt errors across layers.
-    ///
-    /// # Arguments
-    /// * `f` - Synchronous function applied to each business error.
-    ///
-    /// # Returns
-    /// A new [`Stream`] whose error type is `E2`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let mapped = stream.map_err(|e| e.len());
-    /// ```
-    fn map_err<F, E2>(self, f: F) -> Stream<T, E2>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        E2: Send + 'static,
-        F: Fn(E) -> E2 + Send + 'static;
-
-    /// Accumulates every `Next` value into a running state, emitting the
-    /// updated state after each source value (non-terminal `reduce`).
-    ///
-    /// # Arguments
-    /// * `initial` - Initial accumulator state.
-    /// * `f` - Accumulator applied to the current state and each value.
-    ///
-    /// # Returns
-    /// A new [`Stream`] whose values are of type `U`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let running_sum = stream.scan(0, |acc, v| acc + v);
-    /// ```
-    fn scan<U, F>(self, initial: U, f: F) -> Stream<U, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        U: Clone + Send + 'static,
-        F: FnMut(U, T) -> U + Send + 'static;
-
-    /// Prefixes the stream with an initial `Next(value)`.
-    ///
-    /// The prefix is emitted before any source event, then the source is
-    /// forwarded unchanged. Useful to seed an empty `Subject`/`ShareReplay`.
-    ///
-    /// # Arguments
-    /// * `value` - Value emitted first.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use ice_rpc_rx::RxStreamExt;
-    ///
-    /// let stream: ice_rpc::Stream<i32, String> = proxy.numbers().await?;
-    /// let stream = stream.start_with(0);
-    /// ```
-    fn start_with(self, value: T) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static;
+    fn take(self, n: usize) -> Take<Self, T, E> {
+        Take::new(self, n)
+    }
 
     /// Ignores the first `n` `Next` values, then forwards the rest.
-    ///
-    /// Terminal events are forwarded unchanged, even when fewer than `n` values
-    /// are emitted before the source terminates.
-    ///
-    /// # Arguments
-    /// * `n` - Number of leading values to drop.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    fn skip(self, n: usize) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static;
+    fn skip(self, n: usize) -> Skip<Self, T, E> {
+        Skip::new(self, n)
+    }
 
-    /// Emits a technical `RpcError::Timeout` if no event arrives within
-    /// `duration`.
-    ///
-    /// The deadline is reset after every received event. Terminal events are
-    /// forwarded unchanged.
-    ///
-    /// # Arguments
-    /// * `duration` - Maximum silence before timing out.
-    ///
-    /// # Returns
-    /// A new [`Stream`] of the same type `(T, E)`.
-    fn timeout(self, duration: std::time::Duration) -> Stream<T, E>
+    /// Emits only the first `Next` value, then forces a `Complete`.
+    fn first(self) -> First<Self, fn(&T) -> bool, T, E> {
+        self.first_with((|_| true) as fn(&T) -> bool)
+    }
+
+    /// Emits the first `Next` value matching `predicate`, then completes.
+    fn first_with<F>(self, predicate: F) -> First<Self, F, T, E>
     where
-        T: Send + 'static,
-        E: Send + 'static;
+        F: FnMut(&T) -> bool,
+    {
+        First::new(self, predicate)
+    }
+
+    /// Prefixes the stream with an initial `Next(value)`.
+    fn start_with(self, value: T) -> StartWith<Self, T, E> {
+        StartWith::new(self, value)
+    }
+
+    /// Transforms the error type `E` into `E2` with `f`.
+    fn map_err<F, E2>(self, f: F) -> MapErr<Self, F, T, E, E2>
+    where
+        F: FnMut(E) -> E2,
+    {
+        MapErr::new(self, f)
+    }
+
+    /// Accumulates every `Next` value into a running state.
+    fn scan<U, F>(self, initial: U, f: F) -> Scan<Self, F, T, U, E>
+    where
+        U: Clone,
+        F: FnMut(U, T) -> U,
+    {
+        Scan::new(self, initial, f)
+    }
+
+    /// Runs a side effect on each `Next` value without altering it.
+    fn tap<F>(self, f: F) -> Tap<Self, F, T, E>
+    where
+        F: FnMut(&T),
+    {
+        Tap::new(self, f)
+    }
+
+    /// Runs `f` exactly once when the stream terminates.
+    fn finalize<F>(self, f: F) -> Finalize<Self, F, T, E>
+    where
+        F: FnOnce(),
+    {
+        Finalize::new(self, f)
+    }
+
+    /// Replaces an `Error` with a fallback value, then completes.
+    fn catch_error<F>(self, f: F) -> CatchError<Self, F, T, E>
+    where
+        F: FnOnce(E) -> T,
+    {
+        CatchError::new(self, f)
+    }
+
+    /// Delays every event by `duration`.
+    fn delay(self, duration: std::time::Duration) -> Delay<Self, T, E> {
+        Delay::new(self, duration)
+    }
+
+    /// Emits `RpcError::Timeout` if no event arrives within `duration`.
+    fn timeout(self, duration: std::time::Duration) -> Timeout<Self, T, E> {
+        Timeout::new(self, duration)
+    }
+
+    /// Projects each value to an inner stream and emits from the latest one,
+    /// cancelling previous subscriptions (RxJS `switchMap`).
+    fn switch_map<F, U>(self, f: F) -> SwitchMap<Self, F, T, U, E>
+    where
+        F: FnMut(T) -> ice_rpc::Stream<U, E>,
+    {
+        SwitchMap::new(self, f)
+    }
+
+    /// Emits `RpcError::Cancelled` and stops once `token` is cancelled (RxJS
+    /// `takeUntil`).
+    fn take_until(self, token: &ice_rpc::CancellationToken) -> TakeUntil<Self, T, E> {
+        TakeUntil::new(self, token.clone())
+    }
+
+    /// Awaits the first emitted value of the stream.
+    ///
+    /// Equivalent to `recv()` projected onto a `Result<T, StreamError<E>>`:
+    /// `Next(v)` → `Ok(v)`, `Error(e)` → `Business(e)`, `RpcError(e)` → `Rpc(e)`,
+    /// `Complete`/closed → `Empty`.
+    #[allow(async_fn_in_trait)]
+    async fn first_value(self) -> Result<T, ice_rpc::StreamError<E>>
+    where
+        Self: Sized,
+    {
+        let mut stream = Box::pin(self);
+        loop {
+            match futures_lite::future::poll_fn(|cx| {
+                futures_lite::Stream::poll_next(stream.as_mut(), cx)
+            })
+            .await
+            {
+                Some(Event::Next(v)) => return Ok(v),
+                Some(Event::Error(e)) => return Err(ice_rpc::StreamError::Business(e)),
+                Some(Event::RpcError(e)) => return Err(ice_rpc::StreamError::Rpc(e)),
+                Some(Event::Complete) | None => return Err(ice_rpc::StreamError::Empty),
+            }
+        }
+    }
+
+    /// Collects every emitted value into a `Vec`.
+    ///
+    /// The stream is consumed until `Complete` (or until it is closed). On
+    /// `Error`/`RpcError` the collected values are discarded and the error is
+    /// returned.
+    #[allow(async_fn_in_trait)]
+    async fn collect(self) -> Result<Vec<T>, ice_rpc::StreamError<E>>
+    where
+        Self: Sized,
+    {
+        let mut stream = Box::pin(self);
+        let mut values = Vec::new();
+        loop {
+            match futures_lite::future::poll_fn(|cx| {
+                futures_lite::Stream::poll_next(stream.as_mut(), cx)
+            })
+            .await
+            {
+                Some(Event::Next(v)) => values.push(v),
+                Some(Event::Complete) => return Ok(values),
+                Some(Event::Error(e)) => return Err(ice_rpc::StreamError::Business(e)),
+                Some(Event::RpcError(e)) => return Err(ice_rpc::StreamError::Rpc(e)),
+                None => return Ok(values),
+            }
+        }
+    }
 }
 
-impl<T, E> RxStreamExt<T, E> for Stream<T, E> {
+impl<S, T, E> RxStreamExt<T, E> for S where S: futures_lite::Stream<Item = Event<T, E>> + Sized {}
+
+pin_project_lite::pin_project! {
     /// See [`RxStreamExt::map`].
-    fn map<U, F>(self, f: F) -> Stream<U, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        U: Send + 'static,
-        F: Fn(T) -> U + Send + 'static,
-    {
-        // Bridge the source into a fresh channel: the operator returns the same
-        // native `Stream` type, so it composes with the other operators.
-        let (tx, rx) = ice_rpc::channel::<U, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                // Only `Next` values are mapped; terminal events are forwarded
-                // unchanged.
-                let mapped = match event {
-                    Event::Next(v) => Event::Next(f(v)),
-                    Event::Complete => Event::Complete,
-                    Event::Error(e) => Event::Error(e),
-                    Event::RpcError(e) => Event::RpcError(e),
-                };
-                if tx.send_event(mapped).await.is_err() {
-                    return;
-                }
-            }
-        });
-        rx
+    pub struct Map<S, F, T, U, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        _marker: PhantomData<(T, U, E)>,
     }
+}
 
+impl<S, F, T, U, E> Map<S, F, T, U, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, U, E> futures_lite::Stream for Map<S, F, T, U, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(T) -> U,
+{
+    type Item = Event<U, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next((this.f)(v)))),
+            Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
+            Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error(e))),
+            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
     /// See [`RxStreamExt::filter`].
-    fn filter<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: Fn(&T) -> bool + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                match event {
-                    // Only `Next` values are filtered; terminal events are
-                    // forwarded as-is.
-                    Event::Next(v) => {
-                        // The predicate decides whether to forward; stop as
-                        // soon as the consumer is gone.
-                        if f(&v) && tx.send_next(v).await.is_err() {
-                            return;
-                        }
-                    }
-                    other => {
-                        if tx.send_event(other).await.is_err() {
-                            return;
-                        }
+    pub struct Filter<S, F, T, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, E> Filter<S, F, T, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E> futures_lite::Stream for Filter<S, F, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(&T) -> bool,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(Event::Next(v))) => {
+                    if (this.f)(&v) {
+                        return Poll::Ready(Some(Event::Next(v)));
                     }
                 }
+                Poll::Ready(Some(other)) => return Poll::Ready(Some(other)),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
             }
-        });
-        rx
+        }
     }
+}
 
+pin_project_lite::pin_project! {
     /// See [`RxStreamExt::take`].
-    fn take(self, n: usize) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            // Number of `Next` values still allowed before completing.
-            let mut remaining = n;
-            while let Ok(event) = self.recv().await {
-                match event {
-                    Event::Next(v) => {
-                        // Budget exhausted: force a `Complete` and stop.
-                        if remaining == 0 {
-                            let _ = tx.send_complete().await;
-                            return;
-                        }
-                        remaining -= 1;
-                        if tx.send_next(v).await.is_err() {
-                            return;
-                        }
-                        // The last allowed value was sent: complete now.
-                        if remaining == 0 {
-                            let _ = tx.send_complete().await;
-                            return;
-                        }
-                    }
-                    other => {
-                        if tx.send_event(other).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        rx
+    pub struct Take<S, T, E> {
+        #[pin]
+        stream: S,
+        remaining: usize,
+        done: bool,
+        _marker: PhantomData<(T, E)>,
     }
+}
 
-    /// See [`RxStreamExt::first`].
-    fn first(self) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        // `first` is `first_with` with an always-true predicate: the first
-        // value observed is the one emitted.
-        self.first_with(|_| true)
+impl<S, T, E> Take<S, T, E> {
+    fn new(stream: S, n: usize) -> Self {
+        Self {
+            stream,
+            remaining: n,
+            done: false,
+            _marker: PhantomData,
+        }
     }
+}
 
-    /// See [`RxStreamExt::first_with`].
-    fn first_with<F>(self, mut predicate: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnMut(&T) -> bool + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                match event {
-                    Event::Next(v) => {
-                        // First matching value: emit it, then complete.
-                        if predicate(&v) {
-                            let _ = tx.send_next(v).await;
-                            let _ = tx.send_complete().await;
-                            return;
-                        }
-                        // Non-matching value: drop it and keep scanning.
-                    }
-                    Event::Complete => {
-                        // Source completed before any value: complete empty.
-                        let _ = tx.send_complete().await;
-                        return;
-                    }
-                    Event::Error(e) => {
-                        let _ = tx.send_error(e).await;
-                        return;
-                    }
-                    Event::RpcError(e) => {
-                        let _ = tx.send_event(Event::RpcError(e)).await;
-                        return;
-                    }
+impl<S, T, E> futures_lite::Stream for Take<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => {
+                if *this.remaining == 0 {
+                    *this.done = true;
+                    return Poll::Ready(Some(Event::Complete));
                 }
+                *this.remaining -= 1;
+                Poll::Ready(Some(Event::Next(v)))
             }
-        });
-        rx
+            Poll::Ready(Some(other)) => Poll::Ready(Some(other)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
+}
 
-    /// See [`RxStreamExt::finalize`].
-    fn finalize<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce() + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            // `FnOnce` is stored in an `Option` so it can be taken exactly once.
-            let mut f = Some(f);
-            while let Ok(event) = self.recv().await {
-                // A terminal event completes the stream.
-                let terminal = matches!(
-                    &event,
-                    Event::Complete | Event::Error(_) | Event::RpcError(_)
-                );
-                if tx.send_event(event).await.is_err() {
-                    // The consumer is gone: still run finalize, then stop.
-                    if let Some(cb) = f.take() {
-                        cb();
-                    }
-                    return;
-                }
-                if terminal {
-                    if let Some(cb) = f.take() {
-                        cb();
-                    }
-                    return;
-                }
-            }
-            // The source channel closed without an explicit terminal event.
-            if let Some(cb) = f.take() {
-                cb();
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::tap`].
-    fn tap<F>(self, mut f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnMut(&T) + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                // Apply the side effect on `Next` values only, then forward the
-                // event unchanged.
-                if let Event::Next(v) = &event {
-                    f(v);
-                }
-                if tx.send_event(event).await.is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::delay`].
-    fn delay(self, duration: std::time::Duration) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                // Delay every event (values and terminal events) before
-                // forwarding.
-                ice_rpc::rt::sleep(duration).await;
-                if tx.send_event(event).await.is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::catch_error`].
-    fn catch_error<F>(self, f: F) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        F: FnOnce(E) -> T + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            let mut f = Some(f);
-            while let Ok(event) = self.recv().await {
-                match event {
-                    Event::Error(e) => {
-                        // Recover once: emit the fallback value, then complete.
-                        if let Some(handler) = f.take() {
-                            let _ = tx.send_next(handler(e)).await;
-                        }
-                        let _ = tx.send_complete().await;
-                        return;
-                    }
-                    other => {
-                        if tx.send_event(other).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::map_err`].
-    fn map_err<F, E2>(self, f: F) -> Stream<T, E2>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        E2: Send + 'static,
-        F: Fn(E) -> E2 + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E2>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            while let Ok(event) = self.recv().await {
-                let mapped = match event {
-                    Event::Next(v) => Event::Next(v),
-                    Event::Complete => Event::Complete,
-                    Event::Error(e) => Event::Error(f(e)),
-                    Event::RpcError(e) => Event::RpcError(e),
-                };
-                if tx.send_event(mapped).await.is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::scan`].
-    fn scan<U, F>(self, initial: U, mut f: F) -> Stream<U, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-        U: Clone + Send + 'static,
-        F: FnMut(U, T) -> U + Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<U, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            // Running accumulator state, cloned on emission.
-            let mut acc = initial;
-            while let Ok(event) = self.recv().await {
-                match event {
-                    Event::Next(v) => {
-                        acc = f(acc, v);
-                        if tx.send_next(acc.clone()).await.is_err() {
-                            return;
-                        }
-                    }
-                    Event::Complete => {
-                        let _ = tx.send_complete().await;
-                        return;
-                    }
-                    Event::Error(e) => {
-                        let _ = tx.send_error(e).await;
-                        return;
-                    }
-                    Event::RpcError(e) => {
-                        let _ = tx.send_event(Event::RpcError(e)).await;
-                        return;
-                    }
-                }
-            }
-        });
-        rx
-    }
-
-    /// See [`RxStreamExt::start_with`].
-    fn start_with(self, value: T) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            // Emit the prefix first, then forward the source.
-            if tx.send_next(value).await.is_err() {
-                return;
-            }
-            while let Ok(event) = self.recv().await {
-                if tx.send_event(event).await.is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    }
-
+pin_project_lite::pin_project! {
     /// See [`RxStreamExt::skip`].
-    fn skip(self, n: usize) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            // Number of leading values still to drop.
-            let mut remaining = n;
-            while let Ok(event) = self.recv().await {
-                match event {
-                    Event::Next(v) => {
-                        if remaining > 0 {
-                            remaining -= 1;
-                            // Dropped: skip this value.
-                        } else if tx.send_next(v).await.is_err() {
-                            return;
-                        }
-                    }
-                    other => {
-                        if tx.send_event(other).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        rx
+    pub struct Skip<S, T, E> {
+        #[pin]
+        stream: S,
+        remaining: usize,
+        _marker: PhantomData<(T, E)>,
     }
+}
 
-    /// See [`RxStreamExt::timeout`].
-    fn timeout(self, duration: std::time::Duration) -> Stream<T, E>
-    where
-        T: Send + 'static,
-        E: Send + 'static,
-    {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
-        ice_rpc::rt::spawn(async move {
-            loop {
-                // Race the next event against the silence deadline.
-                let event = match ice_rpc::rt::timeout(duration, self.recv()).await {
-                    Err(_) => {
-                        // No event within `duration`: emit a technical timeout.
-                        let _ = tx
-                            .send_event(Event::RpcError(ice_rpc::RpcError::Timeout))
-                            .await;
-                        return;
+impl<S, T, E> Skip<S, T, E> {
+    fn new(stream: S, n: usize) -> Self {
+        Self {
+            stream,
+            remaining: n,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for Skip<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(Event::Next(v))) => {
+                    if *this.remaining > 0 {
+                        *this.remaining -= 1;
+                    } else {
+                        return Poll::Ready(Some(Event::Next(v)));
                     }
-                    Ok(Ok(event)) => event,
-                    Ok(Err(_)) => return, // source channel closed
-                };
-                let terminal = matches!(
-                    &event,
-                    Event::Complete | Event::Error(_) | Event::RpcError(_)
-                );
-                if tx.send_event(event).await.is_err() {
-                    return;
                 }
-                if terminal {
-                    return;
+                Poll::Ready(Some(other)) => return Poll::Ready(Some(other)),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::first_with`].
+    pub struct First<S, F, T, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        completed: bool,
+        done: bool,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, E> First<S, F, T, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            completed: false,
+            done: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E> futures_lite::Stream for First<S, F, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(&T) -> bool,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        if *this.completed {
+            *this.done = true;
+            return Poll::Ready(Some(Event::Complete));
+        }
+        loop {
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(Event::Next(v))) => {
+                    if (this.f)(&v) {
+                        *this.completed = true;
+                        return Poll::Ready(Some(Event::Next(v)));
+                    }
+                }
+                Poll::Ready(Some(other)) => {
+                    *this.done = true;
+                    return Poll::Ready(Some(other));
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::start_with`].
+    pub struct StartWith<S, T, E> {
+        #[pin]
+        stream: S,
+        first: Option<T>,
+        _marker: PhantomData<E>,
+    }
+}
+
+impl<S, T, E> StartWith<S, T, E> {
+    fn new(stream: S, value: T) -> Self {
+        Self {
+            stream,
+            first: Some(value),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for StartWith<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if let Some(value) = this.first.take() {
+            return Poll::Ready(Some(Event::Next(value)));
+        }
+        futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::map_err`].
+    pub struct MapErr<S, F, T, E, E2> {
+        #[pin]
+        stream: S,
+        f: F,
+        _marker: PhantomData<(T, E, E2)>,
+    }
+}
+
+impl<S, F, T, E, E2> MapErr<S, F, T, E, E2> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E, E2> futures_lite::Stream for MapErr<S, F, T, E, E2>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(E) -> E2,
+{
+    type Item = Event<T, E2>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
+            Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error((this.f)(e)))),
+            Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
+            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::scan`].
+    pub struct Scan<S, F, T, U, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        acc: Option<U>,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, U, E> Scan<S, F, T, U, E> {
+    fn new(stream: S, initial: U, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            acc: Some(initial),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, U, E> futures_lite::Stream for Scan<S, F, T, U, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    U: Clone,
+    F: FnMut(U, T) -> U,
+{
+    type Item = Event<U, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => {
+                let acc = this.acc.take().expect("scan accumulator");
+                let next = (this.f)(acc, v);
+                let out = next.clone();
+                *this.acc = Some(next);
+                Poll::Ready(Some(Event::Next(out)))
+            }
+            Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
+            Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error(e))),
+            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::tap`].
+    pub struct Tap<S, F, T, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, E> Tap<S, F, T, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E> futures_lite::Stream for Tap<S, F, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(&T),
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => {
+                (this.f)(&v);
+                Poll::Ready(Some(Event::Next(v)))
+            }
+            Poll::Ready(Some(other)) => Poll::Ready(Some(other)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::finalize`].
+    pub struct Finalize<S, F, T, E> {
+        #[pin]
+        stream: S,
+        f: Option<F>,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, E> Finalize<S, F, T, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f: Some(f),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E> futures_lite::Stream for Finalize<S, F, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnOnce(),
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(event)) => {
+                if event.is_terminal() {
+                    if let Some(f) = this.f.take() {
+                        f();
+                    }
+                }
+                Poll::Ready(Some(event))
+            }
+            Poll::Ready(None) => {
+                if let Some(f) = this.f.take() {
+                    f();
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::catch_error`].
+    pub struct CatchError<S, F, T, E> {
+        #[pin]
+        stream: S,
+        f: Option<F>,
+        completed: bool,
+        done: bool,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, F, T, E> CatchError<S, F, T, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f: Some(f),
+            completed: false,
+            done: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, E> futures_lite::Stream for CatchError<S, F, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnOnce(E) -> T,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        if *this.completed {
+            *this.done = true;
+            return Poll::Ready(Some(Event::Complete));
+        }
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
+            Poll::Ready(Some(Event::Error(e))) => match this.f.take() {
+                Some(f) => {
+                    *this.completed = true;
+                    Poll::Ready(Some(Event::Next(f(e))))
+                }
+                None => {
+                    *this.done = true;
+                    Poll::Ready(Some(Event::Complete))
+                }
+            },
+            Poll::Ready(Some(other)) => {
+                *this.done = true;
+                Poll::Ready(Some(other))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::delay`].
+    pub struct Delay<S, T, E> {
+        #[pin]
+        stream: S,
+        duration: std::time::Duration,
+        pending: Option<Event<T, E>>,
+        sleep: Option<futures_lite::future::Boxed<()>>,
+    }
+}
+
+impl<S, T, E> Delay<S, T, E> {
+    fn new(stream: S, duration: std::time::Duration) -> Self {
+        Self {
+            stream,
+            duration,
+            pending: None,
+            sleep: None,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for Delay<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            if this.pending.is_some() {
+                let ready = this
+                    .sleep
+                    .as_mut()
+                    .expect("sleep future present when an event is pending")
+                    .as_mut()
+                    .poll(cx);
+                match ready {
+                    Poll::Ready(()) => {
+                        *this.sleep = None;
+                        let event = this.pending.take().expect("pending event");
+                        return Poll::Ready(Some(event));
+                    }
+                    Poll::Pending => return Poll::Pending,
                 }
             }
-        });
-        rx
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(event)) => {
+                    *this.pending = Some(event);
+                    *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::timeout`].
+    pub struct Timeout<S, T, E> {
+        #[pin]
+        stream: S,
+        duration: std::time::Duration,
+        sleep: Option<futures_lite::future::Boxed<()>>,
+        done: bool,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, T, E> Timeout<S, T, E> {
+    fn new(stream: S, duration: std::time::Duration) -> Self {
+        Self {
+            stream,
+            duration,
+            sleep: None,
+            done: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for Timeout<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        if this.sleep.is_none() {
+            *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+        }
+        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            Poll::Ready(Some(event)) => {
+                // Reset the silence deadline after every received event.
+                *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+                if event.is_terminal() {
+                    *this.done = true;
+                }
+                Poll::Ready(Some(event))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => match this.sleep.as_mut().expect("sleep future").as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    *this.done = true;
+                    Poll::Ready(Some(Event::RpcError(ice_rpc::RpcError::Timeout)))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::switch_map`].
+    pub struct SwitchMap<S, F, T, U, E> {
+        #[pin]
+        stream: S,
+        f: F,
+        #[pin]
+        inner: Option<ice_rpc::Stream<U, E>>,
+        done: bool,
+        _marker: PhantomData<T>,
+    }
+}
+
+impl<S, F, T, U, E> SwitchMap<S, F, T, U, E> {
+    fn new(stream: S, f: F) -> Self {
+        Self {
+            stream,
+            f,
+            inner: None,
+            done: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, U, E> futures_lite::Stream for SwitchMap<S, F, T, U, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    F: FnMut(T) -> ice_rpc::Stream<U, E>,
+{
+    type Item = Event<U, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            if *this.done {
+                return Poll::Ready(None);
+            }
+            if this.inner.is_some() {
+                let result = {
+                    let inner = this.inner.as_mut().as_pin_mut().expect("inner stream");
+                    futures_lite::Stream::poll_next(inner, cx)
+                };
+                match result {
+                    Poll::Ready(Some(Event::Next(u))) => return Poll::Ready(Some(Event::Next(u))),
+                    Poll::Ready(Some(Event::Complete)) => {
+                        this.inner.set(None);
+                    }
+                    Poll::Ready(Some(Event::Error(e))) => {
+                        *this.done = true;
+                        return Poll::Ready(Some(Event::Error(e)));
+                    }
+                    Poll::Ready(Some(Event::RpcError(e))) => {
+                        *this.done = true;
+                        return Poll::Ready(Some(Event::RpcError(e)));
+                    }
+                    Poll::Ready(None) => {
+                        this.inner.set(None);
+                    }
+                    Poll::Pending => {}
+                }
+            }
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(Event::Next(v))) => {
+                    this.inner.set(Some((this.f)(v)));
+                }
+                Poll::Ready(Some(Event::Complete)) => {
+                    *this.done = true;
+                    return Poll::Ready(Some(Event::Complete));
+                }
+                Poll::Ready(Some(Event::Error(e))) => {
+                    *this.done = true;
+                    return Poll::Ready(Some(Event::Error(e)));
+                }
+                Poll::Ready(Some(Event::RpcError(e))) => {
+                    *this.done = true;
+                    return Poll::Ready(Some(Event::RpcError(e)));
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`RxStreamExt::take_until`].
+    pub struct TakeUntil<S, T, E> {
+        #[pin]
+        stream: S,
+        token: ice_rpc::CancellationToken,
+        done: bool,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, T, E> TakeUntil<S, T, E> {
+    fn new(stream: S, token: ice_rpc::CancellationToken) -> Self {
+        Self {
+            stream,
+            token,
+            done: false,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for TakeUntil<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        if this.token.is_cancelled() {
+            *this.done = true;
+            return Poll::Ready(Some(Event::RpcError(ice_rpc::RpcError::Cancelled)));
+        }
+        futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+
     use super::RxStreamExt;
     use crate::{from, of};
     use ice_rpc::Event;
+
+    /// Drains a poll-based stream to completion.
+    async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
+    where
+        S: futures_lite::Stream<Item = Event<T, E>>,
+    {
+        let mut stream = Box::pin(stream);
+        let mut out = Vec::new();
+        while let Some(event) =
+            futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx))
+                .await
+        {
+            out.push(event);
+        }
+        out
+    }
+
+    /// Reads the next event from a boxed, pinned stream.
+    async fn next_event<S, T, E>(stream: &mut Pin<Box<S>>) -> Option<Event<T, E>>
+    where
+        S: futures_lite::Stream<Item = Event<T, E>>,
+    {
+        futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx))
+            .await
+    }
 
     #[test]
     fn map_filter_take_pipeline() {
@@ -795,18 +1007,12 @@ mod tests {
 
         let stream = rx.filter(|v| *v % 2 == 1).map(|v| v * 10).take(3);
 
-        let collected = pollster::block_on(async {
-            let mut out = Vec::new();
-            while let Ok(ev) = stream.recv().await {
-                match ev {
-                    Event::Next(v) => out.push(v),
-                    Event::Complete => break,
-                    other => panic!("unexpected event: {:?}", other),
-                }
-            }
-            out
-        });
-        assert_eq!(collected, vec![10, 30, 50]);
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 10));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 30));
+        assert!(matches!(&events[2], Event::Next(v) if *v == 50));
+        assert!(matches!(&events[3], Event::Complete));
     }
 
     #[test]
@@ -823,20 +1029,48 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
-        let collected = pollster::block_on(async {
-            let mut out = Vec::new();
-            while let Ok(ev) = stream.recv().await {
-                match ev {
-                    Event::Next(v) => out.push(v),
-                    Event::Complete => break,
-                    other => panic!("unexpected event: {:?}", other),
-                }
-            }
-            out
-        });
-        assert_eq!(collected, vec![1]);
-        // Give the background task a moment to run finalize after Complete.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Complete));
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finalize_runs_on_source_channel_close() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let finalized = Arc::new(AtomicBool::new(false));
+        let flag = finalized.clone();
+        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finalize_runs_on_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let finalized = Arc::new(AtomicBool::new(false));
+        let flag = finalized.clone();
+        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
+
+        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
         assert!(finalized.load(Ordering::SeqCst));
     }
 
@@ -857,173 +1091,8 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
-        pollster::block_on(async { while stream.recv().await.is_ok() {} });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        pollster::block_on(drain(stream));
         assert_eq!(seen.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn delay_postpones_events() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.delay(std::time::Duration::from_millis(20));
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        drop(tx);
-
-        let start = std::time::Instant::now();
-        let event = pollster::block_on(stream.recv());
-        let elapsed = start.elapsed();
-
-        assert!(matches!(event, Ok(Event::Next(1))));
-        assert!(elapsed >= std::time::Duration::from_millis(15));
-    }
-
-    #[test]
-    fn catch_error_replaces_error_with_fallback() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.catch_error(|_| -1);
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(async {
-            let mut out = Vec::new();
-            while let Ok(ev) = stream.recv().await {
-                match ev {
-                    Event::Next(v) => out.push(v),
-                    Event::Complete => break,
-                    other => panic!("unexpected event: {:?}", other),
-                }
-            }
-            out
-        });
-        assert_eq!(events, vec![1, -1]);
-    }
-
-    /// Collects every event until the operator closes its output channel.
-    async fn drain<T, E>(stream: &ice_rpc::Stream<T, E>) -> Vec<Event<T, E>> {
-        let mut out = Vec::new();
-        while let Ok(ev) = stream.recv().await {
-            out.push(ev);
-        }
-        out
-    }
-
-    #[test]
-    fn map_maps_normalized_single_value() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.map(|v| v * 2);
-
-        pollster::block_on(tx.send_complete_with(5)).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Event::Next(v) if *v == 10));
-        assert!(matches!(&events[1], Event::Complete));
-    }
-
-    #[test]
-    fn map_forwards_terminal_events_unchanged() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.map(|v| v * 2);
-
-        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
-        pollster::block_on(tx.send_event(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
-        assert!(matches!(&events[1], Event::RpcError(_)));
-    }
-
-    #[test]
-    fn filter_normalizes_complete_with_as_value() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.filter(|v| *v % 2 == 1);
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        pollster::block_on(tx.send_next(2)).unwrap();
-        pollster::block_on(tx.send_complete_with(9)).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
-        assert!(matches!(&events[1], Event::Next(v) if *v == 9));
-        assert!(matches!(&events[2], Event::Complete));
-    }
-
-    #[test]
-    fn take_zero_completes_without_forwarding() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.take(0);
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Complete));
-    }
-
-    #[test]
-    fn take_forwards_source_terminal_before_limit() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let stream = rx.take(5);
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        pollster::block_on(tx.send_next(2)).unwrap();
-        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
-        assert!(matches!(&events[1], Event::Next(v) if *v == 2));
-        assert!(matches!(&events[2], Event::Error(e) if e.as_str() == "boom"));
-    }
-
-    #[test]
-    fn finalize_runs_on_source_channel_close() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let finalized = Arc::new(AtomicBool::new(false));
-        let flag = finalized.clone();
-        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
-
-        pollster::block_on(tx.send_next(1)).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(finalized.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn finalize_runs_on_error() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
-        let finalized = Arc::new(AtomicBool::new(false));
-        let flag = finalized.clone();
-        let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
-
-        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
-        drop(tx);
-
-        let events = pollster::block_on(drain(&stream));
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(finalized.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1042,11 +1111,28 @@ mod tests {
         pollster::block_on(tx.send_error("boom".to_string())).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Error(e) if e.as_str() == "boom"));
         assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn delay_postpones_events() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.delay(std::time::Duration::from_millis(20));
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        drop(tx);
+
+        let mut stream = Box::pin(stream);
+        let start = std::time::Instant::now();
+        let event = pollster::block_on(next_event(&mut stream));
+        let elapsed = start.elapsed();
+
+        assert!(matches!(event, Some(Event::Next(1))));
+        assert!(elapsed >= std::time::Duration::from_millis(15));
     }
 
     #[test]
@@ -1057,12 +1143,29 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
+        let mut stream = Box::pin(stream);
         let start = std::time::Instant::now();
-        let event = pollster::block_on(stream.recv());
+        let event = pollster::block_on(next_event(&mut stream));
         let elapsed = start.elapsed();
 
-        assert!(matches!(event, Ok(Event::Complete)));
+        assert!(matches!(event, Some(Event::Complete)));
         assert!(elapsed >= std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn catch_error_replaces_error_with_fallback() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.catch_error(|_| -1);
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == -1));
+        assert!(matches!(&events[2], Event::Complete));
     }
 
     #[test]
@@ -1081,7 +1184,7 @@ mod tests {
         pollster::block_on(tx.send_event(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::RpcError(_)));
         assert!(!called.load(Ordering::SeqCst));
@@ -1104,7 +1207,7 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Complete));
@@ -1112,10 +1215,86 @@ mod tests {
     }
 
     #[test]
+    fn map_maps_normalized_single_value() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.map(|v| v * 2);
+
+        pollster::block_on(tx.send_complete_with(5)).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 10));
+        assert!(matches!(&events[1], Event::Complete));
+    }
+
+    #[test]
+    fn map_forwards_terminal_events_unchanged() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.map(|v| v * 2);
+
+        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
+        pollster::block_on(tx.send_event(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(&events[1], Event::RpcError(_)));
+    }
+
+    #[test]
+    fn filter_normalizes_complete_with_as_value() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.filter(|v| *v % 2 == 1);
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        pollster::block_on(tx.send_next(2)).unwrap();
+        pollster::block_on(tx.send_complete_with(9)).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 9));
+        assert!(matches!(&events[2], Event::Complete));
+    }
+
+    #[test]
+    fn take_zero_completes_without_forwarding() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.take(0);
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Complete));
+    }
+
+    #[test]
+    fn take_forwards_source_terminal_before_limit() {
+        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
+        let stream = rx.take(5);
+
+        pollster::block_on(tx.send_next(1)).unwrap();
+        pollster::block_on(tx.send_next(2)).unwrap();
+        pollster::block_on(tx.send_error("boom".to_string())).unwrap();
+        drop(tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+        assert!(matches!(&events[2], Event::Error(e) if e.as_str() == "boom"));
+    }
+
+    #[test]
     fn first_emits_only_first_value() {
         let stream = from([1, 2, 3]).first();
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Complete));
@@ -1125,7 +1304,7 @@ mod tests {
     fn first_with_emits_first_matching_value() {
         let stream = from([1, 2, 3]).first_with(|v| *v >= 2);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 2));
         assert!(matches!(&events[1], Event::Complete));
@@ -1139,7 +1318,7 @@ mod tests {
         pollster::block_on(tx.send_error("boom".to_string())).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
     }
@@ -1148,7 +1327,7 @@ mod tests {
     fn first_completes_empty_when_no_value() {
         let stream = from(std::iter::empty::<i32>()).first();
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::Complete));
     }
@@ -1157,7 +1336,7 @@ mod tests {
     fn first_with_completes_empty_when_no_match() {
         let stream = from([1, 2, 3]).first_with(|v| *v > 10);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], Event::Complete));
     }
@@ -1166,7 +1345,7 @@ mod tests {
     fn first_with_matches_single_of_value() {
         let stream = of(7).first_with(|v| *v > 5);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 7));
         assert!(matches!(&events[1], Event::Complete));
@@ -1181,7 +1360,7 @@ mod tests {
         pollster::block_on(tx.send_error("boom".to_string())).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Error(n) if *n == 4));
@@ -1191,7 +1370,7 @@ mod tests {
     fn scan_emits_running_accumulator() {
         let stream = from([1, 2, 3]).scan(0, |acc, v| acc + v);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 4);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Next(v) if *v == 3));
@@ -1203,7 +1382,7 @@ mod tests {
     fn start_with_prefixes_initial_value() {
         let stream = of(1).start_with(0);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], Event::Next(v) if *v == 0));
         assert!(matches!(&events[1], Event::Next(v) if *v == 1));
@@ -1214,7 +1393,7 @@ mod tests {
     fn skip_drops_leading_values() {
         let stream = from([1, 2, 3, 4]).skip(2);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], Event::Next(v) if *v == 3));
         assert!(matches!(&events[1], Event::Next(v) if *v == 4));
@@ -1226,9 +1405,9 @@ mod tests {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
         let stream = rx.timeout(std::time::Duration::from_millis(20));
 
-        // Keep the sender alive but silent: the deadline must fire.
-        let event = pollster::block_on(stream.recv());
-        assert!(matches!(event, Ok(Event::RpcError(_))));
+        let mut stream = Box::pin(stream);
+        let event = pollster::block_on(next_event(&mut stream));
+        assert!(matches!(event, Some(Event::RpcError(_))));
 
         drop(tx);
     }
@@ -1242,9 +1421,125 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
-        let events = pollster::block_on(drain(&stream));
+        let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Complete));
+    }
+
+    #[test]
+    fn switch_map_switches_to_latest_inner_and_cancels_previous() {
+        use std::sync::{Arc, Mutex};
+
+        let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
+        let senders: Arc<Mutex<Vec<ice_rpc::Sender<i32, String>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+
+        let senders_for_task = senders.clone();
+        let stream = outer_rx.switch_map(move |_| {
+            let (tx, rx) = ice_rpc::channel::<i32, String>(8);
+            senders_for_task.lock().unwrap().push(tx);
+            rx
+        });
+
+        pollster::block_on(outer_tx.send_next(1)).unwrap();
+        pollster::block_on(outer_tx.send_next(2)).unwrap();
+
+        let mut stream = Box::pin(stream);
+        // A single poll drives the lazy combinator: it consumes both source
+        // values and subscribes twice.
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let _ = futures_lite::Stream::poll_next(stream.as_mut(), &mut cx);
+        assert_eq!(senders.lock().unwrap().len(), 2);
+
+        let inner2_tx = senders.lock().unwrap()[1].clone();
+        pollster::block_on(inner2_tx.send_next(20)).unwrap();
+
+        assert!(matches!(
+            pollster::block_on(next_event(&mut stream)),
+            Some(Event::Next(v)) if v == 20
+        ));
+
+        let inner1_tx = senders.lock().unwrap()[0].clone();
+        assert!(pollster::block_on(inner1_tx.send_next(10)).is_err());
+
+        pollster::block_on(outer_tx.send_complete()).unwrap();
+        drop(outer_tx);
+
+        assert!(matches!(
+            pollster::block_on(next_event(&mut stream)),
+            Some(Event::Complete)
+        ));
+    }
+
+    #[test]
+    fn switch_map_forwards_inner_error() {
+        let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
+        let (inner_tx, inner_rx) = ice_rpc::channel::<i32, String>(8);
+
+        let stream = outer_rx.switch_map(move |_| inner_rx.clone());
+
+        pollster::block_on(outer_tx.send_next(1)).unwrap();
+        pollster::block_on(inner_tx.send_error("boom".to_string())).unwrap();
+        drop(outer_tx);
+        drop(inner_tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+    }
+
+    #[test]
+    fn switch_map_ignores_inner_complete() {
+        let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
+        let (inner1_tx, inner1_rx) = ice_rpc::channel::<i32, String>(8);
+        let (inner2_tx, inner2_rx) = ice_rpc::channel::<i32, String>(8);
+
+        let stream = outer_rx.switch_map(move |v| {
+            if v == 1 {
+                inner1_rx.clone()
+            } else {
+                inner2_rx.clone()
+            }
+        });
+
+        pollster::block_on(outer_tx.send_next(1)).unwrap();
+        pollster::block_on(inner1_tx.send_complete()).unwrap();
+        pollster::block_on(outer_tx.send_next(2)).unwrap();
+        pollster::block_on(inner2_tx.send_next(20)).unwrap();
+        pollster::block_on(outer_tx.send_complete()).unwrap();
+        drop(outer_tx);
+        drop(inner1_tx);
+        drop(inner2_tx);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 20));
+        assert!(matches!(&events[1], Event::Complete));
+    }
+
+    #[test]
+    fn take_until_emits_cancelled_when_token_fires() {
+        let token = ice_rpc::CancellationToken::new();
+        token.cancel();
+        let stream = from([1, 2, 3]).take_until(&token);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], Event::RpcError(_)));
+    }
+
+    #[test]
+    fn take_until_forwards_values_when_not_cancelled() {
+        let token = ice_rpc::CancellationToken::new();
+        let stream = from([1, 2, 3]).take_until(&token);
+
+        let events = pollster::block_on(drain(stream));
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+        assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+        assert!(matches!(&events[2], Event::Next(v) if *v == 3));
+        assert!(matches!(&events[3], Event::Complete));
     }
 }

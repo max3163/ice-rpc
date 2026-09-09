@@ -442,10 +442,10 @@ pub async fn start_http_server(
         signal_swansong.shut_down().await;
     });
 
-    // The runtime adapter follows the selected runtime feature:
-    // - `tokio`             → trillium-tokio
-    // - `smol` / no feature → trillium-smol (async-global-executor)
-    #[cfg(feature = "tokio")]
+    // The runtime adapter is selected by the `http-tokio` feature:
+    // - `http-tokio` → trillium-tokio (HTTP server on the tokio runtime)
+    // - otherwise    → trillium-smol (runtime-agnostic, no tokio required)
+    #[cfg(feature = "http-tokio")]
     {
         trillium_tokio::config()
             .with_port(port)
@@ -456,7 +456,7 @@ pub async fn start_http_server(
             .await;
     }
 
-    #[cfg(not(feature = "tokio"))]
+    #[cfg(not(feature = "http-tokio"))]
     {
         trillium_smol::config()
             .with_port(port)

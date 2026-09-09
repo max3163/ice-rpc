@@ -16,9 +16,10 @@
 mod shared;
 
 use ice_rpc::StreamError;
+use ice_rpc_rx::RxStreamExt;
 use shared::{
-    first_or_cancel, ContextEntry, ContextError, ContextService, ContextServiceProxy,
-    DatabaseError, DatabaseService, DatabaseServiceProxy, PersonneInfo, PersonneQuery,
+    ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError,
+    DatabaseService, DatabaseServiceProxy, PersonneInfo, PersonneQuery,
 };
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -73,13 +74,16 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
         ($label:expr, $query:expr, $handler:expr) => {{
             log::info!("-> {}", $label);
             let t_send = Instant::now();
-            let observable = $query;
-            match first_or_cancel(observable, cancel).await {
-                None => {
+            let result = match $query {
+                Ok(stream) => stream.take_until(cancel).first_value().await,
+                Err(e) => Err(StreamError::Rpc(e)),
+            };
+            match result {
+                Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
-                Some(result) => {
+                result => {
                     let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
                     $handler(result, elapsed_ms);
                 }
@@ -219,13 +223,16 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
         ($label:expr, $query:expr, $handler:expr) => {{
             log::info!("-> {}", $label);
             let t_send = Instant::now();
-            let observable = $query;
-            match first_or_cancel(observable, cancel).await {
-                None => {
+            let result = match $query {
+                Ok(stream) => stream.take_until(cancel).first_value().await,
+                Err(e) => Err(StreamError::Rpc(e)),
+            };
+            match result {
+                Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
-                Some(result) => {
+                result => {
                     let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
                     $handler(result, elapsed_ms);
                 }

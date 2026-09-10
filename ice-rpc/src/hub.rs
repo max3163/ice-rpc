@@ -6,7 +6,7 @@
 //! subscribers and routes messages to the registered handlers.
 
 use crate::types::{
-    node_default_topic, node_large_topic, node_notify_topic, NodeId, RpcHeader,
+    node_default_topic, node_large_topic, node_notify_topic, raw_pid_to_u32, NodeId, RpcHeader,
     LARGE_PAYLOAD_THRESHOLD,
 };
 use iceoryx2::port::DegradationAction;
@@ -670,7 +670,7 @@ impl NodeHub {
                     // iceoryx2's native header carries the sender's node id
                     // (hence its PID): the caller is authenticated by the
                     // transport instead of trusting a payload field.
-                    let caller = NodeId(sample.header().node_id().pid().value());
+                    let caller = NodeId(raw_pid_to_u32(sample.header().node_id().pid().value()));
                     for handler in handlers {
                         handler(hdr, caller, payload);
                     }

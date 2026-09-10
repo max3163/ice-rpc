@@ -61,12 +61,12 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
 // ── Wire types, provider primitives, correlation ids and constants ───
 pub use crate::types::{
-    caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, unbounded_channel,
-    EventKind, NodeId, RpcHeader, Sender, StaticString, WireEvent, BLACKBOARD_MAX_READERS,
-    DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS, INIT_RETRY_INTERVAL_MS,
-    LARGE_PAYLOAD_THRESHOLD, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN, PROTOCOL_VERSION,
-    PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS,
-    SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
+    caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, raw_pid_to_u32,
+    unbounded_channel, EventKind, NodeId, RpcHeader, Sender, StaticString, WireEvent,
+    BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
+    INIT_RETRY_INTERVAL_MS, LARGE_PAYLOAD_THRESHOLD, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN,
+    PROTOCOL_VERSION, PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN,
+    RPC_CALL_TIMEOUT_SECS, SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
 };
 
 // Canonical terminal implementations, shared with `ice-rpc-rx` so that the

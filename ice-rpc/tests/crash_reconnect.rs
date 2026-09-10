@@ -17,6 +17,7 @@ use ice_rpc::gen::iceoryx2::prelude::{
     CallbackProgression, Config, Node, NodeState, SemanticString,
 };
 use ice_rpc::gen::iceoryx2::service::ipc_threadsafe::Service;
+use ice_rpc::gen::raw_pid_to_u32;
 
 /// Set in the child process to make it act as the provider.
 const CHILD_ENV: &str = "ICE_RPC_C7_CHILD";
@@ -165,7 +166,7 @@ fn dump_nodes() -> Vec<(u32, &'static str)> {
             NodeState::Inaccessible(_) => "Inaccessible",
             NodeState::Undefined(_) => "Undefined",
         };
-        rows.push((state.node_id().pid().value(), label));
+        rows.push((raw_pid_to_u32(state.node_id().pid().value()), label));
         CallbackProgression::Continue
     });
     rows

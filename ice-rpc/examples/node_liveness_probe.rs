@@ -23,6 +23,7 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+use ice_rpc::gen::raw_pid_to_u32;
 use iceoryx2::prelude::*;
 
 fn setup() {
@@ -44,7 +45,7 @@ fn label<S: Service>(state: &NodeState<S>) -> &'static str {
 fn scan() -> Vec<(u32, &'static str)> {
     let mut out = Vec::new();
     Node::<ipc_threadsafe::Service>::list(Config::global_config(), |state| {
-        out.push((state.node_id().pid().value(), label(&state)));
+        out.push((raw_pid_to_u32(state.node_id().pid().value()), label(&state)));
         CallbackProgression::Continue
     })
     .expect("Node::list failed");

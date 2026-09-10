@@ -10,7 +10,8 @@
 //      is `Send + Sync` and compatible with `RwLock<Mode>`.
 // =============================================================================
 
-use ice_rpc::{self, Observable, ServiceInit, ServiceNamed};
+use ice_rpc::gen::ServiceNamed;
+use ice_rpc::{self, Observable, ServiceInit};
 use ice_rpc_macros::service;
 
 // -----------------------------------------------------------------------------

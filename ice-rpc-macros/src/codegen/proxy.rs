@@ -51,7 +51,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         }
 
         #visibility struct #proxy_name {
-            mode: ice_rpc::async_lock::RwLock<#mode_name>,
+            mode: ice_rpc::gen::async_lock::RwLock<#mode_name>,
             deps: Vec<&'static str>,
         }
 
@@ -74,7 +74,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 ));
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::async_lock::RwLock::new(#mode_name::Provider {
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Provider {
                         local_impl:     arc       as std::sync::Arc<dyn #trait_name>,
                         init_hook:      init_hook as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                         server_started: false,
@@ -89,7 +89,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 let deps = arc.dependencies();
                 std::sync::Arc::new(Self {
                     deps,
-                    mode: ice_rpc::async_lock::RwLock::new(#mode_name::Provider {
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Provider {
                         local_impl:     arc.clone() as std::sync::Arc<dyn #trait_name>,
                         init_hook:      arc         as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                         server_started: false,
@@ -100,7 +100,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #visibility fn consume() -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::async_lock::RwLock::new(#mode_name::Consumer {
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Consumer {
                         ipc_client: #client_name::new(),
                     }),
                 })
@@ -109,7 +109,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #visibility fn provide_nodejs() -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::async_lock::RwLock::new(#mode_name::ProviderNodeJs),
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderNodeJs),
                 })
             }
         }
@@ -119,7 +119,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #(#node_methods)*
         }
 
-        impl ice_rpc::ServiceConsumer for #proxy_name {
+        impl ice_rpc::gen::ServiceConsumer for #proxy_name {
             fn consume_proxy() -> std::sync::Arc<Self> {
                 #proxy_name::consume()
             }

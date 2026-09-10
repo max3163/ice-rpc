@@ -8,7 +8,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ice_rpc::{NodeId, RpcHeader, ServiceLocator};
+use ice_rpc::gen::{NodeId, RpcHeader};
+use ice_rpc::ServiceLocator;
 
 static INTEGRATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -17,7 +18,7 @@ fn blackboard_create_and_list_services_roundtrip() {
     let _guard = INTEGRATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     // Configure the global iceoryx2 config before creating the node.
-    ice_rpc::setup_iceoryx2_global_config();
+    ice_rpc::gen::setup_iceoryx2_global_config();
 
     let locator = ServiceLocator::global();
     let _node = locator
@@ -43,7 +44,7 @@ fn blackboard_create_and_list_services_roundtrip() {
 fn hub_send_and_dispatch_loopback() {
     let _guard = INTEGRATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    ice_rpc::setup_iceoryx2_global_config();
+    ice_rpc::gen::setup_iceoryx2_global_config();
 
     let locator = ServiceLocator::global();
     let _node = locator
@@ -85,7 +86,7 @@ fn hub_send_and_dispatch_loopback() {
 
 #[test]
 fn stream_recv_normalizes_complete_with_as_next_then_complete() {
-    let (tx, mut rx) = ice_rpc::channel::<i32, String>(4);
+    let (tx, mut rx) = ice_rpc::gen::channel::<i32, String>(4);
     pollster::block_on(tx.send_complete_with(42)).unwrap();
     drop(tx);
 

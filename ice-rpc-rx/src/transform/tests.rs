@@ -46,7 +46,7 @@ fn is_technical<T, E>(event: &Event<T, E>) -> bool {
 
 #[test]
 fn map_filter_take_pipeline() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(6);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(6);
     pollster::block_on(tx.send_next(1)).unwrap();
     pollster::block_on(tx.send_next(2)).unwrap();
     pollster::block_on(tx.send_next(3)).unwrap();
@@ -70,7 +70,7 @@ fn finalize_runs_on_complete() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -91,7 +91,7 @@ fn finalize_runs_on_source_channel_close() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -110,7 +110,7 @@ fn finalize_runs_on_error() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -132,7 +132,7 @@ fn tap_runs_side_effect() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let seen = Arc::new(AtomicI32::new(0));
     let flag = seen.clone();
     let stream = rx.tap(move |_| {
@@ -153,7 +153,7 @@ fn tap_does_not_touch_terminal_events() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let seen = Arc::new(AtomicI32::new(0));
     let flag = seen.clone();
     let stream = rx.tap(move |_| {
@@ -176,7 +176,7 @@ fn tap_does_not_touch_terminal_events() {
 
 #[test]
 fn delay_postpones_events() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.delay(std::time::Duration::from_millis(20));
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -193,7 +193,7 @@ fn delay_postpones_events() {
 
 #[test]
 fn delay_forwards_terminal_events() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.delay(std::time::Duration::from_millis(20));
 
     pollster::block_on(tx.send_complete()).unwrap();
@@ -210,7 +210,7 @@ fn delay_forwards_terminal_events() {
 
 #[test]
 fn catch_error_replaces_error_with_fallback() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.catch_error(|_| -1);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -229,7 +229,7 @@ fn catch_error_forwards_technical_error_unchanged() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
     let stream = rx.catch_error(move |_| {
@@ -254,7 +254,7 @@ fn catch_error_passthrough_when_no_error() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
     let stream = rx.catch_error(move |_| {
@@ -275,7 +275,7 @@ fn catch_error_passthrough_when_no_error() {
 
 #[test]
 fn map_maps_normalized_single_value() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.map(|v| v * 2);
 
     pollster::block_on(tx.send_complete_with(5)).unwrap();
@@ -289,7 +289,7 @@ fn map_maps_normalized_single_value() {
 
 #[test]
 fn map_forwards_terminal_events_unchanged() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.map(|v| v * 2);
 
     pollster::block_on(tx.send_error("boom".to_string())).unwrap();
@@ -310,7 +310,7 @@ fn map_forwards_terminal_events_unchanged() {
 
 #[test]
 fn filter_normalizes_complete_with_as_value() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.filter(|v| *v % 2 == 1);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -327,7 +327,7 @@ fn filter_normalizes_complete_with_as_value() {
 
 #[test]
 fn take_zero_completes_without_forwarding() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.take(0);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -340,7 +340,7 @@ fn take_zero_completes_without_forwarding() {
 
 #[test]
 fn take_forwards_source_terminal_before_limit() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.take(5);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -380,7 +380,7 @@ fn first_with_emits_first_matching_value() {
 
 #[test]
 fn first_forwards_error_before_any_value() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.first();
 
     pollster::block_on(tx.send_error("boom".to_string())).unwrap();
@@ -424,7 +424,7 @@ fn first_with_matches_single_of_value() {
 
 #[test]
 fn map_err_transforms_error_type() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.map_err(|e| e.len());
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -476,7 +476,7 @@ fn skip_drops_leading_values() {
 
 #[test]
 fn timeout_emits_technical_error_on_silence() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.timeout(std::time::Duration::from_millis(20));
 
     let mut stream = Box::pin(stream);
@@ -491,7 +491,7 @@ fn timeout_emits_technical_error_on_silence() {
 
 #[test]
 fn timeout_forwards_values_before_deadline() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
     let stream = rx.timeout(std::time::Duration::from_millis(200));
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -508,12 +508,13 @@ fn timeout_forwards_values_before_deadline() {
 fn switch_map_switches_to_latest_inner_and_cancels_previous() {
     use std::sync::{Arc, Mutex};
 
-    let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
-    let senders: Arc<Mutex<Vec<ice_rpc::Sender<i32, String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let (outer_tx, outer_rx) = ice_rpc::gen::channel::<i32, String>(8);
+    let senders: Arc<Mutex<Vec<ice_rpc::gen::Sender<i32, String>>>> =
+        Arc::new(Mutex::new(Vec::new()));
 
     let senders_for_task = senders.clone();
     let stream = outer_rx.switch_map(move |_| {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(8);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(8);
         senders_for_task.lock().unwrap().push(tx);
         rx
     });
@@ -551,8 +552,8 @@ fn switch_map_switches_to_latest_inner_and_cancels_previous() {
 
 #[test]
 fn switch_map_forwards_inner_error() {
-    let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
-    let (inner_tx, inner_rx) = ice_rpc::channel::<i32, String>(8);
+    let (outer_tx, outer_rx) = ice_rpc::gen::channel::<i32, String>(8);
+    let (inner_tx, inner_rx) = ice_rpc::gen::channel::<i32, String>(8);
 
     let stream = outer_rx.switch_map(move |_| {
         inner_rx
@@ -575,9 +576,9 @@ fn switch_map_forwards_inner_error() {
 
 #[test]
 fn switch_map_ignores_inner_complete() {
-    let (outer_tx, outer_rx) = ice_rpc::channel::<i32, String>(8);
-    let (inner1_tx, inner1_rx) = ice_rpc::channel::<i32, String>(8);
-    let (inner2_tx, inner2_rx) = ice_rpc::channel::<i32, String>(8);
+    let (outer_tx, outer_rx) = ice_rpc::gen::channel::<i32, String>(8);
+    let (inner1_tx, inner1_rx) = ice_rpc::gen::channel::<i32, String>(8);
+    let (inner2_tx, inner2_rx) = ice_rpc::gen::channel::<i32, String>(8);
 
     let stream = outer_rx.switch_map(move |v| {
         if v == 1 {

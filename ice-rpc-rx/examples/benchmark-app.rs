@@ -509,10 +509,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cfg = Arc::new(BenchConfig::from_args());
 
-    // RAII guard: cancels the cancellation tokens on Drop (even on panic).
-    // shutdown() must be called explicitly for a clean stop with
-    // waiting for the IPC threads and releasing the iceoryx2 node.
-    let shutdown_guard = ice_rpc::ShutdownGuard::new();
+    // This example keeps the explicit pattern instead of `#[ice_rpc::main]`,
+    // because it calls `std::process::exit`, which bypasses the macro-managed
+    // shutdown. `init()` returns the RAII guard in a single call.
+    let shutdown_guard = ice_rpc::gen::init();
 
     log::info!("=== ice-rpc BENCHMARK ===");
     log::info!("  Service      : {}", cfg.service);
@@ -524,8 +524,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("");
 
     // This process consumes services via locator().get().
-    ice_rpc::init();
-
     let db_proxy = if cfg.service == "db" || cfg.service == "person" || cfg.service == "all" {
         ice_rpc::locator().get::<DatabaseServiceProxy>().await
     } else {

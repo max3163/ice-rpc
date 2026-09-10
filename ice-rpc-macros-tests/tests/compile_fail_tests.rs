@@ -16,4 +16,6 @@ fn compile_fail_validation() {
     // (not as a panic inside the macro).
     t.compile_fail("tests/compile_fail/invalid_return_type.rs");
     t.compile_fail("tests/compile_fail/missing_return_type.rs");
+    // `#[ice_rpc::main]` only accepts an `async fn main`.
+    t.compile_fail("tests/compile_fail/ice_rpc_main_not_async.rs");
 }

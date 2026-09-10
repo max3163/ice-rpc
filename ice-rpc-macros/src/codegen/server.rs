@@ -47,15 +47,15 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         #[derive(Clone)]
         #visibility struct #server_name {
             service_impl: std::sync::Arc<dyn #trait_name>,
-            scratch: std::sync::Arc<ice_rpc::async_lock::Mutex<ice_rpc::rkyv::util::AlignedVec<8>>>,
+            scratch: std::sync::Arc<ice_rpc::gen::async_lock::Mutex<ice_rpc::gen::rkyv::util::AlignedVec<8>>>,
         }
 
         impl #server_name {
             fn new(service_impl: std::sync::Arc<dyn #trait_name>) -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     service_impl,
-                    scratch: std::sync::Arc::new(ice_rpc::async_lock::Mutex::new(
-                        ice_rpc::rkyv::util::AlignedVec::<8>::with_capacity(4096)
+                    scratch: std::sync::Arc::new(ice_rpc::gen::async_lock::Mutex::new(
+                        ice_rpc::gen::rkyv::util::AlignedVec::<8>::with_capacity(4096)
                     )),
                 })
             }
@@ -66,14 +66,14 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
             ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 #hub_config
 
-                use ice_rpc::futures::FutureExt;
+                use ice_rpc::gen::futures::FutureExt;
 
                 let svc_name: &'static str = #logical_name;
                 let svc_impl = self.service_impl.clone();
                 let scratch = self.scratch.clone();
 
                 let (dispatch_tx, mut dispatch_rx) =
-                    ice_rpc::async_channel::bounded::<(ice_rpc::RpcHeader, #req_enum_name, usize)>(1024);
+                    ice_rpc::gen::async_channel::bounded::<(ice_rpc::gen::RpcHeader, #req_enum_name, usize)>(1024);
 
                 let dispatch_tx_clone = dispatch_tx.clone();
                 std::thread::spawn(move || {
@@ -87,8 +87,8 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
                     let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                         let tx = dispatch_tx_clone;
-                        move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
-                            if hdr.protocol_version != ice_rpc::PROTOCOL_VERSION
+                        move |hdr: ice_rpc::gen::RpcHeader, raw: &[u8]| {
+                            if hdr.protocol_version != ice_rpc::gen::PROTOCOL_VERSION
                                 || hdr.service_version != #service_version
                             {
                                 ::log::error!(
@@ -96,29 +96,29 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                     svc_name,
                                     hdr.caller_pid,
                                     hdr.protocol_version,
-                                    ice_rpc::PROTOCOL_VERSION,
+                                    ice_rpc::gen::PROTOCOL_VERSION,
                                     hdr.service_version,
                                     #service_version,
                                 );
-                                let client_node = ice_rpc::NodeId(hdr.caller_pid);
-                                let error_event: ice_rpc::WireEvent<(), ()> = ice_rpc::WireEvent::RpcError(
+                                let client_node = ice_rpc::gen::NodeId(hdr.caller_pid);
+                                let error_event: ice_rpc::gen::WireEvent<(), ()> = ice_rpc::gen::WireEvent::RpcError(
                                     ice_rpc::RpcError::ProtocolMismatch {
-                                        expected_protocol: ice_rpc::PROTOCOL_VERSION,
+                                        expected_protocol: ice_rpc::gen::PROTOCOL_VERSION,
                                         received_protocol: hdr.protocol_version,
                                         expected_service: #service_version,
                                         received_service: hdr.service_version,
                                     },
                                 );
                                 let mut buf =
-                                    ice_rpc::rkyv::util::AlignedVec::<8>::with_capacity(4096);
-                                if ice_rpc::rkyv::api::high::to_bytes_in::<
+                                    ice_rpc::gen::rkyv::util::AlignedVec::<8>::with_capacity(4096);
+                                if ice_rpc::gen::rkyv::api::high::to_bytes_in::<
                                     _,
-                                    ice_rpc::rkyv::rancor::Error,
+                                    ice_rpc::gen::rkyv::rancor::Error,
                                 >(&error_event, &mut buf).is_ok()
                                 {
-                                    let resp_header = ice_rpc::RpcHeader::response_from(
+                                    let resp_header = ice_rpc::gen::RpcHeader::response_from(
                                         &hdr,
-                                        ice_rpc::EventKind::Error,
+                                        ice_rpc::gen::EventKind::Error,
                                         #service_version,
                                     );
                                     let _ = ice_rpc::ServiceLocator::global()
@@ -128,7 +128,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                 return;
                             }
                             let client_pid = hdr.caller_pid;
-                            let client_node = ice_rpc::NodeId(client_pid);
+                            let client_node = ice_rpc::gen::NodeId(client_pid);
 
                             if !ice_rpc::ServiceLocator::global().hub().has_publishers(client_node) {
                                 if let Err(e) = ice_rpc::ServiceLocator::global()
@@ -140,8 +140,8 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                             }
 
                             let raw_len = raw.len();
-                            use ice_rpc::rkyv::rancor::Error as RkyvError;
-                            let native_req: #req_enum_name = match ice_rpc::rkyv::from_bytes::<
+                            use ice_rpc::gen::rkyv::rancor::Error as RkyvError;
+                            let native_req: #req_enum_name = match ice_rpc::gen::rkyv::from_bytes::<
                                 #req_enum_name, RkyvError
                             >(raw) {
                                 Ok(v) => v,
@@ -159,7 +159,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
                     ice_rpc::ServiceLocator::global().hub().register_request_handler(svc_name, handler);
 
-                    use ice_rpc::iceoryx2::prelude::ServiceName;
+                    use ice_rpc::gen::iceoryx2::prelude::ServiceName;
                     let ready_name = match ServiceName::new(#topic_ready) {
                         Ok(n) => n,
                         Err(e) => {
@@ -169,7 +169,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                     };
                     let ready_svc = match node.service_builder(&ready_name)
                         .blackboard_creator::<u8>()
-                        .max_readers(ice_rpc::BLACKBOARD_MAX_READERS)
+                        .max_readers(ice_rpc::gen::BLACKBOARD_MAX_READERS)
                         .add::<bool>(#blackboard_key, false)
                         .create()
                     {
@@ -200,9 +200,9 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                     let _ = ready_tx.send(Ok(()));
                 });
 
-                let cancel = ice_rpc::global_cancel_token();
+                let cancel = ice_rpc::gen::global_cancel_token();
                 loop {
-                    ice_rpc::futures::select! {
+                    ice_rpc::gen::futures::select! {
                         _ = cancel.cancelled().fuse() => break,
                         msg = dispatch_rx.recv().fuse() => {
                             match msg {
@@ -244,21 +244,21 @@ pub fn gen_server_match_arm(
 ) -> TokenStream {
     quote! {
         #req_enum_name::#var_name { #(#arg_names),* } => {
-            use ice_rpc::rkyv::{api::high::to_bytes_in, util::AlignedVec, rancor::Error as RkyvError};
+            use ice_rpc::gen::rkyv::{api::high::to_bytes_in, util::AlignedVec, rancor::Error as RkyvError};
 
             let client_pid = hdr.caller_pid;
-            let client_node = ice_rpc::NodeId(client_pid);
+            let client_node = ice_rpc::gen::NodeId(client_pid);
             let hub = ice_rpc::ServiceLocator::global().hub();
 
             let mut stream = impl_ref.#fn_name(#(#arg_names),*).await;
 
             while let Ok(event) = stream.recv_wire().await {
                 let kind = match &event {
-                    ice_rpc::WireEvent::Next(_)         => ice_rpc::EventKind::Next,
-                    ice_rpc::WireEvent::Complete        => ice_rpc::EventKind::Complete,
-                    ice_rpc::WireEvent::CompleteWith(_) => ice_rpc::EventKind::Complete,
-                    ice_rpc::WireEvent::Error(_)        => ice_rpc::EventKind::Error,
-                    ice_rpc::WireEvent::RpcError(_)     => ice_rpc::EventKind::Error,
+                    ice_rpc::gen::WireEvent::Next(_)         => ice_rpc::gen::EventKind::Next,
+                    ice_rpc::gen::WireEvent::Complete        => ice_rpc::gen::EventKind::Complete,
+                    ice_rpc::gen::WireEvent::CompleteWith(_) => ice_rpc::gen::EventKind::Complete,
+                    ice_rpc::gen::WireEvent::Error(_)        => ice_rpc::gen::EventKind::Error,
+                    ice_rpc::gen::WireEvent::RpcError(_)     => ice_rpc::gen::EventKind::Error,
                 };
                 let mut guard = scratch_ref.lock().await;
                 if guard.capacity() < size_hint + 4096 {
@@ -267,7 +267,7 @@ pub fn gen_server_match_arm(
                 guard.clear();
                 if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
 
-                let resp_header = ice_rpc::RpcHeader::response_from(&hdr, kind, #service_version);
+                let resp_header = ice_rpc::gen::RpcHeader::response_from(&hdr, kind, #service_version);
                 let _ = hub.send_to_node(client_node, resp_header, &*guard);
                 drop(guard);
                 if kind.is_terminal() { break; }

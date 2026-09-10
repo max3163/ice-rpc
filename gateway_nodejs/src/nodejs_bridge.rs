@@ -80,7 +80,7 @@ impl NodeJsBridge {
         let (tx, rx) = ice_rpc::rt::oneshot::channel::<serde_json::Value>();
 
         let call_data = serde_json::json!({
-            "correlationId": ice_rpc::fmt_correlation_id(&cid),
+            "correlationId": ice_rpc::gen::fmt_correlation_id(&cid),
             "service": service,
             "method": method,
             "args": args,
@@ -228,8 +228,8 @@ mod tests {
 
     #[test]
     fn roundtrip_correlation_id() {
-        let cid_orig = ice_rpc::RpcHeader::next_correlation_id();
-        let hex = ice_rpc::fmt_correlation_id(&cid_orig);
+        let cid_orig = ice_rpc::gen::RpcHeader::next_correlation_id();
+        let hex = ice_rpc::gen::fmt_correlation_id(&cid_orig);
         let cid_parsed = parse_correlation_id_hex(&hex).unwrap();
         assert_eq!(cid_orig, cid_parsed);
     }

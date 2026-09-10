@@ -11,15 +11,15 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Barrier};
 
-use ice_rpc::async_lock::Mutex as AsyncMutex;
-use ice_rpc::futures_lite::future::block_on;
+use ice_rpc::gen::async_lock::Mutex as AsyncMutex;
+use ice_rpc::gen::futures_lite::future::block_on;
+use ice_rpc::gen::rkyv::api::high::to_bytes_in;
+use ice_rpc::gen::rkyv::rancor::Error as RkyvError;
+use ice_rpc::gen::rkyv::util::AlignedVec;
+use ice_rpc::gen::rkyv::{Archive, Deserialize, Serialize};
 use ice_rpc::gen::{
     ConnectionState, NodeSupervisor, PendingService, ReconnectCallback, ReconnectManager,
 };
-use ice_rpc::rkyv::api::high::to_bytes_in;
-use ice_rpc::rkyv::rancor::Error as RkyvError;
-use ice_rpc::rkyv::util::AlignedVec;
-use ice_rpc::rkyv::{Archive, Deserialize, Serialize};
 
 /// Serializations executed per thread in each iteration.
 const PER_THREAD: usize = 10_000;

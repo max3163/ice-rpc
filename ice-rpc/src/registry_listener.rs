@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::try_or_log;
+use crate::macros::try_or_log;
 
 use iceoryx2::prelude::*;
 

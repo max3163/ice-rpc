@@ -5,6 +5,7 @@
 //! for an RPC service trait.
 
 mod codegen;
+mod entry;
 
 // PRIVATE constants — the public versions are in ice-rpc (`types.rs`).
 // The values MUST be identical to `ice_rpc::types::{SERVICE_NAME_LEN, METHOD_NAME_LEN}`
@@ -41,7 +42,7 @@ use crate::codegen::{
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
 /// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline for
 ///   locating the provider before the first call (default:
-///   `ice_rpc::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
+///   `ice_rpc::gen::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
 ///   suffixes. It bounds the *discovery* phase only, never the response wait.
 /// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
 struct ServiceAttr {
@@ -483,7 +484,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         #input_trait
 
         #[repr(u8)]
-        #[derive(ice_rpc::rkyv::Archive, ice_rpc::rkyv::Deserialize, ice_rpc::rkyv::Serialize, Debug)]
+        #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
         #visibility enum #req_enum_name { #(#req_variants),* }
 
         #client_struct
@@ -506,4 +507,95 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Bootstraps ice-rpc around an `async fn main`.
+///
+/// Generates a synchronous `fn main` that:
+/// 1. initializes ice-rpc (`ice_rpc::gen::init()`);
+/// 2. awaits the annotated body;
+/// 3. shuts ice-rpc down (waiting for the IPC threads and releasing the
+///    iceoryx2 node) — **even when the body returns early via `?` or
+///    `return`**, because the body runs inside its own `async` block.
+///
+/// # Runtime
+///
+/// No runtime is hard-coded:
+/// - `#[ice_rpc::main]` → runtime-agnostic, driven by `ice_rpc::rt::block_on`;
+/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime
+///   (requires `tokio` with the `rt-multi-thread` and `time` features);
+/// - `#[ice_rpc::main(smol::block_on)]` → any user-provided `fn(Future) -> T`.
+///
+/// # Example
+/// ```rust,ignore
+/// #[ice_rpc::main(tokio)]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let proxy = ice_rpc::locator().get::<MyServiceProxy>().await?;
+///     // ...
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
+    entry::expand_main(attr.into(), item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::entry::expand_main;
+    use proc_macro2::TokenStream;
+    use quote::quote;
+
+    fn expand(attr: TokenStream, item: TokenStream) -> String {
+        expand_main(attr, item)
+            .expect("expansion should succeed")
+            .to_string()
+    }
+
+    #[test]
+    fn main_default_uses_the_agnostic_driver() {
+        let out = expand(
+            quote! {},
+            quote! { async fn main() -> Result<(), String> { Ok(()) } },
+        );
+        assert!(out.contains("ice_rpc :: rt :: block_on"), "{out}");
+        assert!(out.contains("ice_rpc :: gen :: init ()"), "{out}");
+        assert!(out.contains("-> Result < () , String >"), "{out}");
+        assert!(
+            out.starts_with("fn main"),
+            "the generated main must be sync: {out}"
+        );
+        assert!(!out.contains("async fn main"), "{out}");
+    }
+
+    #[test]
+    fn main_tokio_builds_a_tokio_runtime() {
+        let out = expand(quote! { tokio }, quote! { async fn main() {} });
+        assert!(out.contains("new_multi_thread"), "{out}");
+        assert!(!out.contains("ice_rpc :: rt :: block_on"), "{out}");
+    }
+
+    #[test]
+    fn main_custom_driver_is_used_verbatim() {
+        let out = expand(quote! { smol::block_on }, quote! { async fn main() {} });
+        assert!(out.contains("smol :: block_on"), "{out}");
+    }
+
+    #[test]
+    fn main_wraps_body_in_an_inner_async_block() {
+        let out = expand(quote! {}, quote! { async fn main() {} });
+        // The shutdown must be emitted after the awaited body, so an early
+        // `return` / `?` inside the body cannot skip it.
+        let shutdown = out.find("shutdown").expect("shutdown() missing");
+        let body_await = out.find(". await").expect("body await missing");
+        assert!(body_await < shutdown, "{out}");
+    }
+
+    #[test]
+    fn main_rejects_a_synchronous_function() {
+        let err = expand_main(quote! {}, quote! { fn main() {} }).unwrap_err();
+        assert!(err.to_string().contains("async fn main"));
+    }
 }

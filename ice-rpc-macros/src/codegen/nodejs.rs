@@ -4,8 +4,8 @@
 //! functions for each service.
 //!
 //! These functions are always generated (not feature-gated) and reference only
-//! types re-exported by `ice-rpc` (`ice_rpc::rkyv`, `ice_rpc::serde_json`,
-//! `ice_rpc::base64`), so no extra dependency nor feature is required from the
+//! types re-exported by `ice-rpc` (`ice_rpc::gen::rkyv`, `ice_rpc::gen::serde_json`,
+//! `ice_rpc::gen::base64`), so no extra dependency nor feature is required from the
 //! consuming crate.
 
 use proc_macro2::TokenStream;
@@ -59,19 +59,19 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
 
             let args_expr: TokenStream = match arg_names.len() {
                 0 => {
-                    quote! { ice_rpc::serde_json::Value::Object(ice_rpc::serde_json::Map::new()) }
+                    quote! { ice_rpc::gen::serde_json::Value::Object(ice_rpc::gen::serde_json::Map::new()) }
                 }
                 1 => {
                     let arg_name = &arg_names[0];
                     let arg_type = &arg_types[0];
                     if is_type_vec_u8(arg_type) {
                         quote! { {
-                            use ice_rpc::base64::Engine;
-                            let encoded = ice_rpc::base64::engine::general_purpose::STANDARD.encode(&#arg_name);
-                            ice_rpc::serde_json::Value::String(encoded)
+                            use ice_rpc::gen::base64::Engine;
+                            let encoded = ice_rpc::gen::base64::engine::general_purpose::STANDARD.encode(&#arg_name);
+                            ice_rpc::gen::serde_json::Value::String(encoded)
                         } }
                     } else {
-                        quote! { ice_rpc::serde_json::to_value(#arg_name).ok()? }
+                        quote! { ice_rpc::gen::serde_json::to_value(#arg_name).ok()? }
                     }
                 }
                 _ => {
@@ -83,22 +83,22 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                             let arg_type = &arg_types[idx];
                             if is_type_vec_u8(arg_type) {
                                 quote! { #field_str: {
-                                    use ice_rpc::base64::Engine;
-                                    let encoded = ice_rpc::base64::engine::general_purpose::STANDARD.encode(&#name);
-                                    ice_rpc::serde_json::Value::String(encoded)
+                                    use ice_rpc::gen::base64::Engine;
+                                    let encoded = ice_rpc::gen::base64::engine::general_purpose::STANDARD.encode(&#name);
+                                    ice_rpc::gen::serde_json::Value::String(encoded)
                                 } }
                             } else {
-                                quote! { #field_str: ice_rpc::serde_json::to_value(#name).ok()? }
+                                quote! { #field_str: ice_rpc::gen::serde_json::to_value(#name).ok()? }
                             }
                         })
                         .collect();
-                    quote! { ice_rpc::serde_json::json!({ #(#json_fields),* }) }
+                    quote! { ice_rpc::gen::serde_json::json!({ #(#json_fields),* }) }
                 }
             };
 
             quote! {
                 #fn_name_str => {
-                    let req: #req_enum_name = ice_rpc::rkyv::from_bytes::<#req_enum_name, ice_rpc::rkyv::rancor::Error>(bytes).ok()?;
+                    let req: #req_enum_name = ice_rpc::gen::rkyv::from_bytes::<#req_enum_name, ice_rpc::gen::rkyv::rancor::Error>(bytes).ok()?;
                     match req {
                         #req_enum_name::#var_name { #(#arg_names),* } => {
                             Some(#args_expr)
@@ -116,7 +116,7 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         // pure-Rust consumer.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn deserialize_request_to_value(method: &str, bytes: &[u8]) -> Option<ice_rpc::serde_json::Value> {
+            #visibility fn deserialize_request_to_value(method: &str, bytes: &[u8]) -> Option<ice_rpc::gen::serde_json::Value> {
                 match method {
                     #(#match_arms)*
                     _ => None,
@@ -175,37 +175,37 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                     let (event, event_kind) = match event_type {
                         "next" => {
                             let data: #ok_type = match value.get("data") {
-                                Some(d) => match ice_rpc::serde_json::from_value(d.clone()) {
+                                Some(d) => match ice_rpc::gen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::WireEvent::Next(data), ice_rpc::EventKind::Next)
+                            (ice_rpc::gen::WireEvent::Next(data), ice_rpc::gen::EventKind::Next)
                         }
                         "complete" => match value.get("data") {
                             Some(d) => {
-                                let data: #ok_type = match ice_rpc::serde_json::from_value(d.clone()) {
+                                let data: #ok_type = match ice_rpc::gen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                (ice_rpc::WireEvent::CompleteWith(data), ice_rpc::EventKind::Complete)
+                                (ice_rpc::gen::WireEvent::CompleteWith(data), ice_rpc::gen::EventKind::Complete)
                             }
-                            None => (ice_rpc::WireEvent::Complete, ice_rpc::EventKind::Complete),
+                            None => (ice_rpc::gen::WireEvent::Complete, ice_rpc::gen::EventKind::Complete),
                         },
                         "error" => {
                             let err: #err_type = match value.get("data") {
-                                Some(d) => match ice_rpc::serde_json::from_value(d.clone()) {
+                                Some(d) => match ice_rpc::gen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::WireEvent::Error(err), ice_rpc::EventKind::Error)
+                            (ice_rpc::gen::WireEvent::Error(err), ice_rpc::gen::EventKind::Error)
                         }
                         _ => return None,
                     };
-                    let bytes = ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&event)
+                    let bytes = ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
                         .ok()
                         .map(|aligned| aligned.to_vec())?;
                     Some((bytes, event_kind))
@@ -219,7 +219,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         // surface is emitted for every service but consumed only by the bridge.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::serde_json::Value) -> Option<(Vec<u8>, ice_rpc::EventKind)> {
+            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<(Vec<u8>, ice_rpc::gen::EventKind)> {
                 match method {
                     #(#match_arms)*
                     _ => None,

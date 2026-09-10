@@ -1,6 +1,6 @@
 //! Codegen: [`HttpCallable`] implementation for the ice-rpc proxies.
 //!
-//! Generates the [`ice_rpc::HttpCallable`] trait implementation which allows
+//! Generates the [`ice_rpc::gen::HttpCallable`] trait implementation which allows
 //! the dynamic invocation of RPC methods through HTTP/JSON.
 
 use proc_macro2::TokenStream;
@@ -39,7 +39,7 @@ pub fn gen_http_callable_impl(input: &HttpGenInput) -> TokenStream {
 
     quote! {
         #[async_trait::async_trait]
-        impl ice_rpc::HttpCallable for #proxy_name {
+        impl ice_rpc::gen::HttpCallable for #proxy_name {
             fn service_name(&self) -> &'static str {
                 #logical_name
             }
@@ -47,8 +47,8 @@ pub fn gen_http_callable_impl(input: &HttpGenInput) -> TokenStream {
             async fn http_invoke(
                 &self,
                 method: &str,
-                params: ice_rpc::serde_json::Value,
-            ) -> Result<ice_rpc::serde_json::Value, String> {
+                params: ice_rpc::gen::serde_json::Value,
+            ) -> Result<ice_rpc::gen::serde_json::Value, String> {
                 match method {
                     #(#match_arms)*
                     _ => Err(format!(#unknown_method_error, method)),
@@ -75,7 +75,7 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
             let arg_type = &arg_types[0];
             let type_name = format!("{}", quote!(#arg_type));
             quote! {
-                let #arg_name: #arg_type = match ice_rpc::serde_json::from_value(params) {
+                let #arg_name: #arg_type = match ice_rpc::gen::serde_json::from_value(params) {
                     Ok(v) => v,
                     Err(e) => return Err(format!(
                         "Invalid parameter for '{}': {} (expected type: {})",
@@ -97,8 +97,8 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
                             let field_name = #field_name_str;
                             let val = params.get(field_name)
                                 .cloned()
-                                .unwrap_or(ice_rpc::serde_json::Value::Null);
-                            match ice_rpc::serde_json::from_value(val) {
+                                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
+                            match ice_rpc::gen::serde_json::from_value(val) {
                                 Ok(v) => v,
                                 Err(e) => return Err(format!(
                                     "Invalid parameter '{}' for '{}': {}",
@@ -132,15 +132,15 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
             let mut rx = #call_block;
             match rx.recv().await {
                 Ok(ice_rpc::Event::Next(value)) => {
-                    let data = ice_rpc::serde_json::to_value(&value)
+                    let data = ice_rpc::gen::serde_json::to_value(&value)
                         .map_err(|e| format!("Failed to serialize the response: {}", e))?;
-                    Ok(ice_rpc::serde_json::json!({"status":"ok","data":data}))
+                    Ok(ice_rpc::gen::serde_json::json!({"status":"ok","data":data}))
                 }
                 Ok(ice_rpc::Event::Complete) => {
-                    Ok(ice_rpc::serde_json::json!({"status":"ok"}))
+                    Ok(ice_rpc::gen::serde_json::json!({"status":"ok"}))
                 }
                 Ok(ice_rpc::Event::Error(e)) => {
-                    Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
+                    Ok(ice_rpc::gen::serde_json::json!({"status":"error","error":e.to_string()}))
                 }
                 Err(_) => {
                     Err("No response received from the service".to_string())

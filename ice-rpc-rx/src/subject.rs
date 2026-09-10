@@ -17,11 +17,12 @@
 //! subject.complete().await;
 //! ```
 
-use ice_rpc::{Observable, Sender};
+use ice_rpc::gen::Sender;
+use ice_rpc::Observable;
 
 /// A multi-producer / multi-consumer multicast source.
 pub struct Subject<T, E> {
-    subscribers: std::sync::Arc<ice_rpc::async_lock::Mutex<Vec<Sender<T, E>>>>,
+    subscribers: std::sync::Arc<ice_rpc::gen::async_lock::Mutex<Vec<Sender<T, E>>>>,
 }
 
 impl<T, E> Subject<T, E> {
@@ -38,7 +39,7 @@ impl<T, E> Subject<T, E> {
     /// ```
     pub fn new() -> Self {
         Self {
-            subscribers: std::sync::Arc::new(ice_rpc::async_lock::Mutex::new(Vec::new())),
+            subscribers: std::sync::Arc::new(ice_rpc::gen::async_lock::Mutex::new(Vec::new())),
         }
     }
 
@@ -55,7 +56,7 @@ impl<T, E> Subject<T, E> {
     /// let rx = subject.subscribe().await;
     /// ```
     pub async fn subscribe(&self) -> Observable<T, E> {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
         self.subscribers.lock().await.push(tx);
         rx
     }

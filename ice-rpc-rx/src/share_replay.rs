@@ -13,11 +13,12 @@
 //! let rx = shared.subscribe().await; // replays the last value, if any
 //! ```
 
-use ice_rpc::{Event, Observable, ObservableError, Sender};
+use ice_rpc::gen::Sender;
+use ice_rpc::{Event, Observable, ObservableError};
 
 /// Multicast source that replays the last value to late subscribers.
 pub struct ShareReplay<T, E> {
-    state: std::sync::Arc<ice_rpc::async_lock::Mutex<ShareState<T, E>>>,
+    state: std::sync::Arc<ice_rpc::gen::async_lock::Mutex<ShareState<T, E>>>,
 }
 
 struct ShareState<T, E> {
@@ -54,7 +55,7 @@ impl<T, E> ShareReplay<T, E> {
     {
         // Shared state is guarded by a mutex because the background source task
         // and `subscribe` both mutate it concurrently.
-        let state = std::sync::Arc::new(ice_rpc::async_lock::Mutex::new(ShareState {
+        let state = std::sync::Arc::new(ice_rpc::gen::async_lock::Mutex::new(ShareState {
             last: None,
             completed: false,
             error: None,
@@ -119,7 +120,7 @@ impl<T, E> ShareReplay<T, E> {
         T: Clone,
         E: Clone,
     {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
         {
             let mut state = self.state.lock().await;
             // Replay the snapshot first: last value, then terminal state.
@@ -146,7 +147,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_last_value() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         pollster::block_on(tx.send_next(42)).unwrap();
         drop(tx);
 
@@ -163,7 +164,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_only_last_value() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         pollster::block_on(tx.send_next(1)).unwrap();
         pollster::block_on(tx.send_next(2)).unwrap();
         drop(tx);
@@ -180,7 +181,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_complete_state() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
@@ -196,7 +197,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_error_state() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         pollster::block_on(tx.send_error("boom".to_string())).unwrap();
         drop(tx);
 
@@ -212,7 +213,7 @@ mod tests {
 
     #[test]
     fn share_replay_replays_complete_with_as_value_then_complete() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         pollster::block_on(tx.send_complete_with(7)).unwrap();
         drop(tx);
 
@@ -232,7 +233,7 @@ mod tests {
 
     #[test]
     fn share_replay_multicasts_live_events() {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
         let shared = ShareReplay::new(rx);
         let rx1 = pollster::block_on(shared.subscribe());
         let rx2 = pollster::block_on(shared.subscribe());

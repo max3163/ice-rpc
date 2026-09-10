@@ -1290,24 +1290,18 @@ ice-rpc = { features = ["http"] }
 **Full startup :**
 
 ```rust
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initializes the ice-rpc framework
-    ice_rpc::init();
-
-    // 2. Injects the HTTP registry (name → proxy table)
-    common::init_http_registry();
-
-    // 3. Starts the HTTP gateway on port 8080
-    //    (blocks until Ctrl+C or global_cancel_token)
-    ice_rpc::init_http(8080).await;
+    // Starts the HTTP gateway on port 8080 and blocks until Ctrl+C.
+    // `#[ice_rpc::main]` handles the ice-rpc bootstrap and shutdown.
+    ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 
     Ok(())
 }
 ```
 
 **Key points :**
-- [`init_http()`](ice-rpc/src/lib.rs:437) is an alias of [`start_http_server()`](ice-rpc/src/http_gateway.rs:335)
+- [`start_http_gateway!`](ice-rpc/src/lib.rs:393) builds the `name → factory` mapping and starts the gateway
 - The gateway shares the same [`NodeHub`](ice-rpc/src/hub.rs) as the other ice-rpc services of the process
 - The shutdown is graceful : the trillium server stops cleanly via [`global_cancel_token()`](ice-rpc/src/lib.rs)
 - The logs display example URLs at startup

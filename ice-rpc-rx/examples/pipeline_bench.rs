@@ -115,7 +115,7 @@ async fn drain_channel(mut rx: ice_rpc::Observable<i64, String>) {
 async fn time_channel() -> f64 {
     let start = Instant::now();
     for _ in 0..ITERS {
-        let (s0, mut r0) = ice_rpc::channel::<i64, String>(8);
+        let (s0, mut r0) = ice_rpc::gen::channel::<i64, String>(8);
         ice_rpc::rt::spawn(async move {
             for i in 0..N {
                 if s0.send_next(i).await.is_err() {
@@ -125,7 +125,7 @@ async fn time_channel() -> f64 {
             let _ = s0.send_complete().await;
         });
 
-        let (s1, mut r1) = ice_rpc::channel::<i64, String>(8);
+        let (s1, mut r1) = ice_rpc::gen::channel::<i64, String>(8);
         ice_rpc::rt::spawn(async move {
             while let Ok(ev) = r0.recv().await {
                 match ev {
@@ -143,7 +143,7 @@ async fn time_channel() -> f64 {
             }
         });
 
-        let (s2, mut r2) = ice_rpc::channel::<i64, String>(8);
+        let (s2, mut r2) = ice_rpc::gen::channel::<i64, String>(8);
         ice_rpc::rt::spawn(async move {
             while let Ok(ev) = r1.recv().await {
                 match ev {
@@ -161,7 +161,7 @@ async fn time_channel() -> f64 {
             }
         });
 
-        let (s3, r3) = ice_rpc::channel::<i64, String>(8);
+        let (s3, r3) = ice_rpc::gen::channel::<i64, String>(8);
         ice_rpc::rt::spawn(async move {
             let mut remaining = N as usize;
             while let Ok(ev) = r2.recv().await {

@@ -73,7 +73,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
 
     quote! {
         #[async_trait::async_trait]
-        impl ice_rpc::ServiceLifecycle for #client_name {
+        impl ice_rpc::gen::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
                 #hub_config
                 self.core.init(#logical_name).await
@@ -128,9 +128,9 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         std::sync::Arc::new(move |result: Result<&[u8], ice_rpc::RpcError>| {
             match result {
                 Ok(bytes) => {
-                    match ice_rpc::rkyv::from_bytes::<
-                        ice_rpc::WireEvent<#ok_type, #err_type>,
-                        ice_rpc::rkyv::rancor::Error
+                    match ice_rpc::gen::rkyv::from_bytes::<
+                        ice_rpc::gen::WireEvent<#ok_type, #err_type>,
+                        ice_rpc::gen::rkyv::rancor::Error
                     >(bytes) {
                         // Raw relay: the `CompleteWith` single-sample
                         // optimization is preserved through the consumer
@@ -163,7 +163,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         {
             let req_val = #req_enum_name::#var_name { #(#arg_names),* };
 
-            let bytes = match ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&req_val) {
+            let bytes = match ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&req_val) {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     return ice_rpc::Observable::from_technical_error(
@@ -180,14 +180,14 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 Err(e) => return ice_rpc::Observable::from_technical_error(e),
             };
 
-            let rpc_header = ice_rpc::RpcHeader::request(
+            let rpc_header = ice_rpc::gen::RpcHeader::request(
                 svc_name,
                 #method_name_str,
                 #service_version,
             );
             let correlation_id = rpc_header.correlation_id;
 
-            let (tx, rx) = ice_rpc::channel::<#ok_type, #err_type>(8);
+            let (tx, rx) = ice_rpc::gen::channel::<#ok_type, #err_type>(8);
 
             let handler: std::sync::Arc<dyn Fn(Result<&[u8], ice_rpc::RpcError>) + Send + Sync>
                 = #handler_body;

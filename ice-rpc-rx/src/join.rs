@@ -268,7 +268,7 @@ mod tests {
             let a = attempts_clone.clone();
             async move {
                 let n = a.fetch_add(1, Ordering::SeqCst) + 1;
-                let (tx, rx) = ice_rpc::channel::<i32, String>(2);
+                let (tx, rx) = ice_rpc::gen::channel::<i32, String>(2);
                 if n < 3 {
                     let _ = tx.try_send_error("boom".to_string());
                 } else {
@@ -298,7 +298,7 @@ mod tests {
             let a = attempts_clone.clone();
             async move {
                 let n = a.fetch_add(1, Ordering::SeqCst) + 1;
-                let (tx, rx) = ice_rpc::channel::<i32, String>(1);
+                let (tx, rx) = ice_rpc::gen::channel::<i32, String>(1);
                 if n == 1 {
                     let _ = tx.try_send_error("retryable".to_string());
                 } else {

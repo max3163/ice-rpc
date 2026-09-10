@@ -1,0 +1,11 @@
+error: #[ice_rpc::main] must be applied to an `async fn main`
+ --> tests/compile_fail/ice_rpc_main_not_async.rs:5:1
+  |
+5 | fn main() {}
+  | ^^
+
+error[E0601]: `main` function not found in crate `$CRATE`
+ --> tests/compile_fail/ice_rpc_main_not_async.rs:5:13
+  |
+5 | fn main() {}
+  |             ^ consider adding a `main` function to `$DIR/tests/compile_fail/ice_rpc_main_not_async.rs`

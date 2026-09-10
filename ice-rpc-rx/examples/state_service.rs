@@ -84,7 +84,6 @@ impl StateService for StateServiceImpl {
 }
 
 async fn run_provider() {
-    ice_rpc::init();
     let impl_ = StateServiceImpl::new().await;
 
     // The provider subscribes to its own state and is notified of changes.
@@ -102,9 +101,6 @@ async fn run_provider() {
 }
 
 async fn run_consumer() {
-    ice_rpc::init();
-    let guard = ice_rpc::ShutdownGuard::new();
-
     let proxy = ice_rpc::locator()
         .get::<StateServiceProxy>()
         .await
@@ -132,10 +128,9 @@ async fn run_consumer() {
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    guard.shutdown().await;
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() {
     let mode = std::env::args()
         .nth(1)

@@ -46,8 +46,9 @@ ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
 
 `full` is a convenience feature that enables `http` and `tokio` in one shot.
 
-- Service methods return `ice_rpc::Observable<T, E>`.
-  Create one with `ice_rpc::channel::<T, E>(capacity)`.
+- Service methods return `ice_rpc::Observable<T, E>`. Build one with the
+  `ice-rpc-rx` constructors (`of`, `from`, `throw_error`, `Subject`); an advanced
+  provider may use the raw channel via `ice_rpc::gen::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `sleep`, `timeout`,
   `block_on`, `oneshot` and `CancellationToken`.
 
@@ -93,17 +94,20 @@ struct MyServiceImpl;
 #[async_trait::async_trait]
 impl MyService for MyServiceImpl {
     async fn hello(&self, name: String) -> Observable<String, MyError> {
-        let (tx, rx) = ice_rpc::channel::<String, MyError>(1);
+        // Single response: with `ice-rpc-rx`, this is just
+        //     ice_rpc_rx::of(format!("Hello {name} !"))
+        // The raw channel stays available for long-lived push streams:
+        let (tx, rx) = ice_rpc::gen::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
             let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
         });
-        rx // a service returns the observable itself
+        rx // no Result: a service returns the observable itself
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init();
+    // `run_provider!` bootstraps ice-rpc and shuts it down on exit.
     ice_rpc::run_provider!(
         MyServiceProxy::provide(MyServiceImpl),
     ).await
@@ -113,11 +117,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. Call from a consumer
 
 ```rust,ignore
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init();
-    let guard = ice_rpc::ShutdownGuard::new();
-
     let proxy = ice_rpc::locator()
         .get::<MyServiceProxy>().await
         .expect("MyService unknown");
@@ -125,8 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response: String = proxy.hello("Alice".into()).await.first_value().await?;
     println!("Response: {}", response);
 
-    guard.shutdown().await;
-    Ok(())
+    Ok(()) // `#[ice_rpc::main]` shuts ice-rpc down on exit
 }
 ```
 
@@ -134,20 +134,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Concept | Description |
 |---|---|
-| `NodeId` | Process identity (PID), unique across the machine. |
 | `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
 | `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
 | `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
-| `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
-| `ServiceLocator` | Global registry, dependency resolution and initialization. |
-| `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
+| `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
+| `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
+
+Internal concepts (`NodeId`, `ConnectionState`, `NodeHub`, `RpcHeader`, …) are
+exposed through the doc-hidden `ice_rpc::gen` module and described in the
+architecture sections below.
 
 ## Consumption
 
-Consuming a stream is done natively on `ice_rpc::Observable`; a call never fails at
-the call site — a discovery/transport failure becomes an in-stream technical
-error:
+Consuming a stream is done natively on `ice_rpc::Observable` (or through the
+`ice-rpc-rx` operators); a call never fails at the call site — a
+discovery/transport failure becomes an in-stream technical error:
 
 ```rust,ignore
 let value = proxy.hello("Alice".into()).await.first_value().await?;
@@ -200,10 +202,9 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
 }
 ```
 
-For services that consume other services, initialize with `init()` and register with `provide_with_init`:
+For services that consume other services, register with `provide_with_init`; `run_provider!` bootstraps ice-rpc:
 
 ```rust,ignore
-ice_rpc::init();
 ice_rpc::run_provider!(
     MyServiceProxy::provide_with_init(MyServiceImpl),
 ).await
@@ -211,13 +212,21 @@ ice_rpc::run_provider!(
 
 ## Clean shutdown
 
-Use the RAII `ShutdownGuard` to cancel the IPC threads on drop and, on success path, wait for their termination:
+`#[ice_rpc::main]` shuts ice-rpc down for you, including on an early `return` or
+`?`:
 
 ```rust,ignore
-let guard = ice_rpc::ShutdownGuard::new();
-// ... use ice-rpc ...
-guard.shutdown().await; // waits for the IPC threads and releases the iceoryx2 node
+#[ice_rpc::main(tokio)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let proxy = ice_rpc::locator().get::<MyServiceProxy>().await?;
+    // ...
+    Ok(())
+}
 ```
+
+For a hand-written `main` (one calling `std::process::exit`, the N-API gateway,
+tests), the lifecycle lives in `ice_rpc::gen`: `let guard = ice_rpc::gen::init();`
+… `guard.shutdown().await;`.
 
 ## HTTP gateway (optional)
 
@@ -228,8 +237,11 @@ ice-rpc = { version = "0.1", features = ["http"] }
 ```
 
 ```rust,ignore
-ice_rpc::init();
-ice_rpc::start_http_gateway!(8080, MyServiceProxy).await;
+#[ice_rpc::main(tokio)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ice_rpc::start_http_gateway!(8080, MyServiceProxy).await;
+    Ok(())
+}
 ```
 
 Services are then reachable through `/{service}/{method}`.

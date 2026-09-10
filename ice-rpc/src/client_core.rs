@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::futures::FutureExt;
+use futures::FutureExt;
 
 /// Connection state machine of a generated client.
 ///
@@ -115,7 +115,7 @@ impl ClientCore {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut node = discovery.locate_service(service_name);
         while node.is_none() && std::time::Instant::now() < deadline {
-            crate::futures::select! {
+            futures::select! {
                 _ = crate::global_cancel_token().cancelled().fuse() => {
                     return Err(crate::RpcError::Cancelled);
                 }

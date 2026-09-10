@@ -347,14 +347,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("=== PROVIDER STARTUP ===");
 
-    // RAII guard: guarantees the token cancellation on Drop (panic, forced Ctrl+C…).
-    // `run_provider!` also uses an internal ShutdownGuard for the cleanup,
-    // this one serves as an extra safety net at the main level.
-    let _guard = ice_rpc::ShutdownGuard::new();
-
+    // `run_provider!` performs the full bootstrap (init + shutdown): neither a
+    // guard nor an explicit `init()` is needed here.
+    //
     // DatabaseServiceImpl::on_init() calls locator().get::<ConfigServiceProxy>()
     // — this provider also consumes a service internally.
-    ice_rpc::init();
 
     // ── HTTP REST gateway (optional, requires the `http` feature) ──
     #[cfg(feature = "http")]

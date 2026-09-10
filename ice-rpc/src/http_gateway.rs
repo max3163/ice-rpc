@@ -12,15 +12,16 @@
 //!
 //! ```rust,ignore
 //! fn main() {
-//!     // Initializes the framework (without a global service registry).
-//!     ice_rpc::init();
+//!     // Initializes the framework (without a global service registry). The
+//!     // returned guard must stay alive for the whole process lifetime.
+//!     let _guard = ice_rpc::gen::init();
 //!
 //!     smol::block_on(async {
 //!         // Starts the HTTP gateway exposing the chosen services.
 //!         ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 //!
 //!         // The server runs until Ctrl+C
-//!         ice_rpc::wait_for_shutdown().await;
+//!         ice_rpc::gen::wait_for_shutdown().await;
 //!     });
 //! }
 //! ```

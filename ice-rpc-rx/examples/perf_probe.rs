@@ -171,7 +171,7 @@ fn main() {
     bench("D. channel(1)+try_send_complete_with+wire", || {
         let mut ops = 0u64;
         for i in 0..N {
-            let (tx, mut rx) = ice_rpc::channel::<i64, String>(1);
+            let (tx, mut rx) = ice_rpc::gen::channel::<i64, String>(1);
             let _ = tx.try_send_complete_with(i);
             black_box(poll_once(rx.recv_wire()));
             ops += 1;

@@ -107,6 +107,7 @@ impl<T, E> Observable<T, E> {
     /// Used by the `of`/`from` constructors and by
     /// [`Observable::from_technical_error`]. The events are stored in an inline
     /// `VecDeque`: a single allocation, no `Arc`, no mutex.
+    #[doc(hidden)]
     pub fn from_events(events: impl IntoIterator<Item = Event<T, E>>) -> Self {
         Self {
             inner: StreamInner::Buffered {
@@ -119,6 +120,7 @@ impl<T, E> Observable<T, E> {
     ///
     /// Used when an RPC call fails before the transport stream exists (service
     /// not found, provider unreachable, discovery timeout, ...).
+    #[doc(hidden)]
     pub fn from_technical_error(err: RpcError) -> Self {
         Self::from_events([Event::Error(ObservableError::Technical(err))])
     }
@@ -145,6 +147,7 @@ impl<T, E> Observable<T, E> {
     ///
     /// In practice `ice-rpc-rx` exposes the shorter
     /// `RxStreamExt::into_observable()`.
+    #[doc(hidden)]
     pub fn from_stream<S>(stream: S) -> Self
     where
         S: futures_lite::Stream<Item = Event<T, E>> + Send + 'static,

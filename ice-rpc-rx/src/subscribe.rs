@@ -280,7 +280,7 @@ mod tests {
         let next_c = next_called.clone();
 
         // A channel-backed stream that never emits: the task parks on the pull.
-        let (tx, rx) = ice_rpc::channel::<i32, String>(1);
+        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(1);
         let sub = rx.subscribe(move |_v| next_c.store(true, Ordering::SeqCst));
 
         // Dropping cancels silently: no callback, no panic.

@@ -2,7 +2,7 @@
 //!
 //! Starts an IPC consumer, runs demonstration queries, then
 //! waits for [Enter] to replay the queries or Ctrl+C to quit.
-//! The shutdown uses the RAII ShutdownGuard.
+//! `#[ice_rpc::main]` handles the bootstrap and the clean shutdown.
 //!
 //! ## Lazy pattern
 //!
@@ -73,7 +73,7 @@ impl ServiceType {
 }
 
 async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
-    let cancel = ice_rpc::global_cancel_token();
+    let cancel = ice_rpc::gen::global_cancel_token();
 
     macro_rules! run_query {
         ($label:expr, $query:expr, $handler:expr) => {{
@@ -226,7 +226,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
 }
 
 async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
-    let cancel = ice_rpc::global_cancel_token();
+    let cancel = ice_rpc::gen::global_cancel_token();
 
     macro_rules! run_query {
         ($label:expr, $query:expr, $handler:expr) => {{
@@ -536,14 +536,9 @@ async fn read_line_or_cancel(
     }
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
-    // RAII guard: cancels the cancellation tokens on Drop (even on panic).
-    // shutdown() must be called explicitly for a clean stop with
-    // waiting for the IPC threads and releasing the iceoryx2 node.
-    let shutdown_guard = ice_rpc::ShutdownGuard::new();
 
     let service_type = ServiceType::from_args();
     match service_type {
@@ -554,10 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // This process consumes services via locator().get().
-    ice_rpc::init();
-
-    let cancel = ice_rpc::global_cancel_token();
+    let cancel = ice_rpc::gen::global_cancel_token();
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
 
@@ -570,7 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             log::info!("--- Initial execution ---");
             if !run_database_queries(&db).await {
-                return shutdown(&shutdown_guard).await;
+                return Ok(());
             }
             log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
 
@@ -595,7 +587,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             log::info!("--- Initial execution ---");
             if !run_context_queries(&ctx).await {
-                return shutdown(&shutdown_guard).await;
+                return Ok(());
             }
             log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
 
@@ -620,7 +612,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             log::info!("--- Initial execution ---");
             if !run_notification_demo(&notif).await {
-                return shutdown(&shutdown_guard).await;
+                return Ok(());
             }
             log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
 
@@ -639,16 +631,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    shutdown(&shutdown_guard).await
-}
-
-/// Clean shutdown: ice-rpc shutdown via the RAII guard.
-///
-/// The guard guarantees that the tokens are cancelled even if this function
-/// is not called (panic, early return…).
-async fn shutdown(guard: &ice_rpc::ShutdownGuard) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Stopping consumer...");
-    guard.shutdown().await;
-    log::info!("Consumer stopped.");
     Ok(())
 }

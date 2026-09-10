@@ -174,7 +174,7 @@ mod tests {
 
         assert!(matches!(
             pollster::block_on(stream.recv_wire()),
-            Ok(ice_rpc::WireEvent::CompleteWith(42))
+            Ok(ice_rpc::gen::WireEvent::CompleteWith(42))
         ));
         assert!(pollster::block_on(stream.recv_wire()).is_err());
     }

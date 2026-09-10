@@ -4,12 +4,13 @@
 //! with the `#[service]` macro. Each annotated trait automatically generates
 //! its Proxy, Client, Server and lifecycle implementations.
 //!
-//! | Sub-module   | Contents                                                       |
-//! |--------------|----------------------------------------------------------------|
-//! | [`config`]   | `ConfigService` + `ConfigError`                                |
-//! | [`context`]  | `ContextService` + `ContextError` + `ContextEntry`             |
-//! | [`database`] | `DatabaseService` + `DatabaseError` + `PersonneQuery`/`PersonneInfo` |
-//! | [`http`]     | `HttpService` + `HttpRequestParams`/`HttpResponseParams` + `HttpError` |
+//! | Sub-module       | Contents                                                       |
+//! |------------------|----------------------------------------------------------------|
+//! | [`config`]       | `ConfigService` + `ConfigError`                                |
+//! | [`context`]      | `ContextService` + `ContextError` + `ContextEntry`             |
+//! | [`database`]     | `DatabaseService` + `DatabaseError` + `PersonneQuery`/`PersonneInfo` |
+//! | [`http`]         | `HttpService` + `HttpRequestParams`/`HttpResponseParams` + `HttpError` |
+//! | [`notification`] | `NotificationService` (multi-value stream for `subscribe`)     |
 //!
 //! ## Lazy consumption
 //!
@@ -31,8 +32,10 @@ pub mod config;
 pub mod context;
 pub mod database;
 pub mod http;
+pub mod notification;
 
 pub use config::*;
 pub use context::*;
 pub use database::*;
 pub use http::*;
+pub use notification::*;

@@ -46,8 +46,8 @@ ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
 
 `full` is a convenience feature that enables `http` and `tokio` in one shot.
 
-- Service methods return `ice_rpc::Stream<T, E>` — an `async_channel::Receiver`.
-  Create the stream with `ice_rpc::channel::<T, E>(capacity)`.
+- Service methods return `ice_rpc::Observable<T, E>`.
+  Create one with `ice_rpc::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `sleep`, `timeout`,
   `block_on`, `oneshot` and `CancellationToken`.
 
@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Concept | Description |
 |---|---|
 | `NodeId` | Process identity (PID), unique across the machine. |
-| `Observable<T, E>` | Alias of `Stream<T, E>`: the composable flux, and the return type of service methods (no `Result`). |
+| `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
 | `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
 | `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
 | `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Consumption
 
-Consuming a stream is done natively on `ice_rpc::Stream`; a call never fails at
+Consuming a stream is done natively on `ice_rpc::Observable`; a call never fails at
 the call site — a discovery/transport failure becomes an in-stream technical
 error:
 
@@ -167,7 +167,7 @@ either a business error (`Business(E)`) or a technical one
 refines with the two variants.
 
 `RpcError` classifies technical failures so callers can choose a policy
-(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types.rs:333).
+(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types/error.rs:54).
 
 | Variant | Meaning | Retryable |
 |---|---|---|

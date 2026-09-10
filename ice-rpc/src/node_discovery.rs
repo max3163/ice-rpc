@@ -56,7 +56,7 @@ impl NodeDiscovery {
 
     pub fn upsert(&self, node_id: NodeId, status: u8, service_name: &str) {
         let is_new_node = {
-            let mut map = self.records.lock().expect("records lock poisoning");
+            let mut map = crate::sync::lock(&self.records);
             let is_new = !map.contains_key(&node_id.0);
             map.insert(
                 node_id.0,
@@ -73,10 +73,7 @@ impl NodeDiscovery {
 
         if status == NodeRecord::STATUS_DEAD && service_name.is_empty() {
             let services_lost: Vec<String> = {
-                let smap = self
-                    .service_map
-                    .read()
-                    .expect("service_map read lock poisoning");
+                let smap = crate::sync::read(&self.service_map);
                 smap.iter()
                     .filter(|(_, v)| v.0 == node_id.0)
                     .map(|(k, _)| k.clone())
@@ -94,10 +91,7 @@ impl NodeDiscovery {
         }
 
         if !service_name.is_empty() {
-            let mut smap = self
-                .service_map
-                .write()
-                .expect("service_map write lock poisoning");
+            let mut smap = crate::sync::write(&self.service_map);
             if status == NodeRecord::STATUS_OK {
                 let is_new = smap.insert(service_name.to_string(), node_id).is_none();
                 if is_new {
@@ -118,25 +112,16 @@ impl NodeDiscovery {
         }
 
         if !events.is_empty() {
-            if let Ok(mut pending) = self.pending_events.lock() {
-                pending.extend(events);
-            }
+            crate::sync::lock(&self.pending_events).extend(events);
         }
     }
 
     pub fn drain_events(&self) -> Vec<DiscoveryEvent> {
-        if let Ok(mut pending) = self.pending_events.lock() {
-            std::mem::take(&mut *pending)
-        } else {
-            Vec::new()
-        }
+        std::mem::take(&mut *crate::sync::lock(&self.pending_events))
     }
 
     pub fn all_known_services(&self) -> Vec<String> {
-        let smap = self
-            .service_map
-            .read()
-            .expect("service_map read lock poisoning");
+        let smap = crate::sync::read(&self.service_map);
         smap.keys().cloned().collect()
     }
 
@@ -169,7 +154,7 @@ impl NodeDiscovery {
     }
 
     pub fn active_nodes(&self) -> Vec<NodeId> {
-        let map = self.records.lock().expect("records lock poisoning");
+        let map = crate::sync::lock(&self.records);
         map.values()
             .filter(|r| r.status == NodeRecord::STATUS_OK)
             .map(|r| r.node_id)
@@ -177,7 +162,7 @@ impl NodeDiscovery {
     }
 
     pub fn is_node_ok(&self, node_id: NodeId) -> bool {
-        let map = self.records.lock().expect("records lock poisoning");
+        let map = crate::sync::lock(&self.records);
         map.get(&node_id.0)
             .map(|r| r.status == NodeRecord::STATUS_OK)
             .unwrap_or(false)
@@ -186,10 +171,7 @@ impl NodeDiscovery {
     /// Looks for the NodeId hosting a service: cache → registry → None.
     pub fn locate_service(&self, service_name: &str) -> Option<NodeId> {
         {
-            let smap = self
-                .service_map
-                .read()
-                .expect("service_map read lock poisoning");
+            let smap = crate::sync::read(&self.service_map);
             if let Some(nid) = smap.get(service_name).copied() {
                 return Some(nid);
             }
@@ -204,23 +186,17 @@ impl NodeDiscovery {
             let lock_name = format!("{}{}", crate::node_lock::LOCK_NAME_PREFIX, node_id.0);
             crate::node_lock::register_node_lock_watcher(*node_id, lock_name);
         }
-        let smap = self
-            .service_map
-            .read()
-            .expect("service_map read lock poisoning");
+        let smap = crate::sync::read(&self.service_map);
         smap.get(service_name).copied()
     }
 
     pub fn snapshot(&self) -> Vec<NodeRecord> {
-        let map = self.records.lock().expect("records lock poisoning");
+        let map = crate::sync::lock(&self.records);
         map.values().cloned().collect()
     }
 
     pub fn invalidate_service(&self, service_name: &str) {
-        let mut smap = self
-            .service_map
-            .write()
-            .expect("service_map write lock poisoning");
+        let mut smap = crate::sync::write(&self.service_map);
         smap.remove(service_name);
         log::info!(
             "Cache invalidated for service '{}' (reconnecting)",
@@ -230,14 +206,11 @@ impl NodeDiscovery {
 
     pub fn invalidate_node_services(&self, node_id: NodeId) {
         {
-            let mut rmap = self.records.lock().expect("records lock poisoning");
+            let mut rmap = crate::sync::lock(&self.records);
             rmap.remove(&node_id.0);
         }
         {
-            let mut smap = self
-                .service_map
-                .write()
-                .expect("service_map write lock poisoning");
+            let mut smap = crate::sync::write(&self.service_map);
             smap.retain(|_, v| v.0 != node_id.0);
         }
         log::warn!("Node {} marked dead, cache cleared", node_id);

@@ -1,0 +1,5 @@
+error: invalid RPC return type: the success type must be `Observable<T, E>` or `Event<T, E>`
+ --> tests/compile_fail/invalid_return_type.rs:8:29
+  |
+8 |     async fn ping(&self) -> ice_rpc::Observable<()>;
+  |                             ^^^^^^^^^^^^^^^^^^^^^^^

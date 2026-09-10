@@ -10,6 +10,9 @@ publish = false
 tokio = ["ice-rpc/tokio"]
 http = ["ice-rpc/http"]
 http-tokio = ["ice-rpc/http-tokio"]
+# Internal timing harness (`examples/perf_probe.rs`): opt-in only, so it is never
+# built by `--all-targets` or by the CI clippy run.
+perf-probe = []
 
 [dependencies]
 ice-rpc = { path = "../ice-rpc" }
@@ -17,6 +20,9 @@ futures-lite = "2"
 pin-project-lite = "0.2"
 
 [dev-dependencies]
+# The demo services are declared once, in the `common` crate, and shared with the
+# `gateway_nodejs` examples: no local copy is maintained here.
+common = { path = "../examples/common" }
 env_logger = "0.11"
 pollster = "1.0"
 tokio = { workspace = true }
@@ -50,3 +56,7 @@ required-features = ["tokio"]
 [[example]]
 name = "pipeline_bench"
 required-features = ["tokio"]
+
+[[example]]
+name = "perf_probe"
+required-features = ["perf-probe"]

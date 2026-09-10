@@ -24,16 +24,14 @@
 //! - `POST http://localhost:8080/DatabaseService/get_person` with a JSON body
 //! - `POST http://localhost:8080/HttpService/send_request` with a JSON body
 
-mod shared;
-
 use async_trait::async_trait;
-use ice_rpc::{Observable, ServiceInit, StreamError};
-use ice_rpc_rx::{from, of, throw_error, RxStreamExt};
-use shared::{
+use common::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
     HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
 };
+use ice_rpc::{Observable, ServiceInit, StreamError};
+use ice_rpc_rx::{from, of, throw_error, RxStreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -328,7 +326,7 @@ impl NotificationService for NotificationServiceImpl {
     async fn watch(&self, count: u32) -> Observable<u32, String> {
         // A pure pipeline — no channel, no task, no `spawn`: one value every
         // 100 ms, then `Complete`. `into_observable()` freezes it into the
-        // concrete `Stream` required by the service signature.
+        // concrete `Observable` required by the service signature.
         //
         // Trade-off: a pipeline cannot detect that the consumer unsubscribed, so
         // it runs to completion. A `channel` + `send_next` (which errors on a

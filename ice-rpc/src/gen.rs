@@ -6,6 +6,14 @@
 //! small while the internals can evolve independently.
 //!
 //! This module is `#[doc(hidden)]` and is **not** part of the public API.
+//!
+//! # Versioning contract
+//!
+//! This module is a compatibility surface for `ice-rpc-macros`, not a public
+//! API: its symbols are semver-exempt for the consumers of `ice-rpc`, but
+//! **not** for the macro crate. Renaming or removing any item below is a
+//! breaking change of `ice-rpc-macros`. The `ice-rpc-macros-tests` crate pins
+//! every symbol with a dedicated contract test (`gen_facade_symbols_resolve`).
 
 pub use crate::blackboard::{create_node_blackboard, list_services};
 pub use crate::client_core::ClientCore;
@@ -23,3 +31,7 @@ pub use crate::reconnect_manager::{PendingService, ReconnectManager};
 pub use crate::registry_listener::spawn as spawn_node_registry_listener;
 pub use crate::registry_notify::{announce_dead_node, announce_node_ready};
 pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
+// Canonical terminal implementations, shared with `ice-rpc-rx` so that the
+// inherent `Observable` methods and the `RxStreamExt` default methods cannot
+// drift.
+pub use crate::types::{collect_values, first_event};

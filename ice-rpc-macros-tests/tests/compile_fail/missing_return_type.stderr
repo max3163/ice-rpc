@@ -1,0 +1,5 @@
+error: RPC methods must declare a return type, e.g. `-> Observable<T, E>`
+ --> tests/compile_fail/missing_return_type.rs:7:5
+  |
+7 |     async fn ping(&self);
+  |     ^^^^^^^^^^^^^^^^^^^^

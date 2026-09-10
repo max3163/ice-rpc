@@ -36,6 +36,10 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
+        // The `ProviderNodeJs` variant is only built by the Node.js gateway; a
+        // pure-Rust consumer never constructs it, so it is dead there. The
+        // attribute is scoped to the whole enum to keep one auditable exception.
+        #[allow(dead_code)]
         #visibility enum #mode_name {
             Provider {
                 local_impl:     std::sync::Arc<dyn #trait_name>,
@@ -43,7 +47,6 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 server_started: bool,
             },
             Consumer { ipc_client: std::sync::Arc<#client_name> },
-            #[allow(dead_code)]
             ProviderNodeJs,
         }
 
@@ -52,6 +55,12 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             deps: Vec<&'static str>,
         }
 
+        // `provide_nodejs` (below) is the proxy-side entry point of the Node.js
+        // surface: like the `ProviderNodeJs` variant, it is emitted
+        // unconditionally but only used by the `gateway_nodejs` bridge, so a
+        // pure-Rust build sees it as dead code. One commented exception for the
+        // whole generated impl.
+        #[allow(dead_code)]
         impl #proxy_name {
             /// Logical name of the service, injected by the `#[service]` macro.
             pub const SERVICE_NAME: &'static str = #logical_name_lit;
@@ -97,7 +106,6 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 })
             }
 
-            #[allow(dead_code)]
             #visibility fn provide_nodejs() -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     deps: vec![],
@@ -142,7 +150,7 @@ pub fn gen_proxy_method(
                     ipc_client.#fn_name(#(#arg_names),*).await
                 }
                 #mode_name::ProviderNodeJs => {
-                    ice_rpc::Stream::from_technical_error(ice_rpc::RpcError::Internal(
+                    ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
                         "ProviderNodeJs: direct calls are not supported — use IPC".into()
                     ))
                 }

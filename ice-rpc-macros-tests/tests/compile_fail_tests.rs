@@ -12,4 +12,8 @@ fn compile_fail_validation() {
     t.compile_fail("tests/compile_fail/service_name_underscore_start.rs");
     t.compile_fail("tests/compile_fail/method_name_too_long.rs");
     t.compile_fail("tests/compile_fail/service_name_collision.rs");
+    // Method signature validation: reported as `compile_error!` on the method
+    // (not as a panic inside the macro).
+    t.compile_fail("tests/compile_fail/invalid_return_type.rs");
+    t.compile_fail("tests/compile_fail/missing_return_type.rs");
 }

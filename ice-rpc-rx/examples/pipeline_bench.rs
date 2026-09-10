@@ -25,7 +25,8 @@ use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
 use ice_rpc::Event;
-use ice_rpc_rx::{RxError, RxStreamExt};
+use ice_rpc_rx::RxStreamExt;
+use std::convert::Infallible;
 
 const N: i64 = 100_000;
 const ITERS: usize = 5;
@@ -35,7 +36,7 @@ const REPS: usize = 15;
 fn drain<S: futures_lite::Stream>(stream: S) {
     let mut stream = Box::pin(stream);
     let waker = Waker::noop();
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(waker);
     let mut count = 0u64;
     while let Poll::Ready(Some(_)) = futures_lite::Stream::poll_next(stream.as_mut(), &mut cx) {
         count += 1;
@@ -49,7 +50,7 @@ fn time_poll() -> f64 {
     let start = Instant::now();
     for _ in 0..ITERS {
         // The business-error type is irrelevant here: the source never errors.
-        let source: ice_rpc::Stream<i64, RxError> = ice_rpc_rx::from(0..N);
+        let source: ice_rpc::Observable<i64, Infallible> = ice_rpc_rx::from(0..N);
         let pipeline = source
             .map(|v| v * 2)
             .filter(|v| v % 4 == 0)
@@ -64,7 +65,7 @@ fn time_poll() -> f64 {
 /// Pure stream over a `Vec<Event>`: no operator, no channel, no lock. This is
 /// the harness floor.
 struct PureVecStream {
-    values: std::vec::IntoIter<Event<i64, RxError>>,
+    values: std::vec::IntoIter<Event<i64, Infallible>>,
     done: bool,
 }
 
@@ -72,7 +73,7 @@ struct PureVecStream {
 impl Unpin for PureVecStream {}
 
 impl futures_lite::Stream for PureVecStream {
-    type Item = Event<i64, RxError>;
+    type Item = Event<i64, Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.done {
@@ -91,7 +92,7 @@ impl futures_lite::Stream for PureVecStream {
 fn time_pure() -> f64 {
     let start = Instant::now();
     for _ in 0..ITERS {
-        let mut events: Vec<Event<i64, RxError>> = (0..N).map(Event::Next).collect();
+        let mut events: Vec<Event<i64, Infallible>> = (0..N).map(Event::Next).collect();
         events.push(Event::Complete);
         drain(PureVecStream {
             values: events.into_iter(),
@@ -103,7 +104,7 @@ fn time_pure() -> f64 {
 
 // ── channel: the pre-refactor model (1 channel + 1 task per operator) ─
 
-async fn drain_channel(mut rx: ice_rpc::Stream<i64, String>) {
+async fn drain_channel(mut rx: ice_rpc::Observable<i64, String>) {
     let mut count = 0u64;
     while rx.recv().await.is_ok() {
         count += 1;

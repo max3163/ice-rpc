@@ -164,6 +164,28 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     futures_lite::future::block_on(future)
 }
 
+/// Runs a future on the facade's own runtime (unit tests only).
+///
+/// Under the `tokio` facade, [`spawn`] and [`sleep`] require an active runtime:
+/// this helper supplies one, so the tests exercise the *real* facade instead of
+/// panicking with "there is no reactor running". The agnostic facade needs no
+/// runtime, so the plain [`block_on`] is enough there.
+#[cfg(test)]
+pub(crate) fn test_block_on<F: Future>(future: F) -> F::Output {
+    #[cfg(feature = "tokio")]
+    {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build the tokio runtime for tests")
+            .block_on(future)
+    }
+    #[cfg(not(feature = "tokio"))]
+    {
+        block_on(future)
+    }
+}
+
 /// Runtime-agnostic oneshot channel.
 pub mod oneshot {
     pub use futures::channel::oneshot::{channel, Canceled, Receiver, Sender};
@@ -200,13 +222,13 @@ mod tests {
 
     #[test]
     fn timeout_resolves_value_when_future_completes_first() {
-        let result = block_on(timeout(Duration::from_secs(5), async { 42 }));
+        let result = test_block_on(timeout(Duration::from_secs(5), async { 42 }));
         assert_eq!(result, Ok(42));
     }
 
     #[test]
     fn timeout_returns_elapsed_on_deadline() {
-        let result = block_on(timeout(Duration::from_millis(10), async {
+        let result = test_block_on(timeout(Duration::from_millis(10), async {
             futures::future::pending::<()>().await;
         }));
         assert_eq!(result, Err(Elapsed));
@@ -214,15 +236,20 @@ mod tests {
 
     #[test]
     fn spawn_runs_detached_future() {
+        // `spawn` must be called with an active runtime under the `tokio`
+        // facade, so the whole test body runs inside `test_block_on`.
         let flag = Arc::new(AtomicBool::new(false));
-        let flag_clone = flag.clone();
-        spawn(async move {
-            flag_clone.store(true, Ordering::SeqCst);
+        let flag_spawn = flag.clone();
+        let flag_wait = flag.clone();
+        test_block_on(async move {
+            spawn(async move {
+                flag_spawn.store(true, Ordering::SeqCst);
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !flag_wait.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !flag.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         assert!(flag.load(Ordering::SeqCst));
     }
 }

@@ -8,11 +8,9 @@
 //! cargo run --example consumer-http-app
 //! ```
 
-mod shared;
-
+use common::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
 use ice_rpc::StreamError;
 use ice_rpc_rx::RxStreamExt;
-use shared::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 

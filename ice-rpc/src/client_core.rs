@@ -71,10 +71,7 @@ impl ClientCore {
     /// Replaces the previous subscription when the target node changes. The
     /// old subscription is removed via `Drop`.
     pub fn subscribe(&self, node_id: u32) {
-        let mut subscription = self
-            .subscription
-            .lock()
-            .expect("client core subscription lock poisoning");
+        let mut subscription = crate::sync::lock(&self.subscription);
         if let Some(existing) = subscription.as_ref() {
             if existing.node_id() == node_id {
                 return;
@@ -87,7 +84,7 @@ impl ClientCore {
 
     /// Reads the cached target node id (`0` unless the state is `Ready`).
     pub fn cached_target_node(&self) -> u64 {
-        match *self.state.lock().expect("client core state lock poisoning") {
+        match *crate::sync::lock(&self.state) {
             ConnectionState::Ready(n) => n as u64,
             _ => 0,
         }
@@ -175,7 +172,7 @@ impl ClientCore {
 
     /// Returns the current connection state.
     pub fn state(&self) -> ConnectionState {
-        *self.state.lock().expect("client core state lock poisoning")
+        *crate::sync::lock(&self.state)
     }
 
     /// Bootstraps the client: creates the node, starts discovery, locates the
@@ -251,7 +248,7 @@ impl ClientCore {
 
 /// Applies a connection transition after validating it.
 fn transition(state: &Mutex<ConnectionState>, to: ConnectionState) -> bool {
-    let mut guard = state.lock().expect("client core state lock poisoning");
+    let mut guard = crate::sync::lock(state);
     if is_valid_transition(*guard, to) {
         *guard = to;
         true
@@ -277,7 +274,7 @@ fn build_reconnect_cb(
 
     Arc::new(move |dead_node_id: u32| {
         {
-            let mut guard = state.lock().expect("client core state lock poisoning");
+            let mut guard = crate::sync::lock(&state);
             if !is_valid_transition(*guard, ConnectionState::Dead(dead_node_id)) {
                 return;
             }
@@ -290,7 +287,7 @@ fn build_reconnect_cb(
         );
 
         {
-            let mut guard = state.lock().expect("client core state lock poisoning");
+            let mut guard = crate::sync::lock(&state);
             if is_valid_transition(*guard, ConnectionState::Reconnecting) {
                 *guard = ConnectionState::Reconnecting;
             }

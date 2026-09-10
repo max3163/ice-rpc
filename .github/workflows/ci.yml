@@ -17,16 +17,33 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
-      - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets
+      - name: Format check
+        run: cargo fmt --all -- --check
 
-      - name: Test (workspace, excluding the Node.js gateway)
+      # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
+      # `tokio,http` covers the optional runtime adapter and the HTTP gateway,
+      # which are not part of the default feature set.
+      - name: Check (workspace, excluding the Node.js gateway)
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http -- -D warnings
+
+      # The default workspace run exercises the agnostic runtime facade.
+      - name: Test (workspace, default facade)
         run: cargo test --workspace --exclude gateway-nodejs
+
+      # The `tokio` feature swaps the runtime facade: `rt::spawn` / `rt::sleep`
+      # then require an active runtime. The `ice-rpc` unit tests supply one
+      # through `rt::test_block_on`, so the tokio facade is exercised in CI too.
+      - name: Test (ice-rpc, tokio facade)
+        run: cargo test -p ice-rpc --features tokio --lib
 
   coverage:
     name: Coverage (Ubuntu)

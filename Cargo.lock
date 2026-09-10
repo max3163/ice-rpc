@@ -1055,6 +1055,7 @@ name = "ice-rpc-rx"
 version = "0.2.2"
 dependencies = [
  "async-trait",
+ "common",
  "env_logger",
  "futures-lite",
  "ice-rpc",

@@ -132,24 +132,11 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                         ice_rpc::WireEvent<#ok_type, #err_type>,
                         ice_rpc::rkyv::rancor::Error
                     >(bytes) {
-                        Ok(ice_rpc::WireEvent::CompleteWith(v)) => {
-                            // Transport shortcut: single sample carrying the last value.
-                            let _ = tx.try_send_next(v);
-                            let _ = tx.try_send_complete();
-                        }
-                        Ok(ice_rpc::WireEvent::Next(v)) => {
-                            let _ = tx.try_send_next(v);
-                        }
-                        Ok(ice_rpc::WireEvent::Complete) => {
-                            let _ = tx.try_send_complete();
-                        }
-                        Ok(ice_rpc::WireEvent::Error(e)) => {
-                            let _ = tx.try_send_error(e);
-                        }
-                        Ok(ice_rpc::WireEvent::RpcError(e)) => {
-                            let _ = tx.try_send_event(ice_rpc::Event::Error(
-                                ice_rpc::ObservableError::Technical(e)
-                            ));
+                        // Raw relay: the `CompleteWith` single-sample
+                        // optimization is preserved through the consumer
+                        // channel (one message instead of `Next` + `Complete`).
+                        Ok(event) => {
+                            let _ = tx.try_send_wire(event);
                         }
                         Err(_) => {
                             let _ = tx.try_send_event(ice_rpc::Event::Error(
@@ -179,7 +166,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             let bytes = match ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&req_val) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return ice_rpc::Stream::from_technical_error(
+                    return ice_rpc::Observable::from_technical_error(
                         ice_rpc::RpcError::SerializationError,
                     );
                 }
@@ -190,7 +177,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
             let target_node = match self.core.resolve_target(svc_name, #locate_timeout).await {
                 Ok(node) => node,
-                Err(e) => return ice_rpc::Stream::from_technical_error(e),
+                Err(e) => return ice_rpc::Observable::from_technical_error(e),
             };
 
             let rpc_header = ice_rpc::RpcHeader::request(
@@ -222,7 +209,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
             if let Err(e) = hub.send_to_node(target_node, rpc_header, &bytes) {
                 hub.remove_response_handler(&correlation_id);
-                return ice_rpc::Stream::from_technical_error(e);
+                return ice_rpc::Observable::from_technical_error(e);
             }
 
             rx

@@ -4,7 +4,7 @@ Reactive extensions for [ice-rpc](https://crates.io/crates/ice-rpc) event
 streams, inspired by RxJS.
 
 This crate is the **public, user-facing API** of ice-rpc. It extends the native
-`ice_rpc::Stream` type with composable operators, provides multicast primitives
+`ice_rpc::Observable` type with composable operators, provides multicast primitives
 (`Subject`, `ShareReplay`), stream constructors (`from`, `of`) and terminal
 consumption helpers. It is runtime-agnostic and depends only on `ice-rpc`.
 
@@ -12,7 +12,7 @@ consumption helpers. It is runtime-agnostic and depends only on `ice-rpc`.
 
 | Module | Role |
 |---|---|
-| [`transform`](src/transform.rs) | `RxStreamExt` trait: `map`, `filter`, `map_err`, `scan`, `take`, `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`, `timeout`, `catch_error`, `switch_map`, `take_until`, `into_observable`, and the terminals `first_value`, `collect`, `for_each`, `subscribe`, `subscribe_with` |
+| [`transform`](src/transform/mod.rs) | `RxStreamExt` trait: `map`, `filter`, `map_err`, `scan`, `take`, `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`, `timeout`, `catch_error`, `switch_map`, `take_until`, `into_observable`, and the terminals `first_value`, `collect`, `for_each`, `subscribe`, `subscribe_with`. The combinators live in [`transform/operators.rs`](src/transform/operators.rs) |
 | [`join`](src/join.rs) | `merge`, `retry`, `retry_with`, `retry_with_delay` |
 | [`creation`](src/creation.rs) | `from`, `of` (channel-free sources) |
 | [`subscribe`](src/subscribe.rs) | `Observer`, `ObserverFns`, `Subscription` (push mode) |
@@ -28,14 +28,14 @@ ice-rpc-rx = { path = "../ice-rpc-rx" }
 
 ## Operators
 
-Operators chain directly on the native `ice_rpc::Stream` type (or any poll-based
+Operators chain directly on the native `ice_rpc::Observable` type (or any poll-based
 stream of `ice_rpc::Event`) and return pull-based combinator streams, so they
 compose without any wrapper, channel allocation or spawned task:
 
 ```rust,ignore
 use ice_rpc_rx::RxStreamExt;
 
-let stream: ice_rpc::Stream<i32, String> = proxy.list().await;
+let stream: ice_rpc::Observable<i32, String> = proxy.list().await;
 
 let top = stream
     .filter(|v| *v > 0)      // keeps only positive values
@@ -51,7 +51,7 @@ let top = stream
 - `map_err(f)` — remaps a **business** error (`Fn(E) -> E2`); technical errors
   pass through unchanged.
 - `scan(initial, f)` — emits a running accumulator state after each value.
-- `switch_map(f)` — projects each value to an inner `Stream` and emits from the
+- `switch_map(f)` — projects each value to an inner `Observable` and emits from the
   latest one, cancelling previous subscriptions (RxJS `switchMap`).
 - `take(n)` — emits at most `n` values, then completes.
 - `skip(n)` — ignores the first `n` values (symmetric of `take`).
@@ -82,7 +82,7 @@ let merged = merge(vec![of(1), of(2)]);
 let resilient = retry(|| proxy.fetch().await, 3);
 ```
 
-- `merge(streams)` — combines several `Stream<T, E>` into one.
+- `merge(streams)` — combines several `Observable<T, E>` into one.
 - `retry(factory, n)` — re-invokes the factory on a business `Error`, up to `n`
   times.
 - `retry_with(factory, n, pred)` — retry only when `pred(&error)` is `true`.
@@ -92,17 +92,17 @@ let resilient = retry(|| proxy.fetch().await, 3);
 
 The former `ice_rpc::take_one!` / `take_one_or_cancel!` macros have been removed.
 A service method returns the observable directly (no `Result`), so the terminal
-methods of `ice_rpc::Stream` apply without any `?` at the call site:
+methods of `ice_rpc::Observable` apply without any `?` at the call site:
 
 ```rust,ignore
 let value = proxy.get("my.key".into()).await.first_value().await?;
 let all = proxy.list().await.collect().await?; // Vec<T>
 ```
 
-[`Stream::first_value()`](../ice-rpc/src/types.rs) returns
+[`Observable::first_value()`](../ice-rpc/src/types/stream.rs) returns
 `Result<T, StreamError<E>>`, where
 `StreamError = Business(E) | Technical(RpcError) | Empty`.
-[`Stream::collect()`](../ice-rpc/src/types.rs) gathers every value into a
+[`Observable::collect()`](../ice-rpc/src/types/stream.rs) gathers every value into a
 `Vec<T>` and returns `Result<Vec<T>, ObservableError<E>>` (no `Empty`).
 
 `RxStreamExt::for_each(f)` is the pull-based equivalent (`Result<(), ObservableError<E>>`),
@@ -139,6 +139,11 @@ A runnable demonstration lives in the **existing** examples (no extra binary):
 the streaming `NotificationService` is provided by
 [`provider-app.rs`](examples/provider-app.rs) and consumed by
 [`consumer-app.rs`](examples/consumer-app.rs) with `--service notifications`.
+
+The demo services are declared **once**, in the `common` crate
+([`examples/common`](../examples/common/src/mod.rs)), and shared with the
+`gateway_nodejs` examples: `ice-rpc-rx` pulls them as a `dev-dependency`, so there
+is no local copy to keep in sync.
 
 It shows, in order: `subscribe` with a closure, `subscribe_with` with a business
 error (`throw_error`), a hand-written `Observer`, a single-value RPC read in pull
@@ -208,7 +213,7 @@ cargo run -p ice-rpc-rx --example state_service --features tokio -- consumer
 ## Event model
 
 ice-rpc transports a single response as an internal `CompleteWith` sample.
-`ice_rpc::Stream::recv()` normalizes it into `Next` + `Complete`, so consumers
+`ice_rpc::Observable::recv()` normalizes it into `Next` + `Complete`, so consumers
 only ever observe three events:
 
 - `Next(T)` — an emitted value;
@@ -220,23 +225,23 @@ only ever observe three events:
 A single `match` therefore detects any failure; the caller refines with the two
 variants of `ObservableError`. Call-level failures (service not found, provider
 unreachable) are reported **inside** the flux through
-`Stream::from_technical_error`, so a proxy call never returns a `Result`.
+`Observable::from_technical_error`, so a proxy call never returns a `Result`.
 `CompleteWith` is never exposed to user code.
 
 ## Pure (channel-free) sources
 
 `of(value)`, `throw_error(err)` and `from(iter)` build observables backed by an
-**inline** event buffer (the internal `Buffered` stream variant of
-`ice_rpc::Stream`): no channel, no spawned task, no `Arc` and no lock on the data
+**inline** event buffer (the internal `Buffered` variant of
+`ice_rpc::Observable`): no channel, no spawned task, no `Arc` and no lock on the data
 path. The queue is drained through `&mut self`, so `recv()` / `recv_wire()`
 require a mutable binding (e.g. `let mut rx = ...`).
 
 ```rust,ignore
 use ice_rpc_rx::{from, of, throw_error};
 
-let single: ice_rpc::Stream<i32, MyError> = of(42);          // Next(42) + Complete
-let failure: ice_rpc::Stream<i32, MyError> = throw_error(MyError::NotFound);
-let many: ice_rpc::Stream<i32, MyError> = from([1, 2, 3]);
+let single: ice_rpc::Observable<i32, MyError> = of(42);          // Next(42) + Complete
+let failure: ice_rpc::Observable<i32, MyError> = throw_error(MyError::NotFound);
+let many: ice_rpc::Observable<i32, MyError> = from([1, 2, 3]);
 ```
 
 They make a single-response service trivial to implement on the provider side:
@@ -264,11 +269,11 @@ See [`examples/provider-app.rs`](examples/provider-app.rs) for the full example.
 ## Returning a pipeline from a service
 
 A service method must return `Observable<T, E>`, which is the **concrete**
-`Stream<T, E>`: the generated proxy needs a single return type shared by its
+stream type: the generated proxy needs a single return type shared by its
 `Provider` (in-process implementation) and `Consumer` (IPC client) modes, so an
 operator type (`Map<…>`, `Delay<…>`, …) cannot be returned directly.
 
-`into_observable()` freezes the pipeline into a `Stream`:
+`into_observable()` freezes the pipeline into an `Observable`:
 
 ```rust,ignore
 async fn watch(&self, count: u32) -> Observable<u32, String> {
@@ -285,7 +290,8 @@ Any stream of `Event<T, E>` can be frozen this way
 
 Two points to keep in mind:
 
-- a frozen pipeline **cannot** be cloned (rebuild it from its constructor);
+- a frozen pipeline cannot be cloned (`Observable::try_clone` returns `None`);
+  rebuild it from its constructor;
 - it cannot detect that the consumer unsubscribed, so it runs to completion. Use
   an explicit `channel()` + `send_next` (which fails on a closed receiver) when
   the producer must stop early.

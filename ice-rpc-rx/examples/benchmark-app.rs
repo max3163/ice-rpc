@@ -24,9 +24,7 @@
 //! Any difference smaller than the reported spread is **not** attributable to
 //! the code.
 
-mod shared;
-
-use shared::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
+use common::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;

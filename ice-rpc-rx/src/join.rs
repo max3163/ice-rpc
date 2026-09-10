@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn merge_combines_streams() {
-        let s1: ice_rpc::Stream<i32, String> = of(1);
-        let s2: ice_rpc::Stream<i32, String> = of(2);
+        let s1: ice_rpc::Observable<i32, String> = of(1);
+        let s2: ice_rpc::Observable<i32, String> = of(2);
         let stream = merge(vec![s1, s2]);
         let events = pollster::block_on(drain(stream));
 

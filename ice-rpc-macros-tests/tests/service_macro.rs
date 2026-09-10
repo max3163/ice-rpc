@@ -85,7 +85,7 @@ struct CalcImpl;
 impl Calculator for CalcImpl {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         // Channel-free single-value response.
-        ice_rpc::Stream::from_events([ice_rpc::Event::Next(a + b), ice_rpc::Event::Complete])
+        ice_rpc::Observable::from_events([ice_rpc::Event::Next(a + b), ice_rpc::Event::Complete])
     }
 }
 

@@ -15,13 +15,14 @@ pub struct HttpGenInput {
 }
 
 /// Owned data of a method needed for the HTTP dispatch.
-#[allow(dead_code)]
+///
+/// Only the fields actually read by [`gen_http_method_arm`] are kept: the
+/// success/error types are not needed, since the response is already converted
+/// to `serde_json::Value` by the generated call.
 pub struct HttpMethodData {
     pub fn_name: Ident,
     pub arg_names: Vec<Ident>,
     pub arg_types: Vec<Type>,
-    pub ok_type: Type,
-    pub err_type: Type,
 }
 
 /// Generates the [`HttpCallable`] implementation for a Proxy type.

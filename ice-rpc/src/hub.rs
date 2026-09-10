@@ -69,10 +69,7 @@ impl NodeHub {
 
     /// Registers a request handler for a given service.
     pub fn register_request_handler(&self, service_name: &str, handler: RequestHandler) {
-        let mut map = self
-            .request_handlers
-            .write()
-            .expect("request_handlers write lock poisoning");
+        let mut map = crate::sync::write(&self.request_handlers);
         map.entry(service_name.to_string())
             .or_default()
             .push(handler);
@@ -81,18 +78,15 @@ impl NodeHub {
 
     /// Returns the list of service names that have a registered handler.
     pub fn registered_services(&self) -> Vec<String> {
-        self.request_handlers
-            .read()
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default()
+        crate::sync::read(&self.request_handlers)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Registers a response handler for a given correlation_id.
     pub fn register_response_handler(&self, correlation_id: [u8; 16], handler: ResponseHandler) {
-        self.response_handlers
-            .lock()
-            .expect("response_handlers lock poisoning")
-            .insert(correlation_id, handler);
+        crate::sync::lock(&self.response_handlers).insert(correlation_id, handler);
     }
 
     /// Registers a pending call for a target node.
@@ -100,31 +94,19 @@ impl NodeHub {
     /// When the node dies, every pending call is notified with
     /// `RpcError::ProviderUnavailable`.
     pub fn register_pending_call(&self, correlation_id: [u8; 16], node_id: u32) {
-        self.pending_calls
-            .lock()
-            .expect("pending_calls lock poisoning")
-            .insert(correlation_id, node_id);
+        crate::sync::lock(&self.pending_calls).insert(correlation_id, node_id);
     }
 
     /// Removes the response handler associated with a correlation_id.
     pub fn remove_response_handler(&self, correlation_id: &[u8; 16]) {
-        self.response_handlers
-            .lock()
-            .expect("response_handlers lock poisoning")
-            .remove(correlation_id);
-        self.pending_calls
-            .lock()
-            .expect("pending_calls lock poisoning")
-            .remove(correlation_id);
+        crate::sync::lock(&self.response_handlers).remove(correlation_id);
+        crate::sync::lock(&self.pending_calls).remove(correlation_id);
     }
 
     /// Notifies every pending call of a node that it is no longer reachable.
     fn fail_pending_calls(&self, node_id: u32) {
         let cids: Vec<[u8; 16]> = {
-            let pending = self
-                .pending_calls
-                .lock()
-                .expect("pending_calls lock poisoning");
+            let pending = crate::sync::lock(&self.pending_calls);
             pending
                 .iter()
                 .filter(|(_, node)| **node == node_id)
@@ -132,18 +114,12 @@ impl NodeHub {
                 .collect()
         };
         for cid in &cids {
-            self.pending_calls
-                .lock()
-                .expect("pending_calls lock poisoning")
-                .remove(cid);
+            crate::sync::lock(&self.pending_calls).remove(cid);
         }
 
         let mut to_fail = Vec::new();
         {
-            let mut handlers = self
-                .response_handlers
-                .lock()
-                .expect("response_handlers lock poisoning");
+            let mut handlers = crate::sync::lock(&self.response_handlers);
             for cid in cids {
                 if let Some(handler) = handlers.remove(&cid) {
                     to_fail.push(handler);
@@ -158,10 +134,7 @@ impl NodeHub {
 
     /// Checks whether publishers already exist for a target node.
     pub fn has_publishers(&self, target_node_id: NodeId) -> bool {
-        self.publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
+        crate::sync::read(&self.publishers).contains_key(&target_node_id.0)
     }
 
     /// Enables the creation of the large-payload shared-memory segment.
@@ -211,10 +184,7 @@ impl NodeHub {
         let is_large = payload.len() > LARGE_PAYLOAD_THRESHOLD;
 
         let node_pubs = {
-            let publishers = self
-                .publishers
-                .read()
-                .expect("publishers read lock poisoning");
+            let publishers = crate::sync::read(&self.publishers);
             publishers
                 .get(&target_node_id.0)
                 .ok_or(crate::RpcError::ProviderUnavailable {
@@ -231,17 +201,9 @@ impl NodeHub {
 
         let send_result = {
             let guard = if use_large {
-                node_pubs
-                    .large
-                    .as_ref()
-                    .expect("large publisher missing")
-                    .lock()
-                    .expect("large publisher lock poisoning")
+                crate::sync::lock(node_pubs.large.as_ref().expect("large publisher missing"))
             } else {
-                node_pubs
-                    .default
-                    .lock()
-                    .expect("default publisher lock poisoning")
+                crate::sync::lock(&node_pubs.default)
             };
             Self::do_send(&guard, header, payload)
         };
@@ -265,10 +227,7 @@ impl NodeHub {
 
     /// Invalidates the publishers of a target node (following a detected crash).
     pub fn invalidate_publishers(&self, target_node_id: NodeId) {
-        self.publishers
-            .write()
-            .expect("publishers write lock poisoning")
-            .remove(&target_node_id.0);
+        crate::sync::write(&self.publishers).remove(&target_node_id.0);
         self.fail_pending_calls(target_node_id.0);
         log::warn!("Publishers invalidated for {}", target_node_id);
     }
@@ -281,27 +240,15 @@ impl NodeHub {
     /// `shm_unlink` cleanup of the shared-memory backing files.
     pub fn clear_ipc_resources(&self) {
         let publisher_count = {
-            let mut map = self
-                .publishers
-                .write()
-                .expect("publishers write lock poisoning");
+            let mut map = crate::sync::write(&self.publishers);
             let count = map.len();
             map.clear();
             count
         };
 
-        self.request_handlers
-            .write()
-            .expect("request_handlers write lock poisoning")
-            .clear();
-        self.response_handlers
-            .lock()
-            .expect("response_handlers lock poisoning")
-            .clear();
-        self.pending_calls
-            .lock()
-            .expect("pending_calls lock poisoning")
-            .clear();
+        crate::sync::write(&self.request_handlers).clear();
+        crate::sync::lock(&self.response_handlers).clear();
+        crate::sync::lock(&self.pending_calls).clear();
 
         if publisher_count > 0 {
             log::info!("[ice-rpc] NodeHub: dropped {publisher_count} cached publisher set(s).");
@@ -334,26 +281,13 @@ impl NodeHub {
     /// Creates the publishers towards a target node if they do not exist yet
     /// (double-checked locking).
     pub fn ensure_publishers(&self, target_node_id: NodeId) -> Result<(), crate::RpcError> {
-        if self
-            .publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
-        {
+        if crate::sync::read(&self.publishers).contains_key(&target_node_id.0) {
             return Ok(());
         }
 
-        let _create_guard = self
-            .publishers_create_lock
-            .lock()
-            .expect("publishers_create_lock poisoning");
+        let _create_guard = crate::sync::lock(&self.publishers_create_lock);
 
-        if self
-            .publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
-        {
+        if crate::sync::read(&self.publishers).contains_key(&target_node_id.0) {
             return Ok(());
         }
 
@@ -367,10 +301,7 @@ impl NodeHub {
             self.default_message_size_bytes(),
         )?);
 
-        self.publishers
-            .write()
-            .expect("publishers write lock poisoning")
-            .insert(target_node_id.0, np);
+        crate::sync::write(&self.publishers).insert(target_node_id.0, np);
         Ok(())
     }
 
@@ -619,11 +550,7 @@ impl NodeHub {
             return false;
         };
         let hub = crate::ServiceLocator::global().hub();
-        let req_handlers_snapshot = hub
-            .request_handlers
-            .read()
-            .expect("request_handlers read lock poisoning")
-            .clone();
+        let req_handlers_snapshot = crate::sync::read(&hub.request_handlers).clone();
         let mut had_work = false;
 
         while let Ok(Some(sample)) = sub.receive() {
@@ -644,18 +571,12 @@ impl NodeHub {
             } else {
                 let cid = hdr.correlation_id;
                 let terminal = hdr.event_kind.is_terminal();
-                let resp_guard = hub
-                    .response_handlers
-                    .lock()
-                    .expect("response_handlers lock poisoning");
+                let resp_guard = crate::sync::lock(&hub.response_handlers);
                 if let Some(handler) = resp_guard.get(&cid).cloned() {
                     drop(resp_guard);
                     handler(Ok(payload));
                     if terminal {
-                        hub.response_handlers
-                            .lock()
-                            .expect("response_handlers lock poisoning")
-                            .remove(&cid);
+                        crate::sync::lock(&hub.response_handlers).remove(&cid);
                     }
                 }
             }

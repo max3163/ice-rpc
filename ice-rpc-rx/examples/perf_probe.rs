@@ -17,7 +17,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 use ice_rpc::Event;
-use ice_rpc_rx::{RxError, RxStreamExt};
+use ice_rpc_rx::RxStreamExt;
+use std::convert::Infallible;
 
 const N: i64 = 200_000;
 /// Repetitions per measurement: the **minimum** is reported, because on a
@@ -55,7 +56,7 @@ impl<T> futures_lite::Stream for PureVecStream<T> {
 /// Polls a future exactly once, with a no-op waker (no runtime, no thread park).
 fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
     let waker = Waker::noop();
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(waker);
     let mut fut = std::pin::pin!(fut);
     match fut.as_mut().poll(&mut cx) {
         Poll::Ready(v) => Some(v),
@@ -67,7 +68,7 @@ fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
 fn drain<S: futures_lite::Stream>(stream: S) -> u64 {
     let mut stream = Box::pin(stream);
     let waker = Waker::noop();
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(waker);
     let mut n = 0u64;
     while let Poll::Ready(Some(_)) = futures_lite::Stream::poll_next(stream.as_mut(), &mut cx) {
         n += 1;
@@ -99,16 +100,16 @@ fn sizes() {
         size_of::<ice_rpc::RpcError>()
     );
     println!(
-        "size_of::<ObservableError<RxError>>() = {}",
-        size_of::<ice_rpc::ObservableError<RxError>>()
+        "size_of::<ObservableError<Infallible>>() = {}",
+        size_of::<ice_rpc::ObservableError<Infallible>>()
     );
     println!(
         "size_of::<ObservableError<String>>()  = {}",
         size_of::<ice_rpc::ObservableError<String>>()
     );
     println!(
-        "size_of::<Event<i64, RxError>>()   = {}",
-        size_of::<Event<i64, RxError>>()
+        "size_of::<Event<i64, Infallible>>()   = {}",
+        size_of::<Event<i64, Infallible>>()
     );
     println!(
         "size_of::<Event<i64, String>>()    = {}",
@@ -132,8 +133,8 @@ fn main() {
         })
     });
 
-    bench("C2. drain Vec<Event<i64,RxError>> (no lock)", || {
-        let mut events: Vec<Event<i64, RxError>> = (0..N).map(Event::Next).collect();
+    bench("C2. drain Vec<Event<i64,Infallible>> (no lock)", || {
+        let mut events: Vec<Event<i64, Infallible>> = (0..N).map(Event::Next).collect();
         events.push(Event::Complete);
         drain(PureVecStream {
             values: events.into_iter(),
@@ -144,12 +145,12 @@ fn main() {
     println!();
     println!("--- framework local source (ns/event) ---");
 
-    bench("A2. ice_rpc_rx::from  E=RxError (Buffered)", || {
-        drain(ice_rpc_rx::from::<i64, RxError, _>(0..N))
+    bench("A2. ice_rpc_rx::from  E=Infallible (Buffered)", || {
+        drain(ice_rpc_rx::from::<i64, Infallible, _>(0..N))
     });
 
-    bench("B2. from + map/filter/take  E=RxError", || {
-        let s = ice_rpc_rx::from::<i64, RxError, _>(0..N);
+    bench("B2. from + map/filter/take  E=Infallible", || {
+        let s = ice_rpc_rx::from::<i64, Infallible, _>(0..N);
         drain(s.map(|v| v * 2).filter(|v| v % 4 == 0).take(N as usize))
     });
 
@@ -160,7 +161,7 @@ fn main() {
         let mut ops = 0u64;
         for i in 0..N {
             let mut s =
-                ice_rpc::Stream::<i64, String>::from_events([Event::Next(i), Event::Complete]);
+                ice_rpc::Observable::<i64, String>::from_events([Event::Next(i), Event::Complete]);
             black_box(poll_once(s.recv_wire()));
             ops += 1;
         }

@@ -15,15 +15,13 @@
 //! - `cargo run --example consumer-app -- --service context`
 //! - `cargo run --example consumer-app -- --service notifications`
 
-mod shared;
-
-use ice_rpc::{ObservableError, StreamError};
-use ice_rpc_rx::{from, of, throw_error, Observer, RxStreamExt};
-use shared::{
+use common::{
     ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError,
     DatabaseService, DatabaseServiceProxy, NotificationService, NotificationServiceProxy,
     PersonneInfo, PersonneQuery,
 };
+use ice_rpc::{ObservableError, StreamError};
+use ice_rpc_rx::{from, of, throw_error, Observer, RxStreamExt};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -463,7 +461,7 @@ impl Observer<u32, String> for NotificationPrinter {
 /// involved), then on a real streaming RPC.
 ///
 /// The two `subscribe` names are involved:
-/// - `Subject::subscribe()` returns a `Stream` (multicast registration);
+/// - `Subject::subscribe()` returns an `Observable` (multicast registration);
 /// - `RxStreamExt::subscribe` is the terminal activation: one task pulls the
 ///   pipeline and pushes into an `Observer`.
 async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {

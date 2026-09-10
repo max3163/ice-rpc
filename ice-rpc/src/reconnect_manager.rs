@@ -77,10 +77,7 @@ impl ReconnectManager {
     /// Returns `true` when the node had no pending entry before the insert
     /// (i.e. this is the first service registered for that node).
     pub fn insert_pending(&self, node_id: u32, service: Arc<PendingService>) -> bool {
-        let mut pending = self
-            .pending
-            .lock()
-            .expect("reconnect manager lock poisoning");
+        let mut pending = crate::sync::lock(&self.pending);
         let existed = pending.contains_key(&node_id);
         let list = pending.entry(node_id).or_default();
         if !list.iter().any(|s| Arc::ptr_eq(s, &service)) {
@@ -110,11 +107,8 @@ fn worker_loop() {
         }
 
         let manager = ReconnectManager::global();
-        let snapshot: HashMap<u32, Vec<Arc<PendingService>>> = manager
-            .pending
-            .lock()
-            .expect("reconnect manager lock poisoning")
-            .clone();
+        let snapshot: HashMap<u32, Vec<Arc<PendingService>>> =
+            crate::sync::lock(&manager.pending).clone();
 
         if snapshot.is_empty() {
             std::thread::sleep(poll);
@@ -143,10 +137,7 @@ fn worker_loop() {
                         );
                         continue;
                     }
-                    let mut state = service
-                        .state
-                        .lock()
-                        .expect("reconnect manager state lock poisoning");
+                    let mut state = crate::sync::lock(&service.state);
                     if is_valid_transition(*state, ConnectionState::Ready(nid.0)) {
                         *state = ConnectionState::Ready(nid.0);
                     }
@@ -156,10 +147,7 @@ fn worker_loop() {
         }
 
         if !resolved.is_empty() {
-            let mut pending = manager
-                .pending
-                .lock()
-                .expect("reconnect manager lock poisoning");
+            let mut pending = crate::sync::lock(&manager.pending);
             for (node_id, name) in resolved {
                 if let Some(list) = pending.get_mut(&node_id) {
                     list.retain(|s| s.service_name != name);

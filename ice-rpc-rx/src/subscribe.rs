@@ -221,7 +221,7 @@ mod tests {
 
         let seen_c = seen.clone();
         let done_c = done.clone();
-        let stream: ice_rpc::Stream<i32, String> = crate::from([1, 2, 3]);
+        let stream: ice_rpc::Observable<i32, String> = crate::from([1, 2, 3]);
         let _sub = stream.subscribe_with(
             move |v| seen_c.lock().unwrap().push(v),
             |_e: ObservableError<String>| {},
@@ -238,7 +238,7 @@ mod tests {
         let got_c = got.clone();
 
         let stream =
-            ice_rpc::Stream::<i32, String>::from_technical_error(ice_rpc::RpcError::Timeout);
+            ice_rpc::Observable::<i32, String>::from_technical_error(ice_rpc::RpcError::Timeout);
         let _sub = stream.subscribe_with(
             |_v| {},
             move |e: ObservableError<String>| *got_c.lock().unwrap() = Some(e),
@@ -257,8 +257,10 @@ mod tests {
         let got: Arc<Mutex<Option<ObservableError<String>>>> = Arc::new(Mutex::new(None));
         let got_c = got.clone();
 
-        let stream: ice_rpc::Stream<i32, String> =
-            ice_rpc::Stream::from_events([Event::Error(ObservableError::Business("boom".into()))]);
+        let stream: ice_rpc::Observable<i32, String> =
+            ice_rpc::Observable::from_events([Event::Error(ObservableError::Business(
+                "boom".into(),
+            ))]);
         let _sub = stream.subscribe_with(
             |_v| {},
             move |e: ObservableError<String>| *got_c.lock().unwrap() = Some(e),
@@ -291,7 +293,7 @@ mod tests {
 
     #[test]
     fn subscription_closed_resolves_on_complete() {
-        let stream: ice_rpc::Stream<i32, String> = crate::of(1);
+        let stream: ice_rpc::Observable<i32, String> = crate::of(1);
         let sub = stream.subscribe(|_v| {});
 
         // The push task cancels its token when it returns, so `closed` resolves
@@ -304,7 +306,7 @@ mod tests {
     fn for_each_runs_to_completion() {
         let sum = Arc::new(AtomicI32::new(0));
         let sum_c = sum.clone();
-        let stream: ice_rpc::Stream<i32, String> = crate::from([1, 2, 3]);
+        let stream: ice_rpc::Observable<i32, String> = crate::from([1, 2, 3]);
 
         let result = pollster::block_on(stream.for_each(move |v| {
             sum_c.fetch_add(v, Ordering::SeqCst);
@@ -316,7 +318,7 @@ mod tests {
 
     #[test]
     fn for_each_returns_business_error() {
-        let stream: ice_rpc::Stream<i32, String> = ice_rpc::Stream::from_events([
+        let stream: ice_rpc::Observable<i32, String> = ice_rpc::Observable::from_events([
             Event::Next(1),
             Event::Error(ObservableError::Business("boom".into())),
         ]);

@@ -182,8 +182,13 @@ sequenceDiagram
 ice-rpc/                        ← Main crate (library + runtime)
 ├── src/
 │   ├── lib.rs                  ← Public exports, cancellation tokens, shutdown()
-│   ├── types.rs                ← Event<T,E>, RpcHeader (ZeroCopySend), EventKind,
-│   │                              NodeId, RpcError, TakeOneError, ServiceInfo…
+│   ├── types/                  ← RPC fundamental types, one file per concern:
+│   │   ├── node.rs             ← NodeId and the iceoryx2 topic names
+│   │   ├── wire.rs             ← Event, WireEvent, Sender, EventKind + conversions
+│   │   ├── stream.rs           ← Observable, StreamError, channel()
+│   │   ├── header.rs           ← RpcHeader (ZeroCopySend) + correlation ids
+│   │   ├── error.rs            ← RpcError
+│   │   └── consts.rs           ← timeouts, buffer sizes, name lengths
 │   ├── hub.rs                  ← NodeHub : dispatch loop, send_to_node(),
 │   │                              response handler hash table, publishers
 │   ├── node_discovery.rs       ← NodeDiscovery : local service→NodeId cache,
@@ -202,7 +207,7 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── locator.rs              ← ServiceLocator, ServiceLifecycle, ServiceInit,
 │   │                              ServiceNamed (const + method), Kahn topological
 │   │                              sort, ServiceRegistry (lazy proxies), HttpRegistry
-│   ├── macros.rs               ← take_one(), take_one_or_cancel(), try_or_log!
+│   ├── macros.rs               ← try_or_log! (internal error-logging helper)
 │
 ice-rpc-macros/                 ← Procedural macros crate
 ├── src/
@@ -458,7 +463,7 @@ The `NodeId` is the process PID (`std::process::id()`). It is used as a routing 
 
 ## 5. RpcHeader — ZeroCopy format
 
-The [`RpcHeader`](ice-rpc/src/types.rs:228) is carried in the iceoryx2 `user_header` (**ZeroCopySend**, no rkyv serialization) :
+The [`RpcHeader`](ice-rpc/src/types/header.rs:14) is carried in the iceoryx2 `user_header` (**ZeroCopySend**, no rkyv serialization) :
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -477,7 +482,7 @@ The [`RpcHeader`](ice-rpc/src/types.rs:228) is carried in the iceoryx2 `user_hea
 
 ### EventKind
 
-[`EventKind`](ice-rpc/src/types.rs:197) is a stable `#[repr(C)]` discriminant :
+[`EventKind`](ice-rpc/src/types/wire.rs:326) is a stable `#[repr(C)]` discriminant :
 
 ```
   Next     = 0  → intermediate event (non-terminal)
@@ -485,7 +490,7 @@ The [`RpcHeader`](ice-rpc/src/types.rs:228) is carried in the iceoryx2 `user_hea
   Error    = 2  → business error (terminal)
 ```
 
-The [`is_terminal()`](ice-rpc/src/types.rs:214) method allows the client to detect the end of a stream without ever deserializing the payload.
+The [`is_terminal()`](ice-rpc/src/types/wire.rs:341) method allows the client to detect the end of a stream without ever deserializing the payload.
 
 ---
 
@@ -1424,31 +1429,30 @@ The `shm/` directory is created automatically by iceoryx2 for its shared-memory 
 
 ---
 
-## 15. Utility macros
+## 15. Consuming a response
 
-### `take_one!`
+The former `take_one!` / `take_one_or_cancel!` macros have been removed. A service
+method returns the observable directly (no `Result`), and a terminal error travels
+in-band as `Event::Error(ObservableError::E)`.
 
-Consumes the first event of an Observable :
-
-```rust
-let age = take_one!(db.get_user_age("Alice").await)?;
-match age {
-    Ok(age)  => println!("Alice is {} years old", age),
-    Err(e)   => println!("Error: {}", e),
-}
-```
-
-### `take_one_or_cancel!`
-
-Cancellable variant via `CancellationToken` :
+Terminal consumption is provided by `ice-rpc-rx` (or natively by `ice_rpc::Observable`) :
 
 ```rust
-let result = take_one_or_cancel!(db.get_user_age("Alice").await, my_cancel_token);
-match result {
-    None          => println!("Cancelled by Ctrl+C"),
-    Some(Ok(age)) => println!("Alice is {} years old", age),
-    Some(Err(e))  => println!("Error: {}", e),
-}
+use ice_rpc_rx::RxStreamExt;
+
+// First value only. `Complete`/closed → `StreamError::Empty`,
+// terminal error → `StreamError::Business` or `StreamError::Technical`.
+let age = db.get_user_age("Alice".into()).await.first_value().await?;
+
+// First matching value.
+let age = db.get_user_age("Alice".into()).await
+    .first_with(|v| *v > 0)
+    .await?;
+
+// Cancellable consumption: the token fires a terminal
+// `RpcError::Cancelled`, surfaced by `first_value` as `StreamError::Technical`.
+let stream = db.get_user_age("Alice".into()).await.take_until(my_cancel_token);
+let age = stream.first_value().await?;
 ```
 
 ---

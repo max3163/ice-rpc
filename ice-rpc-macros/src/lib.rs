@@ -138,7 +138,34 @@ fn parse_duration_str(s: &str) -> Option<u64> {
     }
 }
 
-fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
+/// Extracts the return type of an RPC method, plus its `(T, E)` pair.
+///
+/// This is the single validation path for method signatures: both the
+/// request-enum generation and the Node.js converters go through it, so they
+/// cannot accept different shapes.
+///
+/// # Errors
+/// Returns a [`syn::Error`] spanned on the method signature (missing return
+/// type) or on the offending type. The caller turns it into a `compile_error!`
+/// pointing at the user's code instead of panicking inside the macro.
+#[allow(clippy::type_complexity)]
+fn rpc_method_types(
+    method: &syn::TraitItemFn,
+) -> syn::Result<(&syn::Type, Box<syn::Type>, Box<syn::Type>)> {
+    let output_type = match &method.sig.output {
+        syn::ReturnType::Type(_, ty) => ty.as_ref(),
+        syn::ReturnType::Default => {
+            return Err(syn::Error::new_spanned(
+                &method.sig,
+                "RPC methods must declare a return type, e.g. `-> Observable<T, E>`",
+            ))
+        }
+    };
+    let (ok_type, err_type) = extract_rpc_result_types(output_type)?;
+    Ok((output_type, ok_type, err_type))
+}
+
+fn nodejs_methods_vec(items: &[TraitItem]) -> syn::Result<Vec<NodeJsMethod>> {
     let mut methods = Vec::new();
     for item in items {
         if let TraitItem::Fn(method) = item {
@@ -157,12 +184,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
                 }
             }
 
-            let output_type = match &method.sig.output {
-                syn::ReturnType::Type(_, ty) => ty.clone(),
-                _ => panic!("RPC methods must return an Observable<T, E>"),
-            };
-
-            let (ok_type, err_type) = extract_rpc_result_types(&output_type);
+            let (_, ok_type, err_type) = rpc_method_types(method)?;
 
             methods.push(NodeJsMethod {
                 fn_name,
@@ -174,7 +196,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
             });
         }
     }
-    methods
+    Ok(methods)
 }
 
 /// `#[service]` attribute macro: generates the Proxy, Client, Server, and the
@@ -327,12 +349,10 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
 
-            let output_type = match &method.sig.output {
-                syn::ReturnType::Type(_, ty) => ty.clone(),
-                _ => panic!("RPC methods must return an Observable<T, E>"),
+            let (output_type, ok_type, err_type) = match rpc_method_types(method) {
+                Ok(types) => types,
+                Err(e) => return e.to_compile_error().into(),
             };
-
-            let (ok_type, err_type) = extract_rpc_result_types(&output_type);
 
             req_variants.push(quote! {
                 #var_name { #(#arg_names: #arg_types),* } = #variant_discriminant
@@ -366,7 +386,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn_name,
                 &arg_names,
                 &arg_types,
-                &output_type,
+                output_type,
                 &mode_name,
             ));
 
@@ -375,8 +395,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn_name: fn_name.clone(),
                 arg_names: arg_names.iter().map(|id| (*id).clone()).collect(),
                 arg_types: arg_types.iter().map(|ty| (**ty).clone()).collect(),
-                ok_type: (*ok_type).clone(),
-                err_type: (*err_type).clone(),
             });
         }
     }
@@ -431,7 +449,10 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
-    let nodejs_methods: Vec<NodeJsMethod> = nodejs_methods_vec(&input_trait.items);
+    let nodejs_methods: Vec<NodeJsMethod> = match nodejs_methods_vec(&input_trait.items) {
+        Ok(methods) => methods,
+        Err(e) => return e.to_compile_error().into(),
+    };
     let nodejs_input = NodeJsGenInput {
         visibility,
         proxy_name: &proxy_name,

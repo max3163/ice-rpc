@@ -12,7 +12,11 @@
 //!   `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`,
 //!   `timeout`, `catch_error` operators, plus the terminals `first_value`,
 //!   `collect`, `for_each` and `subscribe`, applied directly on
-//!   [`ice_rpc::Stream`].
+//!   [`ice_rpc::Observable`]. Every operator is a pull-based combinator: it
+//!   allocates no intermediate channel and spawns no task. The terminals
+//!   `first_value` and `collect` delegate to the same canonical implementation
+//!   as the inherent [`ice_rpc::Observable::first_value`] /
+//!   [`ice_rpc::Observable::collect`], so the two surfaces cannot diverge.
 //! - [`Observer`] / [`Subscription`] — push-based consumption: `subscribe`
 //!   spawns a single task that pushes `next` / `error` / `complete`.
 //! - [`merge`] — merges several streams into one.
@@ -20,8 +24,10 @@
 //! - [`from`] — builds a stream from an iterator.
 //! - [`of`] — builds a single-value stream (channel-free).
 //! - [`throw_error`] — builds a stream that only emits a business error.
-//! - [`ice_rpc::Stream::first_value`] — awaits the first value of a stream.
-//! - [`ice_rpc::Stream::collect`] — gathers every value into a `Vec`.
+//! - [`ice_rpc::Observable::first_value`] — awaits the first value of a stream,
+//!   and the same terminal is available through [`RxStreamExt::first_value`].
+//! - [`ice_rpc::Observable::collect`] — gathers every value into a `Vec`, and
+//!   the same terminal is available through [`RxStreamExt::collect`].
 //! - [`Subject`] — a multi-producer / multi-consumer multicast source.
 //! - [`ShareReplay`] — a multicast source that replays the last value to late
 //!   subscribers (equivalent to RxJS `shareReplay(1)`).
@@ -32,7 +38,7 @@
 //! use ice_rpc_rx::RxStreamExt;
 //!
 //! // `stream` is the native type returned by an ice-rpc service.
-//! let stream: ice_rpc::Stream<i32, String> = proxy.foo().await;
+//! let stream: ice_rpc::Observable<i32, String> = proxy.foo().await;
 //!
 //! // Operators chain on the native type and return poll-based combinator streams.
 //! let odds = stream
@@ -43,7 +49,7 @@
 //!
 //! ## Consuming the first value
 //!
-//! Terminal consumption is provided natively by [`ice_rpc::Stream`]:
+//! Terminal consumption is provided natively by [`ice_rpc::Observable`]:
 //!
 //! ```rust,ignore
 //! let value = proxy.get("my.key".into()).await.first_value().await?;
@@ -53,12 +59,24 @@
 //! ## Normalization
 //!
 //! ice-rpc can transport a single response as an internal `CompleteWith`
-//! sample. [`ice_rpc::Stream::recv`] normalizes it into `Next` followed by
+//! sample. [`ice_rpc::Observable::recv`] normalizes it into `Next` followed by
 //! `Complete`, so consuming code always observes a uniform stream of `Next`
 //! values followed by a terminal event (`Complete` or `Error`).
 //!
+//! ## Timeouts
+//!
+//! Two independent timeouts exist, and they cover disjoint phases:
+//!
+//! - `discovery_timeout` — a **service-level** attribute
+//!   (`#[service("Name", discovery_timeout = "5s")]`) bounding the node
+//!   discovery performed before the call is sent. This is the only place where a
+//!   discovery deadline applies.
+//! - [`RxStreamExt::timeout`] — a per-event **silence watchdog** on an active
+//!   stream. The timer resets after every received event; once it fires, the
+//!   stream terminates with a technical `RpcError::Timeout`.
+//!
 //! [`ice_rpc`]: ../ice_rpc
-//! [`ice_rpc::Stream`]: ../ice_rpc/type.Stream.html
+//! [`ice_rpc::Observable`]: ../ice_rpc/type.Observable.html
 
 mod creation;
 mod join;
@@ -74,24 +92,19 @@ pub use subject::Subject;
 pub use subscribe::{Observer, ObserverFns, Subscription};
 pub use transform::RxStreamExt;
 
-/// Placeholder business-error type for local reactive sources.
+/// Default capacity of the channels created by the multicast primitives.
 ///
-/// Currently uninhabited: it is meant to be used as the `E` parameter of
-/// [`from`] and [`of`] when no business error can occur. Technical failures are
-/// reported through [`ice_rpc::ObservableError::Technical`].
-#[derive(Debug)]
-pub enum RxError {}
-
-/// Default capacity of the intermediate channels created by the operators.
-///
-/// A bounded channel provides backpressure: a producer waits when the queue is
-/// full, which keeps memory usage bounded in reactive pipelines.
-pub(crate) const OPERATOR_CHANNEL_CAPACITY: usize = 8;
+/// The operators themselves are pull-based combinators and create no channel;
+/// only [`Subject`] and [`ShareReplay`] fan out to per-subscriber channels. A
+/// bounded channel provides backpressure: a producer waits when the queue is
+/// full, which keeps memory usage bounded.
+pub(crate) const MULTICAST_CHANNEL_CAPACITY: usize = 8;
 
 #[cfg(test)]
 mod tests {
-    use super::{from, of, throw_error, RxError, RxStreamExt};
+    use super::{from, of, throw_error, RxStreamExt};
     use ice_rpc::{Event, ObservableError};
+    use std::convert::Infallible;
 
     async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
     where
@@ -110,7 +123,7 @@ mod tests {
 
     #[test]
     fn from_emits_values_then_complete() {
-        let events: Vec<Event<i32, RxError>> = pollster::block_on(drain(from([1, 2, 3])));
+        let events: Vec<Event<i32, Infallible>> = pollster::block_on(drain(from([1, 2, 3])));
         assert_eq!(events.len(), 4);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Next(v) if *v == 2));
@@ -120,7 +133,7 @@ mod tests {
 
     #[test]
     fn of_emits_next_then_complete() {
-        let events: Vec<Event<i32, RxError>> = pollster::block_on(drain(of(42)));
+        let events: Vec<Event<i32, Infallible>> = pollster::block_on(drain(of(42)));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 42));
         assert!(matches!(&events[1], Event::Complete));
@@ -128,14 +141,14 @@ mod tests {
 
     #[test]
     fn collect_gathers_all_values() {
-        let stream: ice_rpc::Stream<i32, RxError> = from([1, 2, 3]);
+        let stream: ice_rpc::Observable<i32, Infallible> = from([1, 2, 3]);
         let values = pollster::block_on(stream.collect()).unwrap();
         assert_eq!(values, vec![1, 2, 3]);
     }
 
     #[test]
     fn of_returns_a_channel_free_observable() {
-        let stream: ice_rpc::Stream<i32, RxError> = of(7);
+        let stream: ice_rpc::Observable<i32, Infallible> = of(7);
         let values = pollster::block_on(stream.collect()).unwrap();
         assert_eq!(values, vec![7]);
     }
@@ -143,8 +156,8 @@ mod tests {
     #[test]
     fn pipeline_can_be_frozen_into_an_observable() {
         // A pipeline is usable as the return value of a service method once it
-        // is frozen into the concrete `Stream`.
-        let stream: ice_rpc::Stream<i32, RxError> =
+        // is frozen into the concrete `Observable`.
+        let stream: ice_rpc::Observable<i32, Infallible> =
             from([1, 2, 3]).map(|v| v * 2).into_observable();
 
         let events = pollster::block_on(drain(stream));
@@ -157,13 +170,114 @@ mod tests {
 
     #[test]
     fn frozen_single_value_pipeline_keeps_one_wire_sample() {
-        let mut stream: ice_rpc::Stream<i32, RxError> = from([42]).into_observable();
+        let mut stream: ice_rpc::Observable<i32, Infallible> = from([42]).into_observable();
 
         assert!(matches!(
             pollster::block_on(stream.recv_wire()),
             Ok(ice_rpc::WireEvent::CompleteWith(42))
         ));
         assert!(pollster::block_on(stream.recv_wire()).is_err());
+    }
+
+    /// Terminal consumption through the inherent [`ice_rpc::Observable`] methods.
+    fn native_first(events: Vec<Event<i32, String>>) -> Result<i32, ice_rpc::StreamError<String>> {
+        pollster::block_on(ice_rpc::Observable::<i32, String>::from_events(events).first_value())
+    }
+
+    /// Same input, consumed through the `RxStreamExt` default method (the
+    /// pipeline type is `Map<…>`, so the trait method is selected).
+    fn pipeline_first(
+        events: Vec<Event<i32, String>>,
+    ) -> Result<i32, ice_rpc::StreamError<String>> {
+        pollster::block_on(
+            ice_rpc::Observable::<i32, String>::from_events(events)
+                .map(|v| v)
+                .first_value(),
+        )
+    }
+
+    /// Same pair, for `collect`.
+    fn native_collect(
+        events: Vec<Event<i32, String>>,
+    ) -> Result<Vec<i32>, ice_rpc::ObservableError<String>> {
+        pollster::block_on(ice_rpc::Observable::<i32, String>::from_events(events).collect())
+    }
+
+    fn pipeline_collect(
+        events: Vec<Event<i32, String>>,
+    ) -> Result<Vec<i32>, ice_rpc::ObservableError<String>> {
+        pollster::block_on(
+            ice_rpc::Observable::<i32, String>::from_events(events)
+                .map(|v| v)
+                .collect(),
+        )
+    }
+
+    /// Every outcome, fed to both terminal surfaces, must be identical.
+    fn terminal_cases() -> Vec<Vec<Event<i32, String>>> {
+        vec![
+            // Value then `Complete`.
+            vec![Event::Next(5), Event::Complete],
+            // Values then `Complete`.
+            vec![Event::Next(1), Event::Next(2), Event::Complete],
+            // Business error, before and after a value.
+            vec![Event::Error(ObservableError::Business("boom".into()))],
+            vec![
+                Event::Next(1),
+                Event::Error(ObservableError::Business("boom".into())),
+            ],
+            // Technical error.
+            vec![Event::Error(ObservableError::Technical(
+                ice_rpc::RpcError::Timeout,
+            ))],
+            // Empty.
+            vec![Event::Complete],
+            vec![],
+        ]
+    }
+
+    #[test]
+    fn terminal_first_value_surfaces_agree_on_every_outcome() {
+        for case in terminal_cases() {
+            let native = native_first(case.clone());
+            let pipeline = pipeline_first(case.clone());
+            assert_eq!(
+                format!("{native:?}"),
+                format!("{pipeline:?}"),
+                "first_value diverged on {case:?}"
+            );
+        }
+
+        assert_eq!(
+            native_first(vec![Event::Next(5), Event::Complete]).unwrap(),
+            5
+        );
+        assert!(matches!(
+            pipeline_first(vec![Event::Complete]),
+            Err(ice_rpc::StreamError::Empty)
+        ));
+    }
+
+    #[test]
+    fn terminal_collect_surfaces_agree_on_every_outcome() {
+        for case in terminal_cases() {
+            let native = native_collect(case.clone());
+            let pipeline = pipeline_collect(case.clone());
+            assert_eq!(
+                format!("{native:?}"),
+                format!("{pipeline:?}"),
+                "collect diverged on {case:?}"
+            );
+        }
+
+        assert_eq!(
+            native_collect(vec![Event::Next(1), Event::Next(2), Event::Complete]).unwrap(),
+            vec![1, 2]
+        );
+        assert!(matches!(
+            pipeline_collect(vec![Event::Next(1)]),
+            Ok(values) if values == vec![1]
+        ));
     }
 
     #[test]

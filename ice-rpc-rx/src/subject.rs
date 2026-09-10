@@ -17,7 +17,7 @@
 //! subject.complete().await;
 //! ```
 
-use ice_rpc::{Sender, Stream};
+use ice_rpc::{Observable, Sender};
 
 /// A multi-producer / multi-consumer multicast source.
 pub struct Subject<T, E> {
@@ -44,18 +44,18 @@ impl<T, E> Subject<T, E> {
 
     /// Subscribes to this subject.
     ///
-    /// The returned [`Stream`] only receives events emitted after this call;
+    /// The returned [`Observable`] only receives events emitted after this call;
     /// past values are not replayed.
     ///
     /// # Returns
-    /// A [`Stream`] receiving future events from this subject.
+    /// An [`Observable`] receiving future events from this subject.
     ///
     /// # Example
     /// ```rust,ignore
     /// let rx = subject.subscribe().await;
     /// ```
-    pub async fn subscribe(&self) -> Stream<T, E> {
-        let (tx, rx) = ice_rpc::channel::<T, E>(crate::OPERATOR_CHANNEL_CAPACITY);
+    pub async fn subscribe(&self) -> Observable<T, E> {
+        let (tx, rx) = ice_rpc::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
         self.subscribers.lock().await.push(tx);
         rx
     }

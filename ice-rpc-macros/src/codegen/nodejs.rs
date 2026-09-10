@@ -111,6 +111,9 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         .collect();
 
     quote! {
+        // Emitted unconditionally so `#[service]` has a uniform surface; only the
+        // `gateway_nodejs` bridge calls these converters, hence dead code in any
+        // pure-Rust consumer.
         #[allow(dead_code)]
         impl #proxy_name {
             #visibility fn deserialize_request_to_value(method: &str, bytes: &[u8]) -> Option<ice_rpc::serde_json::Value> {
@@ -212,6 +215,8 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         .collect();
 
     quote! {
+        // Same rationale as `deserialize_request_to_value` above: the Node.js
+        // surface is emitted for every service but consumed only by the bridge.
         #[allow(dead_code)]
         impl #proxy_name {
             #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::serde_json::Value) -> Option<(Vec<u8>, ice_rpc::EventKind)> {

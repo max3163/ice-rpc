@@ -1,10 +1,15 @@
 [package]
 name = "gateway-nodejs"
 version.workspace = true
+# Local override of the workspace MSRV (1.85): the napi family requires 1.88.
+rust-version = "1.88"
 edition = "2021"
 description = "Node.js napi gateway for ice-rpc"
 license = "Apache-2.0"
 publish = false
+
+[lints]
+workspace = true
 
 [package.metadata.release]
 pre-release-replacements = [

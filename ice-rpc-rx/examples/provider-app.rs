@@ -24,6 +24,8 @@
 //! - `POST http://localhost:8080/DatabaseService/get_person` with a JSON body
 //! - `POST http://localhost:8080/HttpService/send_request` with a JSON body
 
+#![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use async_trait::async_trait;
 use common::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,

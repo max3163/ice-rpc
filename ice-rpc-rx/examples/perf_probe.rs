@@ -12,6 +12,7 @@
 //! cargo run --release -p ice-rpc-rx --example perf_probe
 //! ```
 
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};

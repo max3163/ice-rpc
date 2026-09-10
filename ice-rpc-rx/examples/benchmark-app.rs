@@ -24,6 +24,7 @@
 //! Any difference smaller than the reported spread is **not** attributable to
 //! the code.
 
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use common::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

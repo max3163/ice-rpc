@@ -19,6 +19,7 @@
 //! channel and no lock**. The poll pipeline is expected to sit just above it —
 //! that difference is the only meaningful "operator overhead" figure here.
 
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};

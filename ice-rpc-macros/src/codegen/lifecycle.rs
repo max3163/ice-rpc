@@ -54,7 +54,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             }
                             locator.start_discovery();
                             true
-                        }).await;
+                        }).await.unwrap_or_else(|panic| {
+                            ::log::error!(
+                                "[{}] blocking init task panicked: {}",
+                                svc_name,
+                                panic
+                            );
+                            false
+                        });
 
                         if !init_ok {
                             ::log::warn!("[{}] NodeJS Provider: Node init failed, retrying...", svc_name);
@@ -86,9 +93,15 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                     let result = match ice_rpc::rt::spawn_blocking_value(move || {
                                         ice_rpc::nodejs_dispatch::call(cid, svc_static, &method_for_blocking, args_for_blocking)
                                     }).await {
-                                        Ok(v) => v,
-                                        Err(e) => {
+                                        // Outer `Err` = the blocking task panicked;
+                                        // inner `Err` = the JS bridge itself failed.
+                                        Ok(Ok(v)) => v,
+                                        Ok(Err(e)) => {
                                             ::log::error!("[{}::{}] JS bridge: {}", svc_static, method_owned, e);
+                                            return;
+                                        }
+                                        Err(panic) => {
+                                            ::log::error!("[{}::{}] JS bridge task panicked: {}", svc_static, method_owned, panic);
                                             return;
                                         }
                                     };
@@ -143,7 +156,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 }
                                 locator.start_discovery();
                                 true
-                            }).await;
+                            }).await.unwrap_or_else(|panic| {
+                                ::log::error!(
+                                    "[{}] blocking init task panicked: {}",
+                                    stringify!(#trait_name),
+                                    panic
+                                );
+                                false
+                            });
 
                             if !init_ok {
                                 ::log::warn!("[{}] Failed to create the iceoryx2 Node. Retrying...",

@@ -36,17 +36,26 @@ pub fn set_dispatch(f: DispatchFn) {
 
 /// Calls the Node.js bridge through the registered dispatch function.
 ///
-/// # Panics
-/// If [`set_dispatch`] has not been called beforehand.
+/// # Errors
+///
+/// Returns `Err` when [`set_dispatch`] has not been called beforehand. The
+/// former implementation panicked here, which turned a missing gateway
+/// initialization into a process abort under the `panic = "abort"` release
+/// profile. The generated `ProviderNodeJs` handler already logs and drops the
+/// call on `Err`, so returning is the recoverable behaviour.
 pub fn call(
     cid: [u8; 16],
     service: &str,
     method: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    DISPATCH.get().expect(
-        "NodeJS dispatch not initialized — call ice_rpc::nodejs_dispatch::set_dispatch() first",
-    )(cid, service, method, args)
+    match DISPATCH.get() {
+        Some(dispatch) => dispatch(cid, service, method, args),
+        None => Err(
+            "NodeJS dispatch not initialized — call ice_rpc::nodejs_dispatch::set_dispatch() first"
+                .to_string(),
+        ),
+    }
 }
 
 #[cfg(test)]

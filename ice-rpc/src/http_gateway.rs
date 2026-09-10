@@ -255,19 +255,24 @@ fn json_response(conn: Conn, status: u16, value: Value) -> Conn {
 /// - integers → integer number
 /// - otherwise → string
 fn params_to_json(params: &HashMap<String, String>) -> Value {
-    if params.is_empty() {
-        return Value::Null;
+    match params.len() {
+        0 => Value::Null,
+        // Single parameter: pass the value directly, the key is the method
+        // argument name and is not part of the payload.
+        1 => match params.values().next() {
+            Some(val) => parse_scalar(val),
+            // Defensive: `len() == 1` guarantees a value, but the HTTP path
+            // must never be able to abort the process via `unwrap()`
+            // (finding B2, aggravated by `panic = "abort"`).
+            None => Value::Null,
+        },
+        _ => Value::Object(
+            params
+                .iter()
+                .map(|(k, v)| (k.clone(), parse_scalar(v)))
+                .collect(),
+        ),
     }
-    if params.len() == 1 {
-        // Single parameter: pass the value directly.
-        let (_, val) = params.iter().next().unwrap();
-        return parse_scalar(val);
-    }
-    let map: serde_json::Map<String, Value> = params
-        .iter()
-        .map(|(k, v)| (k.clone(), parse_scalar(v)))
-        .collect();
-    Value::Object(map)
 }
 
 /// Tries to interpret a string as a JSON scalar.
@@ -432,9 +437,10 @@ pub async fn start_http_server(
         port
     );
 
-    // Graceful shutdown driven by the ice-rpc global cancellation token
-    // (Ctrl+C or programmatic cancellation). Trillium's own signal handling is
-    // disabled so that ice-rpc keeps a single shutdown path.
+    // Graceful shutdown driven by the ice-rpc global cancellation token, itself
+    // cancelled by iceoryx2's native SIGINT/SIGTERM handling (the `WaitSet`
+    // loops) or by a programmatic cancellation. Trillium's own signal handling
+    // is disabled so that ice-rpc keeps a single shutdown path.
     let swansong = trillium::Swansong::new();
     let signal_swansong = swansong.clone();
     let cancel = crate::global_cancel_token().clone();

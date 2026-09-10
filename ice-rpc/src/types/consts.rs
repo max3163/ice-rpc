@@ -1,14 +1,24 @@
 //! Tuning constants: timeouts, buffer sizes, name lengths.
 //!
-//! `METHOD_NAME_LEN` and `SERVICE_NAME_LEN` must stay in sync with the private
-//! copies in `ice-rpc-macros`, because `RpcHeader` silently truncates past them.
+//! `METHOD_NAME_LEN` and `SERVICE_NAME_LEN` are the maximum **byte lengths**
+//! accepted by `#[service]`; they are duplicated as private constants in
+//! `ice-rpc-macros` (which rejects any longer name at compile time). Both
+//! values equal the `StaticString` capacity used by the wire types, so a name
+//! accepted by the macro always fits without truncation — in the `RpcHeader`
+//! **and** in the discovery blackboard key (see the `REGISTRY_*` constants
+//! below, which must stay equal to `SERVICE_NAME_LEN`).
 
-/// Maximum size of a method name in the RPC header.
-/// Must match the private `METHOD_NAME_LEN` constant in `ice-rpc-macros`.
+/// Maximum byte length of a method name in the RPC header (**inclusive**).
+///
+/// Must match the private `METHOD_NAME_LEN` constant in `ice-rpc-macros` and
+/// the `StaticString` capacity used in `RpcHeader`.
 pub const METHOD_NAME_LEN: usize = 64;
 
-/// Maximum size of a service name in the RPC header.
-/// Must match the private `SERVICE_NAME_LEN` constant in `ice-rpc-macros`.
+/// Maximum byte length of a service name in the RPC header (**inclusive**).
+///
+/// Must match the private `SERVICE_NAME_LEN` constant in `ice-rpc-macros`, the
+/// `StaticString` capacity used in `RpcHeader`, and
+/// [`REGISTRY_SERVICE_NAME_LEN`].
 pub const SERVICE_NAME_LEN: usize = 64;
 
 /// Version of the ice-rpc wire protocol carried in [`RpcHeader`].
@@ -64,5 +74,9 @@ pub const LARGE_TOPIC_BUFFER_SIZE: usize = 4;
 
 /// Maximum number of services per node (= number of keys in the Blackboard).
 pub const MAX_SERVICES_PER_NODE: usize = 32;
-/// Max size of a service name used as a key in the Blackboard.
+/// Maximum byte length of a service name used as a key in the Blackboard
+/// (**inclusive**). Must equal [`SERVICE_NAME_LEN`].
+///
+/// The key is a raw `[u8; REGISTRY_SERVICE_NAME_LEN]` array, **not** a
+/// NUL-terminated C string: a name of exactly this length fills the whole key.
 pub const REGISTRY_SERVICE_NAME_LEN: usize = 64;

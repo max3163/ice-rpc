@@ -6,6 +6,7 @@
 //! variables to switch roles — the standard way to obtain a real second process
 //! from `cargo test`.
 
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -164,7 +165,7 @@ fn dump_nodes() -> Vec<(u32, &'static str)> {
             NodeState::Inaccessible(_) => "Inaccessible",
             NodeState::Undefined(_) => "Undefined",
         };
-        rows.push((state.node_id().pid().value() as u32, label));
+        rows.push((state.node_id().pid().value(), label));
         CallbackProgression::Continue
     });
     rows

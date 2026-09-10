@@ -91,9 +91,7 @@ pub use crate::{
 };
 
 // ── Plumbing invoked by the generated entry points ──────────────────
-pub use crate::{
-    _ProviderService, registry_cancel_token, run_provider_inner, spawn_ctrl_c_handler,
-};
+pub use crate::{_ProviderService, registry_cancel_token, run_provider_inner};
 
 #[cfg(feature = "http")]
 pub use crate::start_http_server;

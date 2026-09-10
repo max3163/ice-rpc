@@ -4,6 +4,7 @@
 //! generates the Proxy, Client, Server and the lifecycle code
 //! for an RPC service trait.
 
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod codegen;
 mod entry;
 
@@ -480,10 +481,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         proc_macro2::Span::call_site(),
     );
 
-    let expanded = quote! {
-        #[allow(unexpected_cfgs)]
-        #input_trait
-
+    let generated = quote! {
         #[repr(u8)]
         #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
         #visibility enum #req_enum_name { #(#req_variants),* }
@@ -505,6 +503,19 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[no_mangle]
         static #collision_symbol: u8 = 0;
+    };
+
+    // The generated wrappers are named after the user's trait and cannot be
+    // documented by the consumer, so they must not trip its `missing_docs`
+    // lint. The annotated trait itself is exempted from this guard: it stays
+    // subject to the consumer's lint configuration.
+    let generated = codegen::helpers::allow_missing_docs(generated);
+
+    let expanded = quote! {
+        #[allow(unexpected_cfgs)]
+        #input_trait
+
+        #generated
     };
 
     expanded.into()

@@ -62,7 +62,9 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
     let handle = crate::rt::spawn_blocking(move || {
         use iceoryx2::prelude::{CallbackProgression, WaitSetBuilder};
         let wait_set = try_or_log!(
-            WaitSetBuilder::new().create::<iceoryx2::service::ipc_threadsafe::Service>(),
+            WaitSetBuilder::new()
+                .signal_handling_mode(crate::waitset_signal_handling_mode())
+                .create::<iceoryx2::service::ipc_threadsafe::Service>(),
             "WaitSet create",
             "failed"
         );
@@ -93,9 +95,18 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
                 },
                 std::time::Duration::from_millis(REGISTRY_WAITSET_TIMEOUT_MS),
             );
-            // Check Termination Request
-            if let Err(_) | Ok(iceoryx2::waitset::WaitSetRunResult::TerminationRequest) = result {
-                break;
+            // SIGINT/SIGTERM: iceoryx2 reports the termination request natively.
+            // Propagate the shutdown to every subsystem, then exit the loop.
+            match result {
+                Ok(
+                    iceoryx2::waitset::WaitSetRunResult::Interrupt
+                    | iceoryx2::waitset::WaitSetRunResult::TerminationRequest,
+                ) => {
+                    crate::request_shutdown();
+                    break;
+                }
+                Err(_) => break,
+                _ => {}
             }
         }
     });

@@ -40,6 +40,8 @@ pub struct ReconnectManager {
 }
 
 impl ReconnectManager {
+    /// Creates a manager with no pending reconnection. Application code should
+    /// normally use [`ReconnectManager::global`], the process-wide instance.
     pub fn new() -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),

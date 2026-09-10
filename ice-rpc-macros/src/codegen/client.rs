@@ -223,7 +223,10 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             if !hub.has_publishers(target_node) {
                 let hub2 = ice_rpc::ServiceLocator::global().hub();
                 let node = target_node;
-                ice_rpc::rt::spawn_blocking(move || {
+                // Hot path of the fallback branch: it must run on the runtime's
+                // bounded blocking pool. A dedicated thread per RPC call would
+                // be unbounded under load.
+                ice_rpc::rt::blocking_call(move || {
                     if let Err(e) = hub2.ensure_publishers(node) {
                         ::log::error!("[{}Client] ensure_publishers (fallback): {}", #logical_name, e);
                     }

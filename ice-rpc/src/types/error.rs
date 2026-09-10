@@ -17,10 +17,16 @@ pub enum RpcError {
     DiscoveryError(String),
     /// The requested service is not registered on any node.
     #[error("RPC service not found: {service}")]
-    ServiceNotFound { service: String },
+    ServiceNotFound {
+        /// Name of the service that could not be resolved.
+        service: String,
+    },
     /// The provider node is unreachable (publishers missing/invalidated).
     #[error("RPC provider unavailable (node {node})")]
-    ProviderUnavailable { node: u32 },
+    ProviderUnavailable {
+        /// Raw node id (PID) of the unreachable provider.
+        node: u32,
+    },
     /// Waiting deadline exceeded.
     #[error("RPC error: timeout exceeded")]
     Timeout,
@@ -29,15 +35,24 @@ pub enum RpcError {
     Cancelled,
     /// Payload exceeds the configured shared-memory limit.
     #[error("RPC payload too large: {size} bytes (limit {limit})")]
-    PayloadTooLarge { size: usize, limit: usize },
+    PayloadTooLarge {
+        /// Size of the payload the caller tried to send, in bytes.
+        size: usize,
+        /// Maximum payload size allowed by the shared-memory segment.
+        limit: usize,
+    },
     /// Peer uses an incompatible protocol or service version.
     #[error(
         "RPC protocol mismatch (protocol {received_protocol} != {expected_protocol}, service {received_service} != {expected_service})"
     )]
     ProtocolMismatch {
+        /// Protocol version this build speaks.
         expected_protocol: u16,
+        /// Protocol version declared by the peer.
         received_protocol: u16,
+        /// Service version this build expects for this service.
         expected_service: u16,
+        /// Service version declared by the peer.
         received_service: u16,
     },
     /// Unexpected internal error / invariant violation.

@@ -33,17 +33,31 @@ pub fn node_bb_name(node_id: u32) -> String {
 }
 
 /// Key type: fixed-size service name.
+///
+/// The key is a **raw byte array**, not a NUL-terminated C string: a name of
+/// exactly [`REGISTRY_SERVICE_NAME_LEN`] bytes fills the whole key and is
+/// therefore valid. Zero bytes act as padding for shorter names only.
+///
+/// The `#[service]` macro rejects any name longer than
+/// [`crate::types::SERVICE_NAME_LEN`] (`== REGISTRY_SERVICE_NAME_LEN`) at
+/// compile time, so the mapping `name → key → name` is lossless for every
+/// accepted name. Carving out a reserved terminator byte here (as the code
+/// previously did) silently truncated 64-byte names and made them
+/// undiscoverable.
 type ServiceKey = [u8; REGISTRY_SERVICE_NAME_LEN];
 
 fn service_name_to_key(name: &str) -> ServiceKey {
     let mut key = [0u8; REGISTRY_SERVICE_NAME_LEN];
     let src = name.as_bytes();
-    let len = src.len().min(REGISTRY_SERVICE_NAME_LEN - 1);
+    let len = src.len().min(REGISTRY_SERVICE_NAME_LEN);
     key[..len].copy_from_slice(&src[..len]);
     key
 }
 
 fn key_to_service_name(key: &ServiceKey) -> String {
+    // Service names never contain a NUL byte (the macro restricts them to
+    // ASCII alphanumerics, '_' and '-'), so the first zero marks the padding.
+    // A key without any zero holds a full-length name and is returned as-is.
     let len = key
         .iter()
         .position(|&b| b == 0)
@@ -93,17 +107,25 @@ pub fn clear_registry_writers() {
 ///
 /// Called ONLY ONCE after the initialization of all services.
 pub fn create_node_blackboard(node_id: u32, service_names: &[String]) {
+    // Validate *before* any side effect: an over-sized node must not be marked
+    // as a provider, otherwise a later shutdown would announce a node that
+    // never published a blackboard. Formerly an `assert!`, which aborted the
+    // process under `panic = "abort"` for a mere configuration error.
+    if service_names.len() > MAX_SERVICES_PER_NODE {
+        log::error!(
+            "[registry] too many services ({}), max = {}: blackboard '{}' not published",
+            service_names.len(),
+            MAX_SERVICES_PER_NODE,
+            node_bb_name(node_id)
+        );
+        return;
+    }
+
     // Crash detection is carried by the iceoryx2 Node's native monitoring token
     crate::node_liveness::mark_provider();
     log::info!(
         "[registry] Liveness via native iceoryx2 node monitoring (pid={})",
         node_id
-    );
-    assert!(
-        service_names.len() <= MAX_SERVICES_PER_NODE,
-        "Too many services ({}), max = {}",
-        service_names.len(),
-        MAX_SERVICES_PER_NODE
     );
 
     let node = match ServiceLocator::global().try_get_node() {
@@ -264,11 +286,29 @@ mod tests {
     }
 
     #[test]
-    fn service_name_key_truncates_long_names() {
-        let long = "A".repeat(REGISTRY_SERVICE_NAME_LEN + 10);
-        let key = service_name_to_key(&long);
+    fn service_name_key_roundtrip_at_max_length() {
+        // A full-capacity name must round-trip losslessly: the key is a raw
+        // byte array, not a NUL-terminated C string. Regression test for the
+        // 64-byte service name that used to be truncated to 63 bytes and could
+        // therefore never be discovered by a consumer.
+        let max = "A".repeat(REGISTRY_SERVICE_NAME_LEN);
+        let key = service_name_to_key(&max);
+        assert_eq!(
+            key.iter().filter(|&&byte| byte == 0).count(),
+            0,
+            "a max-length name must fill the whole key"
+        );
+        assert_eq!(key_to_service_name(&key), max);
+    }
+
+    #[test]
+    fn service_name_key_truncates_only_beyond_capacity() {
+        // Names longer than the capacity cannot be produced by the `#[service]`
+        // macro, but the helper must still behave predictably.
+        let too_long = "A".repeat(REGISTRY_SERVICE_NAME_LEN + 10);
+        let key = service_name_to_key(&too_long);
         let name = key_to_service_name(&key);
-        assert_eq!(name.len(), REGISTRY_SERVICE_NAME_LEN - 1);
-        assert!(long.starts_with(&name));
+        assert_eq!(name.len(), REGISTRY_SERVICE_NAME_LEN);
+        assert!(too_long.starts_with(&name));
     }
 }

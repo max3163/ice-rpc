@@ -248,15 +248,19 @@ impl NodeHub {
             PayloadSegment::Large => node_pubs.large.is_some(),
         };
 
-        let send_result = {
-            if use_large {
-                let large = node_pubs
-                    .large
-                    .as_ref()
-                    .expect("use_large implies a large publisher");
+        let send_result = match (use_large, node_pubs.large.as_ref()) {
+            (true, Some(large)) => {
                 let guard = crate::sync::lock(large);
                 Self::do_send(&guard, header, payload)
-            } else {
+            }
+            // Defensive: `use_large` is only computed as `true` when a large
+            // publisher exists, but a missing segment must surface as a
+            // transport error rather than a panic — the release profile sets
+            // `panic = "abort"`, which would kill the whole process.
+            (true, None) => Err(crate::RpcError::TransportError(
+                "large payload segment requested but no large publisher is available".to_string(),
+            )),
+            (false, _) => {
                 let guard = crate::sync::lock(&node_pubs.default);
                 Self::do_send(&guard, header, payload)
             }
@@ -447,6 +451,16 @@ impl NodeHub {
         })
     }
 
+    /// Clears the "dispatch loop started" flag so that a later call can retry.
+    ///
+    /// Called on every early-failure path of [`Self::start_dispatch_loop`]: the
+    /// message pump must not stay permanently disabled after a transient
+    /// iceoryx2 allocation failure.
+    pub(crate) fn mark_dispatch_stopped(&self) {
+        self.dispatch_started
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Starts the dispatch loop (IPC message pump) in a `spawn_blocking`.
     ///
     /// Idempotent via [`dispatch_started`]. Receives requests and responses
@@ -464,6 +478,7 @@ impl NodeHub {
             Ok(n) => n,
             Err(e) => {
                 log::error!("get_node_sync failed: {}", e);
+                self.mark_dispatch_stopped();
                 return;
             }
         };
@@ -493,6 +508,7 @@ impl NodeHub {
             Some(l) => l,
             None => {
                 log::error!("Failed to create listener on {}", notify_topic);
+                self.mark_dispatch_stopped();
                 return;
             }
         };
@@ -507,12 +523,32 @@ impl NodeHub {
                 large_topic
             );
 
-            let wait_set = WaitSetBuilder::new()
+            let wait_set = match WaitSetBuilder::new()
+                .signal_handling_mode(crate::waitset_signal_handling_mode())
                 .create::<iceoryx2::service::ipc_threadsafe::Service>()
-                .expect("WaitSetBuilder creation failed");
-            let _guard = wait_set
-                .attach_notification(&listener)
-                .expect("attach_notification failed");
+            {
+                Ok(wait_set) => wait_set,
+                Err(e) => {
+                    log::error!(
+                        "WaitSetBuilder creation failed: {:?}; dispatch loop aborted",
+                        e
+                    );
+                    crate::ServiceLocator::global()
+                        .hub()
+                        .mark_dispatch_stopped();
+                    return;
+                }
+            };
+            let _guard = match wait_set.attach_notification(&listener) {
+                Ok(guard) => guard,
+                Err(e) => {
+                    log::error!("attach_notification failed: {:?}; dispatch loop aborted", e);
+                    crate::ServiceLocator::global()
+                        .hub()
+                        .mark_dispatch_stopped();
+                    return;
+                }
+            };
 
             loop {
                 if cancel.is_cancelled() {
@@ -540,10 +576,23 @@ impl NodeHub {
                     }
                 }
 
-                if let Err(_) | Ok(iceoryx2::waitset::WaitSetRunResult::TerminationRequest) = result
-                {
-                    crate::global_cancel_token().cancel();
-                    break;
+                match result {
+                    // SIGINT/SIGTERM: iceoryx2 reports the termination request
+                    // natively, so propagate the shutdown to every subsystem.
+                    Ok(
+                        iceoryx2::waitset::WaitSetRunResult::Interrupt
+                        | iceoryx2::waitset::WaitSetRunResult::TerminationRequest,
+                    ) => {
+                        crate::request_shutdown();
+                        break;
+                    }
+                    // Internal reactor error: cancel locally so the peer can be
+                    // reconnected, but let the registry listener alive.
+                    Err(_) => {
+                        crate::global_cancel_token().cancel();
+                        break;
+                    }
+                    _ => {}
                 }
             }
 
@@ -621,7 +670,7 @@ impl NodeHub {
                     // iceoryx2's native header carries the sender's node id
                     // (hence its PID): the caller is authenticated by the
                     // transport instead of trusting a payload field.
-                    let caller = NodeId(sample.header().node_id().pid().value() as u32);
+                    let caller = NodeId(sample.header().node_id().pid().value());
                     for handler in handlers {
                         handler(hdr, caller, payload);
                     }

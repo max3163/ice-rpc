@@ -5,6 +5,7 @@
 //! The tests below still mutate process-global state (iceoryx2 config, the
 //! global hub singleton), so they are serialized with a shared mutex.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

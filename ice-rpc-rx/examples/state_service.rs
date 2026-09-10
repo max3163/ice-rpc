@@ -19,6 +19,8 @@
 //! cargo run -p ice-rpc-rx --example state_service --features tokio -- consumer
 //! ```
 
+#![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use ice_rpc::{service, Observable};
 use ice_rpc_rx::{ShareReplay, Subject};
 use rkyv::{Archive, Deserialize, Serialize};

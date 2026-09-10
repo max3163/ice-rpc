@@ -10,6 +10,8 @@
 //! compatibility guarantee we want to pin: `gen` is semver-exempt for the
 //! consumers of `ice-rpc`, but **not** for `ice-rpc-macros` / `ice-rpc-rx`.
 
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+
 /// Referencing each symbol pins it in the compilation unit: a rename or a
 /// removal in `ice_rpc::gen` turns this function into a compile error.
 #[test]
@@ -45,7 +47,6 @@ fn gen_facade_symbols_resolve() {
         run_provider_inner,
         setup_iceoryx2_global_config,
         shutdown_and_release,
-        spawn_ctrl_c_handler,
         spawn_node_registry_listener,
         unbounded_channel,
         unregister_node_liveness_watcher,

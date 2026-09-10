@@ -220,7 +220,9 @@ impl ServiceLocator {
         // Without them, locate_service() and read_service_blackboard_full()
         // fail because try_get_node() returns None.
         if self.try_get_node().is_none() {
-            crate::rt::spawn_blocking(|| {
+            // One-shot bootstrap offloaded to the runtime's bounded blocking
+            // pool (a dedicated thread per lazy proxy would be wasteful).
+            crate::rt::blocking_call(|| {
                 let locator = ServiceLocator::global();
                 if let Err(e) = locator.get_node_sync() {
                     log::error!(

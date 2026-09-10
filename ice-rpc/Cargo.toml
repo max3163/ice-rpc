@@ -1,6 +1,7 @@
 [package]
 name = "ice-rpc"
 version.workspace = true
+rust-version.workspace = true
 edition = "2021"
 description = "Zero-copy RPC over iceoryx2 with automatic reconnection, service discovery and HTTP gateway"
 license = "Apache-2.0"
@@ -12,6 +13,9 @@ categories = ["network-programming", "concurrency"]
 readme = "Readme.md"
 # The runtime-generated iceoryx2 config must not be shipped (machine-specific).
 exclude = ["config/iceoryx2.toml"]
+
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -52,7 +56,6 @@ futures-timer = "3"
 async-channel = "2"
 async-lock = "3"
 async-global-executor = "3"
-ctrlc = "3"
 # Optional runtime adapters.
 tokio = { workspace = true, optional = true }
 # Optional runtime-agnostic HTTP gateway (trillium + runtime adapters).

@@ -21,15 +21,27 @@ use crate::types::NodeId;
 // NodeRecord
 // ---------------------------------------------------------------------------
 
+/// One entry of the local topology cache: a node, its last known status, and
+/// when it was last seen.
+///
+/// The cache is *advisory*: the blackboard registry and iceoryx2's native node
+/// monitoring stay the source of truth (see the module documentation).
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
+    /// The node this record describes.
     pub node_id: NodeId,
+    /// Last known status, one of [`NodeRecord::STATUS_OK`] or
+    /// [`NodeRecord::STATUS_DEAD`].
     pub status: u8,
+    /// Instant of the last [`NodeDiscovery::upsert`] for this node.
     pub last_seen: std::time::Instant,
 }
 
 impl NodeRecord {
+    /// Status meaning the node is gone: its PID no longer owns a live iceoryx2
+    /// node.
     pub const STATUS_DEAD: u8 = 0;
+    /// Status meaning the node was seen alive by the registry.
     pub const STATUS_OK: u8 = 1;
 }
 
@@ -37,14 +49,28 @@ impl NodeRecord {
 // NodeDiscovery
 // ---------------------------------------------------------------------------
 
+/// Local cache of the node topology and of the `service name → NodeId` mapping.
+///
+/// Shared behind an `Arc` (see [`crate::ServiceLocator`]). Every method takes
+/// `&self` and applies its own fine-grained lock so that a registry round-trip
+/// never blocks readers for its whole duration.
 pub struct NodeDiscovery {
+    /// One record per raw node id, guarded independently from `service_map`.
     records: std::sync::Mutex<HashMap<u32, NodeRecord>>,
+    /// Service name → hosting node id; written by [`Self::upsert`], read on the
+    /// hot path by [`Self::locate_service`].
     service_map: std::sync::RwLock<HashMap<String, NodeId>>,
+    /// Set once the registry listener has been spawned for this instance, so the
+    /// listener is started at most once.
     pub(crate) registry_listener_started: AtomicBool,
+    /// Events produced since the last [`Self::drain_events`] call.
     pending_events: std::sync::Mutex<Vec<DiscoveryEvent>>,
 }
 
 impl NodeDiscovery {
+    /// Creates an empty cache. No IPC resource is opened here: the first
+    /// registry access happens in [`Self::locate_service`] or
+    /// [`Self::discover_live_nodes`].
     pub fn new() -> Self {
         Self {
             records: std::sync::Mutex::new(HashMap::new()),
@@ -54,6 +80,11 @@ impl NodeDiscovery {
         }
     }
 
+    /// Records `node_id` as hosting `service_name` and emits the resulting
+    /// [`DiscoveryEvent`]s (node up/down, service appeared/disappeared).
+    ///
+    /// `status` is [`NodeRecord::STATUS_OK`] or [`NodeRecord::STATUS_DEAD`]. An
+    /// empty `service_name` means the update concerns the node itself.
     pub fn upsert(&self, node_id: NodeId, status: u8, service_name: &str) {
         let is_new_node = {
             let mut map = crate::sync::lock(&self.records);
@@ -116,10 +147,14 @@ impl NodeDiscovery {
         }
     }
 
+    /// Takes the events accumulated since the previous call, leaving the queue
+    /// empty. Consumed by the reconnection layer.
     pub fn drain_events(&self) -> Vec<DiscoveryEvent> {
         std::mem::take(&mut *crate::sync::lock(&self.pending_events))
     }
 
+    /// Every service name currently cached, whether or not its node is still
+    /// alive. Used to detect disappearances during a reconciliation.
     pub fn all_known_services(&self) -> Vec<String> {
         let smap = crate::sync::read(&self.service_map);
         smap.keys().cloned().collect()
@@ -156,6 +191,10 @@ impl NodeDiscovery {
         result
     }
 
+    /// Flattened list of the services exposed by the live nodes.
+    ///
+    /// Convenience wrapper over [`Self::discover_live_nodes`]: it performs the
+    /// same registry scan.
     pub fn discover_live_services(&self) -> Vec<String> {
         self.discover_live_nodes().into_values().flatten().collect()
     }
@@ -198,6 +237,7 @@ impl NodeDiscovery {
         dead
     }
 
+    /// Cached node ids whose last known status is [`NodeRecord::STATUS_OK`].
     pub fn active_nodes(&self) -> Vec<NodeId> {
         let map = crate::sync::lock(&self.records);
         map.values()
@@ -206,6 +246,7 @@ impl NodeDiscovery {
             .collect()
     }
 
+    /// Returns whether the cache currently considers `node_id` alive.
     pub fn is_node_ok(&self, node_id: NodeId) -> bool {
         let map = crate::sync::lock(&self.records);
         map.get(&node_id.0)
@@ -234,11 +275,14 @@ impl NodeDiscovery {
         smap.get(service_name).copied()
     }
 
+    /// Clones the node records for inspection (diagnostics, tests).
     pub fn snapshot(&self) -> Vec<NodeRecord> {
         let map = crate::sync::lock(&self.records);
         map.values().cloned().collect()
     }
 
+    /// Drops the `service_name` entry so the next call re-resolves it from the
+    /// registry. Invoked when a call fails against a stale target.
     pub fn invalidate_service(&self, service_name: &str) {
         let mut smap = crate::sync::write(&self.service_map);
         smap.remove(service_name);
@@ -248,6 +292,8 @@ impl NodeDiscovery {
         );
     }
 
+    /// Removes `node_id` from the cache along with every service it hosted.
+    /// Invoked once the node is confirmed dead.
     pub fn invalidate_node_services(&self, node_id: NodeId) {
         {
             let mut rmap = crate::sync::lock(&self.records);
@@ -271,22 +317,36 @@ impl Default for NodeDiscovery {
 // DiscoveryEvent
 // ---------------------------------------------------------------------------
 
+/// Topology change produced by [`NodeDiscovery::upsert`] and consumed through
+/// [`NodeDiscovery::drain_events`].
 #[derive(Debug, Clone)]
 pub enum DiscoveryEvent {
+    /// A node was seen for the first time since the cache was created.
     NodeUp {
+        /// The node that appeared.
         node_id: NodeId,
+        /// Services already known for that node.
         services: Vec<String>,
     },
+    /// A node was confirmed dead.
     NodeDown {
+        /// The node that disappeared.
         node_id: NodeId,
+        /// Services that were cached for it and are now unreachable.
         services_lost: Vec<String>,
     },
+    /// A service became resolvable.
     ServiceAppeared {
+        /// Service name, as declared by the `#[service("…")]` attribute.
         service_name: String,
+        /// Node hosting the service, when known.
         node_id: Option<NodeId>,
     },
+    /// A service stopped being resolvable.
     ServiceDisappeared {
+        /// Service name that went away.
         service_name: String,
+        /// Node that hosted it, when known.
         node_id: Option<NodeId>,
     },
 }
@@ -313,7 +373,10 @@ mod tests {
         let dead = nd.reconcile(&live);
 
         assert_eq!(dead, vec![gone]);
-        assert!(!nd.is_node_ok(gone), "the vanished node must leave the cache");
+        assert!(
+            !nd.is_node_ok(gone),
+            "the vanished node must leave the cache"
+        );
     }
 
     #[test]

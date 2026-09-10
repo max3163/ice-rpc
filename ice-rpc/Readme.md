@@ -2,14 +2,14 @@
 
 High-performance, **zero-copy** RPC framework over [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) shared memory.
 
-From a single `#[service]`-annotated trait, the procedural macro generates the entire IPC code: client, server, proxy and lifecycle. Automatic reconnection after a provider crash (including `SIGKILL`) is provided by a cross-platform kernel watchdog (Windows Mutex / Unix `flock`).
+From a single `#[service]`-annotated trait, the procedural macro generates the entire IPC code: client, server, proxy and lifecycle. Automatic reconnection after a provider crash (including `SIGKILL`) is provided by iceoryx2's **native node monitoring**: the OS releases the node's monitoring file lock when the process dies, and `Node::list` reports it as `NodeState::Dead`.
 
 ## Features
 
 - **Zero-copy IPC transport** through iceoryx2 shared memory.
 - **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
 - **Service discovery** with a registry per node and dependency-aware topological initialization.
-- **Crash detection & reconnection** without heartbeat (kernel named lock).
+- **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs`.
 - **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
 
@@ -178,7 +178,7 @@ refines with the two variants.
 | `ProviderUnavailable` | provider node unreachable — also fails in-flight calls on node death | yes |
 | `Timeout` | deadline exceeded | yes |
 | `ServiceNotFound` | service not registered on any node | no |
-| `Cancelled` | global shutdown (Ctrl+C) | no |
+| `Cancelled` | global shutdown (SIGINT/SIGTERM or programmatic) | no |
 | `SerializationError` | rkyv serialization/deserialization failure | no |
 | `PayloadTooLarge` | payload above the shared-memory limit | no |
 | `ProtocolMismatch` | incompatible protocol/service version | no |

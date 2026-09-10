@@ -24,6 +24,7 @@
 //! is needed: `ice_rpc::locator().get()` instantiates any
 //! proxy on demand, from its type.
 
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod consumer;
 mod nodejs_bridge;
 mod runtime;
@@ -49,7 +50,12 @@ static SHUTDOWN_GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> =
 /// `registerService(serviceName: string): boolean`
 ///
 /// # Supported values
-/// `"ContextService"`, `"DatabaseService"`, `"ConfigService"`, `"HttpService"`
+///
+/// Every service listed in `common::with_nodejs_providers!` — currently
+/// `"ConfigService"`, `"ContextService"`, `"DatabaseService"`, `"HttpService"`
+/// and `"NotificationService"`. That inventory lives in the `common` crate,
+/// next to the `#[service]` declarations, so the Node.js surface cannot drift
+/// from them (the `nodejs_provider_inventory_is_exhaustive` test enforces it).
 ///
 /// # Returns
 /// `true` if the service was registered successfully.

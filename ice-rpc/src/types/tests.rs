@@ -38,6 +38,39 @@ fn event_kind_discriminants() {
     assert_eq!(EventKind::Error as u8, 3);
 }
 
+/// Wire contract: `RpcHeader` travels in iceoryx2's `ZeroCopySend`
+/// `user_header`, so its `#[repr(C)]` layout is shared by every process on the
+/// machine and must not drift silently. The offsets and the total size below
+/// are the ones documented in the README's "RpcHeader" section.
+#[test]
+fn rpc_header_layout_is_stable() {
+    use std::mem::{offset_of, size_of};
+
+    assert_eq!(offset_of!(RpcHeader, correlation_id), 0);
+    assert_eq!(offset_of!(RpcHeader, sent_at_ns), 16);
+    assert_eq!(offset_of!(RpcHeader, service_name), 24);
+    assert_eq!(offset_of!(RpcHeader, method_name), 104);
+    assert_eq!(offset_of!(RpcHeader, event_kind), 184);
+    assert_eq!(offset_of!(RpcHeader, protocol_version), 188);
+    assert_eq!(offset_of!(RpcHeader, service_version), 190);
+    assert_eq!(size_of::<RpcHeader>(), 192);
+}
+
+/// The maximum accepted name length is exactly the `StaticString` capacity: a
+/// 64-byte service/method name must survive the header round-trip without
+/// truncation. The discovery path used to truncate it to 63 bytes, which made
+/// such a service permanently undiscoverable by any consumer.
+#[test]
+fn rpc_header_accepts_the_maximum_name_length() {
+    let name = "a".repeat(SERVICE_NAME_LEN);
+    let header = RpcHeader::new(&name, &name);
+
+    assert_eq!(header.service_name.len(), SERVICE_NAME_LEN);
+    assert_eq!(header.method_name.len(), SERVICE_NAME_LEN);
+    assert_eq!(header.service(), name);
+    assert_eq!(header.method(), name);
+}
+
 #[test]
 fn event_is_terminal_flags() {
     assert!(!Event::<i32, String>::Next(1).is_terminal());

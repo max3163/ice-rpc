@@ -34,12 +34,29 @@ impl RpcHeader {
         Self {
             correlation_id: RpcHeader::next_correlation_id(),
             sent_at_ns: RpcHeader::now_ns(),
-            service_name: StaticString::from_bytes_truncated(service.as_bytes())
-                .unwrap_or_default(),
-            method_name: StaticString::from_bytes_truncated(method.as_bytes()).unwrap_or_default(),
+            service_name: Self::pack_name(service, "service"),
+            method_name: Self::pack_name(method, "method"),
             event_kind: EventKind::Request,
             protocol_version: PROTOCOL_VERSION,
             service_version: 0,
+        }
+    }
+
+    /// Packs a name into its fixed-capacity `StaticString`, truncating at the
+    /// capacity (64 bytes) at most.
+    ///
+    /// `#[service]` already rejects longer names at compile time, so truncation
+    /// is only reachable through direct calls to this public constructor. A
+    /// packing failure is **logged** rather than silently replaced by an empty
+    /// name: an empty `service_name` makes the message non-routable, so the
+    /// request would be dropped by the dispatch loop without any trace.
+    fn pack_name<const N: usize>(value: &str, kind: &str) -> StaticString<N> {
+        match StaticString::from_bytes_truncated(value.as_bytes()) {
+            Ok(name) => name,
+            Err(e) => {
+                log::error!("[ice-rpc] RpcHeader: cannot pack the {kind} name '{value}': {e:?}");
+                StaticString::default()
+            }
         }
     }
 

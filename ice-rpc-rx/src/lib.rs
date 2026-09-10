@@ -78,6 +78,7 @@
 //! [`ice_rpc`]: ../ice_rpc
 //! [`ice_rpc::Observable`]: ../ice_rpc/type.Observable.html
 
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod creation;
 mod join;
 mod share_replay;

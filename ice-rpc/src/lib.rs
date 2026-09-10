@@ -128,6 +128,7 @@
 //! | `macros` | `try_or_log!` — internal helper (not exported) |
 
 // The entry-point macros are the primary public API.
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 pub use ice_rpc_macros::{main, service};
 
 // Dependency re-exports (`rkyv`, `serde_json`, `base64`, `async_channel`, …)
@@ -194,7 +195,10 @@ pub use crate::rt::CancellationToken;
 
 /// Global cancellation token for the WaitSet loops (dispatch loop).
 ///
-/// Triggered by Ctrl+C or by the dispatch loop on fatal error.
+/// Triggered by the native iceoryx2 signal handling
+/// (`WaitSetRunResult::Interrupt` for SIGINT/Ctrl+C,
+/// `WaitSetRunResult::TerminationRequest` for SIGTERM), by a programmatic
+/// [`request_shutdown`], or by the dispatch loop on fatal error.
 #[doc(hidden)]
 pub fn global_cancel_token() -> &'static CancellationToken {
     static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
@@ -203,9 +207,10 @@ pub fn global_cancel_token() -> &'static CancellationToken {
 
 /// Cancellation token for the NODE_REGISTRY listener.
 ///
-/// Is NOT triggered by the dispatch loop (TerminationRequest), only
-/// by Ctrl+C. This allows the listener to survive the provider death
-/// and to receive the restart announcements.
+/// Is NOT triggered by the dispatch loop on fatal error, only by a real
+/// termination signal (SIGINT/SIGTERM) or a programmatic [`request_shutdown`].
+/// This allows the listener to survive the provider death and to receive the
+/// restart announcements.
 #[doc(hidden)]
 pub fn registry_cancel_token() -> &'static CancellationToken {
     static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
@@ -228,6 +233,21 @@ pub async fn shutdown_and_release() {
     ServiceLocator::global().release_node().await;
 }
 
+/// Cancels **both** cancellation tokens to propagate a termination request.
+///
+/// Called by the `WaitSet` loops when iceoryx2 reports
+/// [`WaitSetRunResult::Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt)
+/// (SIGINT, i.e. Ctrl+C) or
+/// [`TerminationRequest`](iceoryx2::waitset::WaitSetRunResult::TerminationRequest)
+/// (SIGTERM). The dispatch loop on a fatal error must NOT use this helper: it
+/// only cancels [`global_cancel_token`], so that the registry listener survives
+/// the provider death.
+pub(crate) fn request_shutdown() {
+    log::info!("Termination signal received, shutting down...");
+    global_cancel_token().cancel();
+    registry_cancel_token().cancel();
+}
+
 /// RAII guard for the automatic shutdown of an ice-rpc process.
 ///
 /// On `Drop` (process end or panic), cancels the cancellation tokens.
@@ -238,7 +258,7 @@ pub async fn shutdown_and_release() {
 /// ```rust,ignore
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let guard = ice_rpc::gen::init(); // configures iceoryx2 + installs Ctrl+C
+///     let guard = ice_rpc::gen::init(); // configures iceoryx2 + enables signal handling
 ///     // ... use ice-rpc ...
 ///     guard.shutdown().await;
 ///     Ok(())
@@ -293,10 +313,18 @@ pub fn locator() -> &'static ServiceLocator {
     ServiceLocator::global()
 }
 
-/// Waits for the stop signal (Ctrl+C or programmatic cancellation).
+/// Waits for the stop signal (SIGINT/SIGTERM or programmatic cancellation).
 ///
 /// Syntactic sugar over `global_cancel_token().cancelled().await`.
 /// Used at the end of `main` to block until shutdown.
+///
+/// # Signal handling
+///
+/// The Ctrl+C/SIGTERM detection relies on the native iceoryx2 `WaitSet`: a
+/// process must have started at least one `WaitSet` loop (the dispatch loop
+/// and/or the registry listener) for the signal to be caught. Otherwise the
+/// operating system's default disposition applies (hard termination). The
+/// framework starts those loops on the first proxy use.
 #[doc(hidden)]
 pub async fn wait_for_shutdown() {
     global_cancel_token().cancelled().await;
@@ -306,28 +334,60 @@ pub async fn wait_for_shutdown() {
 // Initialization functions
 // ────────────────────────────────────────────────────────────────────
 
+/// Whether the iceoryx2 `WaitSet` loops must handle termination signals.
+///
+/// `true` by default (set by [`init`]); [`init_without_ctrl_c`] clears it so the
+/// host keeps full control of the process signals.
+static SIGNAL_HANDLING_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 /// Performs the one-time process bootstrap.
 ///
-/// The iceoryx2 global configuration is applied exactly once; the Ctrl+C
-/// handler is installed once, and only when requested. Calling this several
-/// times is safe and has no effect after the first call — which is what allows
-/// [`run_provider!`] and `#[ice_rpc::main]` to bootstrap on their own.
-fn ensure_initialized(install_ctrl_c: bool) {
+/// The iceoryx2 global configuration is applied exactly once. Calling this
+/// several times is safe and has no effect after the first call — which is what
+/// allows [`run_provider!`] and `#[ice_rpc::main]` to bootstrap on their own.
+///
+/// The termination signals (SIGINT/SIGTERM) are no longer handled by a
+/// dedicated handler: they are reported by the native iceoryx2 `WaitSet` (see
+/// [`waitset_signal_handling_mode`]). [`init`] and [`init_without_ctrl_c`] only
+/// toggle [`SIGNAL_HANDLING_ENABLED`].
+fn ensure_initialized() {
     static CONFIG: std::sync::Once = std::sync::Once::new();
     CONFIG.call_once(config::setup_iceoryx2_global_config);
+}
 
-    if install_ctrl_c {
-        static CTRL_C: std::sync::Once = std::sync::Once::new();
-        CTRL_C.call_once(spawn_ctrl_c_handler);
+/// Pure resolver for the `WaitSet` signal handling mode.
+///
+/// Extracted from [`waitset_signal_handling_mode`] so the mapping stays
+/// unit-testable without touching the process-wide flag.
+fn resolve_signal_handling_mode(enabled: bool) -> iceoryx2::prelude::SignalHandlingMode {
+    if enabled {
+        iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests
+    } else {
+        iceoryx2::prelude::SignalHandlingMode::Disabled
     }
+}
+
+/// Returns the [`SignalHandlingMode`](iceoryx2::prelude::SignalHandlingMode)
+/// that the `WaitSet` loops must use.
+///
+/// With [`init`], the default `HandleTerminationRequests` mode lets iceoryx2
+/// install its native SIGINT/SIGTERM handler, so a Ctrl+C makes the blocking
+/// wait return
+/// [`WaitSetRunResult::Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt)
+/// immediately, instead of relying on the polling timeout.
+/// [`init_without_ctrl_c`] selects `Disabled`.
+pub(crate) fn waitset_signal_handling_mode() -> iceoryx2::prelude::SignalHandlingMode {
+    resolve_signal_handling_mode(SIGNAL_HANDLING_ENABLED.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Initializes the framework and returns the RAII shutdown guard.
 ///
-/// Configures iceoryx2, installs the Ctrl+C handler and returns the
-/// [`ShutdownGuard`] owning the process lifetime. Suitable for consumers,
-/// providers and provider+consumer processes alike: no service registry is
-/// needed, proxies are instantiated on demand from their type.
+/// Configures iceoryx2, enables the native signal handling of the `WaitSet`
+/// loops (SIGINT/SIGTERM) and returns the [`ShutdownGuard`] owning the process
+/// lifetime. Suitable for consumers, providers and provider+consumer processes
+/// alike: no service registry is needed, proxies are instantiated on demand
+/// from their type.
 ///
 /// The returned guard **must be kept alive**: dropping it cancels the global
 /// tokens. Call [`ShutdownGuard::shutdown`] for a clean stop (waiting for the
@@ -343,16 +403,20 @@ fn ensure_initialized(install_ctrl_c: bool) {
 #[doc(hidden)]
 #[must_use = "the guard cancels the ice-rpc tokens when dropped; bind it for the process lifetime"]
 pub fn init() -> ShutdownGuard {
-    ensure_initialized(true);
+    ensure_initialized();
+    SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     ShutdownGuard::new()
 }
 
-/// Initializes the framework **without** a Ctrl+C handler and returns the RAII
+/// Initializes the framework **without** signal handling and returns the RAII
 /// shutdown guard (Node.js gateway, tests…).
 ///
 /// Variant of [`init`] for contexts that must manage shutdown manually (N-API
-/// thread, tests, embedded executors). The returned guard should be **stored**
-/// for the host lifetime, otherwise dropping it cancels the tokens.
+/// thread, tests, embedded executors). The `WaitSet` loops are created with
+/// [`SignalHandlingMode::Disabled`](iceoryx2::prelude::SignalHandlingMode), so
+/// iceoryx2 registers no SIGINT/SIGTERM handler and the host keeps full control
+/// of the process signals. The returned guard should be **stored** for the host
+/// lifetime, otherwise dropping it cancels the tokens.
 ///
 /// # Example
 /// ```rust,ignore
@@ -361,24 +425,9 @@ pub fn init() -> ShutdownGuard {
 #[doc(hidden)]
 #[must_use = "the guard cancels the ice-rpc tokens when dropped; bind it for the host lifetime"]
 pub fn init_without_ctrl_c() -> ShutdownGuard {
-    ensure_initialized(false);
+    ensure_initialized();
+    SIGNAL_HANDLING_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
     ShutdownGuard::new()
-}
-
-/// Installs the Ctrl+C handler that triggers [`global_cancel_token`].
-///
-/// Available separately if needed (already called by [`init`]).
-/// The handler is installed through the [`ctrlc`] crate, so it works from any
-/// context, without an async runtime.
-#[doc(hidden)]
-pub fn spawn_ctrl_c_handler() {
-    // `ctrlc::set_handler` can only be installed once per process; duplicate
-    // calls are ignored.
-    let _ = ctrlc::set_handler(move || {
-        log::info!("\nCtrl+C received, shutting down...");
-        global_cancel_token().cancel();
-        registry_cancel_token().cancel();
-    });
 }
 
 /// Starts the HTTP REST gateway with the given service mapping.
@@ -473,8 +522,10 @@ pub async fn run_provider_inner(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Full bootstrap: `run_provider!` is self-contained, so a provider `main`
     // does not need a preliminary `init()`. Idempotent, so a process that
-    // already called `init()` is unaffected.
-    ensure_initialized(true);
+    // already called `init()` is unaffected. Signal handling is enabled
+    // explicitly so a prior `init_without_ctrl_c()` cannot disable it.
+    ensure_initialized();
+    SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // RAII guard: cancels the tokens on panic before the final shutdown_and_release.
     // The explicit shutdown() at the end of the function ensures a clean stop waiting
@@ -610,5 +661,32 @@ mod tests {
         // Without a created iceoryx2 Node, shutdown_and_release must terminate
         // cleanly. It uses `rt::timeout` internally, hence `test_block_on`.
         crate::rt::test_block_on(shutdown_and_release());
+    }
+
+    // ── signal handling mode ─────────────────────────────────────────
+
+    #[test]
+    fn signal_handling_mode_enabled_maps_to_native_termination_requests() {
+        assert_eq!(
+            resolve_signal_handling_mode(true),
+            iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests,
+        );
+    }
+
+    #[test]
+    fn signal_handling_mode_disabled_maps_to_disabled() {
+        assert_eq!(
+            resolve_signal_handling_mode(false),
+            iceoryx2::prelude::SignalHandlingMode::Disabled,
+        );
+    }
+
+    #[test]
+    fn waitset_signal_handling_mode_defaults_to_enabled() {
+        // No test clears the flag, so the process-wide default stays `true`.
+        assert_eq!(
+            waitset_signal_handling_mode(),
+            iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests,
+        );
     }
 }

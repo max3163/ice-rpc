@@ -1,3 +1,5 @@
+#![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 #![allow(unexpected_cfgs)]
 // =============================================================================
 // Integration tests for the `#[service]` procedural macro.
@@ -154,6 +156,30 @@ fn test_allow_large_payload_parameter_compiles() {
 
     // `allow_large_payload = false` (explicit default) still compiles.
     let _default = DefaultPayloadServiceClient::new();
+}
+
+// -----------------------------------------------------------------------------
+// Test 7b: a service name of exactly 64 bytes (= SERVICE_NAME_LEN) is accepted
+// -----------------------------------------------------------------------------
+
+/// Exactly 64 bytes: the maximum the macro accepts, and the capacity of both
+/// the `RpcHeader` `StaticString<64>` and the discovery blackboard key. A
+/// name at the limit must be preserved verbatim end to end, otherwise the
+/// service would be published but never discoverable.
+#[service("MaxLenServiceAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+#[async_trait::async_trait]
+pub trait MaxLenNameService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[test]
+fn test_service_name_at_max_length_is_accepted_verbatim() {
+    assert_eq!(
+        <MaxLenNameServiceProxy as ServiceNamed>::SERVICE_NAME.len(),
+        64,
+        "a 64-byte service name must be accepted without truncation"
+    );
+    assert_eq!(MaxLenNameServiceProxy::consume().service_name().len(), 64);
 }
 
 // -----------------------------------------------------------------------------

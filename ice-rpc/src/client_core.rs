@@ -190,8 +190,10 @@ impl ClientCore {
         };
 
         {
+            // Short, one-shot offload: goes through the runtime's bounded
+            // blocking pool, not through a dedicated thread per call.
             let locator = crate::ServiceLocator::global();
-            let _ = crate::rt::spawn_blocking(move || {
+            let _ = crate::rt::blocking_call(move || {
                 locator.start_discovery();
             })
             .await;
@@ -214,7 +216,7 @@ impl ClientCore {
 
         {
             let locator = crate::ServiceLocator::global();
-            let _ = crate::rt::spawn_blocking(move || {
+            let _ = crate::rt::blocking_call(move || {
                 locator.start_dispatch_if_needed();
             })
             .await;
@@ -228,9 +230,17 @@ impl ClientCore {
         .await;
 
         match result {
-            Ok(()) => {}
-            Err(e) => {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 log::error!("[{}Client] ensure_publishers failed: {}", service_name, e);
+                return false;
+            }
+            Err(panic) => {
+                log::error!(
+                    "[{}Client] ensure_publishers task panicked: {}",
+                    service_name,
+                    panic
+                );
                 return false;
             }
         }

@@ -150,7 +150,7 @@ impl<T, E> Default for Subject<T, E> {
 #[cfg(test)]
 mod tests {
     use super::Subject;
-    use ice_rpc::Event;
+    use ice_rpc::{Event, ObservableError};
 
     #[test]
     fn subject_multicasts_to_subscribers() {
@@ -159,7 +159,7 @@ mod tests {
         let rx2 = pollster::block_on(subject.subscribe());
         pollster::block_on(subject.next(7));
 
-        for rx in [rx1, rx2] {
+        for mut rx in [rx1, rx2] {
             match pollster::block_on(rx.recv()).unwrap() {
                 Event::Next(v) => assert_eq!(v, 7),
                 other => panic!("expected Next, got {:?}", other),
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn subject_completes_subscribers() {
         let subject = Subject::<i32, String>::new();
-        let rx = pollster::block_on(subject.subscribe());
+        let mut rx = pollster::block_on(subject.subscribe());
         pollster::block_on(subject.complete());
 
         match pollster::block_on(rx.recv()).unwrap() {
@@ -182,11 +182,11 @@ mod tests {
     #[test]
     fn subject_errors_subscribers() {
         let subject = Subject::<i32, String>::new();
-        let rx = pollster::block_on(subject.subscribe());
+        let mut rx = pollster::block_on(subject.subscribe());
         pollster::block_on(subject.error("boom".to_string()));
 
         match pollster::block_on(rx.recv()).unwrap() {
-            Event::Error(e) => assert_eq!(e, "boom"),
+            Event::Error(ObservableError::Business(e)) => assert_eq!(e, "boom"),
             other => panic!("expected Error, got {:?}", other),
         }
     }
@@ -204,7 +204,7 @@ mod tests {
         pollster::block_on(subject.next(1));
         pollster::block_on(subject.complete());
 
-        let rx = pollster::block_on(subject.subscribe());
+        let mut rx = pollster::block_on(subject.subscribe());
         pollster::block_on(subject.next(2));
         match pollster::block_on(rx.recv()).unwrap() {
             Event::Next(v) => assert_eq!(v, 2),

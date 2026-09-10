@@ -164,13 +164,9 @@ where
             // Drive the in-flight factory call.
             if let Some(mut fut) = this.pending_factory.take() {
                 match fut.as_mut().poll(cx) {
-                    Poll::Ready(Ok(stream)) => {
+                    Poll::Ready(stream) => {
                         let stream: BoxedStream<T, E> = Box::pin(stream);
                         this.current = Some(stream);
-                    }
-                    Poll::Ready(Err(e)) => {
-                        this.done = true;
-                        return Poll::Ready(Some(Event::RpcError(e)));
                     }
                     Poll::Pending => {
                         this.pending_factory = Some(fut);
@@ -186,7 +182,8 @@ where
                         this.current = Some(stream);
                         return Poll::Ready(Some(Event::Next(v)));
                     }
-                    Poll::Ready(Some(Event::Error(e))) => {
+                    // Only a business error is retryable; a technical error is fatal.
+                    Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
                         if this.retries > 0 && (this.should_retry)(&e) {
                             this.retries -= 1;
                             this.pending_factory = Some((this.factory)());
@@ -195,7 +192,9 @@ where
                             }
                         } else {
                             this.done = true;
-                            return Poll::Ready(Some(Event::Error(e)));
+                            return Poll::Ready(Some(Event::Error(
+                                ice_rpc::ObservableError::Business(e),
+                            )));
                         }
                     }
                     Poll::Ready(Some(other)) => {
@@ -220,7 +219,7 @@ where
 mod tests {
     use super::*;
     use crate::of;
-    use ice_rpc::Event;
+    use ice_rpc::{Event, ObservableError};
 
     async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
     where
@@ -239,7 +238,9 @@ mod tests {
 
     #[test]
     fn merge_combines_streams() {
-        let stream = merge(vec![of(1), of(2)]);
+        let s1: ice_rpc::Stream<i32, String> = of(1);
+        let s2: ice_rpc::Stream<i32, String> = of(2);
+        let stream = merge(vec![s1, s2]);
         let events = pollster::block_on(drain(stream));
 
         let mut values = Vec::new();
@@ -274,7 +275,7 @@ mod tests {
                     let _ = tx.try_send_next(42);
                     let _ = tx.try_send_complete();
                 }
-                Ok(rx)
+                rx
             }
         };
 
@@ -303,14 +304,17 @@ mod tests {
                 } else {
                     let _ = tx.try_send_error("fatal".to_string());
                 }
-                Ok(rx)
+                rx
             }
         };
 
         let stream = retry_with(factory, 3, |e| e == "retryable");
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Error(e) if e == "fatal"));
+        assert!(matches!(
+            &events[0],
+            Event::Error(ObservableError::Business(e)) if e == "fatal"
+        ));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

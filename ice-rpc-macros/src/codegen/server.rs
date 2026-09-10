@@ -235,7 +235,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// the business implementation or the stream `recv().await` is running, so
 /// concurrent RPCs of the same server are no longer serialized.
 pub fn gen_server_match_arm(
-    trait_name: &Ident,
+    _trait_name: &Ident,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
@@ -250,46 +250,27 @@ pub fn gen_server_match_arm(
             let client_node = ice_rpc::NodeId(client_pid);
             let hub = ice_rpc::ServiceLocator::global().hub();
 
-            match impl_ref.#fn_name(#(#arg_names),*).await {
-                Ok(mut stream) => {
-                    while let Ok(event) = stream.recv_wire().await {
-                        let kind = match &event {
-                            ice_rpc::WireEvent::Next(_)         => ice_rpc::EventKind::Next,
-                            ice_rpc::WireEvent::Complete        => ice_rpc::EventKind::Complete,
-                            ice_rpc::WireEvent::CompleteWith(_) => ice_rpc::EventKind::Complete,
-                            ice_rpc::WireEvent::Error(_)        => ice_rpc::EventKind::Error,
-                            ice_rpc::WireEvent::RpcError(_)     => ice_rpc::EventKind::Error,
-                        };
-                        let mut guard = scratch_ref.lock().await;
-                        if guard.capacity() < size_hint + 4096 {
-                            *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
-                        }
-                        guard.clear();
-                        if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
+            let mut stream = impl_ref.#fn_name(#(#arg_names),*).await;
 
-                        let resp_header = ice_rpc::RpcHeader::response_from(&hdr, kind, #service_version);
-                        let _ = hub.send_to_node(client_node, resp_header, &*guard);
-                        drop(guard);
-                        if kind.is_terminal() { break; }
-                    }
+            while let Ok(event) = stream.recv_wire().await {
+                let kind = match &event {
+                    ice_rpc::WireEvent::Next(_)         => ice_rpc::EventKind::Next,
+                    ice_rpc::WireEvent::Complete        => ice_rpc::EventKind::Complete,
+                    ice_rpc::WireEvent::CompleteWith(_) => ice_rpc::EventKind::Complete,
+                    ice_rpc::WireEvent::Error(_)        => ice_rpc::EventKind::Error,
+                    ice_rpc::WireEvent::RpcError(_)     => ice_rpc::EventKind::Error,
+                };
+                let mut guard = scratch_ref.lock().await;
+                if guard.capacity() < size_hint + 4096 {
+                    *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
                 }
-                Err(e) => {
-                    ::log::error!("[{}] IPC error on '{}': {}", stringify!(#trait_name), stringify!(#fn_name), e);
-                    let mut guard = scratch_ref.lock().await;
-                    if guard.capacity() < size_hint + 4096 {
-                        *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
-                    }
-                    guard.clear();
-                    let complete_event: ice_rpc::WireEvent<(), ()> = ice_rpc::WireEvent::Complete;
-                    if to_bytes_in::<_, RkyvError>(&complete_event, &mut *guard).is_ok() {
-                        let resp_header = ice_rpc::RpcHeader::response_from(
-                            &hdr,
-                            ice_rpc::EventKind::Complete,
-                            #service_version,
-                        );
-                        let _ = hub.send_to_node(client_node, resp_header, &*guard);
-                    }
-                }
+                guard.clear();
+                if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
+
+                let resp_header = ice_rpc::RpcHeader::response_from(&hdr, kind, #service_version);
+                let _ = hub.send_to_node(client_node, resp_header, &*guard);
+                drop(guard);
+                if kind.is_terminal() { break; }
             }
         }
     }

@@ -85,7 +85,7 @@ fn hub_send_and_dispatch_loopback() {
 
 #[test]
 fn stream_recv_normalizes_complete_with_as_next_then_complete() {
-    let (tx, rx) = ice_rpc::channel::<i32, String>(4);
+    let (tx, mut rx) = ice_rpc::channel::<i32, String>(4);
     pollster::block_on(tx.send_complete_with(42)).unwrap();
     drop(tx);
 

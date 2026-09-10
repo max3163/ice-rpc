@@ -3,7 +3,7 @@
 //! Provides people lookup queries (by last name/first name, by age).
 //! Depends on `ConfigService` for its connection configuration.
 
-use ice_rpc::{service, timeout, Observable};
+use ice_rpc::{service, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Error returned by the [`DatabaseService`] operations.
@@ -56,7 +56,7 @@ pub struct PersonneInfo {
 ///
 /// Depends on `ConfigService` to obtain the connection parameters
 /// (connection string, credentials, etc.).
-#[service("DatabaseService")]
+#[service("DatabaseService", discovery_timeout = "10s")]
 pub trait DatabaseService {
     /// Returns the age associated with a person's name.
     ///
@@ -64,9 +64,8 @@ pub trait DatabaseService {
     /// * `name` — Name of the searched person.
     ///
     /// # Returns
-    /// * `Ok(stream)` emitting `Next(age)` then `Complete`.
-    /// * `Err(DatabaseError::NotFound)` if the name is unknown.
-    #[timeout("10s")]
+    /// * a stream emitting `Next(age)` then `Complete`;
+    /// * `Error(Business(DatabaseError::NotFound))` if the name is unknown.
     async fn get_user_age(&self, name: String) -> Observable<i32, DatabaseError>;
 
     /// Returns the full information of a person.
@@ -75,8 +74,8 @@ pub trait DatabaseService {
     /// * `query` — Search criteria (last name and first name).
     ///
     /// # Returns
-    /// * `Ok(stream)` emitting `Next(PersonneInfo)` then `Complete`.
-    /// * `Err(DatabaseError::NotFound)` if the person is not found.
-    /// * `Err(DatabaseError::Error)` on internal error.
+    /// * a stream emitting `Next(PersonneInfo)` then `Complete`;
+    /// * `Error(Business(DatabaseError::NotFound))` if the person is not found;
+    /// * `Error(Business(DatabaseError::Error))` on internal error.
     async fn get_person(&self, query: PersonneQuery) -> Observable<PersonneInfo, DatabaseError>;
 }

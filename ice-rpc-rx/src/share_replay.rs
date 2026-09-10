@@ -13,7 +13,7 @@
 //! let rx = shared.subscribe().await; // replays the last value, if any
 //! ```
 
-use ice_rpc::{Event, Sender, Stream};
+use ice_rpc::{Event, ObservableError, Sender, Stream};
 
 /// Multicast source that replays the last value to late subscribers.
 pub struct ShareReplay<T, E> {
@@ -23,7 +23,7 @@ pub struct ShareReplay<T, E> {
 struct ShareState<T, E> {
     last: Option<T>,
     completed: bool,
-    error: Option<E>,
+    error: Option<ObservableError<E>>,
     subscribers: Vec<Sender<T, E>>,
 }
 
@@ -88,13 +88,7 @@ impl<T, E> ShareReplay<T, E> {
                     Event::Error(e) => {
                         st.error = Some(e.clone());
                         for tx in st.subscribers.iter() {
-                            let _ = tx.send_error(e.clone()).await;
-                        }
-                        break;
-                    }
-                    Event::RpcError(e) => {
-                        for tx in st.subscribers.iter() {
-                            let _ = tx.send_event(Event::RpcError(e.clone())).await;
+                            let _ = tx.send_event(Event::Error(e.clone())).await;
                         }
                         break;
                     }
@@ -115,7 +109,7 @@ impl<T, E> ShareReplay<T, E> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// let rx = shared.subscribe().await;
+    /// let mut rx = shared.subscribe().await;
     /// while let Ok(event) = rx.recv().await {
     ///     // handle the event
     /// }
@@ -134,7 +128,7 @@ impl<T, E> ShareReplay<T, E> {
                 let _ = tx.send_next(last.clone()).await;
             }
             if let Some(err) = &state.error {
-                let _ = tx.send_error(err.clone()).await;
+                let _ = tx.send_event(Event::Error(err.clone())).await;
             }
             if state.completed {
                 let _ = tx.send_complete().await;
@@ -148,7 +142,7 @@ impl<T, E> ShareReplay<T, E> {
 #[cfg(test)]
 mod tests {
     use super::ShareReplay;
-    use ice_rpc::Event;
+    use ice_rpc::{Event, ObservableError};
 
     #[test]
     fn share_replay_replays_last_value() {
@@ -160,7 +154,7 @@ mod tests {
         // Wait for the source task to consume the value.
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rx = pollster::block_on(shared.subscribe());
+        let mut rx = pollster::block_on(shared.subscribe());
         match pollster::block_on(rx.recv()).unwrap() {
             Event::Next(v) => assert_eq!(v, 42),
             other => panic!("expected replayed Next, got {:?}", other),
@@ -177,7 +171,7 @@ mod tests {
         let shared = ShareReplay::new(rx);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rx = pollster::block_on(shared.subscribe());
+        let mut rx = pollster::block_on(shared.subscribe());
         match pollster::block_on(rx.recv()).unwrap() {
             Event::Next(v) => assert_eq!(v, 2),
             other => panic!("expected replayed Next(2), got {:?}", other),
@@ -193,7 +187,7 @@ mod tests {
         let shared = ShareReplay::new(rx);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rx = pollster::block_on(shared.subscribe());
+        let mut rx = pollster::block_on(shared.subscribe());
         match pollster::block_on(rx.recv()).unwrap() {
             Event::Complete => {}
             other => panic!("expected Complete, got {:?}", other),
@@ -209,9 +203,9 @@ mod tests {
         let shared = ShareReplay::new(rx);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rx = pollster::block_on(shared.subscribe());
+        let mut rx = pollster::block_on(shared.subscribe());
         match pollster::block_on(rx.recv()).unwrap() {
-            Event::Error(e) => assert_eq!(e, "boom"),
+            Event::Error(ObservableError::Business(e)) => assert_eq!(e, "boom"),
             other => panic!("expected Error, got {:?}", other),
         }
     }
@@ -225,7 +219,7 @@ mod tests {
         let shared = ShareReplay::new(rx);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rx = pollster::block_on(shared.subscribe());
+        let mut rx = pollster::block_on(shared.subscribe());
         match pollster::block_on(rx.recv()).unwrap() {
             Event::Next(v) => assert_eq!(v, 7),
             other => panic!("expected replayed Next(7), got {:?}", other),
@@ -247,7 +241,7 @@ mod tests {
         pollster::block_on(tx.send_complete()).unwrap();
         drop(tx);
 
-        for rx in [rx1, rx2] {
+        for mut rx in [rx1, rx2] {
             match pollster::block_on(rx.recv()).unwrap() {
                 Event::Next(v) => assert_eq!(v, 11),
                 other => panic!("expected Next(11), got {:?}", other),

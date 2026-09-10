@@ -1,16 +1,13 @@
 //! Stream creation helpers.
 //!
-//! [`from`] and [`of`] build local poll-based streams, mirroring the RxJS
-//! constructors of the same name. They are lazy: values are emitted only once
-//! the consumer starts polling.
+//! [`from`] and [`of`] build local observables, mirroring the RxJS constructors
+//! of the same name. They are backed by [`ice_rpc::Stream::from_events`], so
+//! they allocate no channel and spawn no task: the events are produced lazily
+//! by the consumer's own polling.
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use ice_rpc::{Event, Observable, ObservableError};
 
-use crate::RxError;
-use ice_rpc::Event;
-
-/// Creates a stream from an iterator, emitting each value as `Next` then
+/// Creates an observable from an iterator, emitting each value as `Next` then
 /// `Complete`.
 ///
 /// Equivalent to RxJS `from`.
@@ -19,45 +16,18 @@ use ice_rpc::Event;
 /// ```rust,ignore
 /// use ice_rpc_rx::from;
 ///
-/// let stream = from([1, 2, 3]);
+/// let stream: ice_rpc::Stream<i32, String> = from([1, 2, 3]);
 /// ```
-pub fn from<T, I>(iter: I) -> From<T>
+pub fn from<T, E, I>(iter: I) -> Observable<T, E>
 where
     I: IntoIterator<Item = T>,
 {
-    From {
-        values: iter.into_iter().collect::<Vec<_>>().into_iter(),
-        done: false,
-    }
+    let mut events: Vec<Event<T, E>> = iter.into_iter().map(Event::Next).collect();
+    events.push(Event::Complete);
+    ice_rpc::Stream::from_events(events)
 }
 
-pin_project_lite::pin_project! {
-    /// See [`from`].
-    pub struct From<T> {
-        values: std::vec::IntoIter<T>,
-        done: bool,
-    }
-}
-
-impl<T> futures_lite::Stream for From<T> {
-    type Item = Event<T, RxError>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        if *this.done {
-            return Poll::Ready(None);
-        }
-        match this.values.next() {
-            Some(v) => Poll::Ready(Some(Event::Next(v))),
-            None => {
-                *this.done = true;
-                Poll::Ready(Some(Event::Complete))
-            }
-        }
-    }
-}
-
-/// Creates a single-value stream.
+/// Creates a single-value observable.
 ///
 /// Consumers observe the value as `Next` followed by `Complete`. Equivalent to
 /// RxJS `of`.
@@ -66,35 +36,25 @@ impl<T> futures_lite::Stream for From<T> {
 /// ```rust,ignore
 /// use ice_rpc_rx::of;
 ///
-/// let stream = of(42);
+/// let stream: ice_rpc::Stream<i32, String> = of(42);
 /// ```
-pub fn of<T>(value: T) -> Of<T> {
-    Of {
-        value: Some(value),
-        completed: false,
-    }
+pub fn of<T, E>(value: T) -> Observable<T, E> {
+    ice_rpc::Stream::from_events([Event::Next(value), Event::Complete])
 }
 
-pin_project_lite::pin_project! {
-    /// See [`of`].
-    pub struct Of<T> {
-        value: Option<T>,
-        completed: bool,
-    }
-}
-
-impl<T> futures_lite::Stream for Of<T> {
-    type Item = Event<T, RxError>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        if let Some(v) = this.value.take() {
-            return Poll::Ready(Some(Event::Next(v)));
-        }
-        if *this.completed {
-            return Poll::Ready(None);
-        }
-        *this.completed = true;
-        Poll::Ready(Some(Event::Complete))
-    }
+/// Creates an observable that only emits a business error.
+///
+/// Equivalent to RxJS `throwError`: the stream terminates on
+/// [`Event::Error`] with the business variant of
+/// [`ObservableError`](ice_rpc::ObservableError). This is the counterpart of
+/// [`of`] for single-response services that must fail on the business channel.
+///
+/// # Example
+/// ```rust,ignore
+/// use ice_rpc_rx::throw_error;
+///
+/// let stream: ice_rpc::Stream<i32, MyError> = throw_error(MyError::NotFound);
+/// ```
+pub fn throw_error<T, E>(error: E) -> Observable<T, E> {
+    ice_rpc::Stream::from_events([Event::Error(ObservableError::Business(error))])
 }

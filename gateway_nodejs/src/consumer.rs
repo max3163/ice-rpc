@@ -56,7 +56,6 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
             let age = proxy
                 .get_user_age(name)
                 .await
-                .map_err(|e| format!("IPC error (get_user_age): {}", e))?
                 .first_value()
                 .await
                 .map_err(|e| match e {
@@ -64,7 +63,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                         "NotFound: unknown name in database".to_string()
                     }
                     StreamError::Business(e) => format!("Database business error: {}", e),
-                    StreamError::Rpc(e) => format!("RPC error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
                     StreamError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
@@ -83,7 +82,6 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
             let info = proxy
                 .get_person(query)
                 .await
-                .map_err(|e| format!("IPC error (get_person): {}", e))?
                 .first_value()
                 .await
                 .map_err(|e| match e {
@@ -91,7 +89,7 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                         "NotFound: person not found".to_string()
                     }
                     StreamError::Business(e) => format!("Database business error: {}", e),
-                    StreamError::Rpc(e) => format!("RPC error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
                     StreamError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
@@ -111,14 +109,13 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
             let value = proxy
                 .get(key)
                 .await
-                .map_err(|e| format!("IPC error (ConfigService::get): {}", e))?
                 .first_value()
                 .await
                 .map_err(|e| match e {
                     StreamError::Business(common::ConfigError::KeyNotFound) => {
                         "KeyNotFound: key not found".to_string()
                     }
-                    StreamError::Rpc(e) => format!("RPC error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
                     StreamError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
@@ -138,12 +135,11 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
             let response = proxy
                 .send_request(request)
                 .await
-                .map_err(|e| format!("IPC error (send_request): {}", e))?
                 .first_value()
                 .await
                 .map_err(|e| match e {
                     StreamError::Business(e) => format!("Http business error: {}", e),
-                    StreamError::Rpc(e) => format!("RPC error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
                     StreamError::Empty => "Stream ended without a value".to_string(),
                 })?;
 

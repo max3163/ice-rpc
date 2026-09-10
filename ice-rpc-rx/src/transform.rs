@@ -21,10 +21,11 @@
 //! - [`scan`](RxStreamExt::scan) — emits a running accumulator state;
 //! - [`tap`](RxStreamExt::tap) — runs a side effect per value;
 //! - [`finalize`](RxStreamExt::finalize) — runs a callback once at termination;
-//! - [`catch_error`](RxStreamExt::catch_error) — replaces an `Error` with a
-//!   fallback value and completes;
+//! - [`catch_error`](RxStreamExt::catch_error) — replaces a business `Error`
+//!   with a fallback value and completes;
 //! - [`delay`](RxStreamExt::delay) — delays every event;
-//! - [`timeout`](RxStreamExt::timeout) — emits `RpcError::Timeout` on silence;
+//! - [`timeout`](RxStreamExt::timeout) — emits a technical timeout error on
+//!   silence;
 //! - [`switch_map`](RxStreamExt::switch_map) — projects each value to an inner
 //!   stream and emits from the latest one.
 
@@ -129,7 +130,7 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
         Delay::new(self, duration)
     }
 
-    /// Emits `RpcError::Timeout` if no event arrives within `duration`.
+    /// Emits a technical timeout error if no event arrives within `duration`.
     fn timeout(self, duration: std::time::Duration) -> Timeout<Self, T, E> {
         Timeout::new(self, duration)
     }
@@ -143,17 +144,44 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
         SwitchMap::new(self, f)
     }
 
-    /// Emits `RpcError::Cancelled` and stops once `token` is cancelled (RxJS
-    /// `takeUntil`).
+    /// Emits a technical `Cancelled` error and stops once `token` is cancelled
+    /// (RxJS `takeUntil`).
     fn take_until(self, token: &ice_rpc::CancellationToken) -> TakeUntil<Self, T, E> {
         TakeUntil::new(self, token.clone())
     }
 
+    /// Freezes the pipeline into the concrete [`ice_rpc::Stream`], so it can be
+    /// returned by a **service method**.
+    ///
+    /// A service must return `Observable<T, E>`, which is the concrete
+    /// `Stream<T, E>`: the generated proxy needs a single return type shared by
+    /// its `Provider` (in-process implementation) and `Consumer` (IPC client)
+    /// modes, so an operator type (`Map<…>`, `Delay<…>`, …) cannot be returned
+    /// directly. This wraps the pipeline into the boxed variant of `Stream`.
+    ///
+    /// The `CompleteWith` single-sample optimization is preserved.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// async fn watch(&self, count: u32) -> Observable<u32, String> {
+    ///     from(1..=count)
+    ///         .delay(Duration::from_millis(100))
+    ///         .into_observable()
+    /// }
+    /// ```
+    fn into_observable(self) -> ice_rpc::Stream<T, E>
+    where
+        Self: Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        ice_rpc::Stream::from_stream(self)
+    }
+
     /// Awaits the first emitted value of the stream.
     ///
-    /// Equivalent to `recv()` projected onto a `Result<T, StreamError<E>>`:
-    /// `Next(v)` → `Ok(v)`, `Error(e)` → `Business(e)`, `RpcError(e)` → `Rpc(e)`,
-    /// `Complete`/closed → `Empty`.
+    /// `Next(v)` → `Ok(v)`, `Error(e)` → `Err(e.into())`,
+    /// `Complete`/closed → `Err(StreamError::Empty)`.
     #[allow(async_fn_in_trait)]
     async fn first_value(self) -> Result<T, ice_rpc::StreamError<E>>
     where
@@ -167,8 +195,7 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
             .await
             {
                 Some(Event::Next(v)) => return Ok(v),
-                Some(Event::Error(e)) => return Err(ice_rpc::StreamError::Business(e)),
-                Some(Event::RpcError(e)) => return Err(ice_rpc::StreamError::Rpc(e)),
+                Some(Event::Error(e)) => return Err(e.into()),
                 Some(Event::Complete) | None => return Err(ice_rpc::StreamError::Empty),
             }
         }
@@ -176,11 +203,11 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
 
     /// Collects every emitted value into a `Vec`.
     ///
-    /// The stream is consumed until `Complete` (or until it is closed). On
-    /// `Error`/`RpcError` the collected values are discarded and the error is
+    /// The stream is consumed until `Complete` (or until it is closed). On a
+    /// terminal `Error` the collected values are discarded and the error is
     /// returned.
     #[allow(async_fn_in_trait)]
-    async fn collect(self) -> Result<Vec<T>, ice_rpc::StreamError<E>>
+    async fn collect(self) -> Result<Vec<T>, ice_rpc::ObservableError<E>>
     where
         Self: Sized,
     {
@@ -193,12 +220,75 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
             .await
             {
                 Some(Event::Next(v)) => values.push(v),
-                Some(Event::Complete) => return Ok(values),
-                Some(Event::Error(e)) => return Err(ice_rpc::StreamError::Business(e)),
-                Some(Event::RpcError(e)) => return Err(ice_rpc::StreamError::Rpc(e)),
-                None => return Ok(values),
+                Some(Event::Complete) | None => return Ok(values),
+                Some(Event::Error(e)) => return Err(e),
             }
         }
+    }
+
+    /// Consumes the stream with a callback per value (RxJS `forEach`).
+    ///
+    /// Fully pull-based: no task is spawned. `Complete` (or a closed source)
+    /// yields `Ok(())`; a terminal error yields `Err(ObservableError)`.
+    #[allow(async_fn_in_trait)]
+    async fn for_each<F>(self, mut f: F) -> Result<(), ice_rpc::ObservableError<E>>
+    where
+        F: FnMut(T),
+        Self: Sized,
+    {
+        let mut stream = Box::pin(self);
+        loop {
+            match crate::subscribe::next_event(&mut stream).await {
+                Some(Event::Next(v)) => f(v),
+                Some(Event::Complete) | None => return Ok(()),
+                Some(Event::Error(e)) => return Err(e),
+            }
+        }
+    }
+
+    /// Subscribes to the stream with an [`Observer`](crate::Observer).
+    ///
+    /// Spawns **one** task that pulls the pipeline and pushes events. Dropping
+    /// the returned [`Subscription`](crate::Subscription) cancels it silently.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let sub = stream.subscribe_with(
+    ///     |v| println!("next: {v:?}"),
+    ///     |e| eprintln!("error: {e:?}"),
+    ///     || println!("complete"),
+    /// );
+    /// // ... later
+    /// drop(sub);
+    /// ```
+    fn subscribe<O>(self, observer: O) -> crate::Subscription
+    where
+        O: crate::Observer<T, E>,
+        T: Send + 'static,
+        E: Send + 'static,
+        Self: Send + 'static,
+    {
+        let cancel = ice_rpc::CancellationToken::new();
+        crate::subscribe::spawn_push(self, observer, cancel.clone());
+        crate::Subscription::new(cancel)
+    }
+
+    /// Subscribes with three closures (see [`RxStreamExt::subscribe`]).
+    fn subscribe_with<N, Er, C>(
+        self,
+        on_next: N,
+        on_error: Er,
+        on_complete: C,
+    ) -> crate::Subscription
+    where
+        N: FnMut(T) + Send + 'static,
+        Er: FnMut(ice_rpc::ObservableError<E>) + Send + 'static,
+        C: FnMut() + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+        Self: Send + 'static,
+    {
+        self.subscribe(crate::ObserverFns::new(on_next, on_error, on_complete))
     }
 }
 
@@ -237,7 +327,6 @@ where
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next((this.f)(v)))),
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
             Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error(e))),
-            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -507,9 +596,16 @@ where
         let mut this = self.project();
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
-            Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error((this.f)(e)))),
+            // Only the business error is remapped; technical errors pass through.
+            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
+                Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(
+                    (this.f)(e),
+                ))))
+            }
+            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(e)))) => {
+                Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(e))))
+            }
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
-            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -558,7 +654,6 @@ where
             }
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
             Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error(e))),
-            Poll::Ready(Some(Event::RpcError(e))) => Poll::Ready(Some(Event::RpcError(e))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -697,16 +792,19 @@ where
         }
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
-            Poll::Ready(Some(Event::Error(e))) => match this.f.take() {
-                Some(f) => {
-                    *this.completed = true;
-                    Poll::Ready(Some(Event::Next(f(e))))
+            // Only a business error can be caught; a technical error is fatal.
+            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
+                match this.f.take() {
+                    Some(f) => {
+                        *this.completed = true;
+                        Poll::Ready(Some(Event::Next(f(e))))
+                    }
+                    None => {
+                        *this.done = true;
+                        Poll::Ready(Some(Event::Complete))
+                    }
                 }
-                None => {
-                    *this.done = true;
-                    Poll::Ready(Some(Event::Complete))
-                }
-            },
+            }
             Poll::Ready(Some(other)) => {
                 *this.done = true;
                 Poll::Ready(Some(other))
@@ -827,7 +925,9 @@ where
             Poll::Pending => match this.sleep.as_mut().expect("sleep future").as_mut().poll(cx) {
                 Poll::Ready(()) => {
                     *this.done = true;
-                    Poll::Ready(Some(Event::RpcError(ice_rpc::RpcError::Timeout)))
+                    Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(
+                        ice_rpc::RpcError::Timeout,
+                    ))))
                 }
                 Poll::Pending => Poll::Pending,
             },
@@ -887,10 +987,6 @@ where
                         *this.done = true;
                         return Poll::Ready(Some(Event::Error(e)));
                     }
-                    Poll::Ready(Some(Event::RpcError(e))) => {
-                        *this.done = true;
-                        return Poll::Ready(Some(Event::RpcError(e)));
-                    }
                     Poll::Ready(None) => {
                         this.inner.set(None);
                     }
@@ -908,10 +1004,6 @@ where
                 Poll::Ready(Some(Event::Error(e))) => {
                     *this.done = true;
                     return Poll::Ready(Some(Event::Error(e)));
-                }
-                Poll::Ready(Some(Event::RpcError(e))) => {
-                    *this.done = true;
-                    return Poll::Ready(Some(Event::RpcError(e)));
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -955,7 +1047,9 @@ where
         }
         if this.token.is_cancelled() {
             *this.done = true;
-            return Poll::Ready(Some(Event::RpcError(ice_rpc::RpcError::Cancelled)));
+            return Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(
+                ice_rpc::RpcError::Cancelled,
+            ))));
         }
         futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
     }
@@ -966,8 +1060,17 @@ mod tests {
     use std::pin::Pin;
 
     use super::RxStreamExt;
-    use crate::{from, of};
-    use ice_rpc::Event;
+    use ice_rpc::{Event, ObservableError};
+
+    /// Builds a local `Stream<T, String>` from an iterator (test helper).
+    fn local<T>(values: impl IntoIterator<Item = T>) -> ice_rpc::Stream<T, String> {
+        crate::from::<T, String, _>(values)
+    }
+
+    /// Builds a local single-value `Stream<T, String>` (test helper).
+    fn single<T>(value: T) -> ice_rpc::Stream<T, String> {
+        crate::of::<T, String>(value)
+    }
 
     /// Drains a poll-based stream to completion.
     async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
@@ -992,6 +1095,11 @@ mod tests {
     {
         futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx))
             .await
+    }
+
+    /// Returns `true` when the event is a terminal technical error.
+    fn is_technical<T, E>(event: &Event<T, E>) -> bool {
+        matches!(event, Event::Error(ObservableError::Technical(_)))
     }
 
     #[test]
@@ -1070,7 +1178,10 @@ mod tests {
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(
+            &events[0],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
         assert!(finalized.load(Ordering::SeqCst));
     }
 
@@ -1114,7 +1225,10 @@ mod tests {
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
-        assert!(matches!(&events[1], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(
+            &events[1],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
@@ -1169,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_error_forwards_rpc_error_unchanged() {
+    fn catch_error_forwards_technical_error_unchanged() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
@@ -1181,12 +1295,15 @@ mod tests {
             -1
         });
 
-        pollster::block_on(tx.send_event(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
+        pollster::block_on(tx.send_event(Event::Error(ObservableError::Technical(
+            ice_rpc::RpcError::Timeout,
+        ))))
+        .unwrap();
         drop(tx);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::RpcError(_)));
+        assert!(is_technical(&events[0]));
         assert!(!called.load(Ordering::SeqCst));
     }
 
@@ -1234,13 +1351,19 @@ mod tests {
         let stream = rx.map(|v| v * 2);
 
         pollster::block_on(tx.send_error("boom".to_string())).unwrap();
-        pollster::block_on(tx.send_event(Event::RpcError(ice_rpc::RpcError::Timeout))).unwrap();
+        pollster::block_on(tx.send_event(Event::Error(ObservableError::Technical(
+            ice_rpc::RpcError::Timeout,
+        ))))
+        .unwrap();
         drop(tx);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
-        assert!(matches!(&events[1], Event::RpcError(_)));
+        assert!(matches!(
+            &events[0],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
+        assert!(is_technical(&events[1]));
     }
 
     #[test]
@@ -1287,12 +1410,15 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
         assert!(matches!(&events[1], Event::Next(v) if *v == 2));
-        assert!(matches!(&events[2], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(
+            &events[2],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
     }
 
     #[test]
     fn first_emits_only_first_value() {
-        let stream = from([1, 2, 3]).first();
+        let stream = local([1, 2, 3]).first();
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
@@ -1302,7 +1428,7 @@ mod tests {
 
     #[test]
     fn first_with_emits_first_matching_value() {
-        let stream = from([1, 2, 3]).first_with(|v| *v >= 2);
+        let stream = local([1, 2, 3]).first_with(|v| *v >= 2);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
@@ -1320,12 +1446,15 @@ mod tests {
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(
+            &events[0],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
     }
 
     #[test]
     fn first_completes_empty_when_no_value() {
-        let stream = from(std::iter::empty::<i32>()).first();
+        let stream = local(std::iter::empty::<i32>()).first();
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
@@ -1334,7 +1463,7 @@ mod tests {
 
     #[test]
     fn first_with_completes_empty_when_no_match() {
-        let stream = from([1, 2, 3]).first_with(|v| *v > 10);
+        let stream = local([1, 2, 3]).first_with(|v| *v > 10);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
@@ -1343,7 +1472,7 @@ mod tests {
 
     #[test]
     fn first_with_matches_single_of_value() {
-        let stream = of(7).first_with(|v| *v > 5);
+        let stream = single(7).first_with(|v| *v > 5);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
@@ -1363,12 +1492,15 @@ mod tests {
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Event::Next(v) if *v == 1));
-        assert!(matches!(&events[1], Event::Error(n) if *n == 4));
+        assert!(matches!(
+            &events[1],
+            Event::Error(ObservableError::Business(n)) if *n == 4
+        ));
     }
 
     #[test]
     fn scan_emits_running_accumulator() {
-        let stream = from([1, 2, 3]).scan(0, |acc, v| acc + v);
+        let stream = local([1, 2, 3]).scan(0, |acc, v| acc + v);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 4);
@@ -1380,7 +1512,7 @@ mod tests {
 
     #[test]
     fn start_with_prefixes_initial_value() {
-        let stream = of(1).start_with(0);
+        let stream = single(1).start_with(0);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 3);
@@ -1391,7 +1523,7 @@ mod tests {
 
     #[test]
     fn skip_drops_leading_values() {
-        let stream = from([1, 2, 3, 4]).skip(2);
+        let stream = local([1, 2, 3, 4]).skip(2);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 3);
@@ -1401,13 +1533,16 @@ mod tests {
     }
 
     #[test]
-    fn timeout_emits_rpc_error_on_silence() {
+    fn timeout_emits_technical_error_on_silence() {
         let (tx, rx) = ice_rpc::channel::<i32, String>(crate::OPERATOR_CHANNEL_CAPACITY);
         let stream = rx.timeout(std::time::Duration::from_millis(20));
 
         let mut stream = Box::pin(stream);
         let event = pollster::block_on(next_event(&mut stream));
-        assert!(matches!(event, Some(Event::RpcError(_))));
+        assert!(matches!(
+            event,
+            Some(Event::Error(ObservableError::Technical(_)))
+        ));
 
         drop(tx);
     }
@@ -1487,7 +1622,10 @@ mod tests {
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::Error(e) if e.as_str() == "boom"));
+        assert!(matches!(
+            &events[0],
+            Event::Error(ObservableError::Business(e)) if e.as_str() == "boom"
+        ));
     }
 
     #[test]
@@ -1523,17 +1661,17 @@ mod tests {
     fn take_until_emits_cancelled_when_token_fires() {
         let token = ice_rpc::CancellationToken::new();
         token.cancel();
-        let stream = from([1, 2, 3]).take_until(&token);
+        let stream = local([1, 2, 3]).take_until(&token);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Event::RpcError(_)));
+        assert!(is_technical(&events[0]));
     }
 
     #[test]
     fn take_until_forwards_values_when_not_cancelled() {
         let token = ice_rpc::CancellationToken::new();
-        let stream = from([1, 2, 3]).take_until(&token);
+        let stream = local([1, 2, 3]).take_until(&token);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 4);

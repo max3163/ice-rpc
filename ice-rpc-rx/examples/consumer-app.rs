@@ -11,15 +11,18 @@
 //! its type — without `register()`, without a registry nor `initialize_all()`
 //! on the consumer side.
 //!
-//! Usage: `cargo run --example consumer-app -- --service context`
+//! Usage:
+//! - `cargo run --example consumer-app -- --service context`
+//! - `cargo run --example consumer-app -- --service notifications`
 
 mod shared;
 
-use ice_rpc::StreamError;
-use ice_rpc_rx::RxStreamExt;
+use ice_rpc::{ObservableError, StreamError};
+use ice_rpc_rx::{from, of, throw_error, Observer, RxStreamExt};
 use shared::{
     ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError,
-    DatabaseService, DatabaseServiceProxy, PersonneInfo, PersonneQuery,
+    DatabaseService, DatabaseServiceProxy, NotificationService, NotificationServiceProxy,
+    PersonneInfo, PersonneQuery,
 };
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -38,6 +41,7 @@ fn fmt_latency(ms: f64) -> String {
 enum ServiceType {
     Database,
     Context,
+    Notifications,
 }
 
 impl ServiceType {
@@ -49,6 +53,9 @@ impl ServiceType {
                 if found {
                     return match arg.as_str() {
                         "context" | "ContextService" => ServiceType::Context,
+                        "notifications" | "Notifications" | "NotificationService" => {
+                            ServiceType::Notifications
+                        }
                         _ => {
                             log::warn!(
                                 "Unknown service '{}', using DatabaseService by default.",
@@ -74,12 +81,10 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
         ($label:expr, $query:expr, $handler:expr) => {{
             log::info!("-> {}", $label);
             let t_send = Instant::now();
-            let result = match $query {
-                Ok(stream) => stream.take_until(cancel).first_value().await,
-                Err(e) => Err(StreamError::Rpc(e)),
-            };
+            let stream = $query;
+            let result = stream.take_until(cancel).first_value().await;
             match result {
-                Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
+                Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
@@ -98,7 +103,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             Ok(age) => log::info!("<- Alice is {} years old  [{}]", age, fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -110,7 +116,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             Ok(age) => log::info!("<- Bob is {} years old  [{}]", age, fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -124,7 +131,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 log::warn!("<- Max not found in database  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -152,7 +160,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -180,7 +189,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -208,7 +218,8 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -223,12 +234,10 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
         ($label:expr, $query:expr, $handler:expr) => {{
             log::info!("-> {}", $label);
             let t_send = Instant::now();
-            let result = match $query {
-                Ok(stream) => stream.take_until(cancel).first_value().await,
-                Err(e) => Err(StreamError::Rpc(e)),
-            };
+            let stream = $query;
+            let result = stream.take_until(cancel).first_value().await;
             match result {
-                Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
+                Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
@@ -249,7 +258,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
                 log::warn!("<- Key 'app.name' not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -265,7 +275,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             ),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -278,7 +289,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             Ok(false) => log::warn!("<- test.key NOT defined  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -292,7 +304,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
                 log::warn!("<- Key 'test.key' not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -305,7 +318,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             Ok(false) => log::warn!("<- test.key did not exist  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -321,7 +335,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             ),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -338,7 +353,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             ),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) =>
                 log::warn!("<- No entry (empty context)  [{}]", fmt_latency(ms)),
         }
@@ -352,7 +368,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             Ok(false) => log::warn!("<- session.user NOT defined  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -380,7 +397,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             Ok(false) => log::warn!("<- large.payload NOT defined  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -398,7 +416,8 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
                 log::warn!("<- Key 'large.payload' not found  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
@@ -411,10 +430,93 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             Ok(false) => log::warn!("<- large.payload did not exist  [{}]", fmt_latency(ms)),
             Err(StreamError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Rpc(e)) => log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
+            Err(StreamError::Technical(e)) =>
+                log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
             Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
+
+    true
+}
+
+/// A hand-written observer: keeps its state and side effects off the callbacks.
+struct NotificationPrinter {
+    received: usize,
+}
+
+impl Observer<u32, String> for NotificationPrinter {
+    fn next(&mut self, value: u32) {
+        self.received += 1;
+        log::info!("  next({}) — {} notification(s)", value, self.received);
+    }
+
+    fn error(&mut self, error: ObservableError<String>) {
+        log::warn!("  error: {}", error);
+    }
+
+    fn complete(&mut self) {
+        log::info!("  complete — {} notification(s) in total", self.received);
+    }
+}
+
+/// Demonstrates the `subscribe` (push) mechanism: first on local sources (no IPC
+/// involved), then on a real streaming RPC.
+///
+/// The two `subscribe` names are involved:
+/// - `Subject::subscribe()` returns a `Stream` (multicast registration);
+/// - `RxStreamExt::subscribe` is the terminal activation: one task pulls the
+///   pipeline and pushes into an `Observer`.
+async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
+    // ── Local sources: no provider needed, same Observer contract ─────
+    log::info!("--- subscribe over local sources (no IPC) ---");
+
+    // A plain closure is used as a value-only observer.
+    let sub = from::<u32, String, _>([1, 2, 3]).subscribe(|v| log::info!("  [from] next {v}"));
+    sub.closed().await; // resolves on Complete
+    log::info!("   closed: {}", sub.is_closed());
+
+    // The business error travels through the `error` callback, not as an `Err`.
+    let sub = throw_error::<u32, String>("nothing to notify".to_string()).subscribe_with(
+        |v| log::info!("  [error] next {v}"),
+        |e| log::warn!("  [error] error: {e}"),
+        || log::info!("  [error] complete"),
+    );
+    sub.closed().await;
+
+    // A hand-written `Observer` implementation.
+    let sub = of::<u32, String>(0).subscribe(NotificationPrinter { received: 0 });
+    sub.closed().await;
+
+    // ── Over ice-rpc ─────────────────────────────────────────────────
+    log::info!("--- subscribe over ice-rpc ---");
+
+    // Single-value call, read in pull mode (one single wire sample).
+    match notif.ping().await.first_value().await {
+        Ok(v) => log::info!("<- ping = {v}"),
+        Err(e) => log::warn!("<- ping failed: {e}"),
+    }
+
+    // A whole stream, subscribed until completion.
+    log::info!("-> watch(5) — subscribing until completion…");
+    let sub = notif.watch(5).await.subscribe_with(
+        |v| log::info!("<- notification {v}"),
+        |e| log::error!("<- error: {e}"),
+        || log::info!("<- complete"),
+    );
+    sub.closed().await;
+    log::info!("   subscription closed: {}", sub.is_closed());
+
+    // Unsubscribe in the middle of a stream: dropping the handle stops the local
+    // task, and the provider's next `send_next` fails, so it stops producing.
+    log::info!("-> watch(10) — unsubscribing after ~350 ms…");
+    let sub = notif
+        .watch(10)
+        .await
+        .subscribe(|v| log::info!("<- early notification {v}"));
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    log::info!("   dropping the Subscription (unsubscribe)");
+    drop(sub);
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     true
 }
@@ -449,6 +551,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match service_type {
         ServiceType::Database => log::info!("=== CONSUMER STARTUP (DatabaseService) ==="),
         ServiceType::Context => log::info!("=== CONSUMER STARTUP (ContextService) ==="),
+        ServiceType::Notifications => {
+            log::info!("=== CONSUMER STARTUP (NotificationService) ===")
+        }
     }
 
     // This process consumes services via locator().get().
@@ -502,6 +607,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(_) => {
                         log::info!("\n--- Relaunching queries ---");
                         if !run_context_queries(&ctx).await {
+                            break;
+                        }
+                        log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
+                    }
+                }
+            }
+        }
+        ServiceType::Notifications => {
+            let notif = ice_rpc::locator()
+                .get::<NotificationServiceProxy>()
+                .await
+                .expect("NotificationService unknown in the registry");
+
+            log::info!("--- Initial execution ---");
+            if !run_notification_demo(&notif).await {
+                return shutdown(&shutdown_guard).await;
+            }
+            log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
+
+            loop {
+                match read_line_or_cancel(&mut reader, cancel).await {
+                    None => break,
+                    Some(_) => {
+                        log::info!("\n--- Relaunching notifications ---");
+                        if !run_notification_demo(&notif).await {
                             break;
                         }
                         log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");

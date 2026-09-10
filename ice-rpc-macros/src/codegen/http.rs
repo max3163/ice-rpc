@@ -128,28 +128,21 @@ fn gen_http_method_arm(method: &HttpMethodData) -> TokenStream {
     quote! {
         #fn_name_str => {
             #deser_block
-            match #call_block {
-                Ok(mut rx) => match rx.recv().await {
-                    Ok(ice_rpc::Event::Next(value)) => {
-                        let data = ice_rpc::serde_json::to_value(&value)
-                            .map_err(|e| format!("Failed to serialize the response: {}", e))?;
-                        Ok(ice_rpc::serde_json::json!({"status":"ok","data":data}))
-                    }
-                    Ok(ice_rpc::Event::Complete) => {
-                        Ok(ice_rpc::serde_json::json!({"status":"ok"}))
-                    }
-                    Ok(ice_rpc::Event::Error(e)) => {
-                        Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
-                    }
-                    Ok(ice_rpc::Event::RpcError(e)) => {
-                        Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
-                    }
-                    Err(_) => {
-                        Err("No response received from the service".to_string())
-                    }
-                },
-                Err(e) => {
-                    Err(format!("IPC error: {}", e))
+            let mut rx = #call_block;
+            match rx.recv().await {
+                Ok(ice_rpc::Event::Next(value)) => {
+                    let data = ice_rpc::serde_json::to_value(&value)
+                        .map_err(|e| format!("Failed to serialize the response: {}", e))?;
+                    Ok(ice_rpc::serde_json::json!({"status":"ok","data":data}))
+                }
+                Ok(ice_rpc::Event::Complete) => {
+                    Ok(ice_rpc::serde_json::json!({"status":"ok"}))
+                }
+                Ok(ice_rpc::Event::Error(e)) => {
+                    Ok(ice_rpc::serde_json::json!({"status":"error","error":e.to_string()}))
+                }
+                Err(_) => {
+                    Err("No response received from the service".to_string())
                 }
             }
         }

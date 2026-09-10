@@ -97,7 +97,7 @@ impl MyService for MyServiceImpl {
         ice_rpc::rt::spawn(async move {
             let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
         });
-        Ok(rx)
+        rx // a service returns the observable itself
     }
 }
 
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get::<MyServiceProxy>().await
         .expect("MyService unknown");
 
-    let response: String = proxy.hello("Alice".into()).await?.first_value().await?;
+    let response: String = proxy.hello("Alice".into()).await.first_value().await?;
     println!("Response: {}", response);
 
     guard.shutdown().await;
@@ -135,8 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Concept | Description |
 |---|---|
 | `NodeId` | Process identity (PID), unique across the machine. |
-| `Observable<T, E>` | RPC stream: `Result<Receiver<Event<T, E>>, RpcError>`. |
-| `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(E)` / `RpcError(RpcError)`. |
+| `Observable<T, E>` | Alias of `Stream<T, E>`: the composable flux, and the return type of service methods (no `Result`). |
+| `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
+| `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
 | `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
 | `ServiceLocator` | Global registry, dependency resolution and initialization. |
 | `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
@@ -144,15 +145,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Consumption
 
-Consuming the first value of a stream is done natively on `ice_rpc::Stream`:
+Consuming a stream is done natively on `ice_rpc::Stream`; a call never fails at
+the call site — a discovery/transport failure becomes an in-stream technical
+error:
 
 ```rust,ignore
-let value = proxy.hello("Alice".into()).await?.first_value().await?;
+let value = proxy.hello("Alice".into()).await.first_value().await?;
+let all   = proxy.list().await.collect().await?; // Vec<T>
 ```
 
-- `#[timeout("30s")]` on a method sets the service-location timeout (default `RPC_CALL_TIMEOUT_SECS` = 30s).
+- `first_value() -> Result<T, StreamError<E>>` (`Empty` when the stream completes
+  without a value);
+- `collect() -> Result<Vec<T>, ObservableError<E>>`;
+- `#[service(..., discovery_timeout = "5s")]` sets the **service-wide** provider-lookup deadline (default `RPC_CALL_TIMEOUT_SECS` = 30s). It bounds the *discovery* phase only; use the `timeout` operator to bound the response wait.
 
 ## Error semantics
+
+Errors travel **inside** the flux. `Event::Error(ObservableError<E>)` carries
+either a business error (`Business(E)`) or a technical one
+(`Technical(RpcError)`), so a single `match` detects a failure and the caller
+refines with the two variants.
 
 `RpcError` classifies technical failures so callers can choose a policy
 (`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types.rs:333).

@@ -101,7 +101,9 @@ pub struct ClientMethodGenInput<'a> {
     pub err_type: &'a Type,
     pub req_enum_name: &'a Ident,
     pub logical_name: &'a str,
-    pub timeout_secs: Option<u64>,
+    /// Discovery timeout in seconds, shared by every method of the service
+    /// (set once via `#[service(..., discovery_timeout = "5s")]`).
+    pub discovery_timeout_secs: Option<u64>,
     pub service_version: u16,
 }
 
@@ -115,11 +117,11 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let err_type = input.err_type;
     let req_enum_name = input.req_enum_name;
     let logical_name = input.logical_name;
-    let timeout_secs = input.timeout_secs;
     let service_version = input.service_version;
 
     let method_name_str = fn_name.to_string();
-    let locate_timeout = timeout_secs.unwrap_or(30); // RPC_CALL_TIMEOUT_SECS default
+    // Service-wide discovery deadline; mirrors `RPC_CALL_TIMEOUT_SECS` (30s).
+    let locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
 
     // Response handler.
     let handler_body: TokenStream = quote! {
@@ -145,17 +147,23 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                             let _ = tx.try_send_error(e);
                         }
                         Ok(ice_rpc::WireEvent::RpcError(e)) => {
-                            let _ = tx.try_send_event(ice_rpc::Event::RpcError(e));
+                            let _ = tx.try_send_event(ice_rpc::Event::Error(
+                                ice_rpc::ObservableError::Technical(e)
+                            ));
                         }
                         Err(_) => {
-                            let _ = tx.try_send_event(ice_rpc::Event::RpcError(
-                                ice_rpc::RpcError::SerializationError
+                            let _ = tx.try_send_event(ice_rpc::Event::Error(
+                                ice_rpc::ObservableError::Technical(
+                                    ice_rpc::RpcError::SerializationError
+                                )
                             ));
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.try_send_event(ice_rpc::Event::RpcError(e));
+                    let _ = tx.try_send_event(ice_rpc::Event::Error(
+                        ice_rpc::ObservableError::Technical(e)
+                    ));
                 }
             }
         })
@@ -164,17 +172,26 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     // ── Single method body ──────────────────────────────────────────
     quote! {
         #visibility async fn #fn_name(&self, #(#arg_names: #arg_types),*)
-            -> Result<ice_rpc::Stream<#ok_type, #err_type>, ice_rpc::RpcError>
+            -> ice_rpc::Observable<#ok_type, #err_type>
         {
             let req_val = #req_enum_name::#var_name { #(#arg_names),* };
 
-            let bytes = ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&req_val)
-                .map_err(|_| ice_rpc::RpcError::SerializationError)?;
+            let bytes = match ice_rpc::rkyv::to_bytes::<ice_rpc::rkyv::rancor::Error>(&req_val) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return ice_rpc::Stream::from_technical_error(
+                        ice_rpc::RpcError::SerializationError,
+                    );
+                }
+            };
 
             // ── IPC call ─────────────────────────────────────────────
             let svc_name = #logical_name;
 
-            let target_node = self.core.resolve_target(svc_name, #locate_timeout).await?;
+            let target_node = match self.core.resolve_target(svc_name, #locate_timeout).await {
+                Ok(node) => node,
+                Err(e) => return ice_rpc::Stream::from_technical_error(e),
+            };
 
             let rpc_header = ice_rpc::RpcHeader::request(
                 svc_name,
@@ -205,10 +222,10 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
             if let Err(e) = hub.send_to_node(target_node, rpc_header, &bytes) {
                 hub.remove_response_handler(&correlation_id);
-                return Err(e);
+                return ice_rpc::Stream::from_technical_error(e);
             }
 
-            Ok(rx)
+            rx
         }
     }
 }

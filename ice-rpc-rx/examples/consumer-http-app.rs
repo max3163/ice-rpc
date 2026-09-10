@@ -112,13 +112,11 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
     let t_send = Instant::now();
 
-    let result = match http.send_request(request).await {
-        Ok(stream) => stream.take_until(cancel).first_value().await,
-        Err(e) => Err(StreamError::Rpc(e)),
-    };
+    let stream = http.send_request(request).await;
+    let result = stream.take_until(cancel).first_value().await;
 
     match result {
-        Err(StreamError::Rpc(ice_rpc::RpcError::Cancelled)) => {
+        Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
             log::info!("   (cancelled by Ctrl+C)");
             false
         }
@@ -178,7 +176,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Err(StreamError::Rpc(e)) => {
+        Err(StreamError::Technical(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] IPC error: {}  [{}]",

@@ -17,16 +17,6 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
 
-/// `#[timeout("30s")]` attribute for service trait methods.
-///
-/// Defines a custom timeout (in seconds) for locating the service
-/// before the first RPC call. Defaults to
-/// `ice_rpc::RPC_CALL_TIMEOUT_SECS` (30s) when omitted.
-#[proc_macro_attribute]
-pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
 use crate::codegen::{
     client::{
         gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
@@ -49,12 +39,17 @@ use crate::codegen::{
 /// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
 ///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
-/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2)]` → all.
+/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline for
+///   locating the provider before the first call (default:
+///   `ice_rpc::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
+///   suffixes. It bounds the *discovery* phase only, never the response wait.
+/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
     allow_large_payload: bool,
     default_size_message_kb: Option<u64>,
     service_version: u16,
+    discovery_timeout_secs: Option<u64>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -63,6 +58,7 @@ impl syn::parse::Parse for ServiceAttr {
         let mut allow_large_payload = false;
         let mut default_size_message_kb: Option<u64> = None;
         let mut service_version: u16 = 1;
+        let mut discovery_timeout_secs: Option<u64> = None;
 
         if input.is_empty() {
             return Ok(Self {
@@ -70,6 +66,7 @@ impl syn::parse::Parse for ServiceAttr {
                 allow_large_payload: false,
                 default_size_message_kb: None,
                 service_version,
+                discovery_timeout_secs: None,
             });
         }
 
@@ -91,6 +88,16 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
+                } else if ident == "discovery_timeout" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitStr = input.parse()?;
+                    discovery_timeout_secs =
+                        Some(parse_duration_str(&lit.value()).ok_or_else(|| {
+                            syn::Error::new(
+                                lit.span(),
+                                "invalid duration; expected forms like \"30s\", \"5m\" or \"1h\"",
+                            )
+                        })?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -110,36 +117,14 @@ impl syn::parse::Parse for ServiceAttr {
             allow_large_payload,
             default_size_message_kb,
             service_version,
+            discovery_timeout_secs,
         })
     }
 }
 
-/// Parses `#[timeout("30s")]` and returns the duration in seconds.
-fn parse_timeout_attr(attrs: &[syn::Attribute]) -> Option<u64> {
-    for attr in attrs {
-        if !attr.path().is_ident("timeout") {
-            continue;
-        }
-        if let Ok(syn::Meta::NameValue(nv)) = attr.parse_args::<syn::Meta>() {
-            if nv.path.is_ident("ttl") {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = nv.value
-                {
-                    return parse_duration_str(&lit_str.value());
-                }
-            }
-        }
-        // Also supports #[timeout("30s")] without ttl=
-        if let Ok(lit_str) = attr.parse_args::<syn::LitStr>() {
-            return parse_duration_str(&lit_str.value());
-        }
-    }
-    None
-}
-
-/// Parses a duration string like "60s", "5m", "1h" into seconds.
+/// Parses a duration string like `"60s"`, `"5m"`, `"1h"` into seconds.
+///
+/// Used by the `discovery_timeout` parameter of `#[service]`.
 fn parse_duration_str(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Some(rest) = s.strip_suffix('s') {
@@ -195,6 +180,15 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
 /// `#[service]` attribute macro: generates the Proxy, Client, Server, and the
 /// lifecycle code for an RPC service trait.
 ///
+/// # Parameters
+///
+/// `"LogicalName"`, `allow_large_payload`, `default_size_message` (KiB),
+/// `version` and `discovery_timeout` (duration string such as `"5s"`, `"2m"`,
+/// `"1h"`). The discovery timeout is **service-wide**: it bounds the provider
+/// lookup performed by `ClientCore::resolve_target` for every method of the
+/// service. It does not bound the response wait — use the `timeout` operator
+/// (provider-side `ice-rpc-rx`) for that.
+///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
 /// - The `{Trait}Request` enum (rkyv-serializable)
@@ -226,6 +220,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let allow_large_payload = service_attr.allow_large_payload;
     let default_size_message_kb = service_attr.default_size_message_kb;
     let service_version = service_attr.service_version;
+    // Discovery timeout is a *service-wide* setting: every method of the
+    // service shares the same provider-lookup deadline.
+    let discovery_timeout_secs = service_attr.discovery_timeout_secs;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -337,9 +334,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let (ok_type, err_type) = extract_rpc_result_types(&output_type);
 
-            // Extracts the custom timeout.
-            let timeout_secs = parse_timeout_attr(&method.attrs);
-
             req_variants.push(quote! {
                 #var_name { #(#arg_names: #arg_types),* } = #variant_discriminant
             });
@@ -355,7 +349,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 err_type: &err_type,
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
-                timeout_secs,
+                discovery_timeout_secs,
                 service_version,
             }));
 

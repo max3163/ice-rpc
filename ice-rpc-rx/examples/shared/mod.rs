@@ -12,7 +12,7 @@
 // the examples never enable.
 #![allow(dead_code)]
 
-use ice_rpc::{service, timeout, Observable};
+use ice_rpc::{service, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
 
 // ── ConfigService ───────────────────────────────────────────────────
@@ -136,10 +136,9 @@ pub struct PersonneInfo {
 }
 
 /// Business query service over a database.
-#[service("DatabaseService")]
+#[service("DatabaseService", discovery_timeout = "10s")]
 pub trait DatabaseService {
     /// Returns the age associated with a person's name.
-    #[timeout("10s")]
     async fn get_user_age(&self, name: String) -> Observable<i32, DatabaseError>;
 
     /// Returns the full information of a person.
@@ -212,4 +211,24 @@ pub trait HttpService {
         &self,
         request: HttpRequestParams,
     ) -> Observable<HttpResponseParams, HttpError>;
+}
+
+// ── NotificationService ─────────────────────────────────────────────
+//
+// Demonstration of the `subscribe` (push) mechanism: a service that streams
+// several values to its consumer, which is exactly what `subscribe` is for.
+
+/// Streams notifications to whoever subscribes to `watch`.
+#[service("NotificationService", discovery_timeout = "5s")]
+pub trait NotificationService {
+    /// Emits `count` notifications, one every 100 ms, then completes.
+    ///
+    /// This is a **multi-value** stream: on the wire each value travels as its
+    /// own sample, followed by a terminal `Complete`.
+    async fn watch(&self, count: u32) -> Observable<u32, String>;
+
+    /// Single-value health check.
+    ///
+    /// Implemented with `of(value)`, so it travels as **one** wire sample.
+    async fn ping(&self) -> Observable<u32, String>;
 }

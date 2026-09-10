@@ -84,10 +84,8 @@ struct CalcImpl;
 #[async_trait::async_trait]
 impl Calculator for CalcImpl {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
-        let (tx, rx) = ice_rpc::channel::<i32, String>(1);
-        tx.send_next(a + b).await.ok();
-        drop(tx);
-        Ok(rx)
+        // Channel-free single-value response.
+        ice_rpc::Stream::from_events([ice_rpc::Event::Next(a + b), ice_rpc::Event::Complete])
     }
 }
 
@@ -208,4 +206,50 @@ pub trait VersionedService: Send + Sync + 'static {
 fn test_versioned_service_compiles() {
     let client = VersionedServiceClient::new();
     let _ = &client;
+}
+
+// -----------------------------------------------------------------------------
+// Test 10: #[service(discovery_timeout = "5s")] — service-wide parameter
+// -----------------------------------------------------------------------------
+
+#[service("DiscoveryTimeoutService", discovery_timeout = "5s")]
+#[async_trait::async_trait]
+pub trait DiscoveryTimeoutService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+
+    async fn other(&self, value: i32) -> Observable<i32, String>;
+}
+
+#[service(
+    "AllParamsService",
+    allow_large_payload = true,
+    default_size_message = 4,
+    version = 3,
+    discovery_timeout = "2m"
+)]
+#[async_trait::async_trait]
+pub trait AllParamsService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[service("HourTimeoutService", discovery_timeout = "1h")]
+#[async_trait::async_trait]
+pub trait HourTimeoutService: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[test]
+fn test_discovery_timeout_parameter_compiles() {
+    // The discovery timeout is declared once for the whole service: both
+    // methods share it.
+    let client = DiscoveryTimeoutServiceClient::new();
+    let _ = &client;
+
+    // All the `#[service]` parameters coexist.
+    let all = AllParamsServiceClient::new();
+    let _ = &all;
+
+    // The `s`, `m` and `h` duration suffixes are accepted.
+    let hour = HourTimeoutServiceClient::new();
+    let _ = &hour;
 }

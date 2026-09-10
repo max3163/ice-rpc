@@ -73,15 +73,13 @@ impl StateServiceImpl {
 #[async_trait::async_trait]
 impl StateService for StateServiceImpl {
     async fn get_state(&self) -> Observable<Status, String> {
-        Ok(self.state.subscribe().await)
+        self.state.subscribe().await
     }
 
     async fn set_state(&self, status: Status) -> Observable<(), String> {
         self.subject.next(status).await;
-        // Acknowledge with a single terminal value.
-        let (tx, rx) = ice_rpc::channel::<(), String>(1);
-        let _ = tx.try_send_complete_with(());
-        Ok(rx)
+        // Acknowledge with a single terminal value (channel-free source).
+        ice_rpc_rx::of(())
     }
 }
 
@@ -90,7 +88,7 @@ async fn run_provider() {
     let impl_ = StateServiceImpl::new().await;
 
     // The provider subscribes to its own state and is notified of changes.
-    let rx = impl_.get_state().await.expect("subscribe failed");
+    let mut rx = impl_.get_state().await;
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             if let ice_rpc::Event::Next(status) = event {
@@ -113,7 +111,7 @@ async fn run_consumer() {
         .expect("StateService unknown");
 
     // Program A subscribes to state notifications.
-    let rx = proxy.get_state().await.expect("get_state failed");
+    let mut rx = proxy.get_state().await;
     tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             if let ice_rpc::Event::Next(status) = event {
@@ -128,9 +126,8 @@ async fn run_consumer() {
     // Program A sends new states and is notified of each change.
     for status in [Status::Ok, Status::Nok, Status::Nc, Status::Ok] {
         println!("[consumer] set_state({:?})", status);
-        if let Ok(rx) = proxy.set_state(status).await {
-            let _ = rx.first_value().await;
-        }
+        let rx = proxy.set_state(status).await;
+        let _ = rx.first_value().await;
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
 

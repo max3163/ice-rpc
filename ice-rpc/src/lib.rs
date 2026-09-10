@@ -44,7 +44,7 @@
 //!         ice_rpc::rt::spawn(async move {
 //!             let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
 //!         });
-//!         Ok(rx)
+//!         rx // no Result: a service returns the observable itself
 //!     }
 //! }
 //!
@@ -90,7 +90,7 @@
 //!         .get::<MyServiceProxy>().await
 //!         .expect("MyService unknown");
 //!
-//!     let response = proxy.hello("Alice".into()).await?.first_value().await?;
+//!     let response = proxy.hello("Alice".into()).await.first_value().await?;
 //!     log::info!("Response: {}", response);
 //!
 //!     // Clean shutdown: wait for IPC threads, release the iceoryx2 node.
@@ -114,7 +114,9 @@
 //!
 //! - **Service** : Rust trait annotated with `#[service("Name")]` defining RPC methods
 //! - **Node** : process hosting one or more services, identified by its PID
-//! - **Observable** : RPC event stream (`Next` / `Complete` / `Error` / `RpcError`)
+//! - **Observable** : alias of `Stream<T, E>`; emits `Next` / `Complete` /
+//!   `Error(ObservableError)` where the error is either business (`E`) or
+//!   technical (`RpcError`)
 //! - **NodeHub** : central communication hub managing the IPC publishers/subscribers
 //! - **ServiceLocator** : service registry with dependency resolution and topological sort
 //! - **NodeDiscovery** : local service→NodeId cache, initial discovery + Event-based updates
@@ -138,7 +140,7 @@
 //! | `macros` | `try_or_log!` utility |
 
 pub use base64;
-pub use ice_rpc_macros::{service, timeout};
+pub use ice_rpc_macros::service;
 pub use iceoryx2;
 pub use log;
 pub use rkyv;
@@ -185,11 +187,11 @@ pub use service_traits::{
 // ── Public API: fundamental types ──────────────────────────────────
 pub use types::{
     caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, Event, EventKind,
-    NodeId, Observable, RpcError, RpcHeader, Sender, StaticString, Stream, StreamError, WireEvent,
-    BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
-    INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN, PROTOCOL_VERSION,
-    PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS,
-    SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
+    NodeId, Observable, ObservableError, RpcError, RpcHeader, Sender, StaticString, Stream,
+    StreamError, WireEvent, BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE,
+    INITIALIZE_ALL_TIMEOUT_SECS, INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN,
+    PROTOCOL_VERSION, PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN,
+    RPC_CALL_TIMEOUT_SECS, SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
 };
 
 // ── Public API: configuration ───────────────────────────────────────

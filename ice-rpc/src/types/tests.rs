@@ -623,3 +623,49 @@ fn try_clone_returns_none_for_a_boxed_pipeline() {
     let boxed = Observable::<i32, String>::from_stream(inner);
     assert!(boxed.try_clone().is_none());
 }
+
+/// C14: the cleanup must wait for the *last* handle (cloned channels).
+#[test]
+fn on_drop_cleanup_fires_once_when_last_handle_is_dropped() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (_tx, rx) = unbounded_channel::<i32, String>();
+    let hits_cb = hits.clone();
+    let rx = rx.with_on_drop(move || {
+        hits_cb.fetch_add(1, Ordering::SeqCst);
+    });
+    let clone = rx
+        .try_clone()
+        .expect("a channel-backed observable is clonable");
+
+    drop(rx);
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "cleanup must wait for the last handle"
+    );
+
+    drop(clone);
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "cleanup must run exactly once"
+    );
+}
+
+/// C14: dropping a stream the provider never answered still cleans up.
+#[test]
+fn on_drop_cleanup_fires_for_an_abandoned_stream() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let fired = Arc::new(AtomicBool::new(false));
+    let (_tx, rx) = unbounded_channel::<i32, String>();
+    let fired_cb = fired.clone();
+    let rx = rx.with_on_drop(move || fired_cb.store(true, Ordering::SeqCst));
+
+    drop(rx);
+    assert!(fired.load(Ordering::SeqCst));
+}

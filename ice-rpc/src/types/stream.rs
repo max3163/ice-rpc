@@ -46,6 +46,31 @@ pin_project_lite::pin_project! {
     }
 }
 
+/// Shared token whose `Drop` fires the cleanup exactly once, when the **last**
+/// handle holding it disappears.
+///
+/// The callback lives inside the token, so reference counting does the
+/// "last clone" arbitration for free: `try_clone` shares the same `Arc` and the
+/// callback runs only when that `Arc`'s count reaches zero.
+struct OnDropToken(Box<dyn Fn() + Send + Sync + 'static>);
+
+impl Drop for OnDropToken {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
+/// Fires a cleanup callback exactly once, when the last [`Observable`] handle
+/// is dropped.
+///
+/// This is what turns "the consumer abandoned the stream" into an O(1) hub
+/// cleanup — no scan, no lock on the dispatch path (audit C14).
+// The field is never read: its purpose is to *own* the token so that its `Drop`
+// runs. `allow(dead_code)` is therefore intentional.
+#[allow(dead_code)]
+#[derive(Clone, Default)]
+struct OnDropCleanup(Option<std::sync::Arc<OnDropToken>>);
+
 pin_project_lite::pin_project! {
     /// Consumer-side receiver of RPC events.
     ///
@@ -67,6 +92,8 @@ pin_project_lite::pin_project! {
     pub struct Observable<T, E> {
         #[pin]
         inner: StreamInner<T, E>,
+        // Not pinned: dropping it fires the abandoned-call cleanup (C14).
+        on_drop: OnDropCleanup,
     }
 }
 
@@ -98,7 +125,21 @@ impl<T, E> Observable<T, E> {
             },
             StreamInner::Boxed { .. } => return None,
         };
-        Some(Self { inner })
+        Some(Self {
+            inner,
+            on_drop: self.on_drop.clone(),
+        })
+    }
+
+    /// Attaches a cleanup callback fired when the last handle is dropped.
+    ///
+    /// Used by the generated client to release the hub entry of a call the
+    /// consumer abandoned (`timeout`, `first_value()`, `take(1)`, early return,
+    /// `switch_map`, …) without scanning the hub tables (audit C14).
+    #[doc(hidden)]
+    pub fn with_on_drop(mut self, cleanup: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_drop = OnDropCleanup(Some(std::sync::Arc::new(OnDropToken(Box::new(cleanup)))));
+        self
     }
 
     /// Builds a pure, channel-free observable from an already-computed event
@@ -113,6 +154,7 @@ impl<T, E> Observable<T, E> {
             inner: StreamInner::Buffered {
                 queue: events.into_iter().collect(),
             },
+            on_drop: OnDropCleanup(None),
         }
     }
 
@@ -159,6 +201,7 @@ impl<T, E> Observable<T, E> {
                 stream: Box::pin(stream),
                 pending: None,
             },
+            on_drop: OnDropCleanup(None),
         }
     }
 
@@ -453,6 +496,30 @@ pub fn channel<T, E>(capacity: usize) -> (Sender<T, E>, Observable<T, E>) {
                 rx,
                 pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
             },
+            on_drop: OnDropCleanup(None),
+        },
+    )
+}
+
+/// Creates an **unbounded** channel of RPC events.
+///
+/// Used for the per-call response path. The dispatch loop delivers responses
+/// from a synchronous callback and therefore cannot apply backpressure
+/// (`send().await`); a bounded channel would turn a slow consumer into a
+/// **silent** loss (audit C3a/C3b). An unbounded channel removes the loss
+/// point entirely, and the `Drop` cleanup attached by the generated client
+/// (audit C14) frees the queue and the hub entry as soon as the last handle of
+/// the stream is dropped.
+pub fn unbounded_channel<T, E>() -> (Sender<T, E>, Observable<T, E>) {
+    let (tx, rx) = async_channel::unbounded::<WireEvent<T, E>>();
+    (
+        Sender { inner: tx },
+        Observable {
+            inner: StreamInner::Channel {
+                rx,
+                pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            },
+            on_drop: OnDropCleanup(None),
         },
     )
 }

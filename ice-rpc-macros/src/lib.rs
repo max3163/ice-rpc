@@ -381,6 +381,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &arg_names,
                 &req_enum_name,
                 service_version,
+                (&*ok_type, &*err_type),
             ));
 
             node_methods.push(gen_proxy_method(

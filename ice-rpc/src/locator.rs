@@ -115,8 +115,8 @@ impl ServiceLocator {
         // the global lock) has to announce its own death. A pure consumer has
         // nothing to announce and must not try to create a notifier during
         // teardown.
-        let was_provider = crate::node_lock::has_global_node_lock();
-        crate::node_lock::release_global_node_lock();
+        let was_provider = crate::node_liveness::is_provider();
+        crate::node_liveness::clear_provider();
         if was_provider {
             announce_dead_node(std::process::id());
         }
@@ -155,8 +155,8 @@ impl ServiceLocator {
     /// to short-circuit dependencies already satisfied by a Provider
     /// started in another process.
     ///
-    /// each service is validated via `is_node_alive(lock_name)` before being
-    /// included in the result.
+    /// each service is validated via iceoryx2's native node liveness before
+    /// being included in the result.
     pub fn discover_active_ipc_services() -> Vec<String> {
         Self::global().node_discovery().discover_live_services()
     }

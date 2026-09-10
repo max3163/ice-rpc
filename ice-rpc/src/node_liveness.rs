@@ -1,0 +1,274 @@
+//! Node liveness through iceoryx2's native node monitoring.
+//!
+//! # Why
+//!
+//! The previous implementation (`node_lock.rs`) held a homemade kernel lock
+//! (`flock` / Win32 `CreateMutexA`) purely as a liveness beacon. iceoryx2 already
+//! provides that exact mechanism: `<ipc_threadsafe::Service as Service>::Monitoring`
+//! is `FileLockMonitoring`, i.e. a file lock released by the OS on crash
+//! (`iceoryx2_bb_posix::process_state`). `Node::list` exposes it as
+//! [`NodeState::Alive`] / [`NodeState::Dead`], and `UniqueNodeId::pid()` maps a
+//! node back to the process — which is exactly ice-rpc's [`NodeId`].
+//!
+//! # Design
+//!
+//! `Node::list` costs ~680 µs per call (measured, see
+//! `plans/c7-node-lock-validation.md`) versus ~3 µs for a bare `flock`, so it
+//! must **not** be called per watched node. This module keeps a single set of
+//! watched PIDs and a **single** background poller that performs one
+//! `Node::list` per tick for all of them.
+//!
+//! Detection is triggered only on an explicit [`NodeState::Dead`]: a clean
+//! shutdown makes the node disappear (`DoesNotExist`), which must not be
+//! reported as a crash.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use iceoryx2::prelude::*;
+
+use crate::types::NodeId;
+
+/// Polling interval of the liveness poller (ms).
+///
+/// `Node::list` is ~250× the cost of the former `flock` check (~475–680 µs
+/// versus ~3 µs) and perturbs the shared-memory notifier path if called too
+/// often. Measured on the `blast` benchmark: at 100 ms it tips iceoryx2 into a
+/// notifier warning spiral and the `blast` p50 collapses; at 250–500 ms the
+/// benchmark stays within its reference noise. Detection latency is bounded by
+/// this interval, and 500 ms matches the reconnection manager cadence
+/// (`INIT_RETRY_INTERVAL_MS`).
+pub const LIVENESS_POLL_MS: u64 = 500;
+
+/// Effective poll interval, overridable with `ICE_RPC_LIVENESS_POLL_MS`
+/// (ops tuning and A/B measurements).
+fn poll_interval_ms() -> u64 {
+    std::env::var("ICE_RPC_LIVENESS_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(LIVENESS_POLL_MS)
+}
+
+// ---------------------------------------------------------------------------
+// Provider marker
+// ---------------------------------------------------------------------------
+
+static IS_PROVIDER: AtomicBool = AtomicBool::new(false);
+
+/// Marks this process as a discovery provider.
+///
+/// Called when the node Blackboard is published. Replaces the former
+/// `acquire_global_node_lock()`: the iceoryx2 [`Node`] created at init already
+/// holds the native monitoring token, so no extra lock is needed.
+pub fn mark_provider() {
+    IS_PROVIDER.store(true, Ordering::Relaxed);
+}
+
+/// Returns `true` when this process published a discovery registry.
+pub fn is_provider() -> bool {
+    IS_PROVIDER.load(Ordering::Relaxed)
+}
+
+/// Clears the provider marker (clean shutdown).
+pub fn clear_provider() {
+    IS_PROVIDER.store(false, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Native liveness
+// ---------------------------------------------------------------------------
+
+/// Returns the set of PIDs owning at least one **alive** iceoryx2 node.
+///
+/// Returns `None` when `Node::list` itself fails, so callers can distinguish
+/// "no node is alive" from "could not tell" (and never fire a spurious death).
+pub fn alive_pids() -> Option<HashSet<u32>> {
+    let config = crate::config::build_iceoryx2_config();
+    let mut pids = HashSet::new();
+
+    let result = Node::<ipc_threadsafe::Service>::list(&config, |state| {
+        if matches!(state, NodeState::Alive(_)) {
+            pids.insert(state.node_id().pid().value() as u32);
+        }
+        CallbackProgression::Continue
+    });
+
+    match result {
+        Ok(()) => Some(pids),
+        Err(e) => {
+            log::warn!("[node_liveness] Node::list failed: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Returns `true` when the given PID owns an alive iceoryx2 node.
+///
+/// Conservative on error: an inconclusive scan reports the node as alive, so
+/// that a monitoring failure never triggers a false crash.
+pub fn is_pid_alive(pid: u32) -> bool {
+    alive_pids().map(|pids| pids.contains(&pid)).unwrap_or(true)
+}
+
+// ---------------------------------------------------------------------------
+// Watcher registry and unique poller
+// ---------------------------------------------------------------------------
+
+fn watched_registry() -> &'static Mutex<HashMap<u32, ()>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u32, ()>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn poller_started() -> &'static OnceLock<()> {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    &STARTED
+}
+
+/// Registers a remote node for crash detection.
+///
+/// Idempotent. Starts the unique poller on first use. A node equal to the
+/// current process is ignored (a process cannot watch itself).
+pub fn register_node_liveness_watcher(node_id: NodeId) {
+    if node_id == NodeId::current() {
+        return;
+    }
+    crate::sync::lock(watched_registry()).insert(node_id.0, ());
+    ensure_poller();
+}
+
+/// Removes a remote node from crash detection.
+pub fn unregister_node_liveness_watcher(node_id: NodeId) {
+    crate::sync::lock(watched_registry()).remove(&node_id.0);
+}
+
+/// Returns the number of currently watched nodes (tests).
+#[cfg(test)]
+pub fn watched_count() -> usize {
+    crate::sync::lock(watched_registry()).len()
+}
+
+fn ensure_poller() {
+    poller_started().get_or_init(|| {
+        let handle = crate::rt::spawn_blocking(poller_loop);
+        crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
+    });
+}
+
+/// Single polling loop: one `Node::list` per tick for every watched node.
+fn poller_loop() {
+    let cancel = crate::global_cancel_token().clone();
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let watched: Vec<u32> = crate::sync::lock(watched_registry())
+            .keys()
+            .copied()
+            .collect();
+
+        if !watched.is_empty() {
+            if let Some(alive) = alive_pids() {
+                for pid in watched {
+                    if alive.contains(&pid) {
+                        continue;
+                    }
+                    // The node is gone. Only an explicit `Dead` counts as a
+                    // crash; a clean shutdown removes the node entirely, but
+                    // `alive_pids()` cannot tell them apart once absent. We
+                    // therefore confirm with a targeted state query.
+                    if !is_confirmed_dead(pid) {
+                        continue;
+                    }
+
+                    log::warn!("[node_liveness] CRASH DETECTED for Node {}", pid);
+                    crate::sync::lock(watched_registry()).remove(&pid);
+                    crate::locator::ServiceLocator::global()
+                        .node_discovery()
+                        .invalidate_node_services(NodeId(pid));
+                    crate::node_supervisor::fire(pid);
+                }
+            }
+        }
+
+        // Interruptible sleep so shutdown is honoured promptly.
+        let slices = (poll_interval_ms() / 100).max(1);
+        for _ in 0..slices {
+            if cancel.is_cancelled() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Confirms that a watched node is really gone.
+///
+/// `alive_pids()` only reports `Alive` nodes, so a missing PID means the node
+/// either **crashed** (listed as `Dead` — the OS released its monitoring lock)
+/// or **shut down cleanly** (its resources were removed, so it is not listed at
+/// all). Both must trigger the reconnection: requiring a `Dead` state alone
+/// missed clean shutdowns, which is why a stopped provider was only noticed
+/// once a new one started.
+///
+/// `Inaccessible` / `Undefined` (permissions or a transient inconsistency) are
+/// treated as inconclusive and retried on the next tick.
+fn is_confirmed_dead(pid: u32) -> bool {
+    let config = crate::config::build_iceoryx2_config();
+    let mut found = false;
+    let mut crashed = false;
+
+    let result = Node::<ipc_threadsafe::Service>::list(&config, |state| {
+        if state.node_id().pid().value() as u32 != pid {
+            return CallbackProgression::Continue;
+        }
+        found = true;
+        crashed = matches!(state, NodeState::Dead(_));
+        CallbackProgression::Stop
+    });
+
+    if result.is_err() {
+        // Inconclusive: never declare a death on a failed scan.
+        return false;
+    }
+    // `Dead` = crash; not found = clean shutdown (resources removed).
+    crashed || !found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_marker_roundtrip() {
+        assert!(!is_provider());
+        mark_provider();
+        assert!(is_provider());
+        clear_provider();
+        assert!(!is_provider());
+    }
+
+    #[test]
+    fn register_and_unregister_are_tracked() {
+        let fake = NodeId(0x0D1E_0001);
+        assert_ne!(fake, NodeId::current());
+
+        unregister_node_liveness_watcher(fake);
+        let before = watched_count();
+        register_node_liveness_watcher(fake);
+        assert!(watched_count() > before);
+        unregister_node_liveness_watcher(fake);
+        assert_eq!(watched_count(), before);
+    }
+
+    #[test]
+    fn a_process_never_watches_itself() {
+        let before = watched_count();
+        register_node_liveness_watcher(NodeId::current());
+        assert_eq!(watched_count(), before);
+    }
+}

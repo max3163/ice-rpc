@@ -122,7 +122,7 @@
 //! | `registry_notify` | Event notifications: carries the NodeId via `EventId` |
 //! | `registry_listener` | WaitSet loop: receives the Events, updates the cache, cleans dead nodes |
 //! | `node_supervisor` | Node supervisor: broadcasts node death to subscribed clients |
-//! | `node_lock` | Cross-platform kernel named lock (Windows Mutex / Unix flock) |
+//! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
 //! | `client_core` | Shared consumer state: ConnectionState machine, `resolve_target`, reconnection callback, client bootstrap |
 //! | `gen` | Internal contract for the generated code and `ice-rpc-rx`: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 //! | `macros` | `try_or_log!` — internal helper (not exported) |
@@ -140,7 +140,7 @@ mod hub;
 mod locator;
 mod macros;
 mod node_discovery;
-mod node_lock;
+mod node_liveness;
 mod node_supervisor;
 mod reconnect_manager;
 mod registry_listener;

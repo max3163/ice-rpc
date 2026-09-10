@@ -93,11 +93,12 @@ pub fn clear_registry_writers() {
 ///
 /// Called ONLY ONCE after the initialization of all services.
 pub fn create_node_blackboard(node_id: u32, service_names: &[String]) {
-    // Acquires the kernel lock for crash detection.
-    match crate::node_lock::acquire_global_node_lock(crate::types::NodeId(node_id)) {
-        Ok(lock_name) => log::info!("[registry] Kernel lock acquired: '{}'", lock_name),
-        Err(e) => log::error!("[registry] Failed to acquire kernel lock: {}", e),
-    }
+    // Crash detection is carried by the iceoryx2 Node's native monitoring token
+    crate::node_liveness::mark_provider();
+    log::info!(
+        "[registry] Liveness via native iceoryx2 node monitoring (pid={})",
+        node_id
+    );
     assert!(
         service_names.len() <= MAX_SERVICES_PER_NODE,
         "Too many services ({}), max = {}",

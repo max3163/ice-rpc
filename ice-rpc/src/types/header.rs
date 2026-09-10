@@ -16,8 +16,6 @@ pub struct RpcHeader {
     pub correlation_id: [u8; 16],
     /// Emission timestamp in nanoseconds since `UNIX_EPOCH`.
     pub sent_at_ns: u64,
-    /// PID of the emitting process.
-    pub caller_pid: u32,
     /// Name of the target service.
     pub service_name: StaticString<SERVICE_NAME_LEN>,
     /// Name of the RPC method.
@@ -36,7 +34,6 @@ impl RpcHeader {
         Self {
             correlation_id: RpcHeader::next_correlation_id(),
             sent_at_ns: RpcHeader::now_ns(),
-            caller_pid: std::process::id(),
             service_name: StaticString::from_bytes_truncated(service.as_bytes())
                 .unwrap_or_default(),
             method_name: StaticString::from_bytes_truncated(method.as_bytes()).unwrap_or_default(),
@@ -68,7 +65,6 @@ impl RpcHeader {
         Self {
             correlation_id: request.correlation_id,
             sent_at_ns: RpcHeader::now_ns(),
-            caller_pid: std::process::id(),
             service_name: request.service_name,
             method_name: request.method_name,
             event_kind,

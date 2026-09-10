@@ -128,13 +128,20 @@ impl NodeDiscovery {
     /// Discovers the **live** nodes from the registry.
     ///
     /// 1. `list_nodes()` → all candidate NodeIds (including dead ones).
-    /// 2. `is_node_alive()` → filters the nodes whose kernel lock is absent.
+    /// 2. `node_liveness::alive_pids()` → one native `Node::list`, keeps the
+    ///    candidates whose PID owns an alive iceoryx2 node.
     /// 3. `list_services()` → reads the services of the live nodes.
     pub fn discover_live_nodes(&self) -> HashMap<NodeId, Vec<String>> {
         let mut result: HashMap<NodeId, Vec<String>> = HashMap::new();
+        // One native `Node::list` pass for every candidate instead of one
+        // `flock` check per node.
+        let alive = crate::node_liveness::alive_pids();
         for nid_raw in crate::blackboard::list_nodes() {
-            let lock_name = format!("{}{}", crate::node_lock::LOCK_NAME_PREFIX, nid_raw);
-            if crate::node_lock::is_node_alive(&lock_name) {
+            let is_alive = alive
+                .as_ref()
+                .map(|set| set.contains(&nid_raw))
+                .unwrap_or(false);
+            if is_alive {
                 result.insert(NodeId(nid_raw), crate::blackboard::list_services(nid_raw));
             } else {
                 log::debug!(
@@ -151,6 +158,44 @@ impl NodeDiscovery {
 
     pub fn discover_live_services(&self) -> Vec<String> {
         self.discover_live_nodes().into_values().flatten().collect()
+    }
+
+    /// Re-synchronizes the cache with a snapshot of the live nodes and returns
+    /// the `NodeId`s that disappeared.
+    ///
+    /// This is what the registry listener calls on a topology notification: the
+    /// event is only a wake-up token (it no longer carries a node id), so the
+    /// cache is reconciled against the blackboard + native liveness, which stay
+    /// the source of truth. The current process is ignored.
+    pub fn reconcile(&self, live: &HashMap<NodeId, Vec<String>>) -> Vec<NodeId> {
+        let me = NodeId::current();
+
+        for (node_id, services) in live {
+            if *node_id == me {
+                continue;
+            }
+            for service in services {
+                self.upsert(*node_id, NodeRecord::STATUS_OK, service);
+            }
+            // Watch newly discovered nodes for crashes.
+            crate::node_liveness::register_node_liveness_watcher(*node_id);
+        }
+
+        let cached: Vec<NodeId> = self
+            .snapshot()
+            .into_iter()
+            .filter(|r| r.status == NodeRecord::STATUS_OK && r.node_id != me)
+            .map(|r| r.node_id)
+            .collect();
+
+        let mut dead = Vec::new();
+        for node_id in cached {
+            if !live.contains_key(&node_id) {
+                self.invalidate_node_services(node_id);
+                dead.push(node_id);
+            }
+        }
+        dead
     }
 
     pub fn active_nodes(&self) -> Vec<NodeId> {
@@ -182,9 +227,8 @@ impl NodeDiscovery {
             for svc in services {
                 self.upsert(*node_id, NodeRecord::STATUS_OK, svc);
             }
-            // Starts a lock watcher to detect crashes.
-            let lock_name = format!("{}{}", crate::node_lock::LOCK_NAME_PREFIX, node_id.0);
-            crate::node_lock::register_node_lock_watcher(*node_id, lock_name);
+            // Watches the node through iceoryx2's native monitoring.
+            crate::node_liveness::register_node_liveness_watcher(*node_id);
         }
         let smap = crate::sync::read(&self.service_map);
         smap.get(service_name).copied()
@@ -254,6 +298,23 @@ pub enum DiscoveryEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconcile_returns_vanished_nodes() {
+        let nd = NodeDiscovery::new();
+        let gone = NodeId(0x0D1E_1001);
+        let alive = NodeId(0x0D1E_1002);
+        nd.upsert(gone, NodeRecord::STATUS_OK, "GoneService");
+        nd.upsert(alive, NodeRecord::STATUS_OK, "AliveService");
+
+        let mut live = HashMap::new();
+        live.insert(alive, vec!["AliveService".to_string()]);
+
+        let dead = nd.reconcile(&live);
+
+        assert_eq!(dead, vec![gone]);
+        assert!(!nd.is_node_ok(gone), "the vanished node must leave the cache");
+    }
 
     #[test]
     fn node_discovery_upsert_and_query() {

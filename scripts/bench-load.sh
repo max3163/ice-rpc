@@ -12,9 +12,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# The demo provider/consumer resolve `examples/config.toml` and the generated
-# iceoryx2 config (`./config/iceoryx2.toml`) relative to the crate directory.
-cd "$ROOT/ice-rpc"
+# The demo provider/consumer examples live in the `ice-rpc-rx` crate, but the
+# generated iceoryx2 config (`./config/iceoryx2.toml`) is resolved relative to
+# the working directory. Run from the workspace root so both processes share the
+# same config file, and select the crate explicitly with `-p ice-rpc-rx`.
+cd "$ROOT"
 
 WORKERS="${WORKERS:-4}"
 REQUESTS="${REQUESTS:-20000}"
@@ -33,7 +35,7 @@ BENCH_BIN="$ROOT/target/release/examples/benchmark-app$EXE"
 mkdir -p "$OUT_DIR"
 
 echo "[bench-load] building release examples (features: $FEATURES)..."
-cargo build --release --example provider-app --example benchmark-app --features "$FEATURES"
+cargo build -p ice-rpc-rx --release --example provider-app --example benchmark-app --features "$FEATURES"
 
 echo "[bench-load] starting provider ($PROVIDER_BIN)..."
 "$PROVIDER_BIN" &

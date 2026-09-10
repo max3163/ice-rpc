@@ -53,7 +53,7 @@ fn hub_send_and_dispatch_loopback() {
 
     let received = Arc::new(AtomicUsize::new(0));
     let received_clone = received.clone();
-    let handler = Arc::new(move |_hdr: RpcHeader, payload: &[u8]| {
+    let handler = Arc::new(move |_hdr: RpcHeader, _caller: NodeId, payload: &[u8]| {
         assert_eq!(payload, b"hello");
         received_clone.fetch_add(1, Ordering::SeqCst);
     });

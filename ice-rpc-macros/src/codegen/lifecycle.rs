@@ -63,11 +63,11 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
 
                         let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                             let svc = svc_name;
-                            move |hdr: ice_rpc::gen::RpcHeader, raw: &[u8]| {
+                            move |hdr: ice_rpc::gen::RpcHeader, caller: ice_rpc::gen::NodeId, raw: &[u8]| {
                                 let cid = hdr.correlation_id;
                                 let method: &str = hdr.method();
-                                let client_pid = hdr.caller_pid;
-                                let client_node = ice_rpc::gen::NodeId(client_pid);
+                                // Caller identity from iceoryx2's native header.
+                                let client_node = caller;
 
                                 let args = match #proxy_name::deserialize_request_to_value(method, raw) {
                                     Some(v) => v,

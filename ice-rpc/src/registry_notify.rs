@@ -43,7 +43,6 @@ fn create_notifier() -> Option<RegistryNotifier> {
     let svc = node
         .service_builder(&topic_name)
         .event()
-        .event_id_max_value(65535)
         .open_or_create()
         .map_err(|e| {
             log::warn!("[notify] event open_or_create failed (shutdown?): {:?}", e);
@@ -66,10 +65,10 @@ fn with_notifier<R>(f: impl FnOnce(&RegistryNotifier) -> R) -> Option<R> {
     Some(f(notifier))
 }
 
-pub fn notify_change(node_id: u32) {
+pub fn notify_change(_node_id: u32) {
     let notified = with_notifier(|notifier| {
-        if let Err(e) = notifier.notify_with_custom_event_id(EventId::new(node_id as usize)) {
-            log::warn!("notify_with_custom_event_id failed: {:?}", e);
+        if let Err(e) = notifier.notify() {
+            log::warn!("notify failed: {:?}", e);
         }
     })
     .is_some();

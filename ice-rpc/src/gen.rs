@@ -33,15 +33,15 @@ pub use crate::client_core::ClientCore;
 pub use crate::client_core::ConnectionState;
 
 // ── Hub ─────────────────────────────────────────────────────────────
-pub use crate::hub::{NodeHub, RequestHandler, ResponseHandler};
+pub use crate::hub::{NodeHub, PayloadSegment, RequestHandler, ResponseHandler};
 
 // ── Node discovery ──────────────────────────────────────────────────
 pub use crate::node_discovery::{DiscoveryEvent, NodeDiscovery, NodeRecord};
 
-// ── Node lock ───────────────────────────────────────────────────────
-pub use crate::node_lock::{
-    acquire_global_node_lock, is_node_alive, register_node_lock_watcher, release_global_node_lock,
-    unregister_node_lock_watcher, NodeLockWatcher, LOCK_WATCHER_POLL_MS,
+// ── Node liveness ───────────────────────────────────────────────────
+pub use crate::node_liveness::{
+    is_pid_alive, is_provider, mark_provider, register_node_liveness_watcher,
+    unregister_node_liveness_watcher, LIVENESS_POLL_MS,
 };
 
 // ── Node supervisor ─────────────────────────────────────────────────
@@ -61,11 +61,12 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
 // ── Wire types, provider primitives, correlation ids and constants ───
 pub use crate::types::{
-    caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, EventKind, NodeId,
-    RpcHeader, Sender, StaticString, WireEvent, BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE,
-    INITIALIZE_ALL_TIMEOUT_SECS, INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN,
-    PROTOCOL_VERSION, PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN,
-    RPC_CALL_TIMEOUT_SECS, SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
+    caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, unbounded_channel,
+    EventKind, NodeId, RpcHeader, Sender, StaticString, WireEvent, BLACKBOARD_MAX_READERS,
+    DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS, INIT_RETRY_INTERVAL_MS,
+    LARGE_PAYLOAD_THRESHOLD, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN, PROTOCOL_VERSION,
+    PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN, RPC_CALL_TIMEOUT_SECS,
+    SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
 };
 
 // Canonical terminal implementations, shared with `ice-rpc-rx` so that the

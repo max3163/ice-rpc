@@ -11,9 +11,8 @@ use crate::macros::try_or_log;
 use iceoryx2::prelude::*;
 
 use crate::locator::ServiceLocator;
-use crate::node_discovery::{NodeDiscovery, NodeRecord};
+use crate::node_discovery::NodeDiscovery;
 use crate::registry_notify::REGISTRY_NOTIFY_TOPIC;
-use crate::types::NodeId;
 
 /// WaitSet timeout duration for the discovery listener (ms).
 const REGISTRY_WAITSET_TIMEOUT_MS: u64 = 200;
@@ -43,10 +42,12 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
         "ServiceName notify",
         "failed"
     );
+    // No `event_id_max_value` override: the notification is a payload-free
+    // wake-up (see `registry_notify::notify_change`), so the iceoryx2 default
+    // bound (255) is enough.
     let notify_svc = try_or_log!(
         node.service_builder(&notify_topic_name)
             .event()
-            .event_id_max_value(65535)
             .open_or_create(),
         "event open_or_create",
         "failed"
@@ -77,12 +78,16 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
             }
             let result = wait_set.wait_and_process_once_with_timeout(
                 |_| {
-                    // Consumes all notifications and processes each NodeId.
-                    while let Ok(Some(event_id)) = listener.try_wait_one() {
-                        let node_id_raw = event_id.as_value() as u32;
-                        if node_id_raw > 0 {
-                            handle_node_event(&discovery, node_id_raw);
-                        }
+                    // The notification is only a "the topology may have
+                    // changed" wake-up: the blackboard and native liveness are
+                    // the source of truth, so reconcile instead of trusting the
+                    // event payload (which no longer carries a node id).
+                    let mut notified = false;
+                    while let Ok(Some(_)) = listener.try_wait_one() {
+                        notified = true;
+                    }
+                    if notified {
+                        reconcile_topology(&discovery);
                     }
                     CallbackProgression::Continue
                 },
@@ -97,52 +102,13 @@ pub fn spawn(discovery: Arc<NodeDiscovery>) {
     ServiceLocator::global().register_shutdown_handle(handle);
 }
 
-/// Processes an event for a specific NodeId.
-///
-/// Checks whether the node is alive, updates or cleans the cache.
-fn handle_node_event(discovery: &NodeDiscovery, node_id: u32) {
-    // Ignores events from our own PID (shutdown).
-    if node_id == std::process::id() {
-        return;
-    }
-    let lock_name = format!("{}{}", crate::node_lock::LOCK_NAME_PREFIX, node_id);
-    if crate::node_lock::is_node_alive(&lock_name) {
-        // Alive node: reads its services and updates the cache.
-        let services = crate::blackboard::list_services(node_id);
-        for svc in &services {
-            discovery.upsert(NodeId(node_id), NodeRecord::STATUS_OK, svc);
-        }
-        log::debug!(
-            "[listener] Node {} alive, {} service(s)",
-            node_id,
-            services.len()
-        );
-    } else {
-        // Dead node: cleans the cache.
+/// Re-synchronizes the local cache with the live nodes and fires the
+/// reconnection callbacks for the nodes that disappeared.
+fn reconcile_topology(discovery: &NodeDiscovery) {
+    let live = discovery.discover_live_nodes();
+    for node_id in discovery.reconcile(&live) {
         log::warn!("[listener] Node {} DEAD, clearing cache", node_id);
-        discovery.invalidate_node_services(NodeId(node_id));
-        crate::node_lock::unregister_node_lock_watcher(NodeId(node_id));
-        crate::node_supervisor::fire(node_id);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    const DEAD_NODE_ID: u32 = 0x0D1E_0001;
-
-    #[test]
-    fn handle_node_event_ignores_own_pid() {
-        let discovery = Arc::new(NodeDiscovery::new());
-        handle_node_event(&discovery, std::process::id());
-    }
-
-    #[test]
-    fn handle_node_event_dead_node_clears_without_panic() {
-        let discovery = Arc::new(NodeDiscovery::new());
-        assert_ne!(DEAD_NODE_ID, std::process::id());
-        handle_node_event(&discovery, DEAD_NODE_ID);
+        crate::node_liveness::unregister_node_liveness_watcher(node_id);
+        crate::node_supervisor::fire(node_id.0);
     }
 }

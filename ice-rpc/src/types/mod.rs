@@ -28,5 +28,7 @@ pub use consts::*;
 pub use error::RpcError;
 pub use header::{caller_pid_from_cid, fmt_correlation_id, fmt_correlation_id_short, RpcHeader};
 pub use node::*;
-pub use stream::{channel, collect_values, first_event, Observable, StreamError};
+pub use stream::{
+    channel, collect_values, first_event, unbounded_channel, Observable, StreamError,
+};
 pub use wire::{Event, EventKind, ObservableError, Sender, WireEvent};

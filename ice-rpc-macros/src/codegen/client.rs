@@ -123,9 +123,10 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     // Service-wide discovery deadline; mirrors `RPC_CALL_TIMEOUT_SECS` (30s).
     let locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
 
-    // Response handler.
+    // Response handler closure.
     let handler_body: TokenStream = quote! {
-        std::sync::Arc::new(move |result: Result<&[u8], ice_rpc::RpcError>| {
+        move |result: Result<&[u8], ice_rpc::RpcError>| {
+            let hub = ice_rpc::ServiceLocator::global().hub();
             match result {
                 Ok(bytes) => {
                     match ice_rpc::gen::rkyv::from_bytes::<
@@ -136,24 +137,36 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                         // optimization is preserved through the consumer
                         // channel (one message instead of `Next` + `Complete`).
                         Ok(event) => {
-                            let _ = tx.try_send_wire(event);
+                            if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
+                                tx.try_send_wire(event)
+                            {
+                                hub.remove_response_handler(&correlation_id);
+                            }
                         }
                         Err(_) => {
-                            let _ = tx.try_send_event(ice_rpc::Event::Error(
-                                ice_rpc::ObservableError::Technical(
-                                    ice_rpc::RpcError::SerializationError
-                                )
-                            ));
+                            if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
+                                tx.try_send_event(ice_rpc::Event::Error(
+                                    ice_rpc::ObservableError::Technical(
+                                        ice_rpc::RpcError::SerializationError
+                                    )
+                                ))
+                            {
+                                hub.remove_response_handler(&correlation_id);
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.try_send_event(ice_rpc::Event::Error(
-                        ice_rpc::ObservableError::Technical(e)
-                    ));
+                    if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
+                        tx.try_send_event(ice_rpc::Event::Error(
+                            ice_rpc::ObservableError::Technical(e)
+                        ))
+                    {
+                        hub.remove_response_handler(&correlation_id);
+                    }
                 }
             }
-        })
+        }
     };
 
     // ── Single method body ──────────────────────────────────────────
@@ -187,10 +200,23 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             );
             let correlation_id = rpc_header.correlation_id;
 
-            let (tx, rx) = ice_rpc::gen::channel::<#ok_type, #err_type>(8);
+            // Unbounded: the dispatch loop delivers responses from a
+            // synchronous callback and therefore cannot apply backpressure. A
+            // bounded channel would turn a slow consumer into a **silent**
+            // loss once full. The `Drop` guard below releases
+            // the queue and the hub entry as soon as the consumer drops the
+            // stream
+            let (tx, rx) = ice_rpc::gen::unbounded_channel::<#ok_type, #err_type>();
 
-            let handler: std::sync::Arc<dyn Fn(Result<&[u8], ice_rpc::RpcError>) + Send + Sync>
-                = #handler_body;
+            let handler: ice_rpc::gen::ResponseHandler = std::sync::Arc::new(#handler_body);
+
+            // O(1) cleanup on abandon: removes both hub entries when the last
+            // handle of the `Observable` disappears — including a stream the
+            // provider never answered (`timeout`, `first_value()`, …).
+            let rx = rx.with_on_drop({
+                let cid = correlation_id;
+                move || ice_rpc::ServiceLocator::global().hub().finish_call(&cid)
+            });
 
             let hub = ice_rpc::ServiceLocator::global().hub();
 

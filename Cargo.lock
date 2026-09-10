@@ -1010,7 +1010,6 @@ dependencies = [
  "iceoryx2",
  "iceoryx2-bb-container",
  "iceoryx2-bb-system-types",
- "libc",
  "log",
  "pin-project-lite",
  "pollster",
@@ -1024,7 +1023,6 @@ dependencies = [
  "trillium",
  "trillium-smol",
  "trillium-tokio",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

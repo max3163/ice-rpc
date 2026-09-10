@@ -2,7 +2,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, Visibility};
+use syn::{Ident, Type, Visibility};
 
 use super::helpers::gen_hub_config;
 
@@ -73,7 +73,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                 let scratch = self.scratch.clone();
 
                 let (dispatch_tx, mut dispatch_rx) =
-                    ice_rpc::gen::async_channel::bounded::<(ice_rpc::gen::RpcHeader, #req_enum_name, usize)>(1024);
+                    ice_rpc::gen::async_channel::bounded::<(ice_rpc::gen::RpcHeader, ice_rpc::gen::NodeId, #req_enum_name, usize)>(1024);
 
                 let dispatch_tx_clone = dispatch_tx.clone();
                 std::thread::spawn(move || {
@@ -87,20 +87,20 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
                     let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                         let tx = dispatch_tx_clone;
-                        move |hdr: ice_rpc::gen::RpcHeader, raw: &[u8]| {
+                        move |hdr: ice_rpc::gen::RpcHeader, caller: ice_rpc::gen::NodeId, raw: &[u8]| {
                             if hdr.protocol_version != ice_rpc::gen::PROTOCOL_VERSION
                                 || hdr.service_version != #service_version
                             {
                                 ::log::error!(
                                     "[{}Server] incompatible version from Node {} (protocol {} != {}, service {} != {})",
                                     svc_name,
-                                    hdr.caller_pid,
+                                    caller.0,
                                     hdr.protocol_version,
                                     ice_rpc::gen::PROTOCOL_VERSION,
                                     hdr.service_version,
                                     #service_version,
                                 );
-                                let client_node = ice_rpc::gen::NodeId(hdr.caller_pid);
+                                let client_node = caller;
                                 let error_event: ice_rpc::gen::WireEvent<(), ()> = ice_rpc::gen::WireEvent::RpcError(
                                     ice_rpc::RpcError::ProtocolMismatch {
                                         expected_protocol: ice_rpc::gen::PROTOCOL_VERSION,
@@ -127,8 +127,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                 }
                                 return;
                             }
-                            let client_pid = hdr.caller_pid;
-                            let client_node = ice_rpc::gen::NodeId(client_pid);
+                            let client_node = caller;
 
                             if !ice_rpc::ServiceLocator::global().hub().has_publishers(client_node) {
                                 if let Err(e) = ice_rpc::ServiceLocator::global()
@@ -151,7 +150,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                                 }
                             };
 
-                            if tx.try_send((hdr, native_req, raw_len)).is_err() {
+                            if tx.try_send((hdr, caller, native_req, raw_len)).is_err() {
                                 ::log::warn!("[{}Server] channel saturated — request rejected", svc_name);
                             }
                         }
@@ -207,7 +206,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         msg = dispatch_rx.recv().fuse() => {
                             match msg {
                                 Err(_) => break,
-                                Ok((hdr, req_val, size_hint)) => {
+                                Ok((hdr, caller, req_val, size_hint)) => {
                                     let impl_ref = svc_impl.clone();
                                     let scratch_ref = scratch.clone();
                                     ice_rpc::rt::spawn(async move {
@@ -229,28 +228,39 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 ///
 /// Receives the request in native form, calls the business implementation,
 /// and for each stream event, serializes the response via the shared
-/// `scratch_ref` buffer and sends it via `send_to_node`.
+/// `scratch_ref` buffer and sends it via `send_to_node_with_segment`.
 ///
 /// The scratch lock is acquired only around `serialize -> send`, never while
 /// the business implementation or the stream `recv().await` is running, so
 /// concurrent RPCs of the same server are no longer serialized.
+///
+/// # Loss policy (audit C2 / C3c / C3d)
+/// - the whole response stream is **pinned** on the segment chosen by its first
+///   event, so `_default`/`_large` can never reorder a `Next` past a terminal;
+/// - a serialization failure is replaced by a terminal technical error instead
+///   of skipping the event (a skipped terminal would hang the client);
+/// - a send failure aborts the call with an `error!` log instead of being
+///   ignored.
 pub fn gen_server_match_arm(
-    _trait_name: &Ident,
+    trait_name: &Ident,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
     req_enum_name: &Ident,
     service_version: u16,
+    response_types: (&Type, &Type),
 ) -> TokenStream {
+    let (ok_type, err_type) = response_types;
     quote! {
         #req_enum_name::#var_name { #(#arg_names),* } => {
             use ice_rpc::gen::rkyv::{api::high::to_bytes_in, util::AlignedVec, rancor::Error as RkyvError};
 
-            let client_pid = hdr.caller_pid;
-            let client_node = ice_rpc::gen::NodeId(client_pid);
+            let client_node = caller;
             let hub = ice_rpc::ServiceLocator::global().hub();
 
             let mut stream = impl_ref.#fn_name(#(#arg_names),*).await;
+            let large_available = hub.large_publisher_available(client_node);
+            let mut pinned_large: Option<bool> = None;
 
             while let Ok(event) = stream.recv_wire().await {
                 let kind = match &event {
@@ -265,10 +275,80 @@ pub fn gen_server_match_arm(
                     *guard = AlignedVec::<8>::with_capacity(size_hint + 4096);
                 }
                 guard.clear();
-                if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() { continue; }
 
-                let resp_header = ice_rpc::gen::RpcHeader::response_from(&hdr, kind, #service_version);
-                let _ = hub.send_to_node(client_node, resp_header, &*guard);
+                if to_bytes_in::<_, RkyvError>(&event, &mut *guard).is_err() {
+                    ::log::error!(
+                        "[{}::{}] response serialization failed; sending a terminal error",
+                        stringify!(#trait_name), stringify!(#fn_name)
+                    );
+                    guard.clear();
+                    let err_event: ice_rpc::gen::WireEvent<#ok_type, #err_type> =
+                        ice_rpc::gen::WireEvent::RpcError(ice_rpc::RpcError::SerializationError);
+                    if to_bytes_in::<_, RkyvError>(&err_event, &mut *guard).is_err() {
+                        ::log::error!(
+                            "[{}::{}] could not serialize the terminal error; dropping the call",
+                            stringify!(#trait_name), stringify!(#fn_name)
+                        );
+                        break;
+                    }
+                    let resp_header = ice_rpc::gen::RpcHeader::response_from(
+                        &hdr, ice_rpc::gen::EventKind::Error, #service_version,
+                    );
+                    let _ = hub.send_to_node_with_segment(
+                        client_node, resp_header, &*guard, ice_rpc::gen::PayloadSegment::Default,
+                    );
+                    drop(guard);
+                    break;
+                }
+
+                let use_large = *pinned_large.get_or_insert_with(|| {
+                    large_available && guard.len() > ice_rpc::gen::LARGE_PAYLOAD_THRESHOLD
+                });
+
+                if !use_large
+                    && large_available
+                    && guard.len() > ice_rpc::gen::LARGE_PAYLOAD_THRESHOLD
+                {
+                    let size = guard.len();
+                    ::log::error!(
+                        "[{}::{}] response stream outgrew the default segment ({} bytes); aborting the call",
+                        stringify!(#trait_name), stringify!(#fn_name), size
+                    );
+                    guard.clear();
+                    let err_event: ice_rpc::gen::WireEvent<#ok_type, #err_type> =
+                        ice_rpc::gen::WireEvent::RpcError(ice_rpc::RpcError::PayloadTooLarge {
+                            size,
+                            limit: ice_rpc::gen::PUBLISHER_LARGE_MAX_SLICE_LEN,
+                        });
+                    if to_bytes_in::<_, RkyvError>(&err_event, &mut *guard).is_ok() {
+                        let resp_header = ice_rpc::gen::RpcHeader::response_from(
+                            &hdr, ice_rpc::gen::EventKind::Error, #service_version,
+                        );
+                        let _ = hub.send_to_node_with_segment(
+                            client_node, resp_header, &*guard, ice_rpc::gen::PayloadSegment::Default,
+                        );
+                    }
+                    drop(guard);
+                    break;
+                }
+
+                let segment = if use_large {
+                    ice_rpc::gen::PayloadSegment::Large
+                } else {
+                    ice_rpc::gen::PayloadSegment::Default
+                };
+                let resp_header =
+                    ice_rpc::gen::RpcHeader::response_from(&hdr, kind, #service_version);
+                if let Err(e) =
+                    hub.send_to_node_with_segment(client_node, resp_header, &*guard, segment)
+                {
+                    ::log::error!(
+                        "[{}::{}] response send failed: {:?}; aborting the call",
+                        stringify!(#trait_name), stringify!(#fn_name), e
+                    );
+                    drop(guard);
+                    break;
+                }
                 drop(guard);
                 if kind.is_terminal() { break; }
             }

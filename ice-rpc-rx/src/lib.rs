@@ -80,18 +80,16 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod creation;
-mod join;
 mod share_replay;
 mod subject;
 mod subscribe;
 mod transform;
 
 pub use creation::{from, of, throw_error};
-pub use join::{merge, retry, retry_with, retry_with_delay};
 pub use share_replay::ShareReplay;
 pub use subject::Subject;
 pub use subscribe::{Observer, ObserverFns, Subscription};
-pub use transform::RxStreamExt;
+pub use transform::{merge, retry, retry_with, retry_with_delay, RxStreamExt};
 
 /// Default capacity of the channels created by the multicast primitives.
 ///

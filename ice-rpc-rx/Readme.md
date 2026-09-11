@@ -12,9 +12,8 @@ consumption helpers. It is runtime-agnostic and depends only on `ice-rpc`.
 
 | Module | Role |
 |---|---|
-| [`transform`](src/transform/mod.rs) | `RxStreamExt` trait: `map`, `filter`, `map_err`, `scan`, `take`, `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`, `timeout`, `catch_error`, `switch_map`, `take_until`, `into_observable`, and the terminals `first_value`, `collect`, `for_each`, `subscribe`, `subscribe_with`. The combinators live in [`transform/operators.rs`](src/transform/operators.rs) |
-| [`join`](src/join.rs) | `merge`, `retry`, `retry_with`, `retry_with_delay` |
-| [`creation`](src/creation.rs) | `from`, `of` (channel-free sources) |
+| [`transform`](src/transform/mod.rs) | `RxStreamExt` trait and its terminals (`first_value`, `collect`, `for_each`, `subscribe`, `subscribe_with`, `into_observable`). Operator implementations are split by ReactiveX category: [`transforming.rs`](src/transform/transforming.rs) (`map`, `scan`, `map_err`, `switch_map`), [`filtering.rs`](src/transform/filtering.rs) (`filter`, `take`, `skip`, `first`, `first_with`), [`combining.rs`](src/transform/combining.rs) (`start_with`, `merge`), [`error_handling.rs`](src/transform/error_handling.rs) (`catch_error`, `retry`, `retry_with`, `retry_with_delay`), [`utility.rs`](src/transform/utility.rs) (`tap`, `finalize`, `delay`, `timeout`), [`conditional.rs`](src/transform/conditional.rs) (`take_until`) |
+| [`creation`](src/creation.rs) | `from`, `of`, `throw_error` (Creating: channel-free sources) |
 | [`subscribe`](src/subscribe.rs) | `Observer`, `ObserverFns`, `Subscription` (push mode) |
 | [`Subject`](src/subject.rs) | multi-producer / multi-consumer multicast |
 | [`ShareReplay`](src/share_replay.rs) | multicast with replay of the last value (`shareReplay(1)`) |
@@ -44,49 +43,109 @@ let top = stream
     .take(3);                // stops after 3 values
 ```
 
-### Transformation
+### Operator classification (ReactiveX)
 
-- `map(f)` — transforms every `Next` value.
-- `filter(pred)` — keeps only the `Next` values matching a predicate.
-- `map_err(f)` — remaps a **business** error (`Fn(E) -> E2`); technical errors
-  pass through unchanged.
-- `scan(initial, f)` — emits a running accumulator state after each value.
+The operators are grouped using the official
+[ReactiveX operator taxonomy](https://reactivex.io/documentation/operators.html).
+Each item lists its ReactiveX counterpart in parentheses; `extension` marks an
+operator that has no direct ReactiveX equivalent and exists for the ice-rpc model.
+
+#### Creating Observables
+
+- `of(value)` — single-value source (`Just` / RxJS `of`), channel-free.
+- `from(iter)` — emits every item of an iterator, then completes (`From`).
+- `throw_error(err)` — source that only emits a business `Error` (`Throw`).
+- `Subject::new()` — multi-producer multicast source (`Subject`; see [Subject](#subject)).
+- `ShareReplay::new(source)` — multicast source that replays the last value
+  (`Replay` / Connectable Observable; RxJS `shareReplay(1)`, see [ShareReplay](#sharereplay)).
+
+> The underlying `ice_rpc::Observable::from_events`, `channel()` and
+> `unbounded_channel()` constructors live in `ice-rpc`, not in this crate.
+
+#### Transforming Observables
+
+- `map(f)` — transforms every `Next` value (`Map`).
+- `scan(initial, f)` — emits a running accumulator state after each value (`Scan`).
 - `switch_map(f)` — projects each value to an inner `Observable` and emits from the
-  latest one, cancelling previous subscriptions (RxJS `switchMap`).
-- `take(n)` — emits at most `n` values, then completes.
-- `skip(n)` — ignores the first `n` values (symmetric of `take`).
-- `first()` / `first_with(pred)` — emits only the first (matching) value.
-- `start_with(v)` — prefixes the stream with an initial value.
+  latest one, cancelling previous subscriptions (`FlatMap` family / RxJS `switchMap`;
+  the *Switch* aspect also belongs to Combining, see below).
+- `map_err(f)` — remaps a **business** error (`Fn(E) -> E2`); technical errors pass
+  through unchanged (transformation of the error channel; see also Error Handling).
 
-### Utility
+#### Filtering Observables
 
-- `tap(f)` — runs a side effect per value without altering it.
-- `delay(duration)` — delays every event.
-- `timeout(duration)` — emits a technical timeout error when no event arrives in
-  time.
-- `take_until(&token)` — emits a technical `Cancelled` error when the token
-  fires (RxJS `takeUntil`).
-- `finalize(f)` — runs a callback once the stream terminates.
-- `catch_error(f)` — replaces a **business** `Error` with a fallback value and
-  completes; a technical error stays fatal.
+- `filter(pred)` — keeps only the `Next` values matching a predicate (`Filter`).
+- `take(n)` — emits at most `n` values, then completes (`Take`).
+- `skip(n)` — ignores the first `n` values (`Skip`).
+- `first()` — emits only the first `Next` value (`First`).
+- `first_with(pred)` — emits the first matching value (`First` with predicate).
 
-### Join / resilience (free functions)
+#### Combining Observables
+
+- `merge(streams)` — combines several `Observable<T, E>` into one (`Merge`).
+- `start_with(v)` — prefixes the stream with an initial value (`StartWith`).
+- `switch_map(f)` — listed under Transforming; its *Switch* behaviour (`CombineLatest`
+  adjacent) is part of Combining on reactivex.io.
 
 ```rust,ignore
-use ice_rpc_rx::{merge, retry, of};
+use ice_rpc_rx::{merge, of};
 
 // Merge several streams into one.
 let merged = merge(vec![of(1), of(2)]);
+```
+
+#### Error Handling Operators
+
+- `catch_error(f)` — replaces a **business** `Error` with a fallback value and
+  completes; a technical error stays fatal (`Catch`).
+- `retry(factory, n)` — re-invokes the factory on a business `Error`, up to `n`
+  times (`Retry`).
+- `retry_with(factory, n, pred)` — retry only when `pred(&error)` is `true` (`Retry`).
+- `retry_with_delay(factory, n, delay)` — retry with a delay between attempts (`Retry`).
+- `map_err(f)` — remaps the error channel (listed under Transforming).
+
+```rust,ignore
+use ice_rpc_rx::retry;
 
 // Retry the underlying call up to 3 times on a business error.
 let resilient = retry(|| proxy.fetch().await, 3);
 ```
 
-- `merge(streams)` — combines several `Observable<T, E>` into one.
-- `retry(factory, n)` — re-invokes the factory on a business `Error`, up to `n`
-  times.
-- `retry_with(factory, n, pred)` — retry only when `pred(&error)` is `true`.
-- `retry_with_delay(factory, n, delay)` — retry with a delay between attempts.
+#### Observable Utility Operators
+
+- `tap(f)` — runs a side effect per value without altering it (`Do`).
+- `delay(duration)` — delays every event (`Delay`).
+- `timeout(duration)` — emits a technical timeout error when no event arrives in
+  time (`Timeout`).
+- `finalize(f)` — runs a callback once the stream terminates (finalization; RxJS
+  `finalize`).
+- `subscribe(observer)` / `subscribe_with(n, e, c)` — push-mode subscription (`Subscribe`).
+- `for_each(f)` — pull-based per-value consumption (`Subscribe` / `forEach`).
+- `first_value()` — awaits the first value (terminal, async) — `extension`.
+- `into_observable()` — freezes a pipeline into the concrete `ice_rpc::Observable`
+  so a service method can return it — `extension`.
+- `Observer`, `ObserverFns`, `Subscription` — observer / subscription machinery
+  (`Observer`, `Subscribe`, and `unsubscribe` through `Subscription`).
+
+#### Conditional and Boolean Operators
+
+- `take_until(&token)` — mirrors events until the token fires, then emits a
+  technical `Cancelled` error (`TakeUntil`; RxJS `takeUntil`).
+
+#### Mathematical and Aggregate Operators
+
+- `collect()` — gathers every value into a `Vec<T>` (`ToArray` / `ToList`, and an
+  aggregate terminal). Also available as the inherent `ice_rpc::Observable::collect`.
+
+#### ReactiveX operators not implemented
+
+Not provided today (some are expressible with the existing set):
+
+`buffer`, `group_by`, `window`, `flat_map` / `concat_map`, `element_at`,
+`debounce`, `distinct`, `default_if_empty`, `skip_while`, `take_while`,
+`combine_latest`, `zip`, `concat`, `count`, `reduce`, `min`, `max`, `sum`,
+`average`. Multicast is covered by `Subject` / `ShareReplay`, and most aggregates
+are reachable with `scan` plus a terminal.
 
 ## Consuming the first value
 

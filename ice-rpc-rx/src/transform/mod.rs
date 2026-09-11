@@ -274,9 +274,20 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
 
 impl<S, T, E> RxStreamExt<T, E> for S where S: futures_lite::Stream<Item = Event<T, E>> + Sized {}
 
-mod operators;
+// Operator implementations, grouped by ReactiveX category.
+mod combining;
+mod conditional;
+mod error_handling;
+mod filtering;
+mod transforming;
+mod utility;
 
 #[cfg(test)]
 mod tests;
 
-pub use operators::*;
+pub use combining::{merge, StartWith};
+pub use conditional::TakeUntil;
+pub use error_handling::{retry, retry_with, retry_with_delay, CatchError};
+pub use filtering::{Filter, First, Skip, Take};
+pub use transforming::{Map, MapErr, Scan, SwitchMap};
+pub use utility::{Delay, Finalize, Tap, Timeout};

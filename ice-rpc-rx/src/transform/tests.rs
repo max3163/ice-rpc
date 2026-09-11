@@ -3,6 +3,7 @@
 use std::pin::Pin;
 
 use super::RxStreamExt;
+use crate::{merge, of, retry, retry_with};
 use ice_rpc::{Event, ObservableError};
 
 /// Builds a local `Observable<T, String>` from an iterator (test helper).
@@ -633,4 +634,90 @@ fn take_until_forwards_values_when_not_cancelled() {
     assert!(matches!(&events[1], Event::Next(v) if *v == 2));
     assert!(matches!(&events[2], Event::Next(v) if *v == 3));
     assert!(matches!(&events[3], Event::Complete));
+}
+
+// ── Combining ───────────────────────────────────────────────────────
+
+#[test]
+fn merge_combines_streams() {
+    let s1: ice_rpc::Observable<i32, String> = of(1);
+    let s2: ice_rpc::Observable<i32, String> = of(2);
+    let stream = merge(vec![s1, s2]);
+    let events = pollster::block_on(drain(stream));
+
+    let mut values = Vec::new();
+    let mut completed = 0;
+    for ev in events {
+        match ev {
+            Event::Next(v) => values.push(v),
+            Event::Complete => completed += 1,
+            other => panic!("unexpected event: {:?}", other),
+        }
+    }
+    values.sort_unstable();
+    assert_eq!(values, vec![1, 2]);
+    assert_eq!(completed, 2);
+}
+
+// ── Error handling ──────────────────────────────────────────────────
+
+#[test]
+fn retry_recovers_after_business_error() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = attempts.clone();
+    let factory = move || {
+        let a = attempts_clone.clone();
+        async move {
+            let n = a.fetch_add(1, Ordering::SeqCst) + 1;
+            let (tx, rx) = ice_rpc::gen::channel::<i32, String>(2);
+            if n < 3 {
+                let _ = tx.try_send_error("boom".to_string());
+            } else {
+                let _ = tx.try_send_next(42);
+                let _ = tx.try_send_complete();
+            }
+            rx
+        }
+    };
+
+    let stream = retry(factory, 2);
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 42));
+    assert!(matches!(&events[1], Event::Complete));
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn retry_with_respects_predicate() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = attempts.clone();
+    let factory = move || {
+        let a = attempts_clone.clone();
+        async move {
+            let n = a.fetch_add(1, Ordering::SeqCst) + 1;
+            let (tx, rx) = ice_rpc::gen::channel::<i32, String>(1);
+            if n == 1 {
+                let _ = tx.try_send_error("retryable".to_string());
+            } else {
+                let _ = tx.try_send_error("fatal".to_string());
+            }
+            rx
+        }
+    };
+
+    let stream = retry_with(factory, 3, |e| e == "retryable");
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "fatal"
+    ));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }

@@ -141,9 +141,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
 
-Internal concepts (`NodeId`, `ConnectionState`, `NodeHub`, `RpcHeader`, …) are
-exposed through the doc-hidden `ice_rpc::gen` module and described in the
-architecture sections below.
+Internal concepts (`NodeId`, `RpcHeader`, `WireEvent`, the request/response
+transport, …) are exposed through the doc-hidden `ice_rpc::gen` module and used
+by `ice-rpc-macros`. The transport itself is iceoryx2's native
+request/response pattern: see `ice_rpc::reqres`.
 
 ## Consumption
 

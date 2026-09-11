@@ -44,17 +44,3 @@ impl std::fmt::Display for NodeId {
         write!(f, "node-{}", self.0)
     }
 }
-/// Returns the `"default"` topic name for a given node.
-pub fn node_default_topic(node_id: NodeId) -> String {
-    format!("node_{}_default", node_id.0)
-}
-
-/// Returns the `"large"` topic name for a given node.
-pub fn node_large_topic(node_id: NodeId) -> String {
-    format!("node_{}_large", node_id.0)
-}
-
-/// Returns the `"notify"` topic name for a given node.
-pub fn node_notify_topic(node_id: NodeId) -> String {
-    format!("node_{}_notify", node_id.0)
-}

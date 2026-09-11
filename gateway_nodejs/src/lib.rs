@@ -101,26 +101,13 @@ pub fn init(callback: Function<'_, serde_json::Value, Unknown<'static>>) -> bool
     // the whole gateway lifetime, hence the process-wide storage.
     let _ = SHUTDOWN_GUARD.set(ice_rpc::gen::init_without_ctrl_c());
 
-    match ice_rpc::locator().get_node_sync() {
-        Ok(node) => {
-            log::info!(
-                "iceoryx2 Node created (pid={}, strong_count={}).",
-                std::process::id(),
-                std::sync::Arc::strong_count(&node)
-            );
-        }
-        Err(e) => {
-            log::error!("Failed to create the iceoryx2 Node: {:?}", e);
-            return false;
-        }
-    }
-
-    {
-        runtime::block_on(async {
-            ice_rpc::locator().start_discovery();
-            ice_rpc::locator().start_dispatch_if_needed();
-        });
-    }
+    // The native request/response transport creates its own shared iceoryx2
+    // node lazily, on the first client call or service start (`initialize_all`
+    // below). No explicit node bootstrapping or dispatch loop is needed.
+    log::info!(
+        "iceoryx2 native transport ready (pid={}).",
+        std::process::id()
+    );
 
     services::start_initialize_all();
 

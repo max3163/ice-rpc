@@ -55,8 +55,8 @@ start_provider() {
 
 echo
 echo "=== T2: clean shutdown must NOT be reported as Dead ==="
-# `direct`: the Node is owned locally so `drop` really runs its cleanup.
-start_provider "$SCRATCH/clean.out" 2 direct
+# The provider owns its Node locally, so exiting really runs the cleanup.
+start_provider "$SCRATCH/clean.out" 2
 echo "[c7] provider os/iceoryx2 pid = $NODE_PID"
 sleep 5
 "$BIN" list | tee "$SCRATCH/clean.list"

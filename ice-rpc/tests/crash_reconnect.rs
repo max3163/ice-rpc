@@ -1,6 +1,6 @@
 //! C7 / C12 integration test: iceoryx2's native node monitoring detects a
-//! provider that disappeared, and the hub fires the node-death (reconnection)
-//! callbacks — for both an abnormal end (`SIGKILL`) and a clean shutdown.
+//! provider that disappeared — for both an abnormal end (`SIGKILL`) and a clean
+//! shutdown.
 //!
 //! The test re-executes its own binary as a child provider, using environment
 //! variables to switch roles — the standard way to obtain a real second process
@@ -9,12 +9,10 @@
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ice_rpc::gen::iceoryx2::prelude::{
-    CallbackProgression, Config, Node, NodeState, SemanticString,
+    CallbackProgression, Config, Node, NodeBuilder, NodeState, SemanticString,
 };
 use ice_rpc::gen::iceoryx2::service::ipc_threadsafe::Service;
 use ice_rpc::gen::raw_pid_to_u32;
@@ -41,31 +39,26 @@ fn node_death_is_detected() {
     eprintln!("[c7] SIGKILL detected in {crash:?}; clean shutdown detected in {clean:?}");
 }
 
-/// Child role: create the iceoryx2 Node like a provider does, then hold it
+/// Child role: create an iceoryx2 Node like a provider does, then hold it
 /// until the parent kills the process.
 fn child_provider_until_killed() {
     ice_rpc::gen::setup_iceoryx2_global_config();
-    let _node = ice_rpc::ServiceLocator::global()
-        .get_node_sync()
-        .expect("get_node_sync");
+    let _node = NodeBuilder::new().create::<Service>().expect("create node");
     announce_ready();
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
 }
 
-/// Child role: run the real provider shutdown path
-/// (`ServiceLocator::release_node()` drops the iceoryx2 Node), which removes the
-/// node's resources — the clean shutdown the watcher must detect.
+/// Child role: create an iceoryx2 Node, then drop it (the clean shutdown the
+/// watcher must detect).
 fn child_provider_clean_shutdown() {
     ice_rpc::gen::setup_iceoryx2_global_config();
-    let _node = ice_rpc::ServiceLocator::global()
-        .get_node_sync()
-        .expect("get_node_sync");
+    let node = NodeBuilder::new().create::<Service>().expect("create node");
     announce_ready();
     // Give the parent time to register its watcher and observe the node alive.
     std::thread::sleep(Duration::from_millis(2000));
-    pollster::block_on(ice_rpc::ServiceLocator::global().release_node());
+    drop(node);
 }
 
 fn announce_ready() {
@@ -106,16 +99,6 @@ fn run_scenario(clean: bool) -> Duration {
     // test harness abort on `BrokenPipe`, which would kill the provider.
     let (pid, _child_stdout) = read_ready_pid(&mut child);
 
-    // Subscribe to node death *before* the node goes away.
-    let fired = Arc::new(AtomicBool::new(false));
-    let _subscription = {
-        let fired = fired.clone();
-        ice_rpc::gen::NodeSupervisor::global().subscribe(
-            pid,
-            Arc::new(move |_node: u32| fired.store(true, Ordering::SeqCst)),
-        )
-    };
-
     // Register the native liveness watcher and wait until the node is observed.
     ice_rpc::gen::register_node_liveness_watcher(ice_rpc::gen::NodeId(pid));
     let alive_deadline = Instant::now() + Duration::from_secs(10);
@@ -137,17 +120,13 @@ fn run_scenario(clean: bool) -> Duration {
         let _ = child.wait();
     }
 
-    // The poller must detect the disappearance and fire the reconnection.
+    // The native monitoring must report the node as gone.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !fired.load(Ordering::SeqCst) && Instant::now() < deadline {
+    while ice_rpc::gen::is_pid_alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 
     let kind = if clean { "clean shutdown" } else { "SIGKILL" };
-    assert!(
-        fired.load(Ordering::SeqCst),
-        "reconnection callback was not fired after {kind}"
-    );
     assert!(
         !ice_rpc::gen::is_pid_alive(pid),
         "the node is still reported alive after {kind}"

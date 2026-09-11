@@ -4,8 +4,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, Type, Visibility};
 
-use super::helpers::gen_hub_config;
-
 /// Client generation parameters.
 pub struct ClientGenInput<'a> {
     pub visibility: &'a Visibility,
@@ -30,20 +28,13 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
         ..
     } = input;
 
-    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
-
+    let _ = (logical_name, allow_large_payload, default_size_message_kb);
     quote! {
-        #visibility struct #client_name {
-            core: ice_rpc::gen::ClientCore,
-        }
+        #visibility struct #client_name;
 
         impl #client_name {
             #visibility fn new() -> std::sync::Arc<Self> {
-                #hub_config
-
-                std::sync::Arc::new(Self {
-                    core: ice_rpc::gen::ClientCore::new(#logical_name),
-                })
+                std::sync::Arc::new(Self)
             }
 
             #(#client_methods)*
@@ -69,14 +60,13 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
         ..
     } = input;
 
-    let hub_config = gen_hub_config(*allow_large_payload, *default_size_message_kb);
-
+    let _ = (logical_name, allow_large_payload, default_size_message_kb);
     quote! {
         #[async_trait::async_trait]
         impl ice_rpc::gen::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
-                #hub_config
-                self.core.init(#logical_name).await
+                // The native transport connects lazily on the first call.
+                true
             }
         }
     }
@@ -84,13 +74,10 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
 
 /// Generates the body of a client RPC method.
 ///
-/// # Call flow
+/// # Call flow (native iceoryx2 request/response)
 /// 1. Serialization of the request (rkyv).
-/// 2. Location of the target Node (atomic cache → locate_service).
-/// 3. Registration of the reconnection callback (idempotent).
-/// 4. Creation of the response channel + handler.
-/// 5. Registration of the response handler.
-/// 6. `send_to_node`.
+/// 2. Native call through `ice_rpc::gen::native_call`; the responses are
+///    streamed back as an [`Observable`](ice_rpc).
 pub struct ClientMethodGenInput<'a> {
     pub visibility: &'a Visibility,
     pub fn_name: &'a Ident,
@@ -114,61 +101,14 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let arg_names = input.arg_names;
     let arg_types = input.arg_types;
     let ok_type = input.ok_type;
-    let err_type = input.err_type;
     let req_enum_name = input.req_enum_name;
     let logical_name = input.logical_name;
     let _service_version = input.service_version;
+    let err_type = input.err_type;
 
     let method_name_str = fn_name.to_string();
     // Service-wide discovery deadline; mirrors `RPC_CALL_TIMEOUT_SECS` (30s).
     let _locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
-
-    // Historical response-handler tokens. Kept only so the `quote!` inputs stay
-    // referenced while the native transport replaces the hub client.
-    let _handler_body: TokenStream = quote! {
-        move |result: Result<&[u8], ice_rpc::RpcError>| {
-            let hub = ice_rpc::ServiceLocator::global().hub();
-            match result {
-                Ok(bytes) => {
-                    match ice_rpc::gen::rkyv::from_bytes::<
-                        ice_rpc::gen::WireEvent<#ok_type, #err_type>,
-                        ice_rpc::gen::rkyv::rancor::Error
-                    >(bytes) {
-                        // Raw relay: the `CompleteWith` single-sample
-                        // optimization is preserved through the consumer
-                        // channel (one message instead of `Next` + `Complete`).
-                        Ok(event) => {
-                            if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
-                                tx.try_send_wire(event)
-                            {
-                                hub.remove_response_handler(&correlation_id);
-                            }
-                        }
-                        Err(_) => {
-                            if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
-                                tx.try_send_event(ice_rpc::Event::Error(
-                                    ice_rpc::ObservableError::Technical(
-                                        ice_rpc::RpcError::SerializationError
-                                    )
-                                ))
-                            {
-                                hub.remove_response_handler(&correlation_id);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    if let Err(ice_rpc::gen::async_channel::TrySendError::Closed(_)) =
-                        tx.try_send_event(ice_rpc::Event::Error(
-                            ice_rpc::ObservableError::Technical(e)
-                        ))
-                    {
-                        hub.remove_response_handler(&correlation_id);
-                    }
-                }
-            }
-        }
-    };
 
     // ── Single method body (native iceoryx2 request/response) ────────
     quote! {

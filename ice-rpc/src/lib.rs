@@ -105,9 +105,10 @@
 //! - **Observable** : the composable stream returned by services; emits
 //!   `Next` / `Complete` / `Error(ObservableError)` where the error is either
 //!   business (`E`) or technical (`RpcError`)
-//! - **NodeHub** : central communication hub managing the IPC publishers/subscribers
-//! - **ServiceLocator** : service registry with dependency resolution and topological sort
-//! - **NodeDiscovery** : local service→NodeId cache, initial discovery + Event-based updates
+//! - **ServiceLocator** : registry of the services the process provides, plus a
+//!   lazy cache of the consumer proxies
+//! - **request/response** : the native iceoryx2 transport used by the generated
+//!   client and server (`ice_rpc::reqres`)
 //! - **Proxy** : unified entry point supporting 3 modes (Provider / Consumer / ProviderNodeJs)
 //!
 //! ## Main modules
@@ -115,17 +116,10 @@
 //! | Module | Role |
 //! |--------|------|
 //! | `types` | Public Rx types (`Event`, `Observable`, `ObservableError`, `RpcError`, `StreamError`) and the wire types re-exported through `gen` |
-//! | `hub` | `NodeHub` : centralized dispatch loop, publishers, response handlers |
-//! | `locator` | `ServiceLocator` : registration, lifecycle, Kahn topological sort |
-//! | `node_discovery` | `NodeDiscovery` : local cache, service→NodeId resolution |
-//! | `blackboard` | Discovery registry: 1 Blackboard per node (`ice_rpc_node_{pid}`), key = service name |
-//! | `registry_notify` | Event notifications: carries the NodeId via `EventId` |
-//! | `registry_listener` | WaitSet loop: receives the Events, updates the cache, cleans dead nodes |
-//! | `node_supervisor` | Node supervisor: broadcasts node death to subscribed clients |
+//! | `reqres` | Native iceoryx2 request/response transport: shared node, dispatcher, streaming bridge |
+//! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
-//! | `client_core` | Shared consumer state: ConnectionState machine, `resolve_target`, reconnection callback, client bootstrap |
 //! | `gen` | Internal contract for the generated code and `ice-rpc-rx`: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
-//! | `macros` | `try_or_log!` — internal helper (not exported) |
 
 // The entry-point macros are the primary public API.
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
@@ -134,18 +128,9 @@ pub use ice_rpc_macros::{main, service};
 // Dependency re-exports (`rkyv`, `serde_json`, `base64`, `async_channel`, …)
 // now live in `ice_rpc::gen`: the generated code is their only consumer.
 
-mod blackboard;
-mod client_core;
 mod config;
-mod hub;
 mod locator;
-mod macros;
-mod node_discovery;
 mod node_liveness;
-mod node_supervisor;
-mod reconnect_manager;
-mod registry_listener;
-mod registry_notify;
 pub mod rt;
 mod service_traits;
 mod shutdown;
@@ -180,16 +165,6 @@ pub use service_traits::ServiceInit;
 // lives in `ice_rpc::gen`, alongside the plumbing invoked by the macros.
 pub use types::{Event, Observable, ObservableError, RpcError, StreamError};
 
-// ── Crate-internal aliases ──────────────────────────────────────────
-// The wire types and tuning constants are public (doc-hidden) through
-// `ice_rpc::gen`; the crate itself keeps private aliases so that internal
-// modules can keep referring to them as `crate::X`.
-use types::{
-    NodeId, BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
-    INIT_RETRY_INTERVAL_MS, LARGE_TOPIC_BUFFER_SIZE, PUBLISHER_DEFAULT_MAX_SLICE_LEN,
-    PUBLISHER_LARGE_MAX_SLICE_LEN, SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
-};
-
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;
 
@@ -197,24 +172,20 @@ use std::sync::OnceLock;
 
 pub use crate::rt::CancellationToken;
 
-/// Global cancellation token for the WaitSet loops (dispatch loop).
+/// Global cancellation token for the background IPC threads.
 ///
-/// Triggered by the native iceoryx2 signal handling
-/// (`WaitSetRunResult::Interrupt` for SIGINT/Ctrl+C,
-/// `WaitSetRunResult::TerminationRequest` for SIGTERM), by a programmatic
-/// [`request_shutdown`], or by the dispatch loop on fatal error.
+/// Triggered on shutdown (see [`ShutdownGuard`]) and by
+/// [`shutdown_and_release`].
 #[doc(hidden)]
 pub fn global_cancel_token() -> &'static CancellationToken {
     static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
     TOKEN.get_or_init(CancellationToken::new)
 }
 
-/// Cancellation token for the NODE_REGISTRY listener.
+/// Secondary cancellation token, kept distinct from [`global_cancel_token`].
 ///
-/// Is NOT triggered by the dispatch loop on fatal error, only by a real
-/// termination signal (SIGINT/SIGTERM) or a programmatic [`request_shutdown`].
-/// This allows the listener to survive the provider death and to receive the
-/// restart announcements.
+/// Reserved for background helpers that must survive a global cancellation;
+/// both are cancelled by [`shutdown_and_release`] and by [`ShutdownGuard`].
 #[doc(hidden)]
 pub fn registry_cancel_token() -> &'static CancellationToken {
     static TOKEN: OnceLock<CancellationToken> = OnceLock::new();
@@ -235,21 +206,6 @@ pub async fn shutdown_and_release() {
     global_cancel_token().cancel();
     registry_cancel_token().cancel();
     ServiceLocator::global().release_node().await;
-}
-
-/// Cancels **both** cancellation tokens to propagate a termination request.
-///
-/// Called by the `WaitSet` loops when iceoryx2 reports
-/// [`WaitSetRunResult::Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt)
-/// (SIGINT, i.e. Ctrl+C) or
-/// [`TerminationRequest`](iceoryx2::waitset::WaitSetRunResult::TerminationRequest)
-/// (SIGTERM). The dispatch loop on a fatal error must NOT use this helper: it
-/// only cancels [`global_cancel_token`], so that the registry listener survives
-/// the provider death.
-pub(crate) fn request_shutdown() {
-    log::info!("Termination signal received, shutting down...");
-    global_cancel_token().cancel();
-    registry_cancel_token().cancel();
 }
 
 /// RAII guard for the automatic shutdown of an ice-rpc process.
@@ -338,10 +294,13 @@ pub async fn wait_for_shutdown() {
 // Initialization functions
 // ────────────────────────────────────────────────────────────────────
 
-/// Whether the iceoryx2 `WaitSet` loops must handle termination signals.
+/// Whether the framework must let the host keep full control of the process
+/// signals.
 ///
-/// `true` by default (set by [`init`]); [`init_without_ctrl_c`] clears it so the
-/// host keeps full control of the process signals.
+/// Set by [`init`] (the default) and cleared by [`init_without_ctrl_c`]. The
+/// native request/response transport does not install a signal handler, so the
+/// flag is currently informational; it is kept so the two entry points stay
+/// distinguishable for future signal-aware transports.
 static SIGNAL_HANDLING_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
@@ -350,39 +309,9 @@ static SIGNAL_HANDLING_ENABLED: std::sync::atomic::AtomicBool =
 /// The iceoryx2 global configuration is applied exactly once. Calling this
 /// several times is safe and has no effect after the first call — which is what
 /// allows [`run_provider!`] and `#[ice_rpc::main]` to bootstrap on their own.
-///
-/// The termination signals (SIGINT/SIGTERM) are no longer handled by a
-/// dedicated handler: they are reported by the native iceoryx2 `WaitSet` (see
-/// [`waitset_signal_handling_mode`]). [`init`] and [`init_without_ctrl_c`] only
-/// toggle [`SIGNAL_HANDLING_ENABLED`].
 fn ensure_initialized() {
     static CONFIG: std::sync::Once = std::sync::Once::new();
     CONFIG.call_once(config::setup_iceoryx2_global_config);
-}
-
-/// Pure resolver for the `WaitSet` signal handling mode.
-///
-/// Extracted from [`waitset_signal_handling_mode`] so the mapping stays
-/// unit-testable without touching the process-wide flag.
-fn resolve_signal_handling_mode(enabled: bool) -> iceoryx2::prelude::SignalHandlingMode {
-    if enabled {
-        iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests
-    } else {
-        iceoryx2::prelude::SignalHandlingMode::Disabled
-    }
-}
-
-/// Returns the [`SignalHandlingMode`](iceoryx2::prelude::SignalHandlingMode)
-/// that the `WaitSet` loops must use.
-///
-/// With [`init`], the default `HandleTerminationRequests` mode lets iceoryx2
-/// install its native SIGINT/SIGTERM handler, so a Ctrl+C makes the blocking
-/// wait return
-/// [`WaitSetRunResult::Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt)
-/// immediately, instead of relying on the polling timeout.
-/// [`init_without_ctrl_c`] selects `Disabled`.
-pub(crate) fn waitset_signal_handling_mode() -> iceoryx2::prelude::SignalHandlingMode {
-    resolve_signal_handling_mode(SIGNAL_HANDLING_ENABLED.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Initializes the framework and returns the RAII shutdown guard.
@@ -665,32 +594,5 @@ mod tests {
         // Without a created iceoryx2 Node, shutdown_and_release must terminate
         // cleanly. It uses `rt::timeout` internally, hence `test_block_on`.
         crate::rt::test_block_on(shutdown_and_release());
-    }
-
-    // ── signal handling mode ─────────────────────────────────────────
-
-    #[test]
-    fn signal_handling_mode_enabled_maps_to_native_termination_requests() {
-        assert_eq!(
-            resolve_signal_handling_mode(true),
-            iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests,
-        );
-    }
-
-    #[test]
-    fn signal_handling_mode_disabled_maps_to_disabled() {
-        assert_eq!(
-            resolve_signal_handling_mode(false),
-            iceoryx2::prelude::SignalHandlingMode::Disabled,
-        );
-    }
-
-    #[test]
-    fn waitset_signal_handling_mode_defaults_to_enabled() {
-        // No test clears the flag, so the process-wide default stays `true`.
-        assert_eq!(
-            waitset_signal_handling_mode(),
-            iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests,
-        );
     }
 }

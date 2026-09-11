@@ -228,3 +228,51 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         }
     }
 }
+
+/// Generates one `ServiceDispatcher::method(...)` registration that bridges an
+/// RPC method to the injected Node.js dispatch callback.
+///
+/// The callback receives the JSON-decoded request and returns a JSON response
+/// that is converted back into rkyv-encoded `WireEvent` samples. The service
+/// name comes from the proxy's own `SERVICE_NAME` constant, so no extra
+/// parameter is needed.
+pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStream {
+    let method_name_str = fn_name.to_string();
+    quote! {
+        {
+            dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
+                let Some(args) =
+                    #proxy_name::deserialize_request_to_value(#method_name_str, payload)
+                else {
+                    ::log::error!(
+                        "[{}::{}] Failed to deserialize the request",
+                        <#proxy_name>::SERVICE_NAME,
+                        #method_name_str
+                    );
+                    return Box::new(std::iter::empty());
+                };
+                let value = match ice_rpc::nodejs_dispatch::call(
+                    [0u8; 16],
+                    <#proxy_name>::SERVICE_NAME,
+                    #method_name_str,
+                    args,
+                ) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        ::log::error!(
+                            "[{}::{}] NodeJS dispatch failed: {}",
+                            <#proxy_name>::SERVICE_NAME,
+                            #method_name_str,
+                            e
+                        );
+                        return Box::new(std::iter::empty());
+                    }
+                };
+                match #proxy_name::serialize_response_from_value(#method_name_str, value) {
+                    Some((bytes, _kind)) => Box::new(std::iter::once(bytes)),
+                    None => Box::new(std::iter::empty()),
+                }
+            });
+        }
+    }
+}

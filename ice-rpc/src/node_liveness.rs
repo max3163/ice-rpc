@@ -96,11 +96,6 @@ pub fn is_provider() -> bool {
     IS_PROVIDER.load(Ordering::Relaxed)
 }
 
-/// Clears the provider marker (clean shutdown).
-pub fn clear_provider() {
-    IS_PROVIDER.store(false, Ordering::Relaxed);
-}
-
 // ---------------------------------------------------------------------------
 // Native liveness
 // ---------------------------------------------------------------------------
@@ -215,10 +210,6 @@ fn poller_loop() {
 
                     log::warn!("[node_liveness] CRASH DETECTED for Node {}", pid);
                     crate::sync::lock(watched_registry()).remove(&pid);
-                    crate::locator::ServiceLocator::global()
-                        .node_discovery()
-                        .invalidate_node_services(NodeId(pid));
-                    crate::node_supervisor::fire(pid);
                 }
             }
         }
@@ -272,10 +263,11 @@ mod tests {
 
     #[test]
     fn provider_marker_roundtrip() {
+        IS_PROVIDER.store(false, Ordering::Relaxed);
         assert!(!is_provider());
         mark_provider();
         assert!(is_provider());
-        clear_provider();
+        IS_PROVIDER.store(false, Ordering::Relaxed);
         assert!(!is_provider());
     }
 

@@ -5,7 +5,7 @@
 //!
 //! | Sub-module   | Contents                                                        |
 //! |--------------|-----------------------------------------------------------------|
-//! | [`node`]     | [`NodeId`] and the iceoryx2 topic names                         |
+//! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
 //! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`], [`EventKind`] |
 //! | [`stream`]   | [`Observable`] (the concrete stream), [`StreamError`], [`channel`] |
 //! | [`header`]   | [`RpcHeader`] and the correlation-id helpers                    |

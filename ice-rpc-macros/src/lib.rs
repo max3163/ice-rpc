@@ -27,9 +27,12 @@ use crate::codegen::{
     helpers::{extract_rpc_result_types, g_variant_name},
     http::{gen_http_callable_impl, HttpGenInput, HttpMethodData},
     lifecycle::{gen_lifecycle, LifecycleGenInput},
-    nodejs::{gen_nodejs_deserialize_fn, gen_nodejs_serialize_fn, NodeJsGenInput, NodeJsMethod},
+    nodejs::{
+        gen_nodejs_deserialize_fn, gen_nodejs_native_method, gen_nodejs_serialize_fn,
+        NodeJsGenInput, NodeJsMethod,
+    },
     proxy::{gen_proxy, gen_proxy_method, ProxyGenInput},
-    server::{gen_native_method, gen_server, gen_server_match_arm, ServerGenInput},
+    server::{gen_native_method, gen_server, ServerGenInput},
 };
 
 /// Optional parameters of the `#[service]` macro.
@@ -295,11 +298,12 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     // ── End of validation ────────────────────────────────────────
 
-    let ipc_prefix = logical_name.to_lowercase();
+    // `allow_large_payload` / `default_size_message` are kept as accepted (and
+    // ignored) attributes for source compatibility; the native iceoryx2
+    // request/response transport negotiates sizes itself.
+    let _ = (allow_large_payload, default_size_message_kb);
 
-    let topic_ready = format!("{}_server_ready", ipc_prefix);
     let logical_name_lit = logical_name.clone();
-    let blackboard_key: u8 = 1u8;
 
     let req_enum_name = format_ident!("{}Request", trait_name);
     let client_name = format_ident!("{}Client", trait_name);
@@ -311,8 +315,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
     let mut variant_discriminant: u8 = 0;
-    let mut server_match_arms = Vec::new();
     let mut server_native_methods = Vec::new();
+    let mut nodejs_native_methods = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
     for item in &input_trait.items {
@@ -376,22 +380,14 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 service_version,
             }));
 
-            server_match_arms.push(gen_server_match_arm(
-                trait_name,
-                fn_name,
-                &var_name,
-                &arg_names,
-                &req_enum_name,
-                service_version,
-                (&*ok_type, &*err_type),
-            ));
-
             server_native_methods.push(gen_native_method(
                 fn_name,
                 &var_name,
                 &arg_names,
                 &req_enum_name,
             ));
+
+            nodejs_native_methods.push(gen_nodejs_native_method(&proxy_name, fn_name));
 
             node_methods.push(gen_proxy_method(
                 fn_name,
@@ -423,17 +419,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let server_input = ServerGenInput {
         trait_name,
-        logical_name: &logical_name_lit,
         visibility,
         server_name: &server_name,
-        req_enum_name: &req_enum_name,
-        topic_ready: &topic_ready,
-        blackboard_key,
-        server_match_arms: &server_match_arms,
         server_native_methods: &server_native_methods,
-        allow_large_payload,
-        default_size_message_kb,
-        service_version,
     };
     let server_output = gen_server(&server_input);
 
@@ -455,9 +443,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         server_name: &server_name,
         mode_name: &mode_name,
         logical_name_lit: &logical_name_lit,
-        allow_large_payload,
-        default_size_message_kb,
-        service_version,
+        nodejs_native_methods: &nodejs_native_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 

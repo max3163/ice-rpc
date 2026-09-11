@@ -25,36 +25,11 @@
 //! The `ice-rpc-macros-tests` crate pins every symbol with a dedicated contract
 //! test (`gen_facade_symbols_resolve`).
 
-// ── Access-control / blackboard ─────────────────────────────────────
-pub use crate::blackboard::{create_node_blackboard, list_services};
-
-// ── Client core ─────────────────────────────────────────────────────
-pub use crate::client_core::ClientCore;
-pub use crate::client_core::ConnectionState;
-
-// ── Hub ─────────────────────────────────────────────────────────────
-pub use crate::hub::{NodeHub, PayloadSegment, RequestHandler, ResponseHandler};
-
-// ── Node discovery ──────────────────────────────────────────────────
-pub use crate::node_discovery::{DiscoveryEvent, NodeDiscovery, NodeRecord};
-
 // ── Node liveness ───────────────────────────────────────────────────
 pub use crate::node_liveness::{
     is_pid_alive, is_provider, mark_provider, register_node_liveness_watcher,
     unregister_node_liveness_watcher, LIVENESS_POLL_MS,
 };
-
-// ── Node supervisor ─────────────────────────────────────────────────
-pub use crate::node_supervisor::{
-    fire as fire_reconnect_callbacks, NodeSupervisor, ReconnectCallback, SubscriberId, Subscription,
-};
-
-// ── Reconnection ────────────────────────────────────────────────────
-pub use crate::reconnect_manager::{PendingService, ReconnectManager};
-
-// ── Registry ────────────────────────────────────────────────────────
-pub use crate::registry_listener::spawn as spawn_node_registry_listener;
-pub use crate::registry_notify::{announce_dead_node, announce_node_ready};
 
 // ── Shutdown ────────────────────────────────────────────────────────
 pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};

@@ -16,9 +16,8 @@ pub const METHOD_NAME_LEN: usize = 64;
 
 /// Maximum byte length of a service name in the RPC header (**inclusive**).
 ///
-/// Must match the private `SERVICE_NAME_LEN` constant in `ice-rpc-macros`, the
-/// `StaticString` capacity used in `RpcHeader`, and
-/// [`REGISTRY_SERVICE_NAME_LEN`].
+/// Must match the private `SERVICE_NAME_LEN` constant in `ice-rpc-macros` and
+/// the `StaticString` capacity used in `RpcHeader`.
 pub const SERVICE_NAME_LEN: usize = 64;
 
 /// Version of the ice-rpc wire protocol carried in [`RpcHeader`].
@@ -67,16 +66,3 @@ pub const DEFAULT_TOPIC_BUFFER_SIZE: usize = 4096;
 /// Subscriber buffer size for the `_large` topics.
 ///
 pub const LARGE_TOPIC_BUFFER_SIZE: usize = 4;
-
-// ---------------------------------------------------------------------------
-// Types for the discovery registry (1 Blackboard per node)
-// ---------------------------------------------------------------------------
-
-/// Maximum number of services per node (= number of keys in the Blackboard).
-pub const MAX_SERVICES_PER_NODE: usize = 32;
-/// Maximum byte length of a service name used as a key in the Blackboard
-/// (**inclusive**). Must equal [`SERVICE_NAME_LEN`].
-///
-/// The key is a raw `[u8; REGISTRY_SERVICE_NAME_LEN]` array, **not** a
-/// NUL-terminated C string: a name of exactly this length fills the whole key.
-pub const REGISTRY_SERVICE_NAME_LEN: usize = 64;

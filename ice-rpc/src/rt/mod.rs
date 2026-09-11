@@ -163,9 +163,9 @@ where
 /// Runs a blocking closure on a **dedicated** thread and returns an awaitable
 /// handle.
 ///
-/// Reserved for the **long-lived IPC loops** (dispatch loop, registry listener,
-/// liveness poller, reconnect worker): they run for the whole process lifetime,
-/// so they must own a thread instead of permanently occupying a slot in a
+/// Reserved for the **long-lived IPC loops** (the transport dispatch threads and
+/// the liveness poller): they run for the whole process lifetime, so they must
+/// own a thread instead of permanently occupying a slot in a
 /// shared pool. For short blocking work offloaded from an async context, use
 /// [`blocking_call`] or [`spawn_blocking_value`], which run on the runtime's
 /// bounded pool.

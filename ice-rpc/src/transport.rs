@@ -137,6 +137,15 @@ pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
     out
 }
 
+/// Formats a correlation id as a UUID-like hexadecimal string.
+pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
+    let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = cid;
+    format!(
+        "{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}-{b6:02x}{b7:02x}-\
+         {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"
+    )
+}
+
 /// Encodes a request body as `[method_len: u16 BE][method utf8][payload]`.
 pub fn encode_request(method: &str, payload: &[u8]) -> Vec<u8> {
     let method = method.as_bytes();
@@ -671,4 +680,82 @@ fn publish_response(publisher: &IoxPublisher, cid: &[u8], response: &[u8]) -> Re
         .send()
         .map_err(|e| transport_error("send response", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq)]
+    struct Sample {
+        id: u32,
+        count: u64,
+    }
+
+    #[test]
+    fn correlation_ids_are_unique_and_carry_the_pid() {
+        let a = next_correlation_id();
+        let b = next_correlation_id();
+        assert_ne!(a, b);
+        let pid = u64::from_be_bytes(a[..8].try_into().unwrap());
+        assert_eq!(pid, u64::from(std::process::id()));
+    }
+
+    #[test]
+    fn fmt_correlation_id_is_uuid_shaped() {
+        let cid = [
+            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77,
+        ];
+        assert_eq!(
+            fmt_correlation_id(&cid),
+            "deadbeef-cafe-babe-0011-223344556677"
+        );
+    }
+
+    #[test]
+    fn request_framing_roundtrip() {
+        let frame = encode_request("get_user_age", b"payload");
+        let (method, payload) = decode_request(&frame).expect("decodes");
+        assert_eq!(method, "get_user_age");
+        assert_eq!(payload, b"payload");
+    }
+
+    #[test]
+    fn request_framing_rejects_truncated_input() {
+        assert!(decode_request(&[]).is_none());
+        assert!(decode_request(&[0]).is_none());
+        // Announces 5 bytes of method name but carries none.
+        assert!(decode_request(&[0, 5]).is_none());
+    }
+
+    #[test]
+    fn decode_aligned_tolerates_an_unaligned_payload() {
+        let value = Sample {
+            id: 7,
+            count: 0x0102_0304_0506_0708,
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&value).unwrap();
+
+        // Reproduce the wire framing: the payload starts after a two-byte
+        // length, which is not necessarily aligned for `u64`.
+        let mut framed = vec![0u8, 0u8];
+        framed.extend_from_slice(&bytes);
+
+        let decoded = decode_aligned::<Sample>(&framed[2..]).expect("aligned decode");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn dispatcher_routes_known_methods_and_closes_unknown_ones() {
+        let mut dispatcher = ServiceDispatcher::new();
+        dispatcher.method("echo", |payload| {
+            Box::new(std::iter::once(payload.to_vec()))
+        });
+
+        let responses: Vec<_> = dispatcher.dispatch("echo", b"hi").collect();
+        assert_eq!(responses, vec![b"hi".to_vec()]);
+
+        assert_eq!(dispatcher.dispatch("unknown", b"hi").count(), 0);
+    }
 }

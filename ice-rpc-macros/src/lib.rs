@@ -8,10 +8,9 @@
 mod codegen;
 mod entry;
 
-// PRIVATE constants — the public versions are in ice-rpc (`types.rs`).
+// PRIVATE constants — the public versions are in ice-rpc (`types/consts.rs`).
 // The values MUST be identical to `ice_rpc::types::{SERVICE_NAME_LEN, METHOD_NAME_LEN}`
-// (64) because `RpcHeader` stores the names in a `StaticString<SERVICE_NAME_LEN>`
-// and truncates silently past that length.
+// (64): they are the maximum name lengths the generated wire framing accepts.
 const SERVICE_NAME_LEN: usize = 64;
 const METHOD_NAME_LEN: usize = 64;
 
@@ -44,10 +43,10 @@ use crate::codegen::{
 /// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
 ///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
-/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline for
-///   locating the provider before the first call (default:
-///   `ice_rpc::gen::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
-///   suffixes. It bounds the *discovery* phase only, never the response wait.
+/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline, accepted
+///   for source compatibility. The publish/subscribe transport connects on
+///   demand, so the value is currently informational and never bounds the
+///   response wait. Accepts the `s` / `m` / `h` suffixes.
 /// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,

@@ -1,14 +1,13 @@
 //! Central service registry (Service Locator pattern).
 //!
-//! Minimal registry kept for the native iceoryx2 request/response transport:
+//! Minimal registry kept for the publish/subscribe transport:
 //! - **Providers** call [`ServiceLocator::register`] (via `run_provider!`);
 //! - **Consumers** are instantiated lazily on demand from their type during the
 //!   first [`ServiceLocator::get`], using [`ServiceConsumer::consume_proxy`].
 //!
-//! Service discovery and the transport itself are handled natively by
-//! iceoryx2 request/response (`ice_rpc::reqres`): the client opens the service
-//! by name on the first call, so no node resolution, blackboard registry or
-//! dispatch loop is needed here.
+//! Service discovery and the transport itself are handled by iceoryx2
+//! (`ice_rpc::transport`): a client opens the service by name on the first call,
+//! so no node resolution, registry or dispatch loop is needed here.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -135,9 +134,9 @@ impl ServiceLocator {
     /// sort; a dependency that is not registered locally is treated as external
     /// (it is provided by another process) and never blocks initialization.
     ///
-    /// Each service `init()` spawns its native request/response service (see
-    /// the generated lifecycle). A cyclic graph falls back to the registration
-    /// order instead of failing.
+    /// Each service `init()` starts its transport service (see the generated
+    /// lifecycle). A cyclic graph falls back to the registration order instead
+    /// of failing.
     pub async fn initialize_all(&self) -> Result<(), String> {
         let snapshot: Vec<(&'static str, Arc<dyn ServiceLifecycle>, Vec<&'static str>)> = {
             let entries = self.entries.read().await;
@@ -147,41 +146,11 @@ impl ServiceLocator {
                 .collect()
         };
 
-        let registered: HashSet<&'static str> = snapshot.iter().map(|(name, _, _)| *name).collect();
+        let names: Vec<&'static str> = snapshot.iter().map(|(name, _, _)| *name).collect();
+        let deps: Vec<Vec<&'static str>> =
+            snapshot.iter().map(|(_, _, deps)| deps.clone()).collect();
 
-        let mut remaining: Vec<usize> = (0..snapshot.len()).collect();
-        let mut done: HashSet<&'static str> = HashSet::new();
-        let mut order: Vec<usize> = Vec::with_capacity(snapshot.len());
-
-        while !remaining.is_empty() {
-            let mut next_remaining = Vec::new();
-            let mut progressed = false;
-            for &i in &remaining {
-                let ready = snapshot[i]
-                    .2
-                    .iter()
-                    .all(|dep| done.contains(dep) || !registered.contains(dep));
-                if ready {
-                    order.push(i);
-                    done.insert(snapshot[i].0);
-                    progressed = true;
-                } else {
-                    next_remaining.push(i);
-                }
-            }
-            remaining = next_remaining;
-            if !progressed {
-                // Dependency cycle: keep the remaining services in registration
-                // order rather than dead-locking the whole process.
-                log::warn!(
-                    "[ServiceLocator] dependency cycle among {:?}; using registration order",
-                    remaining.iter().map(|&i| snapshot[i].0).collect::<Vec<_>>()
-                );
-                order.append(&mut remaining);
-            }
-        }
-
-        for i in order {
+        for i in topological_order(&names, &deps) {
             let (name, lifecycle, _) = &snapshot[i];
             if !lifecycle.init().await {
                 log::error!("[ServiceLocator] service '{name}' failed to initialize");
@@ -189,5 +158,88 @@ impl ServiceLocator {
             }
         }
         Ok(())
+    }
+}
+
+/// Returns the initialization indices in dependency order (Kahn's algorithm).
+///
+/// A dependency that is not in `names` is treated as **external** (provided by
+/// another process) and never blocks. A dependency cycle falls back to the
+/// registration order instead of dead-locking the process.
+fn topological_order(names: &[&'static str], deps: &[Vec<&'static str>]) -> Vec<usize> {
+    let registered: HashSet<&'static str> = names.iter().copied().collect();
+
+    let mut remaining: Vec<usize> = (0..names.len()).collect();
+    let mut done: HashSet<&'static str> = HashSet::with_capacity(names.len());
+    let mut order: Vec<usize> = Vec::with_capacity(names.len());
+
+    while !remaining.is_empty() {
+        let mut next_remaining = Vec::new();
+        let mut progressed = false;
+        for &i in &remaining {
+            let ready = deps[i]
+                .iter()
+                .all(|dep| done.contains(dep) || !registered.contains(dep));
+            if ready {
+                order.push(i);
+                done.insert(names[i]);
+                progressed = true;
+            } else {
+                next_remaining.push(i);
+            }
+        }
+        remaining = next_remaining;
+        if !progressed {
+            log::warn!(
+                "[ServiceLocator] dependency cycle among {:?}; using registration order",
+                remaining.iter().map(|&i| names[i]).collect::<Vec<_>>()
+            );
+            order.append(&mut remaining);
+        }
+    }
+    order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::topological_order;
+
+    #[test]
+    fn dependencies_come_first() {
+        // `DatabaseService` depends on `ConfigService`, registered after it.
+        let names = ["DatabaseService", "ConfigService"];
+        let deps = [vec!["ConfigService"], vec![]];
+        assert_eq!(topological_order(&names, &deps), vec![1, 0]);
+    }
+
+    #[test]
+    fn independent_services_keep_the_registration_order() {
+        let names = ["A", "B", "C"];
+        let deps = [vec![], vec![], vec![]];
+        assert_eq!(topological_order(&names, &deps), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn external_dependencies_do_not_block() {
+        // `A` depends on a service provided by another process.
+        let names = ["A"];
+        let deps = [vec!["RemoteService"]];
+        assert_eq!(topological_order(&names, &deps), vec![0]);
+    }
+
+    #[test]
+    fn a_cycle_falls_back_to_the_registration_order() {
+        let names = ["A", "B"];
+        let deps = [vec!["B"], vec!["A"]];
+        let order = topological_order(&names, &deps);
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&0) && order.contains(&1));
+    }
+
+    #[test]
+    fn chained_dependencies_are_fully_ordered() {
+        let names = ["C", "B", "A"];
+        let deps = [vec!["B"], vec!["A"], vec![]];
+        assert_eq!(topological_order(&names, &deps), vec![2, 1, 0]);
     }
 }

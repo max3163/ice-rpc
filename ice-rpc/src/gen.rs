@@ -9,9 +9,9 @@
 //!
 //! # Contents
 //!
-//! - the wire types and provider primitives used by the generated client /
-//!   server (`WireEvent`, `RpcHeader`, `EventKind`, `Sender`, `channel`, …);
-//! - the tuning constants and the correlation-id helpers;
+//! - the Rx vocabulary the generated code builds on (`WireEvent`, `Sender`,
+//!   `channel`, `Observable`, …);
+//! - the name-length limits;
 //! - the plumbing invoked by `run_provider!` / `#[ice_rpc::main]`;
 //! - the dependency re-exports (`rkyv`, `serde_json`, `base64`, …) that the
 //!   generated code needs without forcing the user crate to declare them.
@@ -34,14 +34,10 @@ pub use crate::node_liveness::{
 // ── Shutdown ────────────────────────────────────────────────────────
 pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
-// ── Wire types, provider primitives, correlation ids and constants ───
+// ── Rx vocabulary and name limits ───────────────────────────────────
 pub use crate::types::{
-    caller_pid_from_cid, channel, fmt_correlation_id, fmt_correlation_id_short, raw_pid_to_u32,
-    unbounded_channel, EventKind, NodeId, RpcHeader, Sender, StaticString, WireEvent,
-    BLACKBOARD_MAX_READERS, DEFAULT_TOPIC_BUFFER_SIZE, INITIALIZE_ALL_TIMEOUT_SECS,
-    INIT_RETRY_INTERVAL_MS, LARGE_PAYLOAD_THRESHOLD, LARGE_TOPIC_BUFFER_SIZE, METHOD_NAME_LEN,
-    PROTOCOL_VERSION, PUBLISHER_DEFAULT_MAX_SLICE_LEN, PUBLISHER_LARGE_MAX_SLICE_LEN,
-    RPC_CALL_TIMEOUT_SECS, SERVER_READY_POLL_MS, WAITSET_TIMEOUT_US,
+    channel, raw_pid_to_u32, unbounded_channel, NodeId, Sender, WireEvent, METHOD_NAME_LEN,
+    SERVICE_NAME_LEN,
 };
 
 // Canonical terminal implementations, shared with `ice-rpc-rx` so that the
@@ -72,11 +68,12 @@ pub use crate::{_ProviderService, registry_cancel_token, run_provider_inner};
 pub use crate::start_http_server;
 
 // ── Publish/subscribe transport ─────────────────────────────────────
-// Entry points used by the generated client/server (one channel per service,
-// correlated by request id, terminal event carried in the stream).
+// Entry points used by the generated client/server (one request channel and one
+// response channel per service, correlated by a 16-byte id).
 pub use crate::transport::{
-    decode_aligned, decode_request, encode_request, native_call, observable_to_responses,
-    spawn_native_service, ResponseIter, ServiceDispatcher,
+    decode_aligned, decode_request, encode_request, fmt_correlation_id, native_call,
+    next_correlation_id, observable_to_responses, spawn_native_service, ResponseIter,
+    ServiceDispatcher,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

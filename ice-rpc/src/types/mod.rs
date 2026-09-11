@@ -6,17 +6,13 @@
 //! | Sub-module   | Contents                                                        |
 //! |--------------|-----------------------------------------------------------------|
 //! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
-//! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`], [`EventKind`] |
+//! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`]       |
 //! | [`stream`]   | [`Observable`] (the concrete stream), [`StreamError`], [`channel`] |
-//! | [`header`]   | [`RpcHeader`] and the correlation-id helpers                    |
 //! | [`error`]    | [`RpcError`]                                                    |
-//! | [`consts`]   | Tuning constants (timeouts, buffer sizes, …)                    |
-
-pub use iceoryx2_bb_container::string::StaticString;
+//! | [`consts`]   | Name-length limits shared with `ice-rpc-macros`                 |
 
 mod consts;
 mod error;
-mod header;
 mod node;
 mod stream;
 mod wire;
@@ -26,13 +22,12 @@ mod tests;
 
 pub use consts::*;
 pub use error::RpcError;
-pub use header::{caller_pid_from_cid, fmt_correlation_id, fmt_correlation_id_short, RpcHeader};
 pub use node::*;
 pub use stream::{
     channel, collect_values, first_event, unbounded_channel, Observable, StreamError,
 };
-pub use wire::{Event, EventKind, ObservableError, Sender, WireEvent};
+pub use wire::{Event, ObservableError, Sender, WireEvent};
 
-// Shared by the native request/response transport to normalize the `WireEvent`
-// it receives over the wire into the user-facing `Event`.
+// Shared by the transport to normalize the `WireEvent` it receives over the
+// wire into the user-facing `Event`.
 pub(crate) use wire::normalize_wire_event;

@@ -1,9 +1,9 @@
 //! Contract test for the `#[doc(hidden)] pub mod gen` facade of `ice-rpc`.
 //!
 //! `ice-rpc-macros` emits code that references every symbol below, and
-//! `ice-rpc-rx` uses the provider primitives (`channel`, `Sender`, `WireEvent`,
-//! …). `gen` is therefore an internal contract between those crates and the
-//! runtime (see the "Versioning contract" note in `ice-rpc/src/gen.rs`).
+//! `ice-rpc-rx` uses the Rx primitives (`channel`, `Sender`, `WireEvent`, …).
+//! `gen` is therefore an internal contract between those crates and the runtime
+//! (see the "Versioning contract" note in `ice-rpc/src/gen.rs`).
 //!
 //! Importing/mentioning each symbol explicitly makes the test fail to compile as
 //! soon as one of them is renamed or removed — which is exactly the
@@ -23,7 +23,6 @@ fn gen_facade_symbols_resolve() {
     use ice_rpc::gen::{
         _ProviderService,
         // Plumbing invoked by the generated entry points
-        caller_pid_from_cid,
         channel,
         clear_ipc_cleanup,
         collect_values,
@@ -32,7 +31,6 @@ fn gen_facade_symbols_resolve() {
         encode_request,
         first_event,
         fmt_correlation_id,
-        fmt_correlation_id_short,
         global_cancel_token,
         init,
         init_without_ctrl_c,
@@ -40,6 +38,7 @@ fn gen_facade_symbols_resolve() {
         is_provider,
         mark_provider,
         native_call,
+        next_correlation_id,
         observable_to_responses,
         raw_pid_to_u32,
         register_ipc_cleanup,
@@ -52,33 +51,19 @@ fn gen_facade_symbols_resolve() {
         unbounded_channel,
         unregister_node_liveness_watcher,
         wait_for_shutdown,
-        EventKind,
         HttpCallable,
         NodeId,
         ResponseIter,
-        RpcHeader,
         Sender,
         ServiceConsumer,
         ServiceDispatcher,
         ServiceLifecycle,
         ServiceNamed,
         ShutdownGuard,
-        StaticString,
         WireEvent,
-        BLACKBOARD_MAX_READERS,
-        DEFAULT_TOPIC_BUFFER_SIZE,
-        INITIALIZE_ALL_TIMEOUT_SECS,
-        INIT_RETRY_INTERVAL_MS,
-        LARGE_PAYLOAD_THRESHOLD,
-        LARGE_TOPIC_BUFFER_SIZE,
         LIVENESS_POLL_MS,
         METHOD_NAME_LEN,
-        PROTOCOL_VERSION,
-        PUBLISHER_DEFAULT_MAX_SLICE_LEN,
-        PUBLISHER_LARGE_MAX_SLICE_LEN,
-        RPC_CALL_TIMEOUT_SECS,
-        SERVER_READY_POLL_MS,
-        WAITSET_TIMEOUT_US,
+        SERVICE_NAME_LEN,
     };
 
     // The symbols above are only valid as a set; no runtime behaviour is

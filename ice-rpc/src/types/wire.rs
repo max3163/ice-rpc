@@ -7,7 +7,6 @@
 //!
 //! [`From<Event>`]: From
 
-use iceoryx2::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::error::RpcError;
@@ -17,7 +16,7 @@ use super::error::RpcError;
 /// Follows the Rx pattern: a single `error` channel, where the payload
 /// distinguishes a **business** error (authored by the service) from a
 /// **technical** one (raised by the framework/transport).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservableError<E> {
     /// Business error emitted by the service.
     Business(E),
@@ -73,7 +72,7 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for ObservableErr
 /// This is the user-facing event type: the transport-level [`WireEvent`]
 /// `CompleteWith` optimization is never exposed here. A single `Error` variant
 /// carries both business and technical failures ([`ObservableError`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event<T, E> {
     /// Intermediate business value.
     Next(T),
@@ -96,7 +95,7 @@ impl<T, E> Event<T, E> {
 /// Internal counterpart of [`Event`]: it adds the [`WireEvent::CompleteWith`]
 /// single-sample optimization used by producers. Consumers never observe it —
 /// [`crate::Observable::recv`] normalizes it into [`Event`].
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum WireEvent<T, E> {
     /// Intermediate business value.
@@ -280,31 +279,5 @@ pub(crate) fn normalize_wire_event<T, E>(
         WireEvent::CompleteWith(v) => (Event::Next(v), Some(Event::Complete)),
         WireEvent::Error(e) => (Event::Error(ObservableError::Business(e)), None),
         WireEvent::RpcError(e) => (Event::Error(ObservableError::Technical(e)), None),
-    }
-}
-/// Discriminant of the RPC event type carried in the [`RpcHeader`].
-///
-/// `#[repr(C)]` is required by `ZeroCopySend`. The values are fixed.
-#[repr(C)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Default, Archive, Serialize, Deserialize,
-)]
-pub enum EventKind {
-    /// Request emitted by the client (non-terminal).
-    #[default]
-    Request = 0,
-    /// Intermediate event carrying a business value.
-    Next = 1,
-    /// Normal end of the stream (terminal).
-    Complete = 2,
-    /// Business error (terminal).
-    Error = 3,
-}
-
-impl EventKind {
-    /// Returns `true` if this event terminates the stream.
-    #[inline]
-    pub fn is_terminal(self) -> bool {
-        matches!(self, EventKind::Complete | EventKind::Error)
     }
 }

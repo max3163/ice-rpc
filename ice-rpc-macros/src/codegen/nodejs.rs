@@ -147,13 +147,11 @@ fn is_type_vec_u8(ty: &Type) -> bool {
     false
 }
 
-/// Generates the `serialize_response_from_value(method, value) -> Option<(Vec<u8>, EventKind)>` function.
+/// Generates the `serialize_response_from_value(method, value) -> Option<Vec<u8>>`
+/// function.
 ///
 /// The JS returns an object `{ "type": "next"|"complete"|"error", "data": ... }`.
-/// We manually build `Event<Ok, Err>` then serialize it to rkyv.
-///
-/// Also returns the [`EventKind`] to avoid a double rkyv deserialization
-/// in the ProviderNodeJs handler.
+/// We manually build a `WireEvent` then serialize it to rkyv.
 pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
     let NodeJsGenInput {
         visibility,
@@ -172,7 +170,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
             quote! {
                 #fn_name_str => {
                     let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("next");
-                    let (event, event_kind) = match event_type {
+                    let event = match event_type {
                         "next" => {
                             let data: #ok_type = match value.get("data") {
                                 Some(d) => match ice_rpc::gen::serde_json::from_value(d.clone()) {
@@ -181,7 +179,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::gen::WireEvent::Next(data), ice_rpc::gen::EventKind::Next)
+                            ice_rpc::gen::WireEvent::Next(data)
                         }
                         "complete" => match value.get("data") {
                             Some(d) => {
@@ -189,9 +187,9 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                (ice_rpc::gen::WireEvent::CompleteWith(data), ice_rpc::gen::EventKind::Complete)
+                                ice_rpc::gen::WireEvent::CompleteWith(data)
                             }
-                            None => (ice_rpc::gen::WireEvent::Complete, ice_rpc::gen::EventKind::Complete),
+                            None => ice_rpc::gen::WireEvent::Complete,
                         },
                         "error" => {
                             let err: #err_type = match value.get("data") {
@@ -201,14 +199,13 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::gen::WireEvent::Error(err), ice_rpc::gen::EventKind::Error)
+                            ice_rpc::gen::WireEvent::Error(err)
                         }
                         _ => return None,
                     };
-                    let bytes = ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                    ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
                         .ok()
-                        .map(|aligned| aligned.to_vec())?;
-                    Some((bytes, event_kind))
+                        .map(|aligned| aligned.to_vec())
                 }
             }
         })
@@ -219,7 +216,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         // surface is emitted for every service but consumed only by the bridge.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<(Vec<u8>, ice_rpc::gen::EventKind)> {
+            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<Vec<u8>> {
                 match method {
                     #(#match_arms)*
                     _ => None,
@@ -269,7 +266,7 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                     }
                 };
                 match #proxy_name::serialize_response_from_value(#method_name_str, value) {
-                    Some((bytes, _kind)) => Box::new(std::iter::once(bytes)),
+                    Some(bytes) => Box::new(std::iter::once(bytes)),
                     None => Box::new(std::iter::empty()),
                 }
             });

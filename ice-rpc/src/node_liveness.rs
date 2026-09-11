@@ -38,8 +38,7 @@ use crate::types::{raw_pid_to_u32, NodeId};
 /// often. Measured on the `blast` benchmark: at 100 ms it tips iceoryx2 into a
 /// notifier warning spiral and the `blast` p50 collapses; at 250–500 ms the
 /// benchmark stays within its reference noise. Detection latency is bounded by
-/// this interval, and 500 ms matches the reconnection manager cadence
-/// (`INIT_RETRY_INTERVAL_MS`).
+/// this interval and is amortised across every watched node.
 pub const LIVENESS_POLL_MS: u64 = 500;
 
 /// Granularity of the interruptible sleep (ms).
@@ -84,14 +83,14 @@ static IS_PROVIDER: AtomicBool = AtomicBool::new(false);
 
 /// Marks this process as a discovery provider.
 ///
-/// Called when the node Blackboard is published. Replaces the former
-/// hand-written kernel lock: the iceoryx2 [`Node`] created at init already
-/// holds the native monitoring token, so no extra lock is needed.
+/// Called when a process starts providing at least one service. The iceoryx2
+/// [`Node`] it owns already carries the native monitoring token, so an external
+/// watcher can tell a clean shutdown from a crash.
 pub fn mark_provider() {
     IS_PROVIDER.store(true, Ordering::Relaxed);
 }
 
-/// Returns `true` when this process published a discovery registry.
+/// Returns `true` when this process provides at least one service.
 pub fn is_provider() -> bool {
     IS_PROVIDER.load(Ordering::Relaxed)
 }
@@ -229,9 +228,8 @@ fn poller_loop() {
 /// `alive_pids()` only reports `Alive` nodes, so a missing PID means the node
 /// either **crashed** (listed as `Dead` — the OS released its monitoring lock)
 /// or **shut down cleanly** (its resources were removed, so it is not listed at
-/// all). Both must trigger the reconnection: requiring a `Dead` state alone
-/// missed clean shutdowns, which is why a stopped provider was only noticed
-/// once a new one started.
+/// all). Both must be reported: requiring a `Dead` state alone would miss clean
+/// shutdowns, so a stopped provider would only be noticed once a new one starts.
 ///
 /// `Inaccessible` / `Undefined` (permissions or a transient inconsistency) are
 /// treated as inconclusive and retried on the next tick.

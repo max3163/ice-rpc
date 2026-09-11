@@ -28,8 +28,8 @@
 //!
 //! The `#[service("MyService")]` macro automatically generates:
 //! - `MyServiceRequest` — rkyv enum for serialization
-//! - `MyServiceClient` — IPC client with automatic reconnection
-//! - `MyServiceServer` — IPC server with dispatch loop
+//! - `MyServiceClient` — IPC client (publish/subscribe, one call per request id)
+//! - `MyServiceServer` — IPC server exposing the method dispatcher
 //! - `MyServiceProxy` — unified entry point (3 modes)
 //!
 //! ### 2. Start a Provider
@@ -93,7 +93,7 @@
 //!
 //! | Crate             | Role                                               |
 //! |-------------------|----------------------------------------------------|
-//! | `ice-rpc`         | Core framework (types, discovery, hub)             |
+//! | `ice-rpc`         | Core framework (types, transport, ServiceLocator)  |
 //! | `ice-rpc-macros`  | Procedural macros (`#[service]`)                   |
 //! | `common`          | Example services (not shipped)                     |
 //! | `gateway_nodejs`  | Node.js bridge (N-API) for the services            |
@@ -107,8 +107,8 @@
 //!   business (`E`) or technical (`RpcError`)
 //! - **ServiceLocator** : registry of the services the process provides, plus a
 //!   lazy cache of the consumer proxies
-//! - **request/response** : the native iceoryx2 transport used by the generated
-//!   client and server (`ice_rpc::reqres`)
+//! - **transport** : iceoryx2 publish/subscribe, one channel per service,
+//!   correlated by a 16-byte request id (`ice_rpc::transport`)
 //! - **Proxy** : unified entry point supporting 3 modes (Provider / Consumer / ProviderNodeJs)
 //!
 //! ## Main modules
@@ -160,9 +160,9 @@ mod http_gateway;
 pub use service_traits::ServiceInit;
 
 // ── Public API: Rx vocabulary used in service signatures ────────────
-// Everything wire-level (`RpcHeader`, `WireEvent`, `EventKind`, `Sender`,
-// `channel`, `NodeId`, correlation ids, tuning constants, `setup_iceoryx2_*`)
-// lives in `ice_rpc::gen`, alongside the plumbing invoked by the macros.
+// Everything wire-level (`WireEvent`, `Sender`, `channel`, `NodeId`, the
+// transport entry points, `setup_iceoryx2_*`) lives in `ice_rpc::gen`,
+// alongside the plumbing invoked by the macros.
 pub use types::{Event, Observable, ObservableError, RpcError, StreamError};
 
 // ── Public API: locator ─────────────────────────────────────────────
@@ -280,11 +280,10 @@ pub fn locator() -> &'static ServiceLocator {
 ///
 /// # Signal handling
 ///
-/// The Ctrl+C/SIGTERM detection relies on the native iceoryx2 `WaitSet`: a
-/// process must have started at least one `WaitSet` loop (the dispatch loop
-/// and/or the registry listener) for the signal to be caught. Otherwise the
-/// operating system's default disposition applies (hard termination). The
-/// framework starts those loops on the first proxy use.
+/// The transport does not install a SIGINT/SIGTERM handler, so the operating
+/// system's default disposition applies: Ctrl+C terminates the process. A
+/// programmatic shutdown must cancel [`global_cancel_token`] (which is what
+/// [`ShutdownGuard`] does when it is dropped).
 #[doc(hidden)]
 pub async fn wait_for_shutdown() {
     global_cancel_token().cancelled().await;

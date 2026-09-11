@@ -15,3 +15,11 @@ pub const METHOD_NAME_LEN: usize = 64;
 ///
 /// Must match the private `SERVICE_NAME_LEN` constant in `ice-rpc-macros`.
 pub const SERVICE_NAME_LEN: usize = 64;
+
+/// Version of the ice-rpc wire protocol carried in [`RpcHeader`].
+///
+/// Bumped whenever the framing or the header layout changes. A peer with a
+/// different value is reported before its request is dispatched.
+///
+/// [`RpcHeader`]: crate::types::RpcHeader
+pub const PROTOCOL_VERSION: u16 = 1;

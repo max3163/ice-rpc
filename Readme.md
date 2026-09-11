@@ -249,8 +249,8 @@ Each logical service `{service}` maps to four iceoryx2 services:
 
 | iceoryx2 service | Direction | Contents |
 |---|---|---|
-| `{service}_req` | consumer → provider | `cid[16] ++ [method_len: u16 BE][method][payload]` |
-| `{service}_resp` | provider → consumer | `cid[16] ++ rkyv(WireEvent<T, E>)` |
+| `{service}_req` | consumer → provider | `RpcHeader` in `user_header` + `rkyv(args)` |
+| `{service}_resp` | provider → consumer | `RpcHeader` in `user_header` + `rkyv(WireEvent<T, E>)` |
 | `{service}_req_notify` | event | wake-up signal for the provider |
 | `{service}_resp_notify` | event | wake-up signal for the consumer |
 
@@ -260,40 +260,61 @@ shared-memory bus can do. With pub/sub the ports are created once and every call
 is a single loaned sample; correlating the responses by request id gives the same
 call/response semantics for a fraction of the cost.
 
-### 4.2. Provider
+### 4.2. Zero-copy header
+
+Every sample carries an `RpcHeader` ([`ice_rpc::types::header`](ice-rpc/src/types/header.rs))
+in iceoryx2's `user_header`: a plain `#[repr(C)] ZeroCopySend` struct copied in
+place by the bus, so it costs no serialization and no allocation.
+
+| Field | Type | Contents |
+|---|---|---|
+| `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
+| `method_name` | `StaticString<64>` | target method (carried by requests) |
+| `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
+| `protocol_version` | `u16` | framing version, validated by the provider |
+| `service_version` | `u16` | service API version, echoed on the responses |
+
+`event_kind` is stored as a `u8` because `ZeroCopySend` is only derivable on
+structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:20)
+and is converted with `as_u8()` / `from_u8()`.
+
+### 4.3. Provider
 
 One thread per service:
 
 1. it spins briefly, then blocks on a `WaitSet` attached to its `_req_notify`
    `Listener` (only a `Listener` is attachable, not a `Subscriber`);
-2. it drains `{service}_req` and decodes `cid`, method and payload;
+2. it drains `{service}_req`, reads the `RpcHeader` from `sample.user_header()`
+   and takes the rkyv payload from `&sample[..]`;
 3. it runs the `ServiceDispatcher` handler, which streams the service
    `Observable` as rkyv `WireEvent` samples;
-4. it publishes each sample on `{service}_resp` and notifies the consumer.
+4. it publishes each sample on `{service}_resp`, copying the request's
+   correlation id into the response header, and notifies the consumer.
 
-### 4.3. Consumer
+### 4.4. Consumer
 
 One cached publisher and one dispatch thread per service:
 
-- `native_call(service, method, payload)` allocates a 16-byte correlation id,
-  registers a typed handler under it, publishes the framed request and notifies
-  the provider;
+- `native_call(service, method, payload)` builds an `RpcHeader::request`, keeps
+  its `correlation_id`, registers a typed handler under it, publishes the
+  request and notifies the provider;
 - the dispatch thread drains `{service}_resp` and routes each sample to the
   handler registered for its id;
 - a terminal `WireEvent` (`Complete` / `Error`) ends the stream: there is no
   per-call connection to close, so the terminal event is part of the stream.
 
-### 4.4. Tuning
+### 4.5. Tuning
 
 | Setting | Value | Why |
 |---|---|---|
 | `subscriber_max_buffer_size` | 16 384 | absorb a burst without backpressure |
+| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport.rs:645) retries: the overflow becomes backpressure instead of data loss |
 | `initial_max_slice_len` | 256 | `buffer × slice` memory; larger payloads grow the segment |
 | `max_loaned_samples` | 16 384 | iceoryx2 defaults to 8, which fails with `ExceedsMaxLoans` under load |
 | WaitSet deadline | 1 ms | bounds the cost of a missed notification |
 | idle spin | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet` |
 
-### 4.5. NodeId
+### 4.6. NodeId
 
 `NodeId` is the process PID (`std::process::id()`). It is no longer a routing key
 (the service name is); it is used by the liveness monitor to attribute a live
@@ -303,15 +324,34 @@ iceoryx2 node to its process.
 
 ## 5. Payload encoding
 
-Every request and response payload is rkyv-encoded (`WireEvent<T, E>` for
-responses). The framed payload is **not necessarily aligned** for the archived
-type, so the decoder copies it into a 16-byte-aligned buffer first
-(`ice_rpc::transport::decode_aligned`). Calling `rkyv::from_bytes` on the raw
-slice fails at runtime for any type with an alignment greater than 1, which is
-what silently produced empty response streams before.
+The routing metadata (correlation id, method, event kind, versions) travels in
+the zero-copy `user_header`, so the payload holds the rkyv bytes alone:
+`rkyv(args)` for a request, `rkyv(WireEvent<T, E>)` for a response.
+
+The sample is requested with `payload_alignment(Alignment::new(16))`, the
+alignment `rkyv::to_bytes` produces, so the payload is decodable in place. The
+decoder still copies it into a 16-byte-aligned buffer first
+([`decode_aligned`](ice-rpc/src/transport.rs:158)): calling `rkyv::from_bytes` on
+a misaligned slice fails at runtime for any type with an alignment greater than
+1, which is what silently produced empty response streams before.
 
 The name-length limits (`SERVICE_NAME_LEN`, `METHOD_NAME_LEN`, both 64) are shared
-with `ice-rpc-macros`, which rejects longer names at compile time.
+with `ice-rpc-macros`, which rejects longer names at compile time. `METHOD_NAME_LEN`
+is also the capacity of the header's `StaticString`.
+
+### 5.1. Stale iceoryx2 services
+
+Changing the wire format (the header, the payload alignment, `enable_safe_overflow`)
+changes the service's static configuration, and iceoryx2 refuses to open a service
+whose recorded configuration differs from the requested one. A process killed
+while it holds a service can also leave a file without its shared memory, which
+iceoryx2 tries to remove in an **unbounded recursion** (of the builder's `Debug`
+output) and ends in `thread has overflowed its stack`.
+
+After such a change — or after a hard kill — remove the iceoryx2 root path, which
+is `%APPDATA%\ice-rpc\iceoryx2` on Windows and
+`$XDG_DATA_HOME/ice-rpc/iceoryx2` (or `~/.local/share/ice-rpc/iceoryx2`)
+elsewhere, and make sure no process still runs the previous build.
 
 ---
 
@@ -495,7 +535,7 @@ by the dependencies declared via
 │          • one response dispatch thread                              │
 │       2. cid = next_correlation_id()                                 │
 │       3. register_response_handler(cid, typed handler)               │
-│       4. publish the framed request + notify the provider            │
+│       4. publish the request (header + payload) + notify             │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -526,20 +566,20 @@ by the dependencies declared via
 │    │       → normalize_wire_event → tx.try_send_event(...)               │
 │    │     })                                                              │
 │    │                                                                     │
-│    ├─5. frame = cid ++ [method_len][method][payload]                     │
-│    │     publisher.loan_slice_uninit(len).write_from_fn(..).send()       │
+│    ├─5. header = RpcHeader::request(method, 1)                        │
+│    │     loan_slice_uninit(len); *user_header_mut() = header; send()    │
 │    │     notifier.notify() ──────────────────────────────────►           │
 │    │                                                                     │
 │    ▼                                                       WaitSet       │
 │  rx.recv() waits...                                       woken up       │
 │                                                           │               │
 │                                              drain {service}_req          │
-│                                              decode cid, method, payload  │
+│                                              read header; decode payload  │
 │                                              dispatcher.dispatch(method)  │
 │                                                           │               │
 │                                              ⟳ observable_to_responses    │
 │                                                rkyv::to_bytes(WireEvent)   │
-│                                                publish cid ++ bytes       │
+│                                                publish header + bytes     │
 │                                                notifier.notify() ────►    │
 │                                                                           │
 │  WaitSet woken up                                                         │

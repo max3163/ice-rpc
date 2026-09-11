@@ -1,5 +1,5 @@
 //! Publish/subscribe transport: one request channel and one response channel
-//! per service, correlated by a 16-byte request id.
+//! per service, correlated by the request id carried in the zero-copy header.
 //!
 //! # Why pub/sub
 //!
@@ -7,8 +7,16 @@
 //! segment) per request in flight, which caps the throughput far below what the
 //! shared-memory bus can do. The pub/sub pattern uses **one** publisher and
 //! **one** subscriber per process and per service, so a call allocates nothing
-//! but a loaned sample. Correlating the responses with a request id gives the
+//! but a loaned sample. Correlating the responses with the request id gives the
 //! same call/response semantics for a fraction of the cost.
+//!
+//! # Wire format
+//!
+//! Every sample carries a [`RpcHeader`] in iceoryx2's `user_header`
+//! (`ZeroCopySend`, no serialization): correlation id, method name, event kind
+//! and protocol/service versions. The payload is the rkyv bytes alone, and the
+//! sample is aligned so that rkyv can read it in place. The method name travels
+//! in the header of a request only; a response is routed by its correlation id.
 //!
 //! # Wake-ups: Notifier + Listener + WaitSet
 //!
@@ -20,21 +28,12 @@
 //! which a polling loop cannot do on Windows (a sub-millisecond `sleep` is
 //! floored at the system timer, ~1 ms).
 //!
-//! # Wire format
-//!
-//! - **request sample**: `cid[16] ++ [method_len: u16 BE][method utf8][payload]`
-//! - **response sample**: `cid[16] ++ rkyv(WireEvent<T, E>)`
-//!
-//! The method name is carried by the request only; a response is routed purely
-//! by its correlation id.
-//!
 //! # Threads
 //!
 //! - the **provider** runs one dispatch thread per provided service;
 //! - the **consumer** runs one dispatch thread per consumed service.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -43,23 +42,21 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc_threadsafe;
 
 use crate::types::{
-    normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
-    WireEvent,
+    normalize_wire_event, unbounded_channel, Event, EventKind, Observable, ObservableError,
+    RpcError, RpcHeader, WireEvent, CORRELATION_ID_LEN, PROTOCOL_VERSION,
 };
 use crate::CancellationToken;
 
 /// Concrete iceoryx2 service flavour used by the transport.
 type Iox = ipc_threadsafe::Service;
 type IoxNode = iceoryx2::node::Node<Iox>;
-type IoxPubSub = iceoryx2::service::port_factory::publish_subscribe::PortFactory<Iox, [u8], ()>;
+type IoxPubSub =
+    iceoryx2::service::port_factory::publish_subscribe::PortFactory<Iox, [u8], RpcHeader>;
 type IoxEvent = iceoryx2::service::port_factory::event::PortFactory<Iox>;
-type IoxPublisher = iceoryx2::port::publisher::Publisher<Iox, [u8], ()>;
-type IoxSubscriber = iceoryx2::port::subscriber::Subscriber<Iox, [u8], ()>;
+type IoxPublisher = iceoryx2::port::publisher::Publisher<Iox, [u8], RpcHeader>;
+type IoxSubscriber = iceoryx2::port::subscriber::Subscriber<Iox, [u8], RpcHeader>;
 type IoxListener = iceoryx2::port::listener::Listener<Iox>;
 type IoxNotifier = iceoryx2::port::notifier::Notifier<Iox>;
-
-/// Size of the correlation id prefixing every sample.
-pub const CORRELATION_ID_LEN: usize = 16;
 
 /// Suffixes of the iceoryx2 services backing one logical service.
 const REQUEST_SUFFIX: &str = "_req";
@@ -82,6 +79,12 @@ const MAX_LOANED_SAMPLES: usize = 16_384;
 /// Kept small: iceoryx2 pre-allocates `buffer × slice` bytes, so a large slice
 /// multiplied by [`MAX_LOANED_SAMPLES`] would reserve tens of megabytes.
 const MAX_SLICE_LEN: usize = 256;
+
+/// Payload alignment requested from iceoryx2.
+///
+/// `rkyv::to_bytes` produces 16-byte aligned archives, so requesting the same
+/// alignment from the bus makes the payload directly decodable in place.
+const PAYLOAD_ALIGNMENT: usize = 16;
 
 /// Default how long a call waits for the provider to be connected before failing.
 ///
@@ -148,56 +151,10 @@ fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
     .map_err(|e| RpcError::TransportError(format!("node creation: {e}")))
 }
 
-/// Allocates a process-unique correlation id: `pid ++ counter`.
-pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let pid = std::process::id() as u64;
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut out = [0u8; CORRELATION_ID_LEN];
-    out[..8].copy_from_slice(&pid.to_be_bytes());
-    out[8..].copy_from_slice(&counter.to_be_bytes());
-    out
-}
-
-/// Formats a correlation id as a UUID-like hexadecimal string.
-pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
-    let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = cid;
-    format!(
-        "{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}-{b6:02x}{b7:02x}-\
-         {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"
-    )
-}
-
-/// Encodes a request body as `[method_len: u16 BE][method utf8][payload]`.
-pub fn encode_request(method: &str, payload: &[u8]) -> Vec<u8> {
-    let method = method.as_bytes();
-    let len = method.len().min(u16::MAX as usize);
-    let mut out = Vec::with_capacity(2 + len + payload.len());
-    out.extend_from_slice(&(len as u16).to_be_bytes());
-    out.extend_from_slice(&method[..len]);
-    out.extend_from_slice(payload);
-    out
-}
-
-/// Decodes a request body produced by [`encode_request`].
-pub fn decode_request(bytes: &[u8]) -> Option<(String, &[u8])> {
-    if bytes.len() < 2 {
-        return None;
-    }
-    let len = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
-    if bytes.len() < 2 + len {
-        return None;
-    }
-    let method = std::str::from_utf8(&bytes[2..2 + len]).ok()?;
-    Some((method.to_owned(), &bytes[2 + len..]))
-}
-
-/// Decodes a rkyv payload whose backing buffer may be **unaligned**.
+/// Decodes a rkyv payload, copying it into an aligned buffer when needed.
 ///
-/// The sample framing makes the payload start at an arbitrary offset, and
-/// `rkyv::from_bytes` requires the archived type's alignment, so the bytes are
-/// first copied into a 16-byte-aligned `AlignedVec` — the alignment
-/// `rkyv::to_bytes` produces.
+/// The sample payload is aligned by construction ([`PAYLOAD_ALIGNMENT`]), but
+/// the copy keeps the decoder correct even if that assumption is ever relaxed.
 pub fn decode_aligned<T>(bytes: &[u8]) -> Result<T, rkyv::rancor::Error>
 where
     T: rkyv::Archive,
@@ -280,8 +237,7 @@ impl ServiceDispatcher {
 // Consumer side: response routing
 // ---------------------------------------------------------------------------
 
-/// Typed handler invoked with the rkyv response body (already stripped of the
-/// correlation id) of one in-flight call.
+/// Typed handler invoked with the rkyv response payload of one in-flight call.
 type ResponseHandler = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
@@ -395,15 +351,11 @@ fn spawn_response_dispatcher(
             match subscriber.receive() {
                 Ok(Some(sample)) => {
                     idle_spins = 0;
-                    let bytes: &[u8] = &sample;
-                    if bytes.len() <= CORRELATION_ID_LEN {
-                        continue;
-                    }
-                    let mut cid = [0u8; CORRELATION_ID_LEN];
-                    cid.copy_from_slice(&bytes[..CORRELATION_ID_LEN]);
+                    let cid = sample.user_header().correlation_id;
+                    let payload: &[u8] = &sample;
                     let handler = crate::sync::lock(response_handlers()).get(&cid).cloned();
                     if let Some(handler) = handler {
-                        handler(&bytes[CORRELATION_ID_LEN..]);
+                        handler(payload);
                     }
                 }
                 Ok(None) => {
@@ -411,14 +363,12 @@ fn spawn_response_dispatcher(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        // Block until the publisher notifies (or the deadline
-                        // fires), then drain again.
-                        RESPONSE_WAITER_BLOCKED.store(true, Ordering::Relaxed);
+                        RESPONSE_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
                         let _ = waitset.wait_and_process_once_with_timeout(
                             |_| CallbackProgression::Continue,
                             WAITSET_DEADLINE,
                         );
-                        RESPONSE_WAITER_BLOCKED.store(false, Ordering::Relaxed);
+                        RESPONSE_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
                         idle_spins = 0;
                     }
                 }
@@ -453,7 +403,8 @@ where
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
     let ports = consumer_ports(service_name)?;
-    let cid = next_correlation_id();
+    let header = RpcHeader::request(method, 1);
+    let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
 
     let handler: ResponseHandler =
@@ -483,17 +434,13 @@ where
         );
     register_response_handler(cid, handler);
 
-    // `cid ++ [method_len][method][payload]`
-    let body = encode_request(method, payload);
-    let mut frame = Vec::with_capacity(CORRELATION_ID_LEN + body.len());
-    frame.extend_from_slice(&cid);
-    frame.extend_from_slice(&body);
-
-    if let Err(e) = publish_until_delivered(&ports.publisher, &frame, provider_wait_timeout()) {
+    if let Err(e) =
+        publish_until_delivered(&ports.publisher, header, payload, provider_wait_timeout())
+    {
         unregister_response_handler(&cid);
         return Err(e);
     }
-    if REQUEST_WAITER_BLOCKED.load(Ordering::Relaxed) {
+    if REQUEST_WAITER_BLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = ports
             .request_notifier
             .notify_with_custom_event_id(EventId::new(0));
@@ -510,11 +457,21 @@ where
 fn open_service(node: &IoxNode, service_name: &str, suffix: &str) -> Result<IoxPubSub, RpcError> {
     let topic = format!("{service_name}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
+    let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
+        .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
     node.service_builder(&name)
         .publish_subscribe::<[u8]>()
+        .user_header::<RpcHeader>()
+        .payload_alignment(alignment)
         .max_publishers(1)
         .max_subscribers(8)
         .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
+        // Without it the receiver silently overwrites its oldest pending sample
+        // when its buffer is full (iceoryx2's "safe overflow"), which loses a
+        // request that will never be answered. Disabled, a full buffer makes
+        // `send()` report 0 delivered and [`publish_until_delivered`] retries,
+        // turning the overflow into backpressure instead of data loss.
+        .enable_safe_overflow(false)
         .open_or_create()
         .map_err(|e| transport_error("open service", e))
 }
@@ -535,7 +492,7 @@ fn open_event_service(
 
 /// Spawns the provider side of one service: a thread subscribing to the request
 /// channel, dispatching each request, and publishing the responses on the
-/// response channel (each prefixed with the request's correlation id).
+/// response channel (each carrying the request's correlation id).
 pub fn spawn_native_service<F>(
     service_name: &str,
     dispatcher: F,
@@ -632,19 +589,27 @@ where
             match subscriber.receive() {
                 Ok(Some(sample)) => {
                     idle_spins = 0;
-                    let bytes: &[u8] = &sample;
-                    if bytes.len() <= CORRELATION_ID_LEN {
+                    let request_header = *sample.user_header();
+                    let payload: &[u8] = &sample;
+
+                    if request_header.event_kind() != EventKind::Request {
+                        log::warn!(
+                            "[transport] '{service_name}': unexpected {:?} sample",
+                            request_header.event_kind()
+                        );
                         continue;
                     }
-                    let cid = &bytes[..CORRELATION_ID_LEN];
-                    let Some((method, payload)) = decode_request(&bytes[CORRELATION_ID_LEN..])
-                    else {
-                        log::warn!("[transport] '{service_name}': malformed request");
-                        continue;
-                    };
-                    let respond = RESPONSE_WAITER_BLOCKED.load(Ordering::Relaxed);
-                    for response in dispatcher(&method, payload) {
-                        if publish_response(&publisher, cid, &response).is_err() {
+                    if request_header.protocol_version != PROTOCOL_VERSION {
+                        log::warn!(
+                            "[transport] '{service_name}': protocol {} != {PROTOCOL_VERSION}",
+                            request_header.protocol_version
+                        );
+                    }
+
+                    let respond =
+                        RESPONSE_WAITER_BLOCKED.load(std::sync::atomic::Ordering::Relaxed);
+                    for response in dispatcher(request_header.method(), payload) {
+                        if publish_response(&publisher, &request_header, &response).is_err() {
                             break;
                         }
                         if respond {
@@ -657,12 +622,12 @@ where
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        REQUEST_WAITER_BLOCKED.store(true, Ordering::Relaxed);
+                        REQUEST_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
                         let _ = waitset.wait_and_process_once_with_timeout(
                             |_| CallbackProgression::Continue,
                             WAITSET_DEADLINE,
                         );
-                        REQUEST_WAITER_BLOCKED.store(false, Ordering::Relaxed);
+                        REQUEST_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
                         idle_spins = 0;
                     }
                 }
@@ -677,25 +642,27 @@ where
     })
 }
 
-/// Publishes `frame` on `publisher`, retrying until at least one subscriber
-/// receives it or `timeout` elapses.
+/// Publishes `header ++ payload` on `publisher`, retrying until at least one
+/// subscriber receives it or `timeout` elapses.
 ///
 /// `send()` reports how many subscribers received the sample; `0` means it was
 /// dropped because nobody was connected. Without this check, a consumer started
 /// before its provider would send the request into the void and hang forever.
 fn publish_until_delivered(
     publisher: &IoxPublisher,
-    frame: &[u8],
+    header: RpcHeader,
+    payload: &[u8],
     timeout: Duration,
 ) -> Result<(), RpcError> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        let len = frame.len().max(1);
+        let len = payload.len().max(1);
         let sample = publisher
             .loan_slice_uninit(len)
             .map_err(|e| transport_error("loan sample", e))?;
+        let mut sample = sample.write_from_fn(|i| payload.get(i).copied().unwrap_or(0));
+        *sample.user_header_mut() = header;
         let delivered = sample
-            .write_from_fn(|i| frame.get(i).copied().unwrap_or(0))
             .send()
             .map_err(|e| transport_error("send sample", e))?;
         if delivered > 0 {
@@ -710,12 +677,15 @@ fn publish_until_delivered(
     }
 }
 
-/// Publishes one response sample as `cid ++ rkyv(WireEvent)`.
-fn publish_response(publisher: &IoxPublisher, cid: &[u8], response: &[u8]) -> Result<(), RpcError> {
-    let mut frame = Vec::with_capacity(CORRELATION_ID_LEN + response.len());
-    frame.extend_from_slice(cid);
-    frame.extend_from_slice(response);
-    publish_until_delivered(publisher, &frame, CONSUMER_WAIT_TIMEOUT)
+/// Publishes one response sample, carrying the request's correlation id in its
+/// zero-copy header.
+fn publish_response(
+    publisher: &IoxPublisher,
+    request: &RpcHeader,
+    response: &[u8],
+) -> Result<(), RpcError> {
+    let header = RpcHeader::response_from(request, EventKind::Next, request.service_version);
+    publish_until_delivered(publisher, header, response, CONSUMER_WAIT_TIMEOUT)
 }
 
 #[cfg(test)]
@@ -729,43 +699,6 @@ mod tests {
     }
 
     #[test]
-    fn correlation_ids_are_unique_and_carry_the_pid() {
-        let a = next_correlation_id();
-        let b = next_correlation_id();
-        assert_ne!(a, b);
-        let pid = u64::from_be_bytes(a[..8].try_into().unwrap());
-        assert_eq!(pid, u64::from(std::process::id()));
-    }
-
-    #[test]
-    fn fmt_correlation_id_is_uuid_shaped() {
-        let cid = [
-            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
-            0x66, 0x77,
-        ];
-        assert_eq!(
-            fmt_correlation_id(&cid),
-            "deadbeef-cafe-babe-0011-223344556677"
-        );
-    }
-
-    #[test]
-    fn request_framing_roundtrip() {
-        let frame = encode_request("get_user_age", b"payload");
-        let (method, payload) = decode_request(&frame).expect("decodes");
-        assert_eq!(method, "get_user_age");
-        assert_eq!(payload, b"payload");
-    }
-
-    #[test]
-    fn request_framing_rejects_truncated_input() {
-        assert!(decode_request(&[]).is_none());
-        assert!(decode_request(&[0]).is_none());
-        // Announces 5 bytes of method name but carries none.
-        assert!(decode_request(&[0, 5]).is_none());
-    }
-
-    #[test]
     fn decode_aligned_tolerates_an_unaligned_payload() {
         let value = Sample {
             id: 7,
@@ -773,12 +706,11 @@ mod tests {
         };
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&value).unwrap();
 
-        // Reproduce the wire framing: the payload starts after a two-byte
-        // length, which is not necessarily aligned for `u64`.
-        let mut framed = vec![0u8, 0u8];
-        framed.extend_from_slice(&bytes);
+        // Simulate a payload starting at an odd offset.
+        let mut shifted = vec![0u8];
+        shifted.extend_from_slice(&bytes);
 
-        let decoded = decode_aligned::<Sample>(&framed[2..]).expect("aligned decode");
+        let decoded = decode_aligned::<Sample>(&shifted[1..]).expect("aligned decode");
         assert_eq!(decoded, value);
     }
 

@@ -6,6 +6,7 @@
 //! | Sub-module   | Contents                                                        |
 //! |--------------|-----------------------------------------------------------------|
 //! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
+//! | [`header`]   | [`RpcHeader`] (zero-copy `user_header`), [`EventKind`]          |
 //! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`]       |
 //! | [`stream`]   | [`Observable`] (the concrete stream), [`StreamError`], [`channel`] |
 //! | [`error`]    | [`RpcError`]                                                    |
@@ -13,6 +14,7 @@
 
 mod consts;
 mod error;
+mod header;
 mod node;
 mod stream;
 mod wire;
@@ -22,6 +24,9 @@ mod tests;
 
 pub use consts::*;
 pub use error::RpcError;
+pub use header::{
+    fmt_correlation_id, next_correlation_id, EventKind, RpcHeader, CORRELATION_ID_LEN,
+};
 pub use node::*;
 pub use stream::{
     channel, collect_values, first_event, unbounded_channel, Observable, StreamError,

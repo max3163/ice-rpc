@@ -27,8 +27,6 @@ fn gen_facade_symbols_resolve() {
         clear_ipc_cleanup,
         collect_values,
         decode_aligned,
-        decode_request,
-        encode_request,
         first_event,
         fmt_correlation_id,
         global_cancel_token,
@@ -51,9 +49,11 @@ fn gen_facade_symbols_resolve() {
         unbounded_channel,
         unregister_node_liveness_watcher,
         wait_for_shutdown,
+        EventKind,
         HttpCallable,
         NodeId,
         ResponseIter,
+        RpcHeader,
         Sender,
         ServiceConsumer,
         ServiceDispatcher,
@@ -63,6 +63,7 @@ fn gen_facade_symbols_resolve() {
         WireEvent,
         LIVENESS_POLL_MS,
         METHOD_NAME_LEN,
+        PROTOCOL_VERSION,
         SERVICE_NAME_LEN,
     };
 

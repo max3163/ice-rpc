@@ -34,10 +34,10 @@ pub use crate::node_liveness::{
 // ── Shutdown ────────────────────────────────────────────────────────
 pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
-// ── Rx vocabulary and name limits ───────────────────────────────────
+// ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
-    channel, raw_pid_to_u32, unbounded_channel, NodeId, Sender, WireEvent, METHOD_NAME_LEN,
-    SERVICE_NAME_LEN,
+    channel, fmt_correlation_id, next_correlation_id, raw_pid_to_u32, unbounded_channel, EventKind,
+    NodeId, RpcHeader, Sender, WireEvent, METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
 // Canonical terminal implementations, shared with `ice-rpc-rx` so that the
@@ -69,10 +69,9 @@ pub use crate::start_http_server;
 
 // ── Publish/subscribe transport ─────────────────────────────────────
 // Entry points used by the generated client/server (one request channel and one
-// response channel per service, correlated by a 16-byte id).
+// response channel per service, correlated by the id in the zero-copy header).
 pub use crate::transport::{
-    decode_aligned, decode_request, encode_request, fmt_correlation_id, native_call,
-    next_correlation_id, observable_to_responses, spawn_native_service, ResponseIter,
+    decode_aligned, native_call, observable_to_responses, spawn_native_service, ResponseIter,
     ServiceDispatcher,
 };
 

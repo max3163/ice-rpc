@@ -75,8 +75,8 @@ pub use crate::start_http_server;
 // Entry points used by the generated client/server (iceoryx2 request/response,
 // streamed responses, completion = connection close).
 pub use crate::reqres::{
-    decode_request, encode_request, native_call, observable_to_responses, spawn_native_service,
-    ResponseIter, ServiceDispatcher,
+    decode_aligned, decode_request, encode_request, native_call, observable_to_responses,
+    spawn_native_service, ResponseIter, ServiceDispatcher,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

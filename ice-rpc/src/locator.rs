@@ -11,7 +11,7 @@
 //! dispatch loop is needed here.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use async_lock::RwLock;
@@ -23,6 +23,7 @@ use crate::service_traits::{ServiceConsumer, ServiceInit, ServiceLifecycle, Serv
 struct ServiceEntry {
     instance: Arc<dyn Any + Send + Sync>,
     lifecycle: Arc<dyn ServiceLifecycle>,
+    init: Arc<dyn ServiceInit>,
 }
 
 /// Central registry of the application services (Service Locator pattern).
@@ -114,31 +115,74 @@ impl ServiceLocator {
     {
         let name: &'static str = T::SERVICE_NAME;
         let instance = service.clone() as Arc<dyn Any + Send + Sync>;
+        let init = service.clone() as Arc<dyn ServiceInit>;
         let lifecycle = service as Arc<dyn ServiceLifecycle>;
         self.entries.write().await.insert(
             name,
             ServiceEntry {
                 instance,
                 lifecycle,
+                init,
             },
         );
     }
 
-    /// Initializes all the registered services.
+    /// Initializes all the registered services, **in dependency order**.
+    ///
+    /// `DatabaseService::on_init()` may consume `ConfigService`, so a service
+    /// must be initialized only once every registered dependency it declares
+    /// ([`ServiceInit::dependencies`]) is ready. The order is a Kahn topological
+    /// sort; a dependency that is not registered locally is treated as external
+    /// (it is provided by another process) and never blocks initialization.
     ///
     /// Each service `init()` spawns its native request/response service (see
-    /// the generated lifecycle). The proxy's own `init()` self-retries on
-    /// transient failures, so a single call per service is enough.
+    /// the generated lifecycle). A cyclic graph falls back to the registration
+    /// order instead of failing.
     pub async fn initialize_all(&self) -> Result<(), String> {
-        let snapshot: Vec<(&'static str, Arc<dyn ServiceLifecycle>)> = {
+        let snapshot: Vec<(&'static str, Arc<dyn ServiceLifecycle>, Vec<&'static str>)> = {
             let entries = self.entries.read().await;
             entries
                 .iter()
-                .map(|(name, entry)| (*name, entry.lifecycle.clone()))
+                .map(|(name, entry)| (*name, entry.lifecycle.clone(), entry.init.dependencies()))
                 .collect()
         };
 
-        for (name, lifecycle) in snapshot {
+        let registered: HashSet<&'static str> = snapshot.iter().map(|(name, _, _)| *name).collect();
+
+        let mut remaining: Vec<usize> = (0..snapshot.len()).collect();
+        let mut done: HashSet<&'static str> = HashSet::new();
+        let mut order: Vec<usize> = Vec::with_capacity(snapshot.len());
+
+        while !remaining.is_empty() {
+            let mut next_remaining = Vec::new();
+            let mut progressed = false;
+            for &i in &remaining {
+                let ready = snapshot[i]
+                    .2
+                    .iter()
+                    .all(|dep| done.contains(dep) || !registered.contains(dep));
+                if ready {
+                    order.push(i);
+                    done.insert(snapshot[i].0);
+                    progressed = true;
+                } else {
+                    next_remaining.push(i);
+                }
+            }
+            remaining = next_remaining;
+            if !progressed {
+                // Dependency cycle: keep the remaining services in registration
+                // order rather than dead-locking the whole process.
+                log::warn!(
+                    "[ServiceLocator] dependency cycle among {:?}; using registration order",
+                    remaining.iter().map(|&i| snapshot[i].0).collect::<Vec<_>>()
+                );
+                order.append(&mut remaining);
+            }
+        }
+
+        for i in order {
+            let (name, lifecycle, _) = &snapshot[i];
             if !lifecycle.init().await {
                 log::error!("[ServiceLocator] service '{name}' failed to initialize");
                 return Err(format!("service '{name}' failed to initialize"));

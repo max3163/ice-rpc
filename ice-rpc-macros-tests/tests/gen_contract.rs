@@ -27,6 +27,7 @@ fn gen_facade_symbols_resolve() {
         channel,
         clear_ipc_cleanup,
         collect_values,
+        decode_aligned,
         decode_request,
         encode_request,
         first_event,

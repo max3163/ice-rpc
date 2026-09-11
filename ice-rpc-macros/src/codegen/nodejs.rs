@@ -98,7 +98,7 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
 
             quote! {
                 #fn_name_str => {
-                    let req: #req_enum_name = ice_rpc::gen::rkyv::from_bytes::<#req_enum_name, ice_rpc::gen::rkyv::rancor::Error>(bytes).ok()?;
+                    let req: #req_enum_name = ice_rpc::gen::decode_aligned::<#req_enum_name>(bytes).ok()?;
                     match req {
                         #req_enum_name::#var_name { #(#arg_names),* } => {
                             Some(#args_expr)

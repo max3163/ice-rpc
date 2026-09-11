@@ -69,10 +69,9 @@ pub fn gen_native_method(
         {
             let service_impl = self.service_impl.clone();
             dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
-                match ice_rpc::gen::rkyv::from_bytes::<
-                    #req_enum_name,
-                    ice_rpc::gen::rkyv::rancor::Error,
-                >(payload) {
+                // The framed payload is not necessarily aligned for rkyv, so the
+                // decode goes through an aligned copy.
+                match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
                     Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
                         // Clone per invocation: the closure is `Fn`, so it must
                         // not move the captured `Arc` into the coroutine.

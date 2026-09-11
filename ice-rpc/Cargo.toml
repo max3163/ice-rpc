@@ -25,6 +25,10 @@ all-features = true
 # async-io). Optional features switch the execution facade to a dedicated
 # runtime.
 default = []
+# Experimental native transport based on the iceoryx2 `request_response`
+# messaging pattern (streamed responses, completion = connection close).
+# See `src/reqres.rs` and `plans/simplification.md` (F1).
+native-transport = []
 # The HTTP gateway is built on trillium (runtime-agnostic core). Its runtime
 # adapter is selected by the `http-tokio` feature:
 # - `http` (alone)         → trillium-smol (async-global-executor, no tokio)

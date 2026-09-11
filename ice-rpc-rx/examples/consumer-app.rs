@@ -145,12 +145,10 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
         .await,
         |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
-                "<- {} {} - {} years old, {}, {}, {}, {}  [{}]",
+                "<- {} {} - {} years old, {}, {}  [{}]",
                 info.nom,
                 info.prenom,
                 info.age,
-                info.email,
-                info.telephone,
                 info.ville,
                 info.profession,
                 fmt_latency(ms)
@@ -174,12 +172,10 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
         .await,
         |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
-                "<- {} {} - {} years old, {}, {}, {}, {}  [{}]",
+                "<- {} {} - {} years old, {}, {},  [{}]",
                 info.nom,
                 info.prenom,
                 info.age,
-                info.email,
-                info.telephone,
                 info.ville,
                 info.profession,
                 fmt_latency(ms)
@@ -203,12 +199,10 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
         .await,
         |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
-                "<- {} {} - {} years old, {}, {}, {}, {}  [{}]",
+                "<- {} {} - {} years old, {}, {}  [{}]",
                 info.nom,
                 info.prenom,
                 info.age,
-                info.email,
-                info.telephone,
                 info.ville,
                 info.profession,
                 fmt_latency(ms)

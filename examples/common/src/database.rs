@@ -42,10 +42,6 @@ pub struct PersonneInfo {
     pub prenom: String,
     /// Age in years.
     pub age: u32,
-    /// Email address.
-    pub email: String,
-    /// Phone number.
-    pub telephone: String,
     /// City of residence.
     pub ville: String,
     /// Current occupation.

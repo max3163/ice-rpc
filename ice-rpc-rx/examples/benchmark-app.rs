@@ -665,12 +665,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match rx.recv().await {
                 Ok(ice_rpc::Event::Next(info)) => {
                     log::info!(
-                        "  {} {} — {} years old, {}, {}, {}, {}",
+                        "  {} {} — {} years old, {}, {}",
                         info.nom,
                         info.prenom,
                         info.age,
-                        info.email,
-                        info.telephone,
                         info.ville,
                         info.profession
                     );

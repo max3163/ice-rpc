@@ -43,7 +43,7 @@ iceoryx2-bb-system-types = "0.9.3"
 iceoryx2-bb-container = "0.9.3"
 rkyv = { workspace = true }
 async-trait = { workspace = true }
-toml = "1.1"
+toml = { workspace = true }
 thiserror = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }

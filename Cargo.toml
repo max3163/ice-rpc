@@ -71,4 +71,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
 tokio = { version = "1.30", features = ["full"] }
-
+toml = "1"

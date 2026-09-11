@@ -116,7 +116,7 @@
 //! | Module | Role |
 //! |--------|------|
 //! | `types` | Public Rx types (`Event`, `Observable`, `ObservableError`, `RpcError`, `StreamError`) and the wire types re-exported through `gen` |
-//! | `reqres` | Native iceoryx2 request/response transport: shared node, dispatcher, streaming bridge |
+//! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
 //! | `gen` | Internal contract for the generated code and `ice-rpc-rx`: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
@@ -145,9 +145,9 @@ pub mod gen;
 #[doc(hidden)]
 pub mod nodejs_dispatch;
 
-/// Native iceoryx2 request/response transport.
+/// Publish/subscribe transport (one channel per service, correlated by id).
 #[doc(hidden)]
-pub mod reqres;
+pub mod transport;
 
 #[cfg(feature = "http")]
 mod http_gateway;

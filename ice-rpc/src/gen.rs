@@ -71,10 +71,10 @@ pub use crate::{_ProviderService, registry_cancel_token, run_provider_inner};
 #[cfg(feature = "http")]
 pub use crate::start_http_server;
 
-// ── Native request/response transport ───────────────────────────────
-// Entry points used by the generated client/server (iceoryx2 request/response,
-// streamed responses, completion = connection close).
-pub use crate::reqres::{
+// ── Publish/subscribe transport ─────────────────────────────────────
+// Entry points used by the generated client/server (one channel per service,
+// correlated by request id, terminal event carried in the stream).
+pub use crate::transport::{
     decode_aligned, decode_request, encode_request, native_call, observable_to_responses,
     spawn_native_service, ResponseIter, ServiceDispatcher,
 };

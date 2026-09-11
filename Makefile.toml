@@ -30,7 +30,6 @@ BASH = "bash"
 # features (see `required-features` in `ice-rpc-rx/Cargo.toml`):
 #   - most examples            -> `tokio`
 #   - `provider-app` + gateway -> `tokio http-tokio`
-#   - `perf_probe`             -> `perf-probe` (opt-in, never built by default)
 # Always run from the workspace root so the generated `config/iceoryx2.toml` is
 # shared by the provider and the consumer.
 EXAMPLES_CRATE = "ice-rpc-rx"
@@ -328,34 +327,6 @@ description = "Run the state-service example (release, features: tokio)"
 workspace = false
 command = "cargo"
 args = ["run", "-p", "ice-rpc-rx", "--example", "state_service", "--features", "tokio", "--release", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.pipeline-bench-rust]
-description = "Run the pipeline benchmark example (debug, features: tokio)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "pipeline_bench", "--features", "tokio", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.pipeline-bench-rust-release]
-description = "Run the pipeline benchmark example (release, features: tokio)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "pipeline_bench", "--features", "tokio", "--release", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.perf-probe-rust]
-description = "Run the opt-in timing harness (debug, features: perf-probe)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "perf_probe", "--features", "perf-probe", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.perf-probe-rust-release]
-description = "Run the opt-in timing harness (release, features: perf-probe)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "perf_probe", "--features", "perf-probe", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.liveness-probe]

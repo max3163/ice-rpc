@@ -159,8 +159,6 @@ fn from_events_is_channel_free_and_replays_in_order() {
     let mut stream =
         Observable::<i32, String>::from_events([Event::Next(1), Event::Next(2), Event::Complete]);
 
-    assert!(!stream.is_channel_backed());
-
     assert!(matches!(
         pollster::block_on(stream.recv()),
         Ok(Event::Next(1))
@@ -608,58 +606,7 @@ fn rpc_error_is_retryable_classification() {
 }
 
 #[test]
-fn try_clone_duplicates_a_buffered_observable() {
-    let mut original = Observable::<i32, String>::from_events([Event::Next(1), Event::Complete]);
-    let mut copy = original
-        .try_clone()
-        .expect("a buffered observable is clonable");
-
-    // Each handle drains its own copy of the queue.
-    assert!(matches!(
-        pollster::block_on(original.recv()),
-        Ok(Event::Next(1))
-    ));
-    assert!(matches!(
-        pollster::block_on(copy.recv()),
-        Ok(Event::Next(1))
-    ));
-}
-
-#[test]
-fn try_clone_shares_a_channel_backed_observable() {
-    let (tx, mut rx) = channel::<i32, String>(4);
-    let mut clone = rx
-        .try_clone()
-        .expect("a channel-backed observable is clonable");
-
-    // Competing consumers: the message is delivered to exactly one handle.
-    pollster::block_on(tx.send_next(7)).unwrap();
-    drop(tx);
-
-    let values: Vec<i32> = [rx.recv(), clone.recv()]
-        .into_iter()
-        .filter_map(|fut| match pollster::block_on(fut) {
-            Ok(Event::Next(v)) => Some(v),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        values,
-        vec![7],
-        "the message must be delivered exactly once"
-    );
-}
-
-#[test]
-fn try_clone_returns_none_for_a_boxed_pipeline() {
-    let inner = Observable::<i32, String>::from_events([Event::Next(1), Event::Complete]);
-    let boxed = Observable::<i32, String>::from_stream(inner);
-    assert!(boxed.try_clone().is_none());
-}
-
-/// C14: the cleanup must wait for the *last* handle (cloned channels).
-#[test]
-fn on_drop_cleanup_fires_once_when_last_handle_is_dropped() {
+fn on_drop_cleanup_fires_once_when_dropped() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -669,18 +616,8 @@ fn on_drop_cleanup_fires_once_when_last_handle_is_dropped() {
     let rx = rx.with_on_drop(move || {
         hits_cb.fetch_add(1, Ordering::SeqCst);
     });
-    let clone = rx
-        .try_clone()
-        .expect("a channel-backed observable is clonable");
 
     drop(rx);
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        0,
-        "cleanup must wait for the last handle"
-    );
-
-    drop(clone);
     assert_eq!(
         hits.load(Ordering::SeqCst),
         1,

@@ -14,9 +14,6 @@ workspace = true
 tokio = ["ice-rpc/tokio"]
 http = ["ice-rpc/http"]
 http-tokio = ["ice-rpc/http-tokio"]
-# Internal timing harness (`examples/perf_probe.rs`): opt-in only, so it is never
-# built by `--all-targets` or by the CI clippy run.
-perf-probe = []
 
 [dependencies]
 ice-rpc = { path = "../ice-rpc" }
@@ -56,11 +53,3 @@ required-features = ["tokio"]
 [[example]]
 name = "benchmark-app"
 required-features = ["tokio"]
-
-[[example]]
-name = "pipeline_bench"
-required-features = ["tokio"]
-
-[[example]]
-name = "perf_probe"
-required-features = ["perf-probe"]

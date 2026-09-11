@@ -552,13 +552,18 @@ fn switch_map_switches_to_latest_inner_and_cancels_previous() {
 
 #[test]
 fn switch_map_forwards_inner_error() {
+    use std::cell::RefCell;
+
     let (outer_tx, outer_rx) = ice_rpc::gen::channel::<i32, String>(8);
     let (inner_tx, inner_rx) = ice_rpc::gen::channel::<i32, String>(8);
 
+    // Each source value subscribes to a fresh inner stream: hand it out once.
+    let inner = RefCell::new(Some(inner_rx));
     let stream = outer_rx.switch_map(move |_| {
-        inner_rx
-            .try_clone()
-            .expect("a channel-backed observable is clonable")
+        inner
+            .borrow_mut()
+            .take()
+            .expect("the inner channel is subscribed once")
     });
 
     pollster::block_on(outer_tx.send_next(1)).unwrap();
@@ -576,20 +581,19 @@ fn switch_map_forwards_inner_error() {
 
 #[test]
 fn switch_map_ignores_inner_complete() {
+    use std::cell::RefCell;
+
     let (outer_tx, outer_rx) = ice_rpc::gen::channel::<i32, String>(8);
     let (inner1_tx, inner1_rx) = ice_rpc::gen::channel::<i32, String>(8);
     let (inner2_tx, inner2_rx) = ice_rpc::gen::channel::<i32, String>(8);
 
+    let inner1 = RefCell::new(Some(inner1_rx));
+    let inner2 = RefCell::new(Some(inner2_rx));
     let stream = outer_rx.switch_map(move |v| {
-        if v == 1 {
-            inner1_rx
-                .try_clone()
-                .expect("a channel-backed observable is clonable")
-        } else {
-            inner2_rx
-                .try_clone()
-                .expect("a channel-backed observable is clonable")
-        }
+        let slot = if v == 1 { &inner1 } else { &inner2 };
+        slot.borrow_mut()
+            .take()
+            .expect("each inner channel is subscribed once")
     });
 
     pollster::block_on(outer_tx.send_next(1)).unwrap();

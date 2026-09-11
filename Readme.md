@@ -1129,10 +1129,10 @@ The HTTP REST gateway is a built-in HTTP server based on [trillium](https://gith
 │       │  POST /ConfigService/set_config  {"key":"val"}                    │
 │       ▼                                                                   │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │                    Axum Router (port 8080)                         │  │
+│  │                    Trillium Handler (port 8080)                    │  │
 │  │                                                                    │  │
 │  │  ┌──────────────────────────────────────────────────────────────┐  │  │
-│  │  │ Middleware Origin Check                                       │  │  │
+│  │  │ Origin Check                                                  │  │  │
 │  │  │  → If Origin header present : checks *.my-domain.com          │  │  │
 │  │  │  → Otherwise : lets it through (non-browser clients)          │  │  │
 │  │  └──────────────────────────────────────────────────────────────┘  │  │
@@ -1244,9 +1244,9 @@ The query strings are converted automatically to JSON with smart scalar interpre
 
 If a single parameter is present, its value is passed directly (no object). If several parameters are present, they are grouped into a JSON object `{"key1": val1, "key2": val2}`.
 
-### 13.5. Origin security middleware
+### 13.5. Origin security check
 
-An Axum middleware checks the HTTP [`Origin`](ice-rpc/src/http_gateway.rs:243) header to prevent unauthorized cross-origin requests :
+The trillium handler checks the HTTP [`Origin`](ice-rpc/src/http_gateway.rs:105) header to prevent unauthorized cross-origin requests :
 
 - **Absent** : the request goes through (non-browser clients : curl, scripts, etc.)
 - **Present** : the value must match `*.{domain}` or `{domain}` exactly
@@ -1366,7 +1366,7 @@ The [`#[service]`](ice-rpc-macros/src/codegen/http.rs:28) procedural macro autom
 │      get_user_age?name=Alice                                              │
 │       │                                                                   │
 │       ▼                                                                   │
-│  Origin Check Middleware                                                  │
+│  Origin Check                                                             │
 │       │                                                                   │
 │       ▼                                                                   │
 │  handle_get()                                                             │

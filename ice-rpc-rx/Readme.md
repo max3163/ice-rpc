@@ -231,7 +231,7 @@ unreachable) are reported **inside** the flux through
 ## Pure (channel-free) sources
 
 `of(value)`, `throw_error(err)` and `from(iter)` build observables backed by an
-**inline** event buffer (the internal `Buffered` variant of
+**inline** event buffer (the internal `Inline` variant of
 `ice_rpc::Observable`): no channel, no spawned task, no `Arc` and no lock on the data
 path. The queue is drained through `&mut self`, so `recv()` / `recv_wire()`
 require a mutable binding (e.g. `let mut rx = ...`).
@@ -290,8 +290,9 @@ Any stream of `Event<T, E>` can be frozen this way
 
 Two points to keep in mind:
 
-- a frozen pipeline cannot be cloned (`Observable::try_clone` returns `None`);
-  rebuild it from its constructor;
+- a frozen pipeline is **single-subscription** (an `Observable` is not `Clone`);
+  rebuild it from its constructor to get a second consumer, or fan out through
+  `Subject` / `ShareReplay` for multicast;
 - it cannot detect that the consumer unsubscribed, so it runs to completion. Use
   an explicit `channel()` + `send_next` (which fails on a closed receiver) when
   the producer must stop early.

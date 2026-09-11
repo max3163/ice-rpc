@@ -149,72 +149,17 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 return false;
                             }
 
-                            let locator = ice_rpc::ServiceLocator::global();
-                            let init_ok = ice_rpc::rt::spawn_blocking_value(move || {
-                                if locator.get_node_sync().is_err() {
-                                    return false;
-                                }
-                                locator.start_discovery();
-                                true
-                            }).await.unwrap_or_else(|panic| {
-                                ::log::error!(
-                                    "[{}] blocking init task panicked: {}",
-                                    stringify!(#trait_name),
-                                    panic
-                                );
-                                false
-                            });
+                            // Native iceoryx2 request/response service: one
+                            // dispatcher per service, one background thread.
+                            let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
+                            ice_rpc::gen::spawn_native_service(
+                                #logical_name_lit,
+                                move |method, payload| dispatcher.dispatch(method, payload),
+                                ice_rpc::global_cancel_token().clone(),
+                            );
 
-                            if !init_ok {
-                                ::log::warn!("[{}] Failed to create the iceoryx2 Node. Retrying...",
-                                    stringify!(#trait_name));
-                                return false;
-                            }
-
-                            let server = #server_name::new(local_impl.clone());
-
-                            let (ready_tx, ready_rx) = ice_rpc::rt::oneshot::channel::<Result<(), String>>();
-
-                            ice_rpc::rt::spawn(async move {
-                                match server.run(ready_tx).await {
-                                    Ok(()) => {},
-                                    Err(_e) => {
-                                        let mut backoff_ms = 200u64;
-                                        loop {
-                                            ::log::warn!("[{}] Restarting the IPC server in {}ms...",
-                                                stringify!(#trait_name), backoff_ms);
-                                            ice_rpc::rt::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                                            backoff_ms = (backoff_ms * 2).min(5000);
-                                            let (dummy_tx, _) = ice_rpc::rt::oneshot::channel();
-                                            match server.run(dummy_tx).await {
-                                                Ok(()) => break,
-                                                Err(e) => {
-                                                    ::log::error!("[{}] Restart error: {}",
-                                                        stringify!(#trait_name), e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-
-                            match ready_rx.await {
-                                Ok(Ok(())) => {
-                                    *server_started = true;
-                                    ice_rpc::ServiceLocator::global().start_dispatch_if_needed();
-                                    ::log::info!("[{}] IPC server started and ready.", stringify!(#trait_name));
-                                }
-                                Ok(Err(e)) => {
-                                    ::log::error!("[{}] IPC startup failed: {}. Retrying...",
-                                        stringify!(#trait_name), e);
-                                    return false;
-                                }
-                                Err(_) => {
-                                    ::log::error!("[{}] run() exited without signaling. Retrying...",
-                                        stringify!(#trait_name));
-                                    return false;
-                                }
-                            }
+                            *server_started = true;
+                            ::log::info!("[{}] native service started and ready.", stringify!(#trait_name));
                         }
                         true
                     },

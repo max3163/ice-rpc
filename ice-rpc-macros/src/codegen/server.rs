@@ -15,6 +15,7 @@ pub struct ServerGenInput<'a> {
     pub topic_ready: &'a str,
     pub blackboard_key: u8,
     pub server_match_arms: &'a [TokenStream],
+    pub server_native_methods: &'a [TokenStream],
     pub allow_large_payload: bool,
     pub default_size_message_kb: Option<u64>,
     pub service_version: u16,
@@ -36,6 +37,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         topic_ready,
         blackboard_key,
         server_match_arms,
+        server_native_methods,
         allow_large_payload,
         default_size_message_kb,
         service_version,
@@ -58,6 +60,18 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
                         ice_rpc::gen::rkyv::util::AlignedVec::<8>::with_capacity(4096)
                     )),
                 })
+            }
+
+            /// Builds the native `request_response` dispatcher of this service.
+            ///
+            /// Each RPC method is registered with its own handler: it decodes
+            /// the rkyv request enum from the payload, invokes the local
+            /// implementation, and streams the resulting `Observable` through
+            /// `observable_to_responses`.
+            fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
+                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+                #(#server_native_methods)*
+                dispatcher
             }
 
             async fn run(
@@ -352,6 +366,39 @@ pub fn gen_server_match_arm(
                 drop(guard);
                 if kind.is_terminal() { break; }
             }
+        }
+    }
+}
+
+/// Generates one `ServiceDispatcher::method(...)` registration for the native
+/// request/response transport.
+pub fn gen_native_method(
+    fn_name: &Ident,
+    var_name: &Ident,
+    arg_names: &[&Ident],
+    req_enum_name: &Ident,
+) -> TokenStream {
+    let method_name_str = fn_name.to_string();
+    quote! {
+        {
+            let service_impl = self.service_impl.clone();
+            dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
+                match ice_rpc::gen::rkyv::from_bytes::<
+                    #req_enum_name,
+                    ice_rpc::gen::rkyv::rancor::Error,
+                >(payload) {
+                    Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
+                        // Clone per invocation: the closure is `Fn`, so it must
+                        // not move the captured `Arc` into the coroutine.
+                        let impl_ref = service_impl.clone();
+                        let stream = ice_rpc::rt::block_on(async move {
+                            impl_ref.#fn_name(#(#arg_names),*).await
+                        });
+                        ice_rpc::gen::observable_to_responses(stream)
+                    }
+                    _ => Box::new(std::iter::empty()),
+                }
+            });
         }
     }
 }

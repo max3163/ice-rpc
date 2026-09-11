@@ -29,7 +29,7 @@ use crate::codegen::{
     lifecycle::{gen_lifecycle, LifecycleGenInput},
     nodejs::{gen_nodejs_deserialize_fn, gen_nodejs_serialize_fn, NodeJsGenInput, NodeJsMethod},
     proxy::{gen_proxy, gen_proxy_method, ProxyGenInput},
-    server::{gen_server, gen_server_match_arm, ServerGenInput},
+    server::{gen_native_method, gen_server, gen_server_match_arm, ServerGenInput},
 };
 
 /// Optional parameters of the `#[service]` macro.
@@ -312,6 +312,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut client_methods = Vec::new();
     let mut variant_discriminant: u8 = 0;
     let mut server_match_arms = Vec::new();
+    let mut server_native_methods = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
     for item in &input_trait.items {
@@ -385,6 +386,13 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 (&*ok_type, &*err_type),
             ));
 
+            server_native_methods.push(gen_native_method(
+                fn_name,
+                &var_name,
+                &arg_names,
+                &req_enum_name,
+            ));
+
             node_methods.push(gen_proxy_method(
                 fn_name,
                 &arg_names,
@@ -422,6 +430,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         topic_ready: &topic_ready,
         blackboard_key,
         server_match_arms: &server_match_arms,
+        server_native_methods: &server_native_methods,
         allow_large_payload,
         default_size_message_kb,
         service_version,

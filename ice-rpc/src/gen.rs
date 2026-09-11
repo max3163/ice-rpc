@@ -103,7 +103,7 @@ pub use crate::start_http_server;
 #[cfg(feature = "native-transport")]
 pub use crate::reqres::{
     decode_request, encode_request, native_call, observable_to_responses, spawn_native_service,
-    ResponseIter,
+    ResponseIter, ServiceDispatcher,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

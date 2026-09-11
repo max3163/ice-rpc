@@ -14,6 +14,7 @@
 //! - dropping the returned `Observable` closes the connection, which the server
 //!   observes through `ActiveRequest::is_connected`.
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -121,6 +122,43 @@ where
             Err(_) => None,
         }
     }))
+}
+
+/// Per-service table of method handlers, built by a generated provider.
+///
+/// Each handler maps a decoded request payload to a lazy [`ResponseIter`]; the
+/// generated code typically wraps the service implementation's [`Observable`]
+/// with [`observable_to_responses`]. Unknown methods close the stream.
+/// Handler of one RPC method: decoded payload → lazy response samples.
+pub type MethodHandler = Box<dyn Fn(&[u8]) -> ResponseIter + Send + Sync>;
+
+#[derive(Default)]
+pub struct ServiceDispatcher {
+    handlers: HashMap<&'static str, MethodHandler>,
+}
+
+impl ServiceDispatcher {
+    /// Creates an empty dispatcher.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers the handler of one RPC method.
+    pub fn method<F>(&mut self, name: &'static str, handler: F) -> &mut Self
+    where
+        F: Fn(&[u8]) -> ResponseIter + Send + Sync + 'static,
+    {
+        self.handlers.insert(name, Box::new(handler));
+        self
+    }
+
+    /// Routes a decoded request to its handler.
+    pub fn dispatch(&self, method: &str, payload: &[u8]) -> ResponseIter {
+        match self.handlers.get(method) {
+            Some(handler) => handler(payload),
+            None => Box::new(std::iter::empty()),
+        }
+    }
 }
 
 /// Spawns a native **service** for `service_name`.

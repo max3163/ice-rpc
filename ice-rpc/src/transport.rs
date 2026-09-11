@@ -83,6 +83,28 @@ const MAX_LOANED_SAMPLES: usize = 16_384;
 /// multiplied by [`MAX_LOANED_SAMPLES`] would reserve tens of megabytes.
 const MAX_SLICE_LEN: usize = 256;
 
+/// Default how long a call waits for the provider to be connected before failing.
+///
+/// A pub/sub send with no connected subscriber is silently lost, so a consumer
+/// started *before* the provider would otherwise hang forever. Overridable with
+/// `ICE_RPC_PROVIDER_WAIT_MS`.
+const PROVIDER_WAIT_DEFAULT: Duration = Duration::from_secs(30);
+
+/// Resolves [`PROVIDER_WAIT_DEFAULT`], allowing an environment override.
+fn provider_wait_timeout() -> Duration {
+    std::env::var("ICE_RPC_PROVIDER_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(PROVIDER_WAIT_DEFAULT)
+}
+
+/// How long a response waits for the consumer to be connected.
+const CONSUMER_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Sleep between two delivery attempts.
+const PUBLISH_RETRY_SLEEP: Duration = Duration::from_millis(1);
+
 /// Upper bound on how long a dispatch thread blocks before it drains again.
 ///
 /// The wait itself is event-driven (the publisher notifies after each send), so
@@ -467,18 +489,10 @@ where
     frame.extend_from_slice(&cid);
     frame.extend_from_slice(&body);
 
-    let len = frame.len().max(1);
-    let sample = ports
-        .publisher
-        .loan_slice_uninit(len)
-        .map_err(|e| transport_error("loan request", e))?;
-    sample
-        .write_from_fn(|i| frame.get(i).copied().unwrap_or(0))
-        .send()
-        .map_err(|e| {
-            unregister_response_handler(&cid);
-            transport_error("send request", e)
-        })?;
+    if let Err(e) = publish_until_delivered(&ports.publisher, &frame, provider_wait_timeout()) {
+        unregister_response_handler(&cid);
+        return Err(e);
+    }
     if REQUEST_WAITER_BLOCKED.load(Ordering::Relaxed) {
         let _ = ports
             .request_notifier
@@ -663,23 +677,45 @@ where
     })
 }
 
+/// Publishes `frame` on `publisher`, retrying until at least one subscriber
+/// receives it or `timeout` elapses.
+///
+/// `send()` reports how many subscribers received the sample; `0` means it was
+/// dropped because nobody was connected. Without this check, a consumer started
+/// before its provider would send the request into the void and hang forever.
+fn publish_until_delivered(
+    publisher: &IoxPublisher,
+    frame: &[u8],
+    timeout: Duration,
+) -> Result<(), RpcError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let len = frame.len().max(1);
+        let sample = publisher
+            .loan_slice_uninit(len)
+            .map_err(|e| transport_error("loan sample", e))?;
+        let delivered = sample
+            .write_from_fn(|i| frame.get(i).copied().unwrap_or(0))
+            .send()
+            .map_err(|e| transport_error("send sample", e))?;
+        if delivered > 0 {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(RpcError::TransportError(
+                "no subscriber connected (is the provider running?)".to_string(),
+            ));
+        }
+        std::thread::sleep(PUBLISH_RETRY_SLEEP);
+    }
+}
+
 /// Publishes one response sample as `cid ++ rkyv(WireEvent)`.
 fn publish_response(publisher: &IoxPublisher, cid: &[u8], response: &[u8]) -> Result<(), RpcError> {
-    let len = (CORRELATION_ID_LEN + response.len()).max(1);
-    let sample = publisher
-        .loan_slice_uninit(len)
-        .map_err(|e| transport_error("loan response", e))?;
-    sample
-        .write_from_fn(|i| {
-            if i < CORRELATION_ID_LEN {
-                cid.get(i).copied().unwrap_or(0)
-            } else {
-                response.get(i - CORRELATION_ID_LEN).copied().unwrap_or(0)
-            }
-        })
-        .send()
-        .map_err(|e| transport_error("send response", e))?;
-    Ok(())
+    let mut frame = Vec::with_capacity(CORRELATION_ID_LEN + response.len());
+    frame.extend_from_slice(cid);
+    frame.extend_from_slice(response);
+    publish_until_delivered(publisher, &frame, CONSUMER_WAIT_TIMEOUT)
 }
 
 #[cfg(test)]

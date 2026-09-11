@@ -59,6 +59,27 @@ fn provider_consumer_roundtrip() {
         ITERS as f64 / elapsed.as_secs_f64()
     );
 
+    // Sparse traffic: let both dispatch threads fall back to their idle state
+    // (WaitSet), then measure a lone call. This is the "salvo" case where a
+    // polling loop would pay the whole idle sleep on both hops.
+    let mut sparse_worst = std::time::Duration::ZERO;
+    let mut sparse_total = std::time::Duration::ZERO;
+    for i in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let t = std::time::Instant::now();
+        let stream = ice_rpc::rt::block_on(consumer.echo(i));
+        let values = ice_rpc::rt::block_on(stream.collect()).expect("collect");
+        let d = t.elapsed();
+        assert_eq!(values, vec![i + 1]);
+        sparse_total += d;
+        sparse_worst = sparse_worst.max(d);
+    }
+    eprintln!(
+        "[roundtrip] sparse traffic: avg {:.3} ms, worst {:.3} ms",
+        sparse_total.as_secs_f64() * 1000.0 / 20.0,
+        sparse_worst.as_secs_f64() * 1000.0
+    );
+
     // Concurrency probe: 8 threads, 100 calls each. Reports the first error.
     let consumer = std::sync::Arc::new(consumer);
     let mut handles = Vec::new();

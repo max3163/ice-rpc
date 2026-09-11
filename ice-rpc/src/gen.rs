@@ -96,11 +96,9 @@ pub use crate::{_ProviderService, registry_cancel_token, run_provider_inner};
 #[cfg(feature = "http")]
 pub use crate::start_http_server;
 
-// ── Native request/response transport (feature `native-transport`) ───
-// Entry points the generated client/server will target once wired onto the
-// native transport (F6). Kept behind the feature so the default transport is
-// unchanged.
-#[cfg(feature = "native-transport")]
+// ── Native request/response transport ───────────────────────────────
+// Entry points used by the generated client/server (iceoryx2 request/response,
+// streamed responses, completion = connection close).
 pub use crate::reqres::{
     decode_request, encode_request, native_call, observable_to_responses, spawn_native_service,
     ResponseIter, ServiceDispatcher,

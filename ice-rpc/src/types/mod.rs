@@ -35,5 +35,4 @@ pub use wire::{Event, EventKind, ObservableError, Sender, WireEvent};
 
 // Shared by the native request/response transport to normalize the `WireEvent`
 // it receives over the wire into the user-facing `Event`.
-#[cfg(feature = "native-transport")]
 pub(crate) use wire::normalize_wire_event;

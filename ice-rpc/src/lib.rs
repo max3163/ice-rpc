@@ -160,8 +160,7 @@ pub mod gen;
 #[doc(hidden)]
 pub mod nodejs_dispatch;
 
-/// Native iceoryx2 request/response transport (feature `native-transport`).
-#[cfg(feature = "native-transport")]
+/// Native iceoryx2 request/response transport.
 #[doc(hidden)]
 pub mod reqres;
 

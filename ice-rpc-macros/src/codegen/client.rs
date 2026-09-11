@@ -117,14 +117,15 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let err_type = input.err_type;
     let req_enum_name = input.req_enum_name;
     let logical_name = input.logical_name;
-    let service_version = input.service_version;
+    let _service_version = input.service_version;
 
     let method_name_str = fn_name.to_string();
     // Service-wide discovery deadline; mirrors `RPC_CALL_TIMEOUT_SECS` (30s).
-    let locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
+    let _locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
 
-    // Response handler closure.
-    let handler_body: TokenStream = quote! {
+    // Historical response-handler tokens. Kept only so the `quote!` inputs stay
+    // referenced while the native transport replaces the hub client.
+    let _handler_body: TokenStream = quote! {
         move |result: Result<&[u8], ice_rpc::RpcError>| {
             let hub = ice_rpc::ServiceLocator::global().hub();
             match result {
@@ -169,7 +170,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         }
     };
 
-    // ── Single method body ──────────────────────────────────────────
+    // ── Single method body (native iceoryx2 request/response) ────────
     quote! {
         #visibility async fn #fn_name(&self, #(#arg_names: #arg_types),*)
             -> ice_rpc::Observable<#ok_type, #err_type>
@@ -185,63 +186,13 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
                 }
             };
 
-            // ── IPC call ─────────────────────────────────────────────
-            let svc_name = #logical_name;
-
-            let target_node = match self.core.resolve_target(svc_name, #locate_timeout).await {
-                Ok(node) => node,
-                Err(e) => return ice_rpc::Observable::from_technical_error(e),
-            };
-
-            let rpc_header = ice_rpc::gen::RpcHeader::request(
-                svc_name,
+            ice_rpc::gen::native_call::<#ok_type, #err_type>(
+                #logical_name,
                 #method_name_str,
-                #service_version,
-            );
-            let correlation_id = rpc_header.correlation_id;
-
-            // Unbounded: the dispatch loop delivers responses from a
-            // synchronous callback and therefore cannot apply backpressure. A
-            // bounded channel would turn a slow consumer into a **silent**
-            // loss once full. The `Drop` guard below releases
-            // the queue and the hub entry as soon as the consumer drops the
-            // stream
-            let (tx, rx) = ice_rpc::gen::unbounded_channel::<#ok_type, #err_type>();
-
-            let handler: ice_rpc::gen::ResponseHandler = std::sync::Arc::new(#handler_body);
-
-            // O(1) cleanup on abandon: removes both hub entries when the last
-            // handle of the `Observable` disappears — including a stream the
-            // provider never answered (`timeout`, `first_value()`, …).
-            let rx = rx.with_on_drop({
-                let cid = correlation_id;
-                move || ice_rpc::ServiceLocator::global().hub().finish_call(&cid)
-            });
-
-            let hub = ice_rpc::ServiceLocator::global().hub();
-
-            if !hub.has_publishers(target_node) {
-                let hub2 = ice_rpc::ServiceLocator::global().hub();
-                let node = target_node;
-                // Hot path of the fallback branch: it must run on the runtime's
-                // bounded blocking pool. A dedicated thread per RPC call would
-                // be unbounded under load.
-                ice_rpc::rt::blocking_call(move || {
-                    if let Err(e) = hub2.ensure_publishers(node) {
-                        ::log::error!("[{}Client] ensure_publishers (fallback): {}", #logical_name, e);
-                    }
-                }).await;
-            }
-
-            hub.register_response_handler(correlation_id, handler);
-            hub.register_pending_call(correlation_id, target_node.0);
-
-            if let Err(e) = hub.send_to_node(target_node, rpc_header, &bytes) {
-                hub.remove_response_handler(&correlation_id);
-                return ice_rpc::Observable::from_technical_error(e);
-            }
-
-            rx
+                &bytes,
+            )
+            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
         }
+
     }
 }

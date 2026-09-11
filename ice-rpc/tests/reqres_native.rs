@@ -1,8 +1,4 @@
 //! Integration test for the native iceoryx2 request/response transport.
-//!
-//! Only compiled with the `native-transport` feature.
-
-#![cfg(feature = "native-transport")]
 
 use ice_rpc::gen::{rkyv, WireEvent};
 use ice_rpc::reqres::{

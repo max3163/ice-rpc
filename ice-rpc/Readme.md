@@ -2,17 +2,16 @@
 
 High-performance, **zero-copy** RPC framework over [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) shared memory.
 
-From a single `#[service]`-annotated trait, the procedural macro generates the entire IPC code: client, server, proxy and lifecycle. Automatic reconnection after a provider crash (including `SIGKILL`) is provided by a cross-platform kernel watchdog (Windows Mutex / Unix `flock`).
+From a single `#[service]`-annotated trait, the procedural macro generates the entire IPC code: client, server, proxy and lifecycle. Automatic reconnection after a provider crash (including `SIGKILL`) is provided by iceoryx2's **native node monitoring**: the OS releases the node's monitoring file lock when the process dies, and `Node::list` reports it as `NodeState::Dead`.
 
 ## Features
 
 - **Zero-copy IPC transport** through iceoryx2 shared memory.
 - **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
 - **Service discovery** with a registry per node and dependency-aware topological initialization.
-- **Crash detection & reconnection** without heartbeat (kernel named lock).
+- **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs`.
 - **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
-- **Optional consumer-side TTL cache** (`cache` feature) via the `#[cache(ttl = "60s")]` method attribute.
 
 ## Installation
 
@@ -42,14 +41,14 @@ ice-rpc = { version = "0.1" }                           # agnostic (default)
 ice-rpc = { version = "0.1", features = ["smol"] }      # smol (native facade)
 ice-rpc = { version = "0.1", features = ["tokio"] }     # tokio facade
 ice-rpc = { version = "0.1", features = ["http"] }      # trillium gateway (runtime-agnostic)
-ice-rpc = { version = "0.1", features = ["cache"] }     # consumer-side TTL cache
-ice-rpc = { version = "0.1", features = ["full"] }      # http + cache + tokio
+ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
 ```
 
-`full` is a convenience feature that enables `http`, `cache` and `tokio` in one shot.
+`full` is a convenience feature that enables `http` and `tokio` in one shot.
 
-- Service methods return `ice_rpc::Stream<T, E>` — an `async_channel::Receiver`.
-  Create the stream with `ice_rpc::channel::<T, E>(capacity)`.
+- Service methods return `ice_rpc::Observable<T, E>`. Build one with the
+  `ice-rpc-rx` constructors (`of`, `from`, `throw_error`, `Subject`); an advanced
+  provider may use the raw channel via `ice_rpc::gen::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `sleep`, `timeout`,
   `block_on`, `oneshot` and `CancellationToken`.
 
@@ -95,18 +94,20 @@ struct MyServiceImpl;
 #[async_trait::async_trait]
 impl MyService for MyServiceImpl {
     async fn hello(&self, name: String) -> Observable<String, MyError> {
-        let (tx, rx) = ice_rpc::channel::<String, MyError>(2);
+        // Single response: with `ice-rpc-rx`, this is just
+        //     ice_rpc_rx::of(format!("Hello {name} !"))
+        // The raw channel stays available for long-lived push streams:
+        let (tx, rx) = ice_rpc::gen::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
-            let _ = tx.send(ice_rpc::Event::Next(format!("Hello {} !", name))).await;
-            let _ = tx.send(ice_rpc::Event::Complete).await;
+            let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
         });
-        Ok(rx)
+        rx // no Result: a service returns the observable itself
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init();
+    // `run_provider!` bootstraps ice-rpc and shuts it down on exit.
     ice_rpc::run_provider!(
         MyServiceProxy::provide(MyServiceImpl),
     ).await
@@ -116,20 +117,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. Call from a consumer
 
 ```rust,ignore
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ice_rpc::init();
-    let guard = ice_rpc::ShutdownGuard::new();
-
     let proxy = ice_rpc::locator()
         .get::<MyServiceProxy>().await
         .expect("MyService unknown");
 
-    let response: String = ice_rpc::take_one!(proxy.hello("Alice".into()))?;
+    let response: String = proxy.hello("Alice".into()).await.first_value().await?;
     println!("Response: {}", response);
 
-    guard.shutdown().await;
-    Ok(())
+    Ok(()) // `#[ice_rpc::main]` shuts ice-rpc down on exit
 }
 ```
 
@@ -137,23 +134,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Concept | Description |
 |---|---|
-| `NodeId` | Process identity (PID), unique across the machine. |
-| `Observable<T, E>` | RPC stream: `Result<Receiver<Event<T, E>>, RpcError>`. |
-| `Event<T, E>` | `Next(T)` / `Complete` / `Error(E)` / `RpcError(RpcError)`. |
-| `ConnectionState` | Client connection state machine (`Unknown` / `Discovering` / `Ready` / `Dead` / `Reconnecting`). |
-| `ServiceLocator` | Global registry, dependency resolution and initialization. |
-| `NodeHub` | Central IPC hub: publishers, request/response handlers, dispatch loop. |
+| `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
+| `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
+| `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
+| `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
+| `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
 
-## Consumption helpers
+Internal concepts (`NodeId`, `ConnectionState`, `NodeHub`, `RpcHeader`, …) are
+exposed through the doc-hidden `ice_rpc::gen` module and described in the
+architecture sections below.
 
-- `take_one!(observable)` and `take_one_or_cancel!(observable, cancel)` extract the first value of a stream.
-- `#[timeout("30s")]` on a method sets the service-location timeout (default `RPC_CALL_TIMEOUT_SECS` = 30s).
+## Consumption
+
+Consuming a stream is done natively on `ice_rpc::Observable` (or through the
+`ice-rpc-rx` operators); a call never fails at the call site — a
+discovery/transport failure becomes an in-stream technical error:
+
+```rust,ignore
+let value = proxy.hello("Alice".into()).await.first_value().await?;
+let all   = proxy.list().await.collect().await?; // Vec<T>
+```
+
+- `first_value() -> Result<T, StreamError<E>>` (`Empty` when the stream completes
+  without a value);
+- `collect() -> Result<Vec<T>, ObservableError<E>>`;
+- `#[service(..., discovery_timeout = "5s")]` sets the **service-wide** provider-lookup deadline (default `RPC_CALL_TIMEOUT_SECS` = 30s). It bounds the *discovery* phase only; use the `timeout` operator to bound the response wait.
 
 ## Error semantics
 
+Errors travel **inside** the flux. `Event::Error(ObservableError<E>)` carries
+either a business error (`Business(E)`) or a technical one
+(`Technical(RpcError)`), so a single `match` detects a failure and the caller
+refines with the two variants.
+
 `RpcError` classifies technical failures so callers can choose a policy
-(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types.rs:333).
+(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types/error.rs:54).
 
 | Variant | Meaning | Retryable |
 |---|---|---|
@@ -162,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `ProviderUnavailable` | provider node unreachable — also fails in-flight calls on node death | yes |
 | `Timeout` | deadline exceeded | yes |
 | `ServiceNotFound` | service not registered on any node | no |
-| `Cancelled` | global shutdown (Ctrl+C) | no |
+| `Cancelled` | global shutdown (SIGINT/SIGTERM or programmatic) | no |
 | `SerializationError` | rkyv serialization/deserialization failure | no |
 | `PayloadTooLarge` | payload above the shared-memory limit | no |
 | `ProtocolMismatch` | incompatible protocol/service version | no |
@@ -186,10 +202,9 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
 }
 ```
 
-For services that consume other services, initialize with `init()` and register with `provide_with_init`:
+For services that consume other services, register with `provide_with_init`; `run_provider!` bootstraps ice-rpc:
 
 ```rust,ignore
-ice_rpc::init();
 ice_rpc::run_provider!(
     MyServiceProxy::provide_with_init(MyServiceImpl),
 ).await
@@ -197,42 +212,21 @@ ice_rpc::run_provider!(
 
 ## Clean shutdown
 
-Use the RAII `ShutdownGuard` to cancel the IPC threads on drop and, on success path, wait for their termination:
+`#[ice_rpc::main]` shuts ice-rpc down for you, including on an early `return` or
+`?`:
 
 ```rust,ignore
-let guard = ice_rpc::ShutdownGuard::new();
-// ... use ice-rpc ...
-guard.shutdown().await; // waits for the IPC threads and releases the iceoryx2 node
-```
-
-## Consumer-side cache (optional)
-
-Enable the `cache` feature:
-
-```toml
-ice-rpc = { version = "0.1", features = ["cache"] }
-```
-
-Then annotate a service method with `#[cache(ttl = "60s")]`. On the consumer
-side, the generated client caches successful `Next` values keyed by the
-serialized arguments, so subsequent identical calls skip the IPC round-trip
-until the TTL expires.
-
-```rust,ignore
-use ice_rpc::{cache, service, Observable};
-
-#[service("MyService")]
-pub trait MyService: Send + Sync + 'static {
-    #[cache(ttl = "60s", max_entries = 128)]
-    async fn get(&self, key: String) -> Observable<String, MyError>;
+#[ice_rpc::main(tokio)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let proxy = ice_rpc::locator().get::<MyServiceProxy>().await?;
+    // ...
+    Ok(())
 }
 ```
 
-- `ttl` — lifetime of a cached entry (e.g. `"60s"`, `"5min"`);
-- `max_entries` — optional maximum number of entries (default `1024`).
-
-The cache is a local, thread-safe `RpcCache` (`ice_rpc::RpcCache`) with lazy
-expiry; it is intended for idempotent reads.
+For a hand-written `main` (one calling `std::process::exit`, the N-API gateway,
+tests), the lifecycle lives in `ice_rpc::gen`: `let guard = ice_rpc::gen::init();`
+… `guard.shutdown().await;`.
 
 ## HTTP gateway (optional)
 
@@ -243,8 +237,11 @@ ice-rpc = { version = "0.1", features = ["http"] }
 ```
 
 ```rust,ignore
-ice_rpc::init();
-ice_rpc::start_http_gateway!(8080, MyServiceProxy).await;
+#[ice_rpc::main(tokio)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ice_rpc::start_http_gateway!(8080, MyServiceProxy).await;
+    Ok(())
+}
 ```
 
 Services are then reachable through `/{service}/{method}`.

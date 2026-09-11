@@ -4,7 +4,9 @@
 //! generates the Proxy, Client, Server and the lifecycle code
 //! for an RPC service trait.
 
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod codegen;
+mod entry;
 
 // PRIVATE constants — the public versions are in ice-rpc (`types.rs`).
 // The values MUST be identical to `ice_rpc::types::{SERVICE_NAME_LEN, METHOD_NAME_LEN}`
@@ -17,30 +19,9 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
 
-/// `#[cache(ttl = "60s")]` attribute for service trait methods.
-///
-/// This attribute is a pass-through: the real cache logic is implemented
-/// by the `#[service]` macro which reads this attribute on the trait methods.
-/// It is exported only so that the Rust compiler recognizes it
-/// as a valid attribute.
-#[proc_macro_attribute]
-pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-/// `#[timeout("30s")]` attribute for service trait methods.
-///
-/// Defines a custom timeout (in seconds) for locating the service
-/// before the first RPC call. Defaults to
-/// `ice_rpc::RPC_CALL_TIMEOUT_SECS` (30s) when omitted.
-#[proc_macro_attribute]
-pub fn timeout(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
 use crate::codegen::{
     client::{
-        gen_client_lifecycle, gen_client_method, gen_client_struct, CacheConfig, ClientGenInput,
+        gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
         ClientMethodGenInput,
     },
     helpers::{extract_rpc_result_types, g_variant_name},
@@ -60,12 +41,17 @@ use crate::codegen::{
 /// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
 ///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
-/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2)]` → all.
+/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline for
+///   locating the provider before the first call (default:
+///   `ice_rpc::gen::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
+///   suffixes. It bounds the *discovery* phase only, never the response wait.
+/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
     allow_large_payload: bool,
     default_size_message_kb: Option<u64>,
     service_version: u16,
+    discovery_timeout_secs: Option<u64>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -74,6 +60,7 @@ impl syn::parse::Parse for ServiceAttr {
         let mut allow_large_payload = false;
         let mut default_size_message_kb: Option<u64> = None;
         let mut service_version: u16 = 1;
+        let mut discovery_timeout_secs: Option<u64> = None;
 
         if input.is_empty() {
             return Ok(Self {
@@ -81,6 +68,7 @@ impl syn::parse::Parse for ServiceAttr {
                 allow_large_payload: false,
                 default_size_message_kb: None,
                 service_version,
+                discovery_timeout_secs: None,
             });
         }
 
@@ -102,6 +90,16 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
+                } else if ident == "discovery_timeout" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitStr = input.parse()?;
+                    discovery_timeout_secs =
+                        Some(parse_duration_str(&lit.value()).ok_or_else(|| {
+                            syn::Error::new(
+                                lit.span(),
+                                "invalid duration; expected forms like \"30s\", \"5m\" or \"1h\"",
+                            )
+                        })?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -121,85 +119,14 @@ impl syn::parse::Parse for ServiceAttr {
             allow_large_payload,
             default_size_message_kb,
             service_version,
+            discovery_timeout_secs,
         })
     }
 }
 
-/// Parses `#[timeout("30s")]` and returns the duration in seconds.
-fn parse_timeout_attr(attrs: &[syn::Attribute]) -> Option<u64> {
-    for attr in attrs {
-        if !attr.path().is_ident("timeout") {
-            continue;
-        }
-        if let Ok(syn::Meta::NameValue(nv)) = attr.parse_args::<syn::Meta>() {
-            if nv.path.is_ident("ttl") {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = nv.value
-                {
-                    return parse_duration_str(&lit_str.value());
-                }
-            }
-        }
-        // Also supports #[timeout("30s")] without ttl=
-        if let Ok(lit_str) = attr.parse_args::<syn::LitStr>() {
-            return parse_duration_str(&lit_str.value());
-        }
-    }
-    None
-}
-
-/// Extracts the cache configuration from a method's attributes.
+/// Parses a duration string like `"60s"`, `"5m"`, `"1h"` into seconds.
 ///
-/// Parses `#[cache(ttl = "60s")]` or `#[cache(ttl = "60s", max_entries = 256)]`.
-/// Returns `None` if the `#[cache]` attribute is absent.
-fn parse_cache_config(attrs: &[syn::Attribute]) -> Option<CacheConfig> {
-    for attr in attrs {
-        if !attr.path().is_ident("cache") {
-            continue;
-        }
-        // Parses the attribute content: ttl = "60s", max_entries = 256
-        let mut ttl_secs: Option<u64> = None;
-        let mut max_entries: usize = 1024;
-
-        if let Ok(list) = attr.parse_args_with(
-            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_separated_nonempty,
-        ) {
-            for nv in list {
-                if nv.path.is_ident("ttl") {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit_str),
-                        ..
-                    }) = nv.value
-                    {
-                        ttl_secs = parse_duration_str(&lit_str.value());
-                    }
-                } else if nv.path.is_ident("max_entries") {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Int(lit_int),
-                        ..
-                    }) = nv.value
-                    {
-                        if let Ok(v) = lit_int.base10_parse::<usize>() {
-                            max_entries = v;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(ttl) = ttl_secs {
-            return Some(CacheConfig {
-                ttl_secs: ttl,
-                max_entries,
-            });
-        }
-    }
-    None
-}
-
-/// Parses a duration string like "60s", "5m", "1h" into seconds.
+/// Used by the `discovery_timeout` parameter of `#[service]`.
 fn parse_duration_str(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Some(rest) = s.strip_suffix('s') {
@@ -213,7 +140,34 @@ fn parse_duration_str(s: &str) -> Option<u64> {
     }
 }
 
-fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
+/// Extracts the return type of an RPC method, plus its `(T, E)` pair.
+///
+/// This is the single validation path for method signatures: both the
+/// request-enum generation and the Node.js converters go through it, so they
+/// cannot accept different shapes.
+///
+/// # Errors
+/// Returns a [`syn::Error`] spanned on the method signature (missing return
+/// type) or on the offending type. The caller turns it into a `compile_error!`
+/// pointing at the user's code instead of panicking inside the macro.
+#[allow(clippy::type_complexity)]
+fn rpc_method_types(
+    method: &syn::TraitItemFn,
+) -> syn::Result<(&syn::Type, Box<syn::Type>, Box<syn::Type>)> {
+    let output_type = match &method.sig.output {
+        syn::ReturnType::Type(_, ty) => ty.as_ref(),
+        syn::ReturnType::Default => {
+            return Err(syn::Error::new_spanned(
+                &method.sig,
+                "RPC methods must declare a return type, e.g. `-> Observable<T, E>`",
+            ))
+        }
+    };
+    let (ok_type, err_type) = extract_rpc_result_types(output_type)?;
+    Ok((output_type, ok_type, err_type))
+}
+
+fn nodejs_methods_vec(items: &[TraitItem]) -> syn::Result<Vec<NodeJsMethod>> {
     let mut methods = Vec::new();
     for item in items {
         if let TraitItem::Fn(method) = item {
@@ -232,12 +186,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
                 }
             }
 
-            let output_type = match &method.sig.output {
-                syn::ReturnType::Type(_, ty) => ty.clone(),
-                _ => panic!("RPC methods must return an Observable<T, E>"),
-            };
-
-            let (ok_type, err_type) = extract_rpc_result_types(&output_type);
+            let (_, ok_type, err_type) = rpc_method_types(method)?;
 
             methods.push(NodeJsMethod {
                 fn_name,
@@ -249,11 +198,20 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> Vec<NodeJsMethod> {
             });
         }
     }
-    methods
+    Ok(methods)
 }
 
 /// `#[service]` attribute macro: generates the Proxy, Client, Server, and the
 /// lifecycle code for an RPC service trait.
+///
+/// # Parameters
+///
+/// `"LogicalName"`, `allow_large_payload`, `default_size_message` (KiB),
+/// `version` and `discovery_timeout` (duration string such as `"5s"`, `"2m"`,
+/// `"1h"`). The discovery timeout is **service-wide**: it bounds the provider
+/// lookup performed by `ClientCore::resolve_target` for every method of the
+/// service. It does not bound the response wait — use the `timeout` operator
+/// (provider-side `ice-rpc-rx`) for that.
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
@@ -286,6 +244,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let allow_large_payload = service_attr.allow_large_payload;
     let default_size_message_kb = service_attr.default_size_message_kb;
     let service_version = service_attr.service_version;
+    // Discovery timeout is a *service-wide* setting: every method of the
+    // service shares the same provider-lookup deadline.
+    let discovery_timeout_secs = service_attr.discovery_timeout_secs;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -390,17 +351,10 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
 
-            let output_type = match &method.sig.output {
-                syn::ReturnType::Type(_, ty) => ty.clone(),
-                _ => panic!("RPC methods must return an Observable<T, E>"),
+            let (output_type, ok_type, err_type) = match rpc_method_types(method) {
+                Ok(types) => types,
+                Err(e) => return e.to_compile_error().into(),
             };
-
-            let (ok_type, err_type) = extract_rpc_result_types(&output_type);
-
-            // Extracts the cache configuration for this method.
-            let cache_config = parse_cache_config(&method.attrs);
-            // Extracts the custom timeout.
-            let timeout_secs = parse_timeout_attr(&method.attrs);
 
             req_variants.push(quote! {
                 #var_name { #(#arg_names: #arg_types),* } = #variant_discriminant
@@ -417,8 +371,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 err_type: &err_type,
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
-                cache_config: cache_config.as_ref(),
-                timeout_secs,
+                discovery_timeout_secs,
                 service_version,
             }));
 
@@ -429,13 +382,14 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &arg_names,
                 &req_enum_name,
                 service_version,
+                (&*ok_type, &*err_type),
             ));
 
             node_methods.push(gen_proxy_method(
                 fn_name,
                 &arg_names,
                 &arg_types,
-                &output_type,
+                output_type,
                 &mode_name,
             ));
 
@@ -444,8 +398,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn_name: fn_name.clone(),
                 arg_names: arg_names.iter().map(|id| (*id).clone()).collect(),
                 arg_types: arg_types.iter().map(|ty| (**ty).clone()).collect(),
-                ok_type: (*ok_type).clone(),
-                err_type: (*err_type).clone(),
             });
         }
     }
@@ -500,7 +452,10 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
-    let nodejs_methods: Vec<NodeJsMethod> = nodejs_methods_vec(&input_trait.items);
+    let nodejs_methods: Vec<NodeJsMethod> = match nodejs_methods_vec(&input_trait.items) {
+        Ok(methods) => methods,
+        Err(e) => return e.to_compile_error().into(),
+    };
     let nodejs_input = NodeJsGenInput {
         visibility,
         proxy_name: &proxy_name,
@@ -526,12 +481,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         proc_macro2::Span::call_site(),
     );
 
-    let expanded = quote! {
-        #[allow(unexpected_cfgs)]
-        #input_trait
-
+    let generated = quote! {
         #[repr(u8)]
-        #[derive(ice_rpc::rkyv::Archive, ice_rpc::rkyv::Deserialize, ice_rpc::rkyv::Serialize, Debug)]
+        #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
         #visibility enum #req_enum_name { #(#req_variants),* }
 
         #client_struct
@@ -553,5 +505,109 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         static #collision_symbol: u8 = 0;
     };
 
+    // The generated wrappers are named after the user's trait and cannot be
+    // documented by the consumer, so they must not trip its `missing_docs`
+    // lint. The annotated trait itself is exempted from this guard: it stays
+    // subject to the consumer's lint configuration.
+    let generated = codegen::helpers::allow_missing_docs(generated);
+
+    let expanded = quote! {
+        #[allow(unexpected_cfgs)]
+        #input_trait
+
+        #generated
+    };
+
     expanded.into()
+}
+
+/// Bootstraps ice-rpc around an `async fn main`.
+///
+/// Generates a synchronous `fn main` that:
+/// 1. initializes ice-rpc (`ice_rpc::gen::init()`);
+/// 2. awaits the annotated body;
+/// 3. shuts ice-rpc down (waiting for the IPC threads and releasing the
+///    iceoryx2 node) — **even when the body returns early via `?` or
+///    `return`**, because the body runs inside its own `async` block.
+///
+/// # Runtime
+///
+/// No runtime is hard-coded:
+/// - `#[ice_rpc::main]` → runtime-agnostic, driven by `ice_rpc::rt::block_on`;
+/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime
+///   (requires `tokio` with the `rt-multi-thread` and `time` features);
+/// - `#[ice_rpc::main(smol::block_on)]` → any user-provided `fn(Future) -> T`.
+///
+/// # Example
+/// ```rust,ignore
+/// #[ice_rpc::main(tokio)]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let proxy = ice_rpc::locator().get::<MyServiceProxy>().await?;
+///     // ...
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
+    entry::expand_main(attr.into(), item.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::entry::expand_main;
+    use proc_macro2::TokenStream;
+    use quote::quote;
+
+    fn expand(attr: TokenStream, item: TokenStream) -> String {
+        expand_main(attr, item)
+            .expect("expansion should succeed")
+            .to_string()
+    }
+
+    #[test]
+    fn main_default_uses_the_agnostic_driver() {
+        let out = expand(
+            quote! {},
+            quote! { async fn main() -> Result<(), String> { Ok(()) } },
+        );
+        assert!(out.contains("ice_rpc :: rt :: block_on"), "{out}");
+        assert!(out.contains("ice_rpc :: gen :: init ()"), "{out}");
+        assert!(out.contains("-> Result < () , String >"), "{out}");
+        assert!(
+            out.starts_with("fn main"),
+            "the generated main must be sync: {out}"
+        );
+        assert!(!out.contains("async fn main"), "{out}");
+    }
+
+    #[test]
+    fn main_tokio_builds_a_tokio_runtime() {
+        let out = expand(quote! { tokio }, quote! { async fn main() {} });
+        assert!(out.contains("new_multi_thread"), "{out}");
+        assert!(!out.contains("ice_rpc :: rt :: block_on"), "{out}");
+    }
+
+    #[test]
+    fn main_custom_driver_is_used_verbatim() {
+        let out = expand(quote! { smol::block_on }, quote! { async fn main() {} });
+        assert!(out.contains("smol :: block_on"), "{out}");
+    }
+
+    #[test]
+    fn main_wraps_body_in_an_inner_async_block() {
+        let out = expand(quote! {}, quote! { async fn main() {} });
+        // The shutdown must be emitted after the awaited body, so an early
+        // `return` / `?` inside the body cannot skip it.
+        let shutdown = out.find("shutdown").expect("shutdown() missing");
+        let body_await = out.find(". await").expect("body await missing");
+        assert!(body_await < shutdown, "{out}");
+    }
+
+    #[test]
+    fn main_rejects_a_synchronous_function() {
+        let err = expand_main(quote! {}, quote! { fn main() {} }).unwrap_err();
+        assert!(err.to_string().contains("async fn main"));
+    }
 }

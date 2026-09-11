@@ -8,10 +8,10 @@
 //! cargo run --example consumer-http-app
 //! ```
 
-mod shared;
-
-use ice_rpc::{take_one_or_cancel, TakeOneError};
-use shared::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+use common::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+use ice_rpc::StreamError;
+use ice_rpc_rx::RxStreamExt;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -75,7 +75,7 @@ fn fmt_bytes(bytes: usize) -> String {
 }
 
 async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usize) -> bool {
-    let cancel = ice_rpc::global_cancel_token();
+    let cancel = ice_rpc::gen::global_cancel_token();
 
     let body = generate_payload(payload_size, label);
     let request = HttpRequestParams {
@@ -111,14 +111,15 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
     let t_send = Instant::now();
 
-    let result = take_one_or_cancel!(http.send_request(request).await, cancel);
+    let stream = http.send_request(request).await;
+    let result = stream.take_until(cancel).first_value().await;
 
     match result {
-        None => {
+        Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
             log::info!("   (cancelled by Ctrl+C)");
             false
         }
-        Some(Ok(response)) => {
+        Ok(response) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             let res_size = response.body.len()
                 + response.status_text.len()
@@ -150,10 +151,10 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
             true
         }
-        Some(Err(TakeOneError::Service(HttpError::PayloadTooLarge {
+        Err(StreamError::Business(HttpError::PayloadTooLarge {
             max_bytes,
             actual_bytes,
-        }))) => {
+        })) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Payload too large: {} max, {} sent  [{}]",
@@ -164,7 +165,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Service(e))) => {
+        Err(StreamError::Business(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Business error: {:?}  [{}]",
@@ -174,7 +175,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Ipc(e))) => {
+        Err(StreamError::Technical(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] IPC error: {}  [{}]",
@@ -184,7 +185,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Some(Err(TakeOneError::Empty)) => {
+        Err(StreamError::Empty) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::warn!(
                 "  ✗ [{}] No value received  [{}]",
@@ -274,7 +275,7 @@ async fn read_line_or_cancel(
     }
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("╔══════════════════════════════════════════════════════════════╗");
@@ -282,15 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("╚══════════════════════════════════════════════════════════════╝");
     log::info!("");
 
-    // RAII guard: cancels the cancellation tokens on Drop (even on panic).
-    // shutdown() must be called explicitly for a clean stop with
-    // waiting for the IPC threads and releasing the iceoryx2 node.
-    let shutdown_guard = ice_rpc::ShutdownGuard::new();
-
-    // This process consumes HttpService via locator().get().
-    ice_rpc::init();
-
-    let cancel = ice_rpc::global_cancel_token();
+    let cancel = ice_rpc::gen::global_cancel_token();
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
 
@@ -301,7 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("--- Initial execution ---");
     if !run_all_http_tests(&http_service).await {
-        return shutdown(&shutdown_guard).await;
+        return Ok(());
     }
     log::info!("--- End. [ENTER] to replay, [Ctrl+C] to quit. ---\n");
 
@@ -318,16 +311,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    shutdown(&shutdown_guard).await
-}
-
-/// Clean shutdown: ice-rpc shutdown via the RAII guard.
-///
-/// The guard guarantees that the tokens are cancelled even if this function
-/// is not called (panic, early return…).
-async fn shutdown(guard: &ice_rpc::ShutdownGuard) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("\nStopping HTTP consumer...");
-    guard.shutdown().await;
-    log::info!("HTTP consumer stopped.");
     Ok(())
 }

@@ -1,0 +1,66 @@
+[package]
+name = "ice-rpc-rx"
+version.workspace = true
+rust-version.workspace = true
+edition = "2021"
+description = "Reactive operators (RxJS-like) for ice-rpc event streams"
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+tokio = ["ice-rpc/tokio"]
+http = ["ice-rpc/http"]
+http-tokio = ["ice-rpc/http-tokio"]
+# Internal timing harness (`examples/perf_probe.rs`): opt-in only, so it is never
+# built by `--all-targets` or by the CI clippy run.
+perf-probe = []
+
+[dependencies]
+ice-rpc = { path = "../ice-rpc" }
+futures-lite = "2"
+pin-project-lite = "0.2"
+
+[dev-dependencies]
+# The demo services are declared once, in the `common` crate, and shared with the
+# `gateway_nodejs` examples: no local copy is maintained here.
+common = { path = "../examples/common" }
+env_logger = "0.11"
+pollster = "1.0"
+tokio = { workspace = true }
+async-trait = { workspace = true }
+rkyv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "1"
+log = { workspace = true }
+
+[[example]]
+name = "state_service"
+required-features = ["tokio"]
+
+[[example]]
+name = "provider-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-http-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "benchmark-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "pipeline_bench"
+required-features = ["tokio"]
+
+[[example]]
+name = "perf_probe"
+required-features = ["perf-probe"]

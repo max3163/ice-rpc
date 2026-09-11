@@ -6,7 +6,7 @@
 //! subscribers and routes messages to the registered handlers.
 
 use crate::types::{
-    node_default_topic, node_large_topic, node_notify_topic, NodeId, RpcHeader,
+    node_default_topic, node_large_topic, node_notify_topic, raw_pid_to_u32, NodeId, RpcHeader,
     LARGE_PAYLOAD_THRESHOLD,
 };
 use iceoryx2::port::DegradationAction;
@@ -26,9 +26,29 @@ struct NodePublishersInner {
 }
 
 /// Type of a request handler: called from the dispatch loop.
-pub type RequestHandler = Arc<dyn Fn(RpcHeader, &[u8]) + Send + Sync + 'static>;
+pub type RequestHandler = Arc<dyn Fn(RpcHeader, NodeId, &[u8]) + Send + Sync + 'static>;
+
 /// Type of a response handler: called from the dispatch loop.
+///
+/// The entry is removed from the hub either on the terminal event
+/// ([`NodeHub::finish_call`]) or, for a stream abandoned by its consumer, by
+/// the cleanup callback attached to the `Observable` (`Drop`, audit C14).
 pub type ResponseHandler = Arc<dyn Fn(Result<&[u8], crate::RpcError>) + Send + Sync + 'static>;
+
+/// Target shared-memory segment of a `send_to_node` call.
+///
+/// `_default` and `_large` are two distinct iceoryx2 topics with **no relative
+/// order**. To keep a response stream ordered, every event of a given call must
+/// travel on a single segment: the codegen pins it on the first event (audit C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadSegment {
+    /// Route by payload size (historical behaviour, `_large` when available).
+    Auto,
+    /// Force the `_default` topic, whatever the payload size.
+    Default,
+    /// Force the `_large` topic (falls back to `_default` if unavailable).
+    Large,
+}
 
 type IpcPublisher = iceoryx2::port::publisher::Publisher<
     iceoryx2::service::ipc_threadsafe::Service,
@@ -69,10 +89,7 @@ impl NodeHub {
 
     /// Registers a request handler for a given service.
     pub fn register_request_handler(&self, service_name: &str, handler: RequestHandler) {
-        let mut map = self
-            .request_handlers
-            .write()
-            .expect("request_handlers write lock poisoning");
+        let mut map = crate::sync::write(&self.request_handlers);
         map.entry(service_name.to_string())
             .or_default()
             .push(handler);
@@ -81,18 +98,15 @@ impl NodeHub {
 
     /// Returns the list of service names that have a registered handler.
     pub fn registered_services(&self) -> Vec<String> {
-        self.request_handlers
-            .read()
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default()
+        crate::sync::read(&self.request_handlers)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Registers a response handler for a given correlation_id.
     pub fn register_response_handler(&self, correlation_id: [u8; 16], handler: ResponseHandler) {
-        self.response_handlers
-            .lock()
-            .expect("response_handlers lock poisoning")
-            .insert(correlation_id, handler);
+        crate::sync::lock(&self.response_handlers).insert(correlation_id, handler);
     }
 
     /// Registers a pending call for a target node.
@@ -100,31 +114,25 @@ impl NodeHub {
     /// When the node dies, every pending call is notified with
     /// `RpcError::ProviderUnavailable`.
     pub fn register_pending_call(&self, correlation_id: [u8; 16], node_id: u32) {
-        self.pending_calls
-            .lock()
-            .expect("pending_calls lock poisoning")
-            .insert(correlation_id, node_id);
+        crate::sync::lock(&self.pending_calls).insert(correlation_id, node_id);
+    }
+
+    /// Removes the response handler **and** the pending-call entry of a
+    /// correlation_id, in the same critical section.
+    pub fn finish_call(&self, correlation_id: &[u8; 16]) {
+        crate::sync::lock(&self.response_handlers).remove(correlation_id);
+        crate::sync::lock(&self.pending_calls).remove(correlation_id);
     }
 
     /// Removes the response handler associated with a correlation_id.
     pub fn remove_response_handler(&self, correlation_id: &[u8; 16]) {
-        self.response_handlers
-            .lock()
-            .expect("response_handlers lock poisoning")
-            .remove(correlation_id);
-        self.pending_calls
-            .lock()
-            .expect("pending_calls lock poisoning")
-            .remove(correlation_id);
+        self.finish_call(correlation_id);
     }
 
     /// Notifies every pending call of a node that it is no longer reachable.
     fn fail_pending_calls(&self, node_id: u32) {
         let cids: Vec<[u8; 16]> = {
-            let pending = self
-                .pending_calls
-                .lock()
-                .expect("pending_calls lock poisoning");
+            let pending = crate::sync::lock(&self.pending_calls);
             pending
                 .iter()
                 .filter(|(_, node)| **node == node_id)
@@ -132,18 +140,12 @@ impl NodeHub {
                 .collect()
         };
         for cid in &cids {
-            self.pending_calls
-                .lock()
-                .expect("pending_calls lock poisoning")
-                .remove(cid);
+            crate::sync::lock(&self.pending_calls).remove(cid);
         }
 
         let mut to_fail = Vec::new();
         {
-            let mut handlers = self
-                .response_handlers
-                .lock()
-                .expect("response_handlers lock poisoning");
+            let mut handlers = crate::sync::lock(&self.response_handlers);
             for cid in cids {
                 if let Some(handler) = handlers.remove(&cid) {
                     to_fail.push(handler);
@@ -158,10 +160,15 @@ impl NodeHub {
 
     /// Checks whether publishers already exist for a target node.
     pub fn has_publishers(&self, target_node_id: NodeId) -> bool {
-        self.publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
+        crate::sync::read(&self.publishers).contains_key(&target_node_id.0)
+    }
+
+    /// Returns `true` when a `_large` publisher exists for the target node.
+    pub fn large_publisher_available(&self, target_node_id: NodeId) -> bool {
+        crate::sync::read(&self.publishers)
+            .get(&target_node_id.0)
+            .map(|publishers| publishers.large.is_some())
+            .unwrap_or(false)
     }
 
     /// Enables the creation of the large-payload shared-memory segment.
@@ -198,7 +205,7 @@ impl NodeHub {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Sends an RPC message to a target node through the appropriate publisher.
+    /// Sends an RPC message to a target node, routing by payload size.
     ///
     /// On failure, the publishers are invalidated and the node_down callbacks
     /// are fired.
@@ -208,16 +215,24 @@ impl NodeHub {
         header: RpcHeader,
         payload: &[u8],
     ) -> Result<(), crate::RpcError> {
+        self.send_to_node_with_segment(target_node_id, header, payload, PayloadSegment::Auto)
+    }
+
+    /// Sends an RPC message on a **pinned** segment
+    pub fn send_to_node_with_segment(
+        &self,
+        target_node_id: NodeId,
+        header: RpcHeader,
+        payload: &[u8],
+        segment: PayloadSegment,
+    ) -> Result<(), crate::RpcError> {
         let is_large = payload.len() > LARGE_PAYLOAD_THRESHOLD;
 
         let node_pubs = {
-            let publishers = self
-                .publishers
-                .read()
-                .expect("publishers read lock poisoning");
+            let publishers = crate::sync::read(&self.publishers);
             publishers
                 .get(&target_node_id.0)
-                .ok_or_else(|| crate::RpcError::ProviderUnavailable {
+                .ok_or(crate::RpcError::ProviderUnavailable {
                     node: target_node_id.0,
                 })?
                 .clone()
@@ -227,23 +242,28 @@ impl NodeHub {
         // on this node. When it is absent, oversized payloads fall back to the
         // default segment so that the call still works without the second
         // shared-memory segment.
-        let use_large = is_large && node_pubs.large.is_some();
+        let use_large = match segment {
+            PayloadSegment::Auto => is_large && node_pubs.large.is_some(),
+            PayloadSegment::Default => false,
+            PayloadSegment::Large => node_pubs.large.is_some(),
+        };
 
-        let send_result = {
-            let guard = if use_large {
-                node_pubs
-                    .large
-                    .as_ref()
-                    .expect("large publisher missing")
-                    .lock()
-                    .expect("large publisher lock poisoning")
-            } else {
-                node_pubs
-                    .default
-                    .lock()
-                    .expect("default publisher lock poisoning")
-            };
-            Self::do_send(&guard, header, payload)
+        let send_result = match (use_large, node_pubs.large.as_ref()) {
+            (true, Some(large)) => {
+                let guard = crate::sync::lock(large);
+                Self::do_send(&guard, header, payload)
+            }
+            // Defensive: `use_large` is only computed as `true` when a large
+            // publisher exists, but a missing segment must surface as a
+            // transport error rather than a panic — the release profile sets
+            // `panic = "abort"`, which would kill the whole process.
+            (true, None) => Err(crate::RpcError::TransportError(
+                "large payload segment requested but no large publisher is available".to_string(),
+            )),
+            (false, _) => {
+                let guard = crate::sync::lock(&node_pubs.default);
+                Self::do_send(&guard, header, payload)
+            }
         };
         if send_result.is_ok() {
             let _ = node_pubs
@@ -265,12 +285,32 @@ impl NodeHub {
 
     /// Invalidates the publishers of a target node (following a detected crash).
     pub fn invalidate_publishers(&self, target_node_id: NodeId) {
-        self.publishers
-            .write()
-            .expect("publishers write lock poisoning")
-            .remove(&target_node_id.0);
+        crate::sync::write(&self.publishers).remove(&target_node_id.0);
         self.fail_pending_calls(target_node_id.0);
         log::warn!("Publishers invalidated for {}", target_node_id);
+    }
+
+    /// Drops all the iceoryx2 ports cached by the hub (publishers + notifiers)
+    /// and clears the handler maps.
+    ///
+    /// The hub is a process-lifetime singleton, so these ports are never
+    /// dropped automatically. Their `Drop` is what triggers iceoryx2's
+    /// `shm_unlink` cleanup of the shared-memory backing files.
+    pub fn clear_ipc_resources(&self) {
+        let publisher_count = {
+            let mut map = crate::sync::write(&self.publishers);
+            let count = map.len();
+            map.clear();
+            count
+        };
+
+        crate::sync::write(&self.request_handlers).clear();
+        crate::sync::lock(&self.response_handlers).clear();
+        crate::sync::lock(&self.pending_calls).clear();
+
+        if publisher_count > 0 {
+            log::info!("[ice-rpc] NodeHub: dropped {publisher_count} cached publisher set(s).");
+        }
     }
 
     /// Performs the low-level send: `loan_slice_uninit` → write → send.
@@ -299,26 +339,13 @@ impl NodeHub {
     /// Creates the publishers towards a target node if they do not exist yet
     /// (double-checked locking).
     pub fn ensure_publishers(&self, target_node_id: NodeId) -> Result<(), crate::RpcError> {
-        if self
-            .publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
-        {
+        if crate::sync::read(&self.publishers).contains_key(&target_node_id.0) {
             return Ok(());
         }
 
-        let _create_guard = self
-            .publishers_create_lock
-            .lock()
-            .expect("publishers_create_lock poisoning");
+        let _create_guard = crate::sync::lock(&self.publishers_create_lock);
 
-        if self
-            .publishers
-            .read()
-            .expect("publishers read lock poisoning")
-            .contains_key(&target_node_id.0)
-        {
+        if crate::sync::read(&self.publishers).contains_key(&target_node_id.0) {
             return Ok(());
         }
 
@@ -332,10 +359,7 @@ impl NodeHub {
             self.default_message_size_bytes(),
         )?);
 
-        self.publishers
-            .write()
-            .expect("publishers write lock poisoning")
-            .insert(target_node_id.0, np);
+        crate::sync::write(&self.publishers).insert(target_node_id.0, np);
         Ok(())
     }
 
@@ -392,13 +416,17 @@ impl NodeHub {
             .subscriber_max_buffer_size(subscriber_buffer)
             .max_publishers(16)
             .open_or_create()
-            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}"))
+            })?;
         svc.publisher_builder()
             .initial_max_slice_len(initial_max_slice_len)
             .allocation_strategy(AllocationStrategy::PowerOfTwo)
             .set_degradation_handler(|_, _| DegradationAction::DegradeAndFail)
             .create()
-            .map_err(|e| crate::RpcError::TransportError(format!("publisher create({topic}): {e:?}")))
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("publisher create({topic}): {e:?}"))
+            })
     }
 
     /// Creates an iceoryx2 notifier on a given topic.
@@ -415,10 +443,22 @@ impl NodeHub {
             .service_builder(&name)
             .event()
             .open_or_create()
-            .map_err(|e| crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}")))?;
-        svc.notifier_builder()
-            .create()
-            .map_err(|e| crate::RpcError::TransportError(format!("notifier create({topic}): {e:?}")))
+            .map_err(|e| {
+                crate::RpcError::TransportError(format!("open_or_create({topic}): {e:?}"))
+            })?;
+        svc.notifier_builder().create().map_err(|e| {
+            crate::RpcError::TransportError(format!("notifier create({topic}): {e:?}"))
+        })
+    }
+
+    /// Clears the "dispatch loop started" flag so that a later call can retry.
+    ///
+    /// Called on every early-failure path of [`Self::start_dispatch_loop`]: the
+    /// message pump must not stay permanently disabled after a transient
+    /// iceoryx2 allocation failure.
+    pub(crate) fn mark_dispatch_stopped(&self) {
+        self.dispatch_started
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Starts the dispatch loop (IPC message pump) in a `spawn_blocking`.
@@ -438,6 +478,7 @@ impl NodeHub {
             Ok(n) => n,
             Err(e) => {
                 log::error!("get_node_sync failed: {}", e);
+                self.mark_dispatch_stopped();
                 return;
             }
         };
@@ -467,6 +508,7 @@ impl NodeHub {
             Some(l) => l,
             None => {
                 log::error!("Failed to create listener on {}", notify_topic);
+                self.mark_dispatch_stopped();
                 return;
             }
         };
@@ -481,12 +523,32 @@ impl NodeHub {
                 large_topic
             );
 
-            let wait_set = WaitSetBuilder::new()
+            let wait_set = match WaitSetBuilder::new()
+                .signal_handling_mode(crate::waitset_signal_handling_mode())
                 .create::<iceoryx2::service::ipc_threadsafe::Service>()
-                .expect("WaitSetBuilder creation failed");
-            let _guard = wait_set
-                .attach_notification(&listener)
-                .expect("attach_notification failed");
+            {
+                Ok(wait_set) => wait_set,
+                Err(e) => {
+                    log::error!(
+                        "WaitSetBuilder creation failed: {:?}; dispatch loop aborted",
+                        e
+                    );
+                    crate::ServiceLocator::global()
+                        .hub()
+                        .mark_dispatch_stopped();
+                    return;
+                }
+            };
+            let _guard = match wait_set.attach_notification(&listener) {
+                Ok(guard) => guard,
+                Err(e) => {
+                    log::error!("attach_notification failed: {:?}; dispatch loop aborted", e);
+                    crate::ServiceLocator::global()
+                        .hub()
+                        .mark_dispatch_stopped();
+                    return;
+                }
+            };
 
             loop {
                 if cancel.is_cancelled() {
@@ -514,10 +576,23 @@ impl NodeHub {
                     }
                 }
 
-                if let Err(_) | Ok(iceoryx2::waitset::WaitSetRunResult::TerminationRequest) = result
-                {
-                    crate::global_cancel_token().cancel();
-                    break;
+                match result {
+                    // SIGINT/SIGTERM: iceoryx2 reports the termination request
+                    // natively, so propagate the shutdown to every subsystem.
+                    Ok(
+                        iceoryx2::waitset::WaitSetRunResult::Interrupt
+                        | iceoryx2::waitset::WaitSetRunResult::TerminationRequest,
+                    ) => {
+                        crate::request_shutdown();
+                        break;
+                    }
+                    // Internal reactor error: cancel locally so the peer can be
+                    // reconnected, but let the registry listener alive.
+                    Err(_) => {
+                        crate::global_cancel_token().cancel();
+                        break;
+                    }
+                    _ => {}
                 }
             }
 
@@ -578,11 +653,7 @@ impl NodeHub {
             return false;
         };
         let hub = crate::ServiceLocator::global().hub();
-        let req_handlers_snapshot = hub
-            .request_handlers
-            .read()
-            .expect("request_handlers read lock poisoning")
-            .clone();
+        let req_handlers_snapshot = crate::sync::read(&hub.request_handlers).clone();
         let mut had_work = false;
 
         while let Ok(Some(sample)) = sub.receive() {
@@ -596,25 +667,30 @@ impl NodeHub {
 
             if hdr.is_request() {
                 if let Some(handlers) = req_handlers_snapshot.get(svc) {
+                    // iceoryx2's native header carries the sender's node id
+                    // (hence its PID): the caller is authenticated by the
+                    // transport instead of trusting a payload field.
+                    let caller = NodeId(raw_pid_to_u32(sample.header().node_id().pid().value()));
                     for handler in handlers {
-                        handler(hdr, payload);
+                        handler(hdr, caller, payload);
                     }
                 }
             } else {
                 let cid = hdr.correlation_id;
                 let terminal = hdr.event_kind.is_terminal();
-                let resp_guard = hub
-                    .response_handlers
-                    .lock()
-                    .expect("response_handlers lock poisoning");
-                if let Some(handler) = resp_guard.get(&cid).cloned() {
-                    drop(resp_guard);
-                    handler(Ok(payload));
-                    if terminal {
-                        hub.response_handlers
-                            .lock()
-                            .expect("response_handlers lock poisoning")
-                            .remove(&cid);
+                let handler = crate::sync::lock(&hub.response_handlers).get(&cid).cloned();
+                match handler {
+                    Some(handler) => {
+                        handler(Ok(payload));
+                        if terminal {
+                            hub.finish_call(&cid);
+                        }
+                    }
+                    None => {
+                        log::warn!(
+                            "[ice-rpc] response for unknown/closed correlation id {} dropped",
+                            crate::types::fmt_correlation_id_short(&cid)
+                        );
                     }
                 }
             }
@@ -642,7 +718,7 @@ mod tests {
     #[test]
     fn register_request_handlers_and_list_services() {
         let hub = new_hub();
-        let handler: RequestHandler = Arc::new(|_, _| {});
+        let handler: RequestHandler = Arc::new(|_, _, _| {});
         hub.register_request_handler("DatabaseService", handler.clone());
         hub.register_request_handler("ConfigService", handler);
 
@@ -686,6 +762,27 @@ mod tests {
             Some(crate::RpcError::ProviderUnavailable { node: n }) => assert_eq!(*n, node.0),
             other => panic!("Expected ProviderUnavailable, got {:?}", other),
         }
+    }
+
+    /// Terminal response must purge the pending-call entry too.
+    #[test]
+    fn finish_call_purges_handler_and_pending_call() {
+        let hub = new_hub();
+        let cid = [0x21u8; 16];
+        let handler: ResponseHandler = Arc::new(|_| {});
+        hub.register_response_handler(cid, handler);
+        hub.register_pending_call(cid, 0xABCD);
+
+        hub.finish_call(&cid);
+
+        assert!(
+            hub.response_handlers.lock().unwrap().is_empty(),
+            "response handler must be purged"
+        );
+        assert!(
+            hub.pending_calls.lock().unwrap().is_empty(),
+            "pending call must be purged together with the handler"
+        );
     }
 
     #[test]

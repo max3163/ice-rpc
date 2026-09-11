@@ -1,0 +1,34 @@
+# Cargo aliases for the ice-rpc workspace examples.
+#
+# The demo apps live in `ice-rpc-rx` and require the `tokio` feature at build
+# time, so a plain `cargo run --example provider-app` fails. These aliases wire
+# the right crate + features:
+#
+#   cargo provider            # provider-app, debug
+#   cargo consumer            # consumer-app, debug (database by default)
+#   cargo consumer -- --service context
+#   cargo state               # state_service, debug
+#   cargo http-consumer       # consumer-http-app, debug
+#   cargo provider-http       # provider-app with the HTTP gateway, debug
+#   cargo bench-app           # benchmark-app, release
+#   cargo pipeline            # pipeline_bench, release
+#   cargo probe               # C7 native-liveness probe (ice-rpc), debug
+#
+# `-release` variants build with optimisations.
+[alias]
+provider = "run -p ice-rpc-rx --example provider-app --features tokio"
+provider-release = "run -p ice-rpc-rx --release --example provider-app --features tokio"
+provider-http = "run -p ice-rpc-rx --example provider-app --features=tokio,http-tokio"
+
+consumer = "run -p ice-rpc-rx --example consumer-app --features tokio"
+consumer-release = "run -p ice-rpc-rx --release --example consumer-app --features tokio"
+http-consumer = "run -p ice-rpc-rx --example consumer-http-app --features tokio"
+
+state = "run -p ice-rpc-rx --example state_service --features tokio"
+
+# `bench` is a Cargo built-in command and cannot be aliased: use `bench-app`.
+bench-app = "run -p ice-rpc-rx --release --example benchmark-app --features tokio"
+pipeline = "run -p ice-rpc-rx --release --example pipeline_bench --features tokio"
+
+probe = "run -p ice-rpc --example node_liveness_probe"
+probe-release = "run -p ice-rpc --release --example node_liveness_probe"

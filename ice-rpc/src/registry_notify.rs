@@ -7,7 +7,7 @@
 //! this module only notifies changes to wake up the listeners of the
 //! other processes.
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use iceoryx2::prelude::*;
 
@@ -23,15 +23,12 @@ pub const REGISTRY_NOTIFY_TOPIC: &str = "ice_rpc_registry_notify";
 // Notifier
 // ---------------------------------------------------------------------------
 
-fn get_or_create_notifier() -> Option<
-    &'static iceoryx2::port::notifier::Notifier<iceoryx2::service::ipc_threadsafe::Service>,
-> {
-    type RegistryNotifier =
-        iceoryx2::port::notifier::Notifier<iceoryx2::service::ipc_threadsafe::Service>;
-    static NOTIFIER: OnceLock<RegistryNotifier> = OnceLock::new();
-    if let Some(n) = NOTIFIER.get() {
-        return Some(n);
-    }
+type RegistryNotifier =
+    iceoryx2::port::notifier::Notifier<iceoryx2::service::ipc_threadsafe::Service>;
+
+static NOTIFIER: Mutex<Option<RegistryNotifier>> = Mutex::new(None);
+
+fn create_notifier() -> Option<RegistryNotifier> {
     let node = ServiceLocator::global()
         .get_node_sync()
         .map_err(|e| {
@@ -46,30 +43,38 @@ fn get_or_create_notifier() -> Option<
     let svc = node
         .service_builder(&topic_name)
         .event()
-        .event_id_max_value(65535)
         .open_or_create()
         .map_err(|e| {
             log::warn!("[notify] event open_or_create failed (shutdown?): {:?}", e);
         })
         .ok()?;
-    let notifier = svc
-        .notifier_builder()
+    svc.notifier_builder()
         .create()
         .map_err(|e| {
             log::warn!("[notify] notifier create failed: {:?}", e);
         })
-        .ok()?;
-    let _ = NOTIFIER.set(notifier);
-    NOTIFIER.get()
+        .ok()
 }
 
-pub fn notify_change(node_id: u32) {
-    let Some(notifier) = get_or_create_notifier() else {
+fn with_notifier<R>(f: impl FnOnce(&RegistryNotifier) -> R) -> Option<R> {
+    let mut guard = NOTIFIER.lock().ok()?;
+    if guard.is_none() {
+        *guard = create_notifier();
+    }
+    let notifier = guard.as_ref()?;
+    Some(f(notifier))
+}
+
+pub fn notify_change(_node_id: u32) {
+    let notified = with_notifier(|notifier| {
+        if let Err(e) = notifier.notify() {
+            log::warn!("notify failed: {:?}", e);
+        }
+    })
+    .is_some();
+
+    if !notified {
         log::debug!("[notify] notifier unavailable — change notification skipped");
-        return;
-    };
-    if let Err(e) = notifier.notify_with_custom_event_id(EventId::new(node_id as usize)) {
-        log::warn!("notify_with_custom_event_id failed: {:?}", e);
     }
 }
 
@@ -85,4 +90,13 @@ pub fn announce_node_ready(node_id: u32) {
 /// Notifies that a node is dead.
 pub fn announce_dead_node(node_id: u32) {
     notify_change(node_id);
+}
+
+/// Drops the cached registry notifier (called at shutdown).
+pub fn clear_notifier() {
+    if let Ok(mut guard) = NOTIFIER.lock() {
+        if guard.take().is_some() {
+            log::info!("[ice-rpc] registry notifier dropped.");
+        }
+    }
 }

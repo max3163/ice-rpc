@@ -20,10 +20,11 @@
 //!
 //! # Lazy proxies
 //!
-//! [`init`] calls `ice_rpc::init_without_ctrl_c()`. No global registry
+//! [`init`] calls `ice_rpc::gen::init_without_ctrl_c()`. No global registry
 //! is needed: `ice_rpc::locator().get()` instantiates any
 //! proxy on demand, from its type.
 
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
 mod consumer;
 mod nodejs_bridge;
 mod runtime;
@@ -31,6 +32,15 @@ mod services;
 
 use napi::bindgen_prelude::{Function, Unknown};
 use napi_derive::napi;
+
+/// Keeps the ice-rpc shutdown guard alive for the whole gateway lifetime.
+///
+/// The N-API entry points (`init` / `shutdown`) are free functions, so there is
+/// no long-lived owner to hold the guard: it is stored here instead. Dropping
+/// it would cancel the global tokens immediately, which must not happen while
+/// the gateway is running.
+static SHUTDOWN_GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> =
+    std::sync::OnceLock::new();
 
 /// Registers a Node.js Provider service by its logical name.
 ///
@@ -40,7 +50,12 @@ use napi_derive::napi;
 /// `registerService(serviceName: string): boolean`
 ///
 /// # Supported values
-/// `"ContextService"`, `"DatabaseService"`, `"ConfigService"`, `"HttpService"`
+///
+/// Every service listed in `common::with_nodejs_providers!` — currently
+/// `"ConfigService"`, `"ContextService"`, `"DatabaseService"`, `"HttpService"`
+/// and `"NotificationService"`. That inventory lives in the `common` crate,
+/// next to the `#[service]` declarations, so the Node.js surface cannot drift
+/// from them (the `nodejs_provider_inventory_is_exhaustive` test enforces it).
 ///
 /// # Returns
 /// `true` if the service was registered successfully.
@@ -82,7 +97,9 @@ pub fn init(callback: Function<'_, serde_json::Value, Unknown<'static>>) -> bool
         )
     });
 
-    ice_rpc::init_without_ctrl_c();
+    // `init_without_ctrl_c` returns the RAII guard; it must be kept alive for
+    // the whole gateway lifetime, hence the process-wide storage.
+    let _ = SHUTDOWN_GUARD.set(ice_rpc::gen::init_without_ctrl_c());
 
     match ice_rpc::locator().get_node_sync() {
         Ok(node) => {
@@ -148,7 +165,7 @@ pub fn call_service(
 pub fn shutdown() {
     log::info!("Stopping the gateway...");
     let _ = runtime::spawn_task(async move {
-        ice_rpc::shutdown_and_release().await;
+        ice_rpc::gen::shutdown_and_release().await;
         log::info!("IPC resources released.");
     });
     runtime::shutdown_runtime();

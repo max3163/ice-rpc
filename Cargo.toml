@@ -2,6 +2,7 @@
 members = [
     "ice-rpc",
     "ice-rpc-macros",
+    "ice-rpc-rx",
     "examples/common",
     "gateway_nodejs",
     "ice-rpc-macros-tests"
@@ -10,6 +11,39 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.2"
+# True floor driven by the dependency tree, not by the local toolchain:
+# `iceoryx2` requires 1.85, the library crates only need older features
+# (`std::mem::offset_of!` is 1.77, `u64::div_ceil` is 1.73, `OnceLock` is 1.70).
+# `gateway_nodejs` overrides it with 1.88, forced by the napi family. Keeping the
+# value as low as the dependencies allow is what lets `cargo` pick an MSRV-aware
+# dependency resolution and keeps `rust-version` a *contract*, not a pin.
+rust-version = "1.85"
+
+[workspace.lints.rust]
+# An `unsafe fn` must wrap its own operations in an explicit `unsafe` block.
+# There is no `unsafe` in this workspace today; the point is that introducing
+# one must be a deliberate, reviewed act (finding M6).
+unsafe_op_in_unsafe_fn = "deny"
+# Every item reachable from outside its crate carries a doc comment. This is what
+# turns the `Readme.md` claims into something checkable: an undocumented `pub fn`
+# is a hole in the documented surface (finding M15). Items marked
+# `#[doc(hidden)]` (the `ice-rpc::gen` facade) are exempt by construction.
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Every `unsafe` block must carry a `// SAFETY:` justification stating the
+# invariants the caller and callee must uphold (finding M6).
+undocumented_unsafe_blocks = "deny"
+# `Result::unwrap` is banned: it discards the error and turns a recoverable
+# failure into a process abort under the `panic = "abort"` release profile
+# (finding B2). Library code has zero occurrence; test, example and benchmark
+# targets opt out explicitly at the top of the file.
+unwrap_used = "deny"
+# `expect` is deliberately NOT banned outright: the remaining production sites
+# were reviewed one by one (B2 removed the harmful ones) and several are genuine
+# invariant assertions whose message *is* the contract. Banning it would push
+# authors towards `unwrap`, which is strictly worse.
+expect_used = "allow"
 
 [workspace.metadata.release]
 tag-name = "v{{version}}"

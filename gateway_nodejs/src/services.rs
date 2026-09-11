@@ -18,14 +18,19 @@
 //! # Adding a new service
 //!
 //! 1. Add `#[service("MyService")]` in the crate that defines the service.
-//! 2. Add it to the list of exposed services in [`register_service`].
+//! 2. Add its proxy to the inventory macro in the same crate
+//!    (`common::with_nodejs_providers!`). Nothing to change here: this module
+//!    consumes that inventory, so the Node.js surface cannot drift from the
+//!    declarations.
 
-/// Dispatch table of the Node.js Providers, generated at compile time.
+/// Dispatch arm for a single provider proxy.
 ///
-/// Internal syntax: `register_nodejs_providers!(name ; ProxyA, ProxyB, ...)`.
-/// The `;` separator separates the service name from the proxy list.
-macro_rules! register_nodejs_providers {
-    ($service_name:expr ; $($proxy:ty),* $(,)?) => {
+/// Invoked through `common::with_nodejs_providers!`, which expands to
+/// `register_one_provider!(service_name, ProxyA, ProxyB, …)`. The proxy list
+/// therefore comes from the `common` inventory and this module holds **no**
+/// hardcoded service list to keep in sync.
+macro_rules! register_one_provider {
+    ($service_name:expr, $($proxy:ty),* $(,)?) => {
         match $service_name {
             $( <$proxy>::SERVICE_NAME => {
                 let proxy = <$proxy>::provide_nodejs();
@@ -55,17 +60,16 @@ macro_rules! register_nodejs_providers {
 /// The consumers do **not** need to be registered: they are created
 /// automatically by [`ServiceLocator::get`] on the first access.
 ///
+/// The set of accepted names is the `common` inventory
+/// (`common::with_nodejs_providers!`), which lives next to the `#[service]`
+/// declarations. Adding a service there is enough; the
+/// `nodejs_provider_inventory_is_exhaustive` test in `common` fails if the
+/// inventory misses a declared service.
+///
 /// # Returns
 /// `true` if the service was registered successfully.
 pub fn register_service(service_name: &str) -> bool {
-    // Local list of the services that this Node.js process exposes (Provider mode).
-    let registered = register_nodejs_providers!(
-        service_name ;
-        common::ContextServiceProxy,
-        common::DatabaseServiceProxy,
-        common::ConfigServiceProxy,
-        common::HttpServiceProxy
-    );
+    let registered = common::with_nodejs_providers!(register_one_provider, service_name);
 
     if registered {
         log::info!(

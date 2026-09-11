@@ -9,7 +9,9 @@
 
 `ice-rpc` is a **zero-copy** Rust RPC (Remote Procedure Call) library built on [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) for inter-process communication (IPC) through shared memory.
 
-From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The library implements an **automatic reconnection** strategy after a provider crash, including hard kills (`SIGKILL`), thanks to a cross-platform kernel watchdog (Windows Mutex / Unix `flock`).
+From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The library implements an **automatic reconnection** strategy after a provider crash, including hard kills (`SIGKILL`), using iceoryx2's **native node monitoring**: the OS releases the node's monitoring file lock when the process dies, and `Node::list` reports it as `NodeState::Dead`.
+
+**Requirements.** Rust **1.85** or newer — declared as `rust-version` in the workspace manifest, with `gateway-nodejs` overriding it to **1.88** (imposed by the N-API bindings). The workspace also enforces a shared lint baseline, adopted by every member through `[workspace.lints]`: `unsafe_op_in_unsafe_fn`, `missing_docs`, `undocumented_unsafe_blocks` (every `unsafe` block carries a `// SAFETY:` justification) and `unwrap_used` (`unwrap` is banned in library code, since it would turn a recoverable error into a process abort under the release profile's `panic = "abort"`). Test, example and benchmark targets opt out of `unwrap_used` explicitly, at the top of the file.
 
 ---
 
@@ -60,12 +62,12 @@ sequenceDiagram
     participant C as Consumer (PID=1000)
     participant ND as NodeDiscovery
 
-    P->>P: acquire_global_node_lock() → CreateMutexA("ice_rpc_node_2000")
+    P->>P: mark_provider() — the Node already holds the monitoring token
     P->>BB: create_node_blackboard(2000, ["DatabaseService","ConfigService"])
     Note over BB: Key "DatabaseService" → 2000<br/>Key "ConfigService" → 2000
-    P->>EV: notify_with_custom_event_id(EventId(2000))
-    EV-->>C: listener.try_wait_one() → EventId=2000
-    C->>C: is_node_alive("ice_rpc_node_2000") ✓
+    P->>EV: notify_change(2000) — payload-free wake-up
+    EV-->>C: listener.try_wait_one() → topology may have changed
+    C->>C: Node::list → NodeState::Alive ✓
     C->>BB: list_services(2000) → ["DatabaseService","ConfigService"]
     C->>ND: upsert(2000, OK, "DatabaseService") → cache
     Note over C: Late consumer (starts after Provider)
@@ -106,7 +108,7 @@ sequenceDiagram
 sequenceDiagram
     participant P as Provider (PID=2000)
     participant Kernel as OS Kernel
-    participant WL as NodeLockWatcher (Consumer)
+    participant WL as NodeLivenessPoller (Consumer)
     participant ND as NodeDiscovery (Consumer)
     participant S as NodeSupervisor
     participant RM as ReconnectManager
@@ -114,10 +116,10 @@ sequenceDiagram
     participant H as NodeHub
     participant C as In-flight Caller
 
-    P->>Kernel: Mutex creation "ice_rpc_node_2000" (or flock)
+    P->>Kernel: Node creation → monitoring file lock held
     Note over P: Hard crash (SIGKILL)
-    Kernel->>Kernel: Automatic release of the mutex/flock
-    WL->>Kernel: Poll: is_node_alive("ice_rpc_node_2000") → false
+    Kernel->>Kernel: Automatic release of the monitoring lock
+    WL->>Kernel: Poll: Node::list → pid gone / NodeState::Dead
     WL->>ND: invalidate_node_services(NodeId(2000))
     WL->>S: fire(2000)
     S->>S: notify_node_dead(2000) → broadcast
@@ -182,28 +184,33 @@ sequenceDiagram
 ice-rpc/                        ← Main crate (library + runtime)
 ├── src/
 │   ├── lib.rs                  ← Public exports, cancellation tokens, shutdown()
-│   ├── types.rs                ← Event<T,E>, RpcHeader (ZeroCopySend), EventKind,
-│   │                              NodeId, RpcError, TakeOneError, ServiceInfo…
+│   ├── types/                  ← RPC fundamental types, one file per concern:
+│   │   ├── node.rs             ← NodeId and the iceoryx2 topic names
+│   │   ├── wire.rs             ← Event, WireEvent, Sender, EventKind + conversions
+│   │   ├── stream.rs           ← Observable, StreamError, channel()
+│   │   ├── header.rs           ← RpcHeader (ZeroCopySend) + correlation ids
+│   │   ├── error.rs            ← RpcError
+│   │   └── consts.rs           ← timeouts, buffer sizes, name lengths
 │   ├── hub.rs                  ← NodeHub : dispatch loop, send_to_node(),
 │   │                              response handler hash table, publishers
 │   ├── node_discovery.rs       ← NodeDiscovery : local service→NodeId cache,
 │   │                              DiscoveryEvent, initial discovery
 │   ├── blackboard.rs           ← Registry : 1 Blackboard per node (ice_rpc_node_{pid}),
 │   │                              key = service name, value = NodeId
-│   ├── cache.rs                ← RpcCache : consumer-side TTL cache (feature `cache`)
 │   ├── registry_notify.rs      ← Event notifications : carries the NodeId via EventId
 │   ├── registry_listener.rs    ← WaitSet listener : receives Events, updates cache,
 │   │                              cleans dead nodes
 │   ├── node_supervisor.rs     ← Node supervisor: broadcasts node death to subscribers
 │   ├── reconnect_manager.rs   ← Centralized reconnection retry (single worker thread)
-│   ├── node_lock.rs            ← Kernel Named Lock (Windows Mutex / Unix flock)
-│   │                              for heartbeat-free crash detection
+│   ├── node_liveness.rs        ← Native iceoryx2 node monitoring (Node::list,
+│   │                              NodeState::Alive/Dead) for heartbeat-free
+│   │                              crash detection, single shared poller
 │   ├── http_gateway.rs         ← HTTP REST gateway (trillium) : exposes the services
 │   │                              via GET/POST on /{service}/{method}
 │   ├── locator.rs              ← ServiceLocator, ServiceLifecycle, ServiceInit,
 │   │                              ServiceNamed (const + method), Kahn topological
 │   │                              sort, ServiceRegistry (lazy proxies), HttpRegistry
-│   ├── macros.rs               ← take_one(), take_one_or_cancel(), try_or_log!
+│   ├── macros.rs               ← try_or_log! (internal error-logging helper)
 │
 ice-rpc-macros/                 ← Procedural macros crate
 ├── src/
@@ -459,38 +466,50 @@ The `NodeId` is the process PID (`std::process::id()`). It is used as a routing 
 
 ## 5. RpcHeader — ZeroCopy format
 
-The [`RpcHeader`](ice-rpc/src/types.rs:228) is carried in the iceoryx2 `user_header` (**ZeroCopySend**, no rkyv serialization) :
+The [`RpcHeader`](ice-rpc/src/types/header.rs:14) is carried in the iceoryx2 `user_header` (**ZeroCopySend**, no rkyv serialization) :
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                      RpcHeader (ZeroCopy, 176+ bytes)                │
+│                     RpcHeader (ZeroCopy, 192 bytes)                  │
 │                                                                      │
 │  Offset │ Size  │ Field               │ Description                 │
 │  ───────┼────────┼─────────────────────┼──────────────────────────── │
-│   0     │ 16     │ correlation_id      │ [PID(4B) | counter(8B) |   │
+│   0     │ 16     │ correlation_id      │ [PID(4B) | counter(8B) |    │
 │         │        │                     │  padding(4B)] unique UUID   │
 │  16     │ 8      │ sent_at_ns          │ Emission timestamp (ns)     │
-│  24     │ 128    │ service_name        │ StaticString<126> — target  │
-│ 152     │ 128    │ method_name         │ StaticString<126> — method  │
-│ 280     │ 1      │ event_kind          │ Next=0, Complete=1, Error=2 │
+│  24     │ 80     │ service_name        │ StaticString<64> — target   │
+│ 104     │ 80     │ method_name         │ StaticString<64> — method   │
+│ 184     │ 4      │ event_kind          │ EventKind (see below)       │
+│ 188     │ 2      │ protocol_version    │ ice-rpc wire protocol       │
+│ 190     │ 2      │ service_version     │ service interface version   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+The layout is `#[repr(C)]` and is part of the wire contract shared by every
+process on the machine. It is pinned by the `rpc_header_layout_is_stable` test
+in `ice-rpc/src/types/tests.rs`, and so are the field capacities: a service or
+method name of up to `SERVICE_NAME_LEN` (64) bytes fits without truncation.
+
 ### EventKind
 
-[`EventKind`](ice-rpc/src/types.rs:197) is a stable `#[repr(C)]` discriminant :
+[`EventKind`](ice-rpc/src/types/wire.rs:292) is a stable `#[repr(C)]` discriminant :
 
 ```
-  Next     = 0  → intermediate event (non-terminal)
-  Complete = 1  → normal end of the stream (terminal)
-  Error    = 2  → business error (terminal)
+  Request  = 0  → request emitted by the client (non-terminal)
+  Next     = 1  → intermediate event carrying a business value (non-terminal)
+  Complete = 2  → normal end of the stream (terminal)
+  Error    = 3  → business error (terminal)
 ```
 
-The [`is_terminal()`](ice-rpc/src/types.rs:214) method allows the client to detect the end of a stream without ever deserializing the payload.
+The [`is_terminal()`](ice-rpc/src/types/wire.rs:307) method allows the client to detect the end of a stream without ever deserializing the payload.
+
+The table above is asserted against this very file by the
+`readme_documents_the_real_wire_contract` test (in `ice-rpc-macros-tests`), so
+it cannot drift away from the code without failing the build.
 
 ---
 
-## 6. Service discovery (Registry + Event + NodeLock)
+## 6. Service discovery (Blackboard + Event + native liveness)
 
 ### 6.1. Architecture : 1 Blackboard per node
 
@@ -511,8 +530,9 @@ Each node creates ONE Blackboard `ice_rpc_node_{pid}` containing one **key per s
 │  MECHANISMS :                                                        │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │ 1. EVENT (ice_rpc_registry_notify)                           │   │
-│  │    • Carries the NodeId directly in the EventId              │   │
-│  │    • event-id-max-value = 65535 (iceoryx2.toml config)       │   │
+│  │    • Payload-free wake-up — "the topology may have changed"  │   │
+│  │    • Blackboard + native liveness are the source of truth    │   │
+│  │      so the listener reconciles instead of trusting the event│   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │ 2. BLACKBOARD (ice_rpc_node_{pid}) — persistent              │   │
@@ -520,9 +540,10 @@ Each node creates ONE Blackboard `ice_rpc_node_{pid}` containing one **key per s
 │  │    • Late-join : Service::list() → filter ice_rpc_node_*     │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ 3. NAMED KERNEL LOCK (ice_rpc_node_{pid})                    │   │
-│  │    • Windows : CreateMutexA / Unix : flock                   │   │
-│  │    • is_node_alive() → immediate crash detection             │   │
+│  │ 3. NATIVE NODE MONITORING (iceoryx2)                         │   │
+│  │    • Node::list → NodeState::Alive / Dead                    │   │
+│  │    • The OS releases the monitoring file lock on crash       │   │
+│  │    • One Node::list per tick, for every watched PID          │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -531,15 +552,15 @@ Each node creates ONE Blackboard `ice_rpc_node_{pid}` containing one **key per s
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│           LISTENER : Event(NodeId) → Direct processing               │
+│           LISTENER : Event → reconcile the topology                  │
 │                                                                      │
 │  Provider starts :                                                   │
 │    → create_node_blackboard(pid, services)                           │
 │    → notify_with_custom_event_id(EventId::new(pid))                  │
 │                                                                      │
 │  Listener receives :                                                 │
-│    → try_wait_one() → EventId = NodeId                               │
-│    → is_node_alive(lock_name) ?                                      │
+│    → try_wait_one() → the topology may have changed                  │
+│    → reconcile : Node::list → NodeState::Alive ?                     │
 │       YES → list_services(pid) → upsert() → cache                    │
 │       NO  → invalidate_node_services() + fire_reconnect_callbacks()  │
 └──────────────────────────────────────────────────────────────────────┘
@@ -554,7 +575,7 @@ Each node creates ONE Blackboard `ice_rpc_node_{pid}` containing one **key per s
 │  locate_service("DatabaseService") :                                 │
 │    1. Local cache → miss                                              │
 │    2. list_nodes() → Service::list() → filter ice_rpc_node_*         │
-│    3. For each NodeId : is_node_alive() ?                            │
+│    3. For each NodeId : Node::list → Alive ?                         │
 │       YES → list_services(pid) → rebuilds the cache                  │
 │       NO  → ignored (dead node)                                      │
 │    4. Returns the found NodeId (or None → retry)                     │
@@ -900,7 +921,7 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 │  3 sources detect a node death :                                        │
 │                                                                          │
 │  SOURCE 1 : IPC send failure   → invalidate_publishers() + fire()       │
-│  SOURCE 2 : NodeLockWatcher    → invalidate_node_services() + fire()    │
+│  SOURCE 2 : liveness poller    → invalidate_node_services() + fire()    │
 │  SOURCE 3 : DEAD notification  → fire()                                  │
 │                                                                          │
 │  invalidate_publishers() → fail_pending_calls(node_id)                  │
@@ -922,54 +943,29 @@ The `common::nodejs_dispatch` is a **function pointer** injected by `gateway_nod
 
 ---
 
-## 11. Crash monitoring — NodeLock
+## 11. Crash monitoring — native iceoryx2 node monitoring
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│              NAMED KERNEL LOCK — CROSS-PLATFORM                       │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ WINDOWS                                                        │  │
-│  │                                                                │  │
-│  │  Provider :                                                    │  │
-│  │    dedicated thread → CreateMutexA("ice_rpc_node_{pid}")       │  │
-│  │                     → WaitForSingleObject(INFINITE)            │  │
-│  │                     → infinite loop (sleep 3600s)              │  │
-│  │                                                                │  │
-│  │  Watcher :                                                     │  │
-│  │    OpenMutexA(SYNCHRONIZE, "ice_rpc_node_{pid}")               │  │
-│  │    → NULL     = mutex destroyed → process DEAD                 │  │
-│  │    → non-NULL = mutex exists    → process ALIVE                │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ UNIX (Linux / macOS)                                           │  │
-│  │                                                                │  │
-│  │  Provider :                                                    │  │
-│  │    open("/tmp/ice_rpc_node_{pid}.lock", O_CREAT|O_WRONLY)      │  │
-│  │    flock(fd, LOCK_EX|LOCK_NB)                                  │  │
-│  │    → fd kept open → kernel releases on crash                   │  │
-│  │                                                                │  │
-│  │  Watcher :                                                     │  │
-│  │    open(lock_path, O_WRONLY)                                   │  │
-│  │    flock(fd, LOCK_EX|LOCK_NB)                                  │  │
-│  │    → success = nobody holds the lock → process DEAD            │  │
-│  │    → failure = lock held            → process ALIVE            │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ NodeLockWatcher (client side)                                  │  │
-│  │                                                                │  │
-│  │  • Runs in a spawn_blocking (Tokio) or std::thread             │  │
-│  │  • Polls is_node_alive(lock_name) every 100ms                  │  │
-│  │  • On detected crash :                                         │  │
-│  │      invalidate_node_services()  → clears the NodeDiscovery cache │
-│  │      fire_reconnect_callbacks()  → unified callback            │  │
-│  │  • Auto-detection : Tokio runtime → spawn_blocking,            │  │
-│  │    otherwise std::thread::spawn                                │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-```
+There is **no hand-written kernel lock**. iceoryx2's node monitoring
+(`<ipc_threadsafe::Service as Service>::Monitoring`) is a file lock held by the
+node and released by the OS when the process dies. `Node::list` exposes it as
+`NodeState::Alive` / `NodeState::Dead`, and `UniqueNodeId::pid()` maps a node back
+to its process — which is ice-rpc's `NodeId`.
+
+| Aspect | Behaviour |
+|---|---|
+| **Provider** | The iceoryx2 `Node` created at init already holds the monitoring lock; no extra lock is acquired. `mark_provider()` is set when the node blackboard is published. |
+| **Clean shutdown** | `release_node()` drops the `Node` (releasing the lock) and the registry announces the death, so peers do not mistake it for a crash. |
+| **Watcher** | A **single** background poller serves the whole process: one `Node::list` per tick for *every* watched PID. |
+| **Interval** | `LIVENESS_POLL_MS = 500` ms, overridable with `ICE_RPC_LIVENESS_POLL_MS`. |
+| **Why one shared poller** | A single `Node::list` costs ~475–680 µs (versus ~3 µs for a bare `flock` check). Calling it once per watched node — or at 100 ms — perturbs the shared-memory notifier path, so the cost is amortised across all watched nodes. |
+| **On detection** | `invalidate_node_services()` clears the discovery cache, then `node_supervisor::fire(pid)` runs the node-death callbacks (see §10). |
+| **Crash vs clean shutdown** | A clean shutdown removes the node entirely, so the poller confirms with a targeted `NodeState::Dead` query before declaring a crash. |
+| **Failure policy** | Conservative: a failed or inconclusive scan never declares a node dead. |
+
+See [`ice-rpc/src/node_liveness.rs`](ice-rpc/src/node_liveness.rs:1) for the
+implementation, [`ice-rpc/examples/node_liveness_probe.rs`](ice-rpc/examples/node_liveness_probe.rs:1)
+for the diagnostic harness, and [`scripts/validate-node-liveness.sh`](scripts/validate-node-liveness.sh:1)
+for the automated validation (clean shutdown vs `SIGKILL`).
 
 ---
 
@@ -1286,24 +1282,18 @@ ice-rpc = { features = ["http"] }
 **Full startup :**
 
 ```rust
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initializes the ice-rpc framework
-    ice_rpc::init();
-
-    // 2. Injects the HTTP registry (name → proxy table)
-    common::init_http_registry();
-
-    // 3. Starts the HTTP gateway on port 8080
-    //    (blocks until Ctrl+C or global_cancel_token)
-    ice_rpc::init_http(8080).await;
+    // Starts the HTTP gateway on port 8080 and blocks until Ctrl+C.
+    // `#[ice_rpc::main]` handles the ice-rpc bootstrap and shutdown.
+    ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 
     Ok(())
 }
 ```
 
 **Key points :**
-- [`init_http()`](ice-rpc/src/lib.rs:437) is an alias of [`start_http_server()`](ice-rpc/src/http_gateway.rs:335)
+- [`start_http_gateway!`](ice-rpc/src/lib.rs:393) builds the `name → factory` mapping and starts the gateway
 - The gateway shares the same [`NodeHub`](ice-rpc/src/hub.rs) as the other ice-rpc services of the process
 - The shutdown is graceful : the trillium server stops cleanly via [`global_cancel_token()`](ice-rpc/src/lib.rs)
 - The logs display example URLs at startup
@@ -1407,53 +1397,6 @@ The [`#[service]`](ice-rpc-macros/src/codegen/http.rs:28) procedural macro autom
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 13.10. Consumer-side cache (`cache` feature)
-
-The cache is a consumer-side TTL cache. Enable the `cache` Cargo feature:
-
-```toml
-[dependencies]
-ice-rpc = { features = ["cache"] }
-```
-
-Alternatively, use the `full` feature to enable `http`, `cache` and `tokio`
-together:
-
-```toml
-[dependencies]
-ice-rpc = { features = ["full"] }
-```
-
-Then annotate an idempotent service method with `#[cache(ttl = "60s")]`:
-
-```rust
-use ice_rpc::{cache, service, Observable};
-
-#[service("ConfigService")]
-pub trait ConfigService {
-    #[cache(ttl = "60s", max_entries = 128)]
-    async fn get(&self, key: String) -> Observable<String, ConfigError>;
-}
-```
-
-How it works:
-
-1. On the first call, the generated client serializes the request and computes
-   `ice_rpc::hash_bytes(&bytes)`.
-2. On cache miss, it performs the normal IPC call and stores successful `Next`
-   values in `ice_rpc::RpcCache` (keyed by the arguments hash).
-3. On cache hit, the response is deserialized from the cached rkyv bytes and
-   returned immediately, without any IPC round-trip.
-
-Attributes:
-
-- `ttl` — entry lifetime, e.g. `"60s"`, `"5min"`;
-- `max_entries` — optional capacity (default `1024`), evicts the oldest entries
-  when full.
-
-The underlying [`RpcCache`](ice-rpc/src/cache.rs:29) is thread-safe
-(`Mutex<HashMap<u64, CacheEntry<V>>>`) and performs lazy expiry on lookup.
-
 ---
 
 ## 14. iceoryx2 configuration
@@ -1472,31 +1415,30 @@ The `shm/` directory is created automatically by iceoryx2 for its shared-memory 
 
 ---
 
-## 15. Utility macros
+## 15. Consuming a response
 
-### `take_one!`
+The former `take_one!` / `take_one_or_cancel!` macros have been removed. A service
+method returns the observable directly (no `Result`), and a terminal error travels
+in-band as `Event::Error(ObservableError::E)`.
 
-Consumes the first event of an Observable :
-
-```rust
-let age = take_one!(db.get_user_age("Alice").await)?;
-match age {
-    Ok(age)  => println!("Alice is {} years old", age),
-    Err(e)   => println!("Error: {}", e),
-}
-```
-
-### `take_one_or_cancel!`
-
-Cancellable variant via `CancellationToken` :
+Terminal consumption is provided by `ice-rpc-rx` (or natively by `ice_rpc::Observable`) :
 
 ```rust
-let result = take_one_or_cancel!(db.get_user_age("Alice").await, my_cancel_token);
-match result {
-    None          => println!("Cancelled by Ctrl+C"),
-    Some(Ok(age)) => println!("Alice is {} years old", age),
-    Some(Err(e))  => println!("Error: {}", e),
-}
+use ice_rpc_rx::RxStreamExt;
+
+// First value only. `Complete`/closed → `StreamError::Empty`,
+// terminal error → `StreamError::Business` or `StreamError::Technical`.
+let age = db.get_user_age("Alice".into()).await.first_value().await?;
+
+// First matching value.
+let age = db.get_user_age("Alice".into()).await
+    .first_with(|v| *v > 0)
+    .await?;
+
+// Cancellable consumption: the token fires a terminal
+// `RpcError::Cancelled`, surfaced by `first_value` as `StreamError::Technical`.
+let stream = db.get_user_age("Alice".into()).await.take_until(my_cancel_token);
+let age = stream.first_value().await?;
 ```
 
 ---
@@ -1578,18 +1520,21 @@ git push origin vX.Y.Z
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     SHUTDOWN — CRITICAL ORDER                         │
 │                                                                      │
-│  Ctrl+C                                                               │
+│  SIGINT (Ctrl+C) / SIGTERM                                            │
 │    │                                                                  │
 │    ▼                                                                  │
-│  spawn_ctrl_c_handler() → tokio::spawn { ctrl_c().await }            │
+│  iceoryx2 WaitSet — native signal handling                            │
+│    → WaitSetRunResult::Interrupt / TerminationRequest                 │
+│    (no ctrlc handler; SignalHandlingMode drives it)                   │
 │    │                                                                  │
 │    ▼                                                                  │
-│  global_cancel_token().cancel()                                       │
-│  registry_cancel_token().cancel()                                     │
+│  request_shutdown()                                                   │
+│    → global_cancel_token().cancel()                                   │
+│    → registry_cancel_token().cancel()                                 │
 │    │                                                                  │
-│    ├─ Server WaitSet thread       : is_cancelled() → break           │
+│    ├─ Server WaitSet thread       : signal → request_shutdown()      │
 │    ├─ Client WaitSet thread       : is_cancelled() → break           │
-│    ├─ registry_notify listener    : is_cancelled() → break           │
+│    ├─ registry_notify listener    : signal → request_shutdown()      │
 │    └─ initialize_all() retry loop : tokio::select! → cancellation    │
 │                                                                      │
 │    ▼                                                                  │

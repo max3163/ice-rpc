@@ -4,10 +4,28 @@
 //! ```bash
 //! cargo run --release --example benchmark-app -- --workers 3 --pipeline 2 --requests 5000
 //! ```
+//!
+//! # Getting trustworthy numbers
+//!
+//! Each measured phase is preceded by an **untimed warm-up phase**. The very
+//! first calls pay one-off costs — provider discovery, publisher creation,
+//! shared-memory growth, OS page-in — which roughly halve the reported
+//! throughput if they land inside the measured window (44k req/s instead of
+//! ~110k on this workload).
+//!
+//! A single phase is still noisy, so use `--repeat` to get a **median** plus the
+//! min→max spread, which is the noise floor of the run:
+//!
+//! ```bash
+//! cargo run --release -p ice-rpc-rx --example benchmark-app --features tokio -- \
+//!     --workers 8 --requests 2000 --blast --repeat 5
+//! ```
+//!
+//! Any difference smaller than the reported spread is **not** attributable to
+//! the code.
 
-mod shared;
-
-use shared::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+use common::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -22,6 +40,10 @@ struct BenchConfig {
     json: bool,
     min_success_rate: f64,
     min_rps: f64,
+    /// Number of times the whole measured phase is repeated. With more than
+    /// one repetition the **median** is reported: on a non-realtime OS a single
+    /// phase is noisy enough to swing the throughput by 10-30%.
+    repeat: usize,
 }
 
 impl BenchConfig {
@@ -36,6 +58,7 @@ impl BenchConfig {
             json: false,
             min_success_rate: 0.95,
             min_rps: 0.0,
+            repeat: 1,
         };
         let mut i = 1;
         while i < args.len() {
@@ -73,6 +96,10 @@ impl BenchConfig {
                 "--min-rps" => {
                     i += 1;
                     cfg.min_rps = args[i].parse().unwrap_or(cfg.min_rps);
+                }
+                "--repeat" => {
+                    i += 1;
+                    cfg.repeat = args[i].parse().unwrap_or(cfg.repeat).max(1);
                 }
                 _ => {}
             }
@@ -132,30 +159,32 @@ const REQ_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn send_one_db(db: Arc<DatabaseServiceProxy>, name: String) -> ReqOutcome {
     let t0 = Instant::now();
-    let rx = match db.get_user_age(name).await {
-        Err(_) => return ReqOutcome::ErrIpc(t0.elapsed()),
-        Ok(rx) => rx,
-    };
+    let mut rx = db.get_user_age(name).await;
     match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Error(_))) => ReqOutcome::ErrService(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::RpcError(_))) => ReqOutcome::ErrIpc(t0.elapsed()),
+        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Business(_)))) => {
+            ReqOutcome::ErrService(t0.elapsed())
+        }
+        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Technical(_)))) => {
+            ReqOutcome::ErrIpc(t0.elapsed())
+        }
         Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
     }
 }
 
 async fn send_one_person(db: Arc<DatabaseServiceProxy>, query: PersonneQuery) -> ReqOutcome {
     let t0 = Instant::now();
-    let rx = match db.get_person(query).await {
-        Err(_) => return ReqOutcome::ErrIpc(t0.elapsed()),
-        Ok(rx) => rx,
-    };
+    let mut rx = db.get_person(query).await;
     match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
         Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Error(_))) => ReqOutcome::ErrService(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::RpcError(_))) => ReqOutcome::ErrIpc(t0.elapsed()),
+        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Business(_)))) => {
+            ReqOutcome::ErrService(t0.elapsed())
+        }
+        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Technical(_)))) => {
+            ReqOutcome::ErrIpc(t0.elapsed())
+        }
         Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
     }
 }
@@ -329,6 +358,25 @@ fn compute_stats(outcomes: &mut [ReqOutcome], wall: Duration) -> Stats {
     }
 }
 
+/// Median of a sample set (sorts in place; the caller keeps the sorted order to
+/// read `first`/`last` as min/max).
+fn median_f64(values: &mut [f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).expect("no NaN sample"));
+    values[values.len() / 2]
+}
+
+/// Median of a sample set (sorts in place).
+fn median_u64(values: &mut [u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
 fn print_stats(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
     let sep = "─".repeat(60);
     println!("\n{sep}");
@@ -417,52 +465,15 @@ fn print_json(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
     println!("{}", serde_json::to_string(&out).unwrap_or_default());
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let cfg = Arc::new(BenchConfig::from_args());
-
-    // RAII guard: cancels the cancellation tokens on Drop (even on panic).
-    // shutdown() must be called explicitly for a clean stop with
-    // waiting for the IPC threads and releasing the iceoryx2 node.
-    let shutdown_guard = ice_rpc::ShutdownGuard::new();
-
-    log::info!("=== ice-rpc BENCHMARK ===");
-    log::info!("  Service      : {}", cfg.service);
-    log::info!("  Mode         : {}", cfg.mode_label());
-    log::info!("  Workers      : {}", cfg.workers);
-    log::info!("  Req/worker   : {}", cfg.requests_per_worker);
-    log::info!("  Warmup/wkr   : {}", cfg.warmup_per_worker);
-    log::info!("  Total measured : {}", cfg.total_requests());
-    log::info!("");
-
-    // This process consumes services via locator().get().
-    ice_rpc::init();
-
-    let db_proxy = if cfg.service == "db" || cfg.service == "person" || cfg.service == "all" {
-        ice_rpc::locator().get::<DatabaseServiceProxy>().await
-    } else {
-        None
-    };
-
-    let _cfg_proxy = if cfg.service == "config" || cfg.service == "all" {
-        ice_rpc::locator().get::<ConfigServiceProxy>().await
-    } else {
-        None
-    };
-
-    log::info!(
-        "Launching {} workers ({})...",
-        cfg.workers,
-        cfg.mode_label()
-    );
-    log::info!("Warmup: {} req/worker (not counted)", cfg.warmup_per_worker);
-    log::info!("");
-
+/// Runs one full measured phase: spawns the workers, collects the outcomes and
+/// computes the statistics.
+///
+/// The one-off connection costs (provider discovery, publisher creation,
+/// shared-memory growth, OS page-in) are paid by the **first** phase, so it is
+/// always used as an untimed warm-up before the measured repetitions.
+async fn run_phase(proxy: Arc<DatabaseServiceProxy>, cfg: Arc<BenchConfig>) -> (Stats, Duration) {
     let wall_start = Instant::now();
     let mut handles = Vec::with_capacity(cfg.workers);
-
-    let proxy = db_proxy.expect("DatabaseServiceProxy not initialized");
 
     if cfg.service == "person" {
         for worker_id in 0..cfg.workers {
@@ -491,16 +502,132 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let wall = wall_start.elapsed();
+    (compute_stats(&mut all_outcomes, wall), wall)
+}
 
-    let stats = compute_stats(&mut all_outcomes, wall);
-    if cfg.json {
-        print_json(&cfg, &stats, wall);
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let cfg = Arc::new(BenchConfig::from_args());
+
+    // This example keeps the explicit pattern instead of `#[ice_rpc::main]`,
+    // because it calls `std::process::exit`, which bypasses the macro-managed
+    // shutdown. `init()` returns the RAII guard in a single call.
+    let shutdown_guard = ice_rpc::gen::init();
+
+    log::info!("=== ice-rpc BENCHMARK ===");
+    log::info!("  Service      : {}", cfg.service);
+    log::info!("  Mode         : {}", cfg.mode_label());
+    log::info!("  Workers      : {}", cfg.workers);
+    log::info!("  Req/worker   : {}", cfg.requests_per_worker);
+    log::info!("  Warmup/wkr   : {}", cfg.warmup_per_worker);
+    log::info!("  Total measured : {}", cfg.total_requests());
+    log::info!("");
+
+    // This process consumes services via locator().get().
+    let db_proxy = if cfg.service == "db" || cfg.service == "person" || cfg.service == "all" {
+        ice_rpc::locator().get::<DatabaseServiceProxy>().await
     } else {
-        print_stats(&cfg, &stats, wall);
+        None
+    };
+
+    let _cfg_proxy = if cfg.service == "config" || cfg.service == "all" {
+        ice_rpc::locator().get::<ConfigServiceProxy>().await
+    } else {
+        None
+    };
+
+    log::info!(
+        "Launching {} workers ({})...",
+        cfg.workers,
+        cfg.mode_label()
+    );
+    log::info!("Warmup: {} req/worker (not counted)", cfg.warmup_per_worker);
+    log::info!("");
+
+    let proxy = db_proxy.expect("DatabaseServiceProxy not initialized");
+
+    // ── Untimed warm-up phase ────────────────────────────────────────
+    // Absorbs the one-off costs (discovery, publisher creation, shared-memory
+    // growth, page-in) that would otherwise halve the first measured phase.
+    log::info!("Warm-up phase (not measured)...");
+    let (warm, _) = run_phase(proxy.clone(), cfg.clone()).await;
+    log::info!(
+        "  warm-up: {:.0} req/s · success {:.1}%",
+        warm.throughput,
+        if warm.count > 0 {
+            warm.ok as f64 / warm.count as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+
+    // ── Measured phase(s) ────────────────────────────────────────────
+    let mut stats_reps: Vec<Stats> = Vec::with_capacity(cfg.repeat);
+    for rep in 1..=cfg.repeat {
+        let (stats, wall) = run_phase(proxy.clone(), cfg.clone()).await;
+
+        if cfg.repeat == 1 {
+            if cfg.json {
+                print_json(&cfg, &stats, wall);
+            } else {
+                print_stats(&cfg, &stats, wall);
+            }
+        } else {
+            let rate = if stats.count > 0 {
+                stats.ok as f64 / stats.count as f64 * 100.0
+            } else {
+                0.0
+            };
+            log::info!(
+                "  rep {}/{} : {:.0} req/s · p50 {:.3} ms · p95 {:.3} ms · success {:.1}%",
+                rep,
+                cfg.repeat,
+                stats.throughput,
+                stats.p50_us as f64 / 1000.0,
+                stats.p95_us as f64 / 1000.0,
+                rate,
+            );
+        }
+        stats_reps.push(stats);
     }
 
-    let success_rate = if stats.count > 0 {
-        stats.ok as f64 / stats.count as f64
+    // ── Median summary (noise-resistant) ─────────────────────────────
+    let mut throughputs: Vec<f64> = stats_reps.iter().map(|s| s.throughput).collect();
+    let mut p50s: Vec<u64> = stats_reps.iter().map(|s| s.p50_us).collect();
+    let mut p95s: Vec<u64> = stats_reps.iter().map(|s| s.p95_us).collect();
+    let med_throughput = median_f64(&mut throughputs);
+    let med_p50 = median_u64(&mut p50s);
+    let med_p95 = median_u64(&mut p95s);
+
+    if cfg.repeat > 1 {
+        let sep = "─".repeat(60);
+        log::info!("");
+        log::info!("{sep}");
+        log::info!("  MEDIAN over {} repetitions", cfg.repeat);
+        log::info!(
+            "  Throughput : {:.0} req/s   (min {:.0} / max {:.0})",
+            med_throughput,
+            throughputs[0],
+            throughputs[throughputs.len() - 1]
+        );
+        log::info!(
+            "  p50        : {:.3} ms     (min {:.3} / max {:.3})",
+            med_p50 as f64 / 1000.0,
+            p50s[0] as f64 / 1000.0,
+            p50s[p50s.len() - 1] as f64 / 1000.0
+        );
+        log::info!("  p95        : {:.3} ms", med_p95 as f64 / 1000.0);
+        log::info!("{sep}");
+        log::info!("  Spread (min→max) is the machine noise floor of this run: any");
+        log::info!("  difference smaller than it is not attributable to the code.");
+    }
+
+    let total_ok: usize = stats_reps.iter().map(|s| s.ok).sum();
+    let total_count: usize = stats_reps.iter().map(|s| s.count).sum();
+
+    let success_rate = if total_count > 0 {
+        total_ok as f64 / total_count as f64
     } else {
         0.0
     };
@@ -512,10 +639,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cfg.min_success_rate * 100.0
         );
     }
-    if cfg.min_rps > 0.0 && stats.throughput < cfg.min_rps {
+    if cfg.min_rps > 0.0 && med_throughput < cfg.min_rps {
         log::error!(
-            "[benchmark] throughput {:.0} req/s below threshold {:.0} req/s",
-            stats.throughput,
+            "[benchmark] median throughput {:.0} req/s below threshold {:.0} req/s",
+            med_throughput,
             cfg.min_rps
         );
         failed = true;
@@ -534,26 +661,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nom: nom.to_string(),
                 prenom: prenom.to_string(),
             };
-            match proxy.get_person(query).await {
-                Ok(rx) => match rx.recv().await {
-                    Ok(ice_rpc::Event::Next(info)) => {
-                        log::info!(
-                            "  {} {} — {} years old, {}, {}, {}, {}",
-                            info.nom,
-                            info.prenom,
-                            info.age,
-                            info.email,
-                            info.telephone,
-                            info.ville,
-                            info.profession
-                        );
-                    }
-                    Ok(ice_rpc::Event::Error(e)) => {
-                        log::warn!("  {} {} — Error: {}", nom, prenom, e);
-                    }
-                    _ => log::warn!("  {} {} — No response", nom, prenom),
-                },
-                Err(e) => log::error!("  {} {} — IPC error: {}", nom, prenom, e),
+            let mut rx = proxy.get_person(query).await;
+            match rx.recv().await {
+                Ok(ice_rpc::Event::Next(info)) => {
+                    log::info!(
+                        "  {} {} — {} years old, {}, {}",
+                        info.nom,
+                        info.prenom,
+                        info.age,
+                        info.ville,
+                        info.profession
+                    );
+                }
+                Ok(ice_rpc::Event::Error(e)) => {
+                    log::warn!("  {} {} — Error: {}", nom, prenom, e);
+                }
+                _ => log::warn!("  {} {} — No response", nom, prenom),
             }
         }
     }

@@ -35,5 +35,5 @@ where
 /// No-op shutdown.
 ///
 /// The agnostic executor has no dedicated runtime to stop; the ice-rpc core
-/// releases its IPC resources through [`ice_rpc::shutdown_and_release`].
+/// releases its IPC resources through [`ice_rpc::gen::shutdown_and_release`].
 pub fn shutdown_runtime() {}

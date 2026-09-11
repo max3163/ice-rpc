@@ -37,7 +37,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
 
     quote! {
         #[async_trait::async_trait]
-        impl ice_rpc::ServiceLifecycle for #proxy_name {
+        impl ice_rpc::gen::ServiceLifecycle for #proxy_name {
             async fn init(&self) -> bool {
                 #hub_config
 
@@ -54,7 +54,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             }
                             locator.start_discovery();
                             true
-                        }).await;
+                        }).await.unwrap_or_else(|panic| {
+                            ::log::error!(
+                                "[{}] blocking init task panicked: {}",
+                                svc_name,
+                                panic
+                            );
+                            false
+                        });
 
                         if !init_ok {
                             ::log::warn!("[{}] NodeJS Provider: Node init failed, retrying...", svc_name);
@@ -63,11 +70,11 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
 
                         let handler: ice_rpc::gen::RequestHandler = std::sync::Arc::new({
                             let svc = svc_name;
-                            move |hdr: ice_rpc::RpcHeader, raw: &[u8]| {
+                            move |hdr: ice_rpc::gen::RpcHeader, caller: ice_rpc::gen::NodeId, raw: &[u8]| {
                                 let cid = hdr.correlation_id;
                                 let method: &str = hdr.method();
-                                let client_pid = hdr.caller_pid;
-                                let client_node = ice_rpc::NodeId(client_pid);
+                                // Caller identity from iceoryx2's native header.
+                                let client_node = caller;
 
                                 let args = match #proxy_name::deserialize_request_to_value(method, raw) {
                                     Some(v) => v,
@@ -86,9 +93,15 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                     let result = match ice_rpc::rt::spawn_blocking_value(move || {
                                         ice_rpc::nodejs_dispatch::call(cid, svc_static, &method_for_blocking, args_for_blocking)
                                     }).await {
-                                        Ok(v) => v,
-                                        Err(e) => {
+                                        // Outer `Err` = the blocking task panicked;
+                                        // inner `Err` = the JS bridge itself failed.
+                                        Ok(Ok(v)) => v,
+                                        Ok(Err(e)) => {
                                             ::log::error!("[{}::{}] JS bridge: {}", svc_static, method_owned, e);
+                                            return;
+                                        }
+                                        Err(panic) => {
+                                            ::log::error!("[{}::{}] JS bridge task panicked: {}", svc_static, method_owned, panic);
                                             return;
                                         }
                                     };
@@ -109,7 +122,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                         }
                                     }
 
-                                    let resp_hdr = ice_rpc::RpcHeader::response_from(
+                                    let resp_hdr = ice_rpc::gen::RpcHeader::response_from(
                                         &hdr,
                                         event_kind,
                                         #service_version,
@@ -143,7 +156,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 }
                                 locator.start_discovery();
                                 true
-                            }).await;
+                            }).await.unwrap_or_else(|panic| {
+                                ::log::error!(
+                                    "[{}] blocking init task panicked: {}",
+                                    stringify!(#trait_name),
+                                    panic
+                                );
+                                false
+                            });
 
                             if !init_ok {
                                 ::log::warn!("[{}] Failed to create the iceoryx2 Node. Retrying...",
@@ -203,14 +223,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             }
         }
 
-        impl ice_rpc::ServiceNamed for #proxy_name {
+        impl ice_rpc::gen::ServiceNamed for #proxy_name {
             const SERVICE_NAME: &'static str = #logical_name_lit;
         }
 
         #[async_trait::async_trait]
         impl ice_rpc::ServiceInit for #proxy_name {
             async fn on_init(&self) -> bool {
-                ice_rpc::ServiceLifecycle::init(self).await
+                ice_rpc::gen::ServiceLifecycle::init(self).await
             }
             fn dependencies(&self) -> Vec<&'static str> {
                 self.deps.clone()

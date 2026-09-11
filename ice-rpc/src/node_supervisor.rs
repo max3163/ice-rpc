@@ -45,9 +45,7 @@ impl NodeSupervisor {
     /// [`Subscription`] is dropped.
     pub fn subscribe(&self, node_id: u32, cb: ReconnectCallback) -> Subscription {
         let subscriber_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.nodes
-            .lock()
-            .expect("node supervisor lock poisoning")
+        crate::sync::lock(&self.nodes)
             .entry(node_id)
             .or_default()
             .subscribers
@@ -60,7 +58,7 @@ impl NodeSupervisor {
 
     /// Removes a subscription and the node entry once it becomes empty.
     fn unsubscribe(&self, node_id: u32, subscriber_id: SubscriberId) {
-        let mut nodes = self.nodes.lock().expect("node supervisor lock poisoning");
+        let mut nodes = crate::sync::lock(&self.nodes);
         let mut remove_node = false;
         if let Some(state) = nodes.get_mut(&node_id) {
             state.subscribers.remove(&subscriber_id);
@@ -78,7 +76,7 @@ impl NodeSupervisor {
     /// deadlock the supervisor.
     pub fn notify_node_dead(&self, node_id: u32) {
         let cbs: Vec<ReconnectCallback> = {
-            let nodes = self.nodes.lock().expect("node supervisor lock poisoning");
+            let nodes = crate::sync::lock(&self.nodes);
             nodes
                 .get(&node_id)
                 .map(|state| state.subscribers.values().cloned().collect())
@@ -134,8 +132,10 @@ mod tests {
     fn fire_notifies_all_services_of_the_node() {
         let fired_a = Arc::new(AtomicU32::new(0));
         let fired_b = Arc::new(AtomicU32::new(0));
-        let _sub_a = NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_a.clone()));
-        let _sub_b = NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_b.clone()));
+        let _sub_a =
+            NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_a.clone()));
+        let _sub_b =
+            NodeSupervisor::global().subscribe(NODE_MULTI_SVC, counting_cb(fired_b.clone()));
 
         fire(NODE_MULTI_SVC);
 
@@ -147,8 +147,10 @@ mod tests {
     fn fire_notifies_multiple_instances_of_the_node() {
         let fired_a = Arc::new(AtomicU32::new(0));
         let fired_b = Arc::new(AtomicU32::new(0));
-        let _sub_a = NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_a.clone()));
-        let _sub_b = NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_b.clone()));
+        let _sub_a =
+            NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_a.clone()));
+        let _sub_b =
+            NodeSupervisor::global().subscribe(NODE_MULTI_INST, counting_cb(fired_b.clone()));
 
         fire(NODE_MULTI_INST);
 

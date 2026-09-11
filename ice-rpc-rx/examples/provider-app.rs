@@ -24,15 +24,16 @@
 //! - `POST http://localhost:8080/DatabaseService/get_person` with a JSON body
 //! - `POST http://localhost:8080/HttpService/send_request` with a JSON body
 
-mod shared;
-
+#![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use async_trait::async_trait;
-use ice_rpc::{Event, Observable, ServiceInit};
-use shared::{
+use common::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
-    HttpServiceProxy, PersonneInfo, PersonneQuery,
+    HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
 };
+use ice_rpc::{Observable, ServiceInit, StreamError};
+use ice_rpc_rx::{from, of, throw_error, RxStreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -63,20 +64,11 @@ impl ConfigService for ConfigServiceImpl {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         let store = self.store.read().await;
-        let value = store.get(&key).cloned();
-        let (tx, rx) = ice_rpc::channel::<String, ConfigError>(2);
-        tokio::spawn(async move {
-            match value {
-                Some(v) => {
-                    let _ = tx.send(Event::Next(v)).await;
-                    let _ = tx.send(Event::Complete).await;
-                }
-                None => {
-                    let _ = tx.send(Event::Error(ConfigError::KeyNotFound)).await;
-                }
-            }
-        });
-        Ok(rx)
+        match store.get(&key).cloned() {
+            // Single-response service: no channel, no task — just `of(value)`.
+            Some(value) => of(value),
+            None => throw_error(ConfigError::KeyNotFound),
+        }
     }
 }
 
@@ -157,88 +149,60 @@ impl DatabaseServiceImpl {
 #[async_trait]
 impl DatabaseService for DatabaseServiceImpl {
     async fn get_user_age(&self, name: String) -> Observable<i32, DatabaseError> {
-        let age = match name.as_str() {
-            "Alice" => 30,
-            "Bob" => 42,
-            "Charlie" => 25,
-            "Diana" => 35,
-            "Eve" => 28,
-            "Frank" => 45,
-            "Grace" => 31,
-            "Heidi" => 27,
-            "Ivan" => 38,
-            "Judy" => 33,
-            _ => {
-                let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(1);
-                let _ = tx.try_send(Event::Error(DatabaseError::NotFound));
-                return Ok(rx);
-            }
-        };
-
-        let (tx, rx) = ice_rpc::channel::<i32, DatabaseError>(2);
-        let _ = tx.try_send(Event::Next(age));
-        let _ = tx.try_send(Event::Complete);
-        Ok(rx)
+        match name.as_str() {
+            "Alice" => of(30),
+            "Bob" => of(42),
+            "Charlie" => of(25),
+            "Diana" => of(35),
+            "Eve" => of(28),
+            "Frank" => of(45),
+            "Grace" => of(31),
+            "Heidi" => of(27),
+            "Ivan" => of(38),
+            "Judy" => of(33),
+            _ => throw_error(DatabaseError::NotFound),
+        }
     }
 
     async fn get_person(&self, query: PersonneQuery) -> Observable<PersonneInfo, DatabaseError> {
-        let personne = match (query.nom.as_str(), query.prenom.as_str()) {
-            ("Dupont", "Jean") => PersonneInfo {
+        match (query.nom.as_str(), query.prenom.as_str()) {
+            ("Dupont", "Jean") => of(PersonneInfo {
                 nom: "Dupont".into(),
                 prenom: "Jean".into(),
                 age: 45,
-                email: "jean.dupont@email.fr".into(),
-                telephone: "06 12 34 56 78".into(),
                 ville: "Paris".into(),
                 profession: "Engineer".into(),
-            },
-            ("Martin", "Marie") => PersonneInfo {
+            }),
+            ("Martin", "Marie") => of(PersonneInfo {
                 nom: "Martin".into(),
                 prenom: "Marie".into(),
                 age: 32,
-                email: "marie.martin@email.fr".into(),
-                telephone: "07 23 45 67 89".into(),
                 ville: "Lyon".into(),
                 profession: "Doctor".into(),
-            },
-            ("Bernard", "Pierre") => PersonneInfo {
+            }),
+            ("Bernard", "Pierre") => of(PersonneInfo {
                 nom: "Bernard".into(),
                 prenom: "Pierre".into(),
                 age: 28,
-                email: "pierre.bernard@email.fr".into(),
-                telephone: "06 34 56 78 90".into(),
                 ville: "Marseille".into(),
                 profession: "Architect".into(),
-            },
-            ("Petit", "Sophie") => PersonneInfo {
+            }),
+            ("Petit", "Sophie") => of(PersonneInfo {
                 nom: "Petit".into(),
                 prenom: "Sophie".into(),
                 age: 39,
-                email: "sophie.petit@email.fr".into(),
-                telephone: "07 45 67 89 01".into(),
                 ville: "Bordeaux".into(),
                 profession: "Lawyer".into(),
-            },
-            ("Thomas", "Luc") => PersonneInfo {
+            }),
+            ("Thomas", "Luc") => of(PersonneInfo {
                 nom: "Thomas".into(),
                 prenom: "Luc".into(),
                 age: 51,
-                email: "luc.thomas@email.fr".into(),
-                telephone: "06 56 78 90 12".into(),
                 ville: "Lille".into(),
                 profession: "Teacher".into(),
-            },
-            _ => {
-                let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(1);
-                let _ = tx.try_send(Event::Error(DatabaseError::NotFound));
-                return Ok(rx);
-            }
-        };
-
-        let (tx, rx) = ice_rpc::channel::<PersonneInfo, DatabaseError>(2);
-        let _ = tx.try_send(Event::Next(personne));
-        let _ = tx.try_send(Event::Complete);
-        Ok(rx)
+            }),
+            _ => throw_error(DatabaseError::NotFound),
+        }
     }
 }
 
@@ -259,24 +223,15 @@ impl ServiceInit for DatabaseServiceImpl {
 
         *self.config_proxy.write().await = Some(config.clone());
 
-        let rx = match config.get("database.url".into()).await {
-            Ok(rx) => rx,
-            Err(e) => {
-                log::error!(
-                    "[DatabaseService] IPC error while reading the config: {}",
-                    e
-                );
-                return false;
-            }
-        };
+        let rx = config.get("database.url".into()).await;
 
-        let db_url = match rx.recv().await {
-            Ok(Event::Next(url)) => url,
-            Ok(Event::Error(ConfigError::KeyNotFound)) => {
+        let db_url = match rx.first_value().await {
+            Ok(url) => url,
+            Err(StreamError::Business(ConfigError::KeyNotFound)) => {
                 log::error!("[DatabaseService] Key \"database.url\" missing from the config.");
                 return false;
             }
-            _ => {
+            Err(_) => {
                 log::error!("[DatabaseService] Unexpected response from ConfigService.");
                 return false;
             }
@@ -322,19 +277,13 @@ impl HttpService for HttpServiceImpl {
         );
 
         if req_body_len > max_payload {
-            let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(2);
-            tokio::spawn(async move {
-                let _ = tx
-                    .send(Event::Error(HttpError::PayloadTooLarge {
-                        max_bytes: max_payload,
-                        actual_bytes: req_body_len,
-                    }))
-                    .await;
+            return throw_error(HttpError::PayloadTooLarge {
+                max_bytes: max_payload,
+                actual_bytes: req_body_len,
             });
-            return Ok(rx);
         }
 
-        let response = HttpResponseParams {
+        of(HttpResponseParams {
             status_code: 200,
             status_text: "OK".to_string(),
             headers: vec![
@@ -346,14 +295,7 @@ impl HttpService for HttpServiceImpl {
                 ("x-echo-method".to_string(), request.method.clone()),
             ],
             body: request.body,
-        };
-
-        let (tx, rx) = ice_rpc::channel::<HttpResponseParams, HttpError>(2);
-        tokio::spawn(async move {
-            let _ = tx.send(Event::Next(response)).await;
-            let _ = tx.send(Event::Complete).await;
-        });
-        Ok(rx)
+        })
     }
 }
 
@@ -368,19 +310,40 @@ impl ice_rpc::ServiceInit for HttpServiceImpl {
     }
 }
 
+/// Streams notifications to its subscribers — the provider side of `subscribe`.
+struct NotificationServiceImpl;
+
+#[async_trait]
+impl NotificationService for NotificationServiceImpl {
+    async fn watch(&self, count: u32) -> Observable<u32, String> {
+        // A pure pipeline — no channel, no task, no `spawn`: one value every
+        // 100 ms, then `Complete`. `into_observable()` freezes it into the
+        // concrete `Observable` required by the service signature.
+        //
+        // Trade-off: a pipeline cannot detect that the consumer unsubscribed, so
+        // it runs to completion. A `channel` + `send_next` (which errors on a
+        // closed receiver) is the way to stop early.
+        from(1..=count)
+            .delay(std::time::Duration::from_millis(100))
+            .into_observable()
+    }
+
+    async fn ping(&self) -> Observable<u32, String> {
+        // Single response: one wire sample (`CompleteWith`).
+        of(0)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("=== PROVIDER STARTUP ===");
 
-    // RAII guard: guarantees the token cancellation on Drop (panic, forced Ctrl+C…).
-    // `run_provider!` also uses an internal ShutdownGuard for the cleanup,
-    // this one serves as an extra safety net at the main level.
-    let _guard = ice_rpc::ShutdownGuard::new();
-
+    // `run_provider!` performs the full bootstrap (init + shutdown): neither a
+    // guard nor an explicit `init()` is needed here.
+    //
     // DatabaseServiceImpl::on_init() calls locator().get::<ConfigServiceProxy>()
     // — this provider also consumes a service internally.
-    ice_rpc::init();
 
     // ── HTTP REST gateway (optional, requires the `http` feature) ──
     #[cfg(feature = "http")]
@@ -425,8 +388,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ice_rpc::run_provider!(
         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
-        ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("examples/config.toml")),
+        ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/config.toml"
+        ))),
         HttpServiceProxy::provide_with_init(HttpServiceImpl::new(100 * 1024 * 1024)),
+        NotificationServiceProxy::provide(NotificationServiceImpl),
     )
     .await
 }

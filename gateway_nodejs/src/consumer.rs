@@ -17,7 +17,7 @@
 //! 5. Return of the first event (`Next`) as `serde_json::Value`
 
 use common::{ConfigService, DatabaseService, HttpService};
-use ice_rpc::{Event, ServiceLocator};
+use ice_rpc::{ServiceLocator, StreamError};
 use serde_json::Value;
 
 /// Calls a method of a remote IPC service and returns the result as JSON.
@@ -53,20 +53,21 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .await
                 .ok_or_else(|| "DatabaseService not found (no provider detected)".to_string())?;
 
-            let rx = proxy
+            let age = proxy
                 .get_user_age(name)
                 .await
-                .map_err(|e| format!("IPC error (get_user_age): {}", e))?;
+                .first_value()
+                .await
+                .map_err(|e| match e {
+                    StreamError::Business(common::DatabaseError::NotFound) => {
+                        "NotFound: unknown name in database".to_string()
+                    }
+                    StreamError::Business(e) => format!("Database business error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
+                    StreamError::Empty => "Stream ended without a value".to_string(),
+                })?;
 
-            match rx.recv().await {
-                Ok(Event::Next(age)) => Ok(serde_json::json!(age)),
-                Ok(Event::Error(common::DatabaseError::NotFound)) => {
-                    Err("NotFound: unknown name in database".to_string())
-                }
-                Ok(Event::Error(e)) => Err(format!("Database business error: {}", e)),
-                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
-                Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
-            }
+            Ok(serde_json::json!(age))
         }
         ("DatabaseService", "get_person") => {
             let nom: String = extract_field(&args, "nom")?;
@@ -78,21 +79,22 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .await
                 .ok_or_else(|| "DatabaseService not found (no provider detected)".to_string())?;
 
-            let rx = proxy
+            let info = proxy
                 .get_person(query)
                 .await
-                .map_err(|e| format!("IPC error (get_person): {}", e))?;
+                .first_value()
+                .await
+                .map_err(|e| match e {
+                    StreamError::Business(common::DatabaseError::NotFound) => {
+                        "NotFound: person not found".to_string()
+                    }
+                    StreamError::Business(e) => format!("Database business error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
+                    StreamError::Empty => "Stream ended without a value".to_string(),
+                })?;
 
-            match rx.recv().await {
-                Ok(Event::Next(info)) => Ok(serde_json::to_value(&info)
-                    .map_err(|e| format!("Failed to serialize PersonneInfo: {}", e))?),
-                Ok(Event::Error(common::DatabaseError::NotFound)) => {
-                    Err("NotFound: person not found".to_string())
-                }
-                Ok(Event::Error(e)) => Err(format!("Database business error: {}", e)),
-                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
-                Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
-            }
+            Ok(serde_json::to_value(&info)
+                .map_err(|e| format!("Failed to serialize PersonneInfo: {}", e))?)
         }
 
         // ── ConfigService ────────────────────────────────────────────
@@ -104,19 +106,20 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .await
                 .ok_or_else(|| "ConfigService not found (no provider detected)".to_string())?;
 
-            let rx = proxy
+            let value = proxy
                 .get(key)
                 .await
-                .map_err(|e| format!("IPC error (ConfigService::get): {}", e))?;
+                .first_value()
+                .await
+                .map_err(|e| match e {
+                    StreamError::Business(common::ConfigError::KeyNotFound) => {
+                        "KeyNotFound: key not found".to_string()
+                    }
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
+                    StreamError::Empty => "Stream ended without a value".to_string(),
+                })?;
 
-            match rx.recv().await {
-                Ok(Event::Next(value)) => Ok(serde_json::json!(value)),
-                Ok(Event::Error(common::ConfigError::KeyNotFound)) => {
-                    Err("KeyNotFound: key not found".to_string())
-                }
-                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
-                Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
-            }
+            Ok(serde_json::json!(value))
         }
 
         // ── HttpService ──────────────────────────────────────────────
@@ -129,18 +132,19 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .await
                 .ok_or_else(|| "HttpService not found (no provider detected)".to_string())?;
 
-            let rx = proxy
+            let response = proxy
                 .send_request(request)
                 .await
-                .map_err(|e| format!("IPC error (send_request): {}", e))?;
+                .first_value()
+                .await
+                .map_err(|e| match e {
+                    StreamError::Business(e) => format!("Http business error: {}", e),
+                    StreamError::Technical(e) => format!("RPC error: {}", e),
+                    StreamError::Empty => "Stream ended without a value".to_string(),
+                })?;
 
-            match rx.recv().await {
-                Ok(Event::Next(response)) => Ok(serde_json::to_value(&response)
-                    .map_err(|e| format!("Failed to serialize HttpResponseParams: {}", e))?),
-                Ok(Event::Error(e)) => Err(format!("Http business error: {}", e)),
-                Ok(Event::RpcError(e)) => Err(format!("RPC error: {}", e)),
-                Ok(Event::Complete) | Err(_) => Err("Stream ended without a value".to_string()),
-            }
+            Ok(serde_json::to_value(&response)
+                .map_err(|e| format!("Failed to serialize HttpResponseParams: {}", e))?)
         }
 
         _ => Err(format!(

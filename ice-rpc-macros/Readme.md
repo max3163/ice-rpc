@@ -9,8 +9,6 @@ This crate provides the `#[service]` attribute macro: from a single annotated tr
 | Macro | Role |
 |---|---|
 | `#[service]` / `#[service("Name")]` | Generates Request, Client, Server, Proxy, Mode and lifecycle implementations. |
-| `#[cache(ttl = "60s")]` | Enables a local TTL cache on a client method. |
-| `#[timeout("30s")]` | Defines a custom service-location timeout for a method. |
 
 ## Generated types
 
@@ -25,7 +23,7 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 
 ## Usage
 
-Normally you do not depend on this crate directly: `ice-rpc` re-exports `service`, `cache` and `timeout`.
+Normally you do not depend on this crate directly: `ice-rpc` re-exports `service`.
 
 ```rust,ignore
 use ice_rpc::{service, Observable};
@@ -38,10 +36,16 @@ pub trait MyService: Send + Sync + 'static {
 
 ## Service parameters
 
-`#[service]` accepts three optional parameters, combinable in any order:
+`#[service]` accepts optional parameters, combinable in any order:
 
 ```rust,ignore
-#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 1)]
+#[service(
+    "MyService",
+    allow_large_payload = true,
+    default_size_message = 8,
+    version = 1,
+    discovery_timeout = "5s",
+)]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -52,24 +56,27 @@ pub trait MyService: Send + Sync + 'static {
 | `allow_large_payload` | `bool` | `false` | Creates the second shared-memory segment (`_large`) used for payloads above `LARGE_PAYLOAD_THRESHOLD`. |
 | `default_size_message` | integer (KiB) | `256` bytes | Initial slice size of the `_default` shared-memory segment publisher. |
 | `version` | integer | `1` | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`. |
+| `discovery_timeout` | duration string (`"30s"`, `"5m"`, `"1h"`) | `RPC_CALL_TIMEOUT_SECS` (30s) | **Service-wide** deadline for locating the provider before the first call. |
 
-## Method attributes
+## Discovery timeout
+
+`discovery_timeout` is a property of the **service**, not of a method: every
+method of the trait shares the same provider-lookup deadline.
 
 ```rust,ignore
-#[service("CachedService")]
-pub trait CachedService: Send + Sync + 'static {
-    #[cache(ttl = "60s", max_entries = 256)]
-    #[timeout("30s")]
-    async fn get(&self, key: String) -> Observable<String, MyError>;
+#[service("DatabaseService", discovery_timeout = "5s")]
+pub trait DatabaseService: Send + Sync + 'static {
+    async fn get_user_age(&self, name: String) -> Observable<i32, DatabaseError>;
+    async fn get_person(&self, query: PersonneQuery) -> Observable<PersonneInfo, DatabaseError>;
 }
 ```
 
-`#[cache]` accepts:
-
-- `ttl = "60s"` (or `"5m"`, `"1h"`) — cache lifetime;
-- `max_entries = 256` — maximum number of cached responses (default 1024).
-
-`#[timeout]` accepts a duration string and overrides the default service-location timeout.
+It is applied to `ClientCore::resolve_target` only, i.e. the time spent finding
+*which* node hosts the service (and ensuring its publishers). It therefore
+**does not bound the response wait**: a provider that accepts the call and never
+answers is not interrupted by it. On the consumer side, use the
+`RxStreamExt::timeout(duration)` operator from `ice-rpc-rx` to bound the
+response latency (and the silence between two values of a streaming response).
 
 ## Validation
 

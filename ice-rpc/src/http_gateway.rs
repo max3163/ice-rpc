@@ -12,15 +12,16 @@
 //!
 //! ```rust,ignore
 //! fn main() {
-//!     // Initializes the framework (without a global service registry).
-//!     ice_rpc::init();
+//!     // Initializes the framework (without a global service registry). The
+//!     // returned guard must stay alive for the whole process lifetime.
+//!     let _guard = ice_rpc::gen::init();
 //!
 //!     smol::block_on(async {
 //!         // Starts the HTTP gateway exposing the chosen services.
 //!         ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 //!
 //!         // The server runs until Ctrl+C
-//!         ice_rpc::wait_for_shutdown().await;
+//!         ice_rpc::gen::wait_for_shutdown().await;
 //!     });
 //! }
 //! ```
@@ -46,6 +47,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use trillium::{Conn, Handler, Method};
 
+/// Factory creating an [`HttpCallable`] proxy.
+type HttpCallableFactory = fn() -> Arc<dyn HttpCallable>;
+
 /// Shared state of the HTTP gateway.
 ///
 /// Contains the cache of [`HttpCallable`] proxies indexed by service name.
@@ -53,13 +57,13 @@ use trillium::{Conn, Handler, Method};
 #[derive(Clone)]
 struct HttpGatewayState {
     /// HTTP proxy factories (logical name → factory).
-    factories: Arc<HashMap<&'static str, fn() -> Arc<dyn HttpCallable>>>,
+    factories: Arc<HashMap<&'static str, HttpCallableFactory>>,
     /// HTTP proxy cache (name → proxy).
     cache: Arc<RwLock<HashMap<String, Arc<dyn HttpCallable>>>>,
 }
 
 impl HttpGatewayState {
-    fn new(factories: HashMap<&'static str, fn() -> Arc<dyn HttpCallable>>) -> Self {
+    fn new(factories: HashMap<&'static str, HttpCallableFactory>) -> Self {
         Self {
             factories: Arc::new(factories),
             cache: Arc::new(RwLock::new(HashMap::new())),
@@ -251,19 +255,24 @@ fn json_response(conn: Conn, status: u16, value: Value) -> Conn {
 /// - integers → integer number
 /// - otherwise → string
 fn params_to_json(params: &HashMap<String, String>) -> Value {
-    if params.is_empty() {
-        return Value::Null;
+    match params.len() {
+        0 => Value::Null,
+        // Single parameter: pass the value directly, the key is the method
+        // argument name and is not part of the payload.
+        1 => match params.values().next() {
+            Some(val) => parse_scalar(val),
+            // Defensive: `len() == 1` guarantees a value, but the HTTP path
+            // must never be able to abort the process via `unwrap()`
+            // (finding B2, aggravated by `panic = "abort"`).
+            None => Value::Null,
+        },
+        _ => Value::Object(
+            params
+                .iter()
+                .map(|(k, v)| (k.clone(), parse_scalar(v)))
+                .collect(),
+        ),
     }
-    if params.len() == 1 {
-        // Single parameter: pass the value directly.
-        let (_, val) = params.iter().next().unwrap();
-        return parse_scalar(val);
-    }
-    let map: serde_json::Map<String, Value> = params
-        .iter()
-        .map(|(k, v)| (k.clone(), parse_scalar(v)))
-        .collect();
-    Value::Object(map)
 }
 
 /// Tries to interpret a string as a JSON scalar.
@@ -428,9 +437,10 @@ pub async fn start_http_server(
         port
     );
 
-    // Graceful shutdown driven by the ice-rpc global cancellation token
-    // (Ctrl+C or programmatic cancellation). Trillium's own signal handling is
-    // disabled so that ice-rpc keeps a single shutdown path.
+    // Graceful shutdown driven by the ice-rpc global cancellation token, itself
+    // cancelled by iceoryx2's native SIGINT/SIGTERM handling (the `WaitSet`
+    // loops) or by a programmatic cancellation. Trillium's own signal handling
+    // is disabled so that ice-rpc keeps a single shutdown path.
     let swansong = trillium::Swansong::new();
     let signal_swansong = swansong.clone();
     let cancel = crate::global_cancel_token().clone();
@@ -439,10 +449,10 @@ pub async fn start_http_server(
         signal_swansong.shut_down().await;
     });
 
-    // The runtime adapter follows the selected runtime feature:
-    // - `tokio`             → trillium-tokio
-    // - `smol` / no feature → trillium-smol (async-global-executor)
-    #[cfg(feature = "tokio")]
+    // The runtime adapter is selected by the `http-tokio` feature:
+    // - `http-tokio` → trillium-tokio (HTTP server on the tokio runtime)
+    // - otherwise    → trillium-smol (runtime-agnostic, no tokio required)
+    #[cfg(feature = "http-tokio")]
     {
         trillium_tokio::config()
             .with_port(port)
@@ -453,7 +463,7 @@ pub async fn start_http_server(
             .await;
     }
 
-    #[cfg(not(feature = "tokio"))]
+    #[cfg(not(feature = "http-tokio"))]
     {
         trillium_smol::config()
             .with_port(port)

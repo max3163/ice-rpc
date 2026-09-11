@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::futures::FutureExt;
+use futures::FutureExt;
 
 /// Connection state machine of a generated client.
 ///
@@ -71,10 +71,7 @@ impl ClientCore {
     /// Replaces the previous subscription when the target node changes. The
     /// old subscription is removed via `Drop`.
     pub fn subscribe(&self, node_id: u32) {
-        let mut subscription = self
-            .subscription
-            .lock()
-            .expect("client core subscription lock poisoning");
+        let mut subscription = crate::sync::lock(&self.subscription);
         if let Some(existing) = subscription.as_ref() {
             if existing.node_id() == node_id {
                 return;
@@ -87,7 +84,7 @@ impl ClientCore {
 
     /// Reads the cached target node id (`0` unless the state is `Ready`).
     pub fn cached_target_node(&self) -> u64 {
-        match *self.state.lock().expect("client core state lock poisoning") {
+        match *crate::sync::lock(&self.state) {
             ConnectionState::Ready(n) => n as u64,
             _ => 0,
         }
@@ -118,7 +115,7 @@ impl ClientCore {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut node = discovery.locate_service(service_name);
         while node.is_none() && std::time::Instant::now() < deadline {
-            crate::futures::select! {
+            futures::select! {
                 _ = crate::global_cancel_token().cancelled().fuse() => {
                     return Err(crate::RpcError::Cancelled);
                 }
@@ -175,7 +172,7 @@ impl ClientCore {
 
     /// Returns the current connection state.
     pub fn state(&self) -> ConnectionState {
-        *self.state.lock().expect("client core state lock poisoning")
+        *crate::sync::lock(&self.state)
     }
 
     /// Bootstraps the client: creates the node, starts discovery, locates the
@@ -193,8 +190,10 @@ impl ClientCore {
         };
 
         {
+            // Short, one-shot offload: goes through the runtime's bounded
+            // blocking pool, not through a dedicated thread per call.
             let locator = crate::ServiceLocator::global();
-            let _ = crate::rt::spawn_blocking(move || {
+            let _ = crate::rt::blocking_call(move || {
                 locator.start_discovery();
             })
             .await;
@@ -217,7 +216,7 @@ impl ClientCore {
 
         {
             let locator = crate::ServiceLocator::global();
-            let _ = crate::rt::spawn_blocking(move || {
+            let _ = crate::rt::blocking_call(move || {
                 locator.start_dispatch_if_needed();
             })
             .await;
@@ -231,9 +230,17 @@ impl ClientCore {
         .await;
 
         match result {
-            Ok(()) => {}
-            Err(e) => {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 log::error!("[{}Client] ensure_publishers failed: {}", service_name, e);
+                return false;
+            }
+            Err(panic) => {
+                log::error!(
+                    "[{}Client] ensure_publishers task panicked: {}",
+                    service_name,
+                    panic
+                );
                 return false;
             }
         }
@@ -251,7 +258,7 @@ impl ClientCore {
 
 /// Applies a connection transition after validating it.
 fn transition(state: &Mutex<ConnectionState>, to: ConnectionState) -> bool {
-    let mut guard = state.lock().expect("client core state lock poisoning");
+    let mut guard = crate::sync::lock(state);
     if is_valid_transition(*guard, to) {
         *guard = to;
         true
@@ -277,7 +284,7 @@ fn build_reconnect_cb(
 
     Arc::new(move |dead_node_id: u32| {
         {
-            let mut guard = state.lock().expect("client core state lock poisoning");
+            let mut guard = crate::sync::lock(&state);
             if !is_valid_transition(*guard, ConnectionState::Dead(dead_node_id)) {
                 return;
             }
@@ -290,13 +297,14 @@ fn build_reconnect_cb(
         );
 
         {
-            let mut guard = state.lock().expect("client core state lock poisoning");
+            let mut guard = crate::sync::lock(&state);
             if is_valid_transition(*guard, ConnectionState::Reconnecting) {
                 *guard = ConnectionState::Reconnecting;
             }
         }
 
-        crate::reconnect_manager::ReconnectManager::global().schedule(dead_node_id, pending.clone());
+        crate::reconnect_manager::ReconnectManager::global()
+            .schedule(dead_node_id, pending.clone());
     })
 }
 

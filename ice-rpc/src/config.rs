@@ -118,16 +118,30 @@ fn write_config_toml(config: &iceoryx2::config::Config) -> Option<std::path::Pat
 
     let file_path = config_dir.join("iceoryx2.toml");
 
-    // Do not rewrite the file if it already exists (optimization).
+    // The generated file embeds a machine-specific absolute root-path. Reusing a
+    // file produced on another machine/OS (or with a different
+    // `ICE_RPC_ROOT_PATH`) would make iceoryx2 operate on a non-existent path —
+    // e.g. a POSIX `/home/...` root-path reused on Windows, where the directory
+    // listing then fails with a Win32 `FindFirstFileA` error and `Service::list`
+    // returns `InternalError`. Validate the recorded root-path and regenerate on
+    // mismatch (this also avoids an unnecessary rewrite on each start).
     if file_path.exists() {
-        let abs_path = match std::env::current_dir() {
-            Ok(cwd) => cwd.join(&file_path),
-            Err(e) => {
-                log::error!("[ice-rpc] ERROR: current_dir(): {e}");
-                return None;
-            }
-        };
-        return Some(abs_path);
+        let expected_root =
+            String::from_utf8_lossy(config.global.root_path().as_bytes()).to_string();
+        if existing_config_root_path(&file_path).as_deref() == Some(expected_root.as_str()) {
+            let abs_path = match std::env::current_dir() {
+                Ok(cwd) => cwd.join(&file_path),
+                Err(e) => {
+                    log::error!("[ice-rpc] ERROR: current_dir(): {e}");
+                    return None;
+                }
+            };
+            return Some(abs_path);
+        }
+        log::warn!(
+            "[ice-rpc] '{}' records a root-path for another platform: regenerating.",
+            file_path.display()
+        );
     }
 
     let toml_content = match toml::to_string_pretty(config) {
@@ -152,6 +166,20 @@ fn write_config_toml(config: &iceoryx2::config::Config) -> Option<std::path::Pat
     };
 
     Some(abs_path)
+}
+
+/// Reads the `global.root-path` recorded in an existing generated TOML config.
+///
+/// Returns `None` when the file cannot be read or parsed, so the caller
+/// regenerates it.
+fn existing_config_root_path(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&content).ok()?;
+    value
+        .get("global")?
+        .get("root-path")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Applies the global iceoryx2 configuration from the TOML file.
@@ -256,41 +284,98 @@ mod tests {
     }
 
     #[test]
-    fn write_config_toml_skips_when_file_exists() {
+    fn write_config_toml_keeps_file_with_matching_root_path() {
         let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = std::env::temp_dir().join("ice_rpc_test_config_skip");
+        let tmp = std::env::temp_dir().join("ice_rpc_test_config_keep");
         let _ = std::fs::remove_dir_all(&tmp);
 
         let original_dir = std::env::current_dir().ok();
-
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_current_dir(&tmp).unwrap();
 
-        // Create the file manually before calling write_config_toml
+        let config = build_iceoryx2_config();
         let config_dir = tmp.join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
         let config_file = config_dir.join("iceoryx2.toml");
-        std::fs::write(&config_file, "# existing config\n").unwrap();
+        // A file whose root-path already matches this platform must be kept as-is.
+        let content = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&config_file, &content).unwrap();
 
-        let config = build_iceoryx2_config();
         let result = write_config_toml(&config);
 
-        // Restore
         if let Some(dir) = original_dir {
             let _ = std::env::set_current_dir(&dir);
         }
 
+        let after = std::fs::read_to_string(&config_file).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(
             result.is_some(),
-            "must return the path even if the file exists"
+            "must return the path when the file exists"
         );
-        let path = result.unwrap();
-        assert!(path.ends_with("iceoryx2.toml"));
+        assert_eq!(after, content, "a matching config must not be rewritten");
+    }
 
-        // The content must NOT have been modified (the optimization skipped the write)
-        // Note: this cannot be verified here because the file was removed.
+    #[test]
+    fn write_config_toml_regenerates_stale_root_path() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join("ice_rpc_test_config_stale");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let original_dir = std::env::current_dir().ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        let config = build_iceoryx2_config();
+        let expected_root =
+            String::from_utf8_lossy(config.global.root_path().as_bytes()).to_string();
+
+        let config_dir = tmp.join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_file = config_dir.join("iceoryx2.toml");
+        // Simulate a config generated on another OS (POSIX root-path on Windows).
+        std::fs::write(
+            &config_file,
+            "[global]\nroot-path = \"/home/max/.local/share/ice-rpc/iceoryx2\"\n",
+        )
+        .unwrap();
+
+        let result = write_config_toml(&config);
+
+        if let Some(dir) = original_dir {
+            let _ = std::env::set_current_dir(&dir);
+        }
+
+        let recorded = existing_config_root_path(&config_file);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(result.is_some());
+        assert_eq!(
+            recorded.as_deref(),
+            Some(expected_root.as_str()),
+            "a stale root-path must be regenerated for the current platform"
+        );
+    }
+
+    #[test]
+    fn existing_config_root_path_reads_recorded_value() {
+        let tmp = std::env::temp_dir().join("ice_rpc_test_config_read");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("iceoryx2.toml");
+
+        std::fs::write(&file, "[global]\nroot-path = \"/tmp/ice-rpc\"\n").unwrap();
+        assert_eq!(
+            existing_config_root_path(&file).as_deref(),
+            Some("/tmp/ice-rpc")
+        );
+
+        // Content without a root-path must yield None so the caller regenerates.
+        std::fs::write(&file, "# no root-path here\n").unwrap();
+        assert_eq!(existing_config_root_path(&file), None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

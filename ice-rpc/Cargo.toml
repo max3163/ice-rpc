@@ -41,6 +41,10 @@ log = { workspace = true }
 iceoryx2 = "0.9.3"
 iceoryx2-bb-system-types = "0.9.3"
 iceoryx2-bb-container = "0.9.3"
+# `SignalHandler::termination_requested()`: the dispatch loops sample the
+# termination flag directly, since a saturated service never reaches the
+# blocking `WaitSet` path where iceoryx2 reports SIGINT/SIGTERM.
+iceoryx2-bb-posix = "0.9.3"
 rkyv = { workspace = true }
 async-trait = { workspace = true }
 toml = { workspace = true }

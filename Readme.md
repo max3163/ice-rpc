@@ -1064,13 +1064,13 @@ let age = stream.first_value().await?;
 │  Ctrl+C (SIGINT) / SIGTERM                                            │
 │    │                                                                  │
 │    ▼                                                                  │
-│  The OS default disposition terminates the process                   │
-│  (the transport installs no signal handler)                          │
+│  iceoryx2 owns the SIGINT/SIGTERM handler (init() selects the        │
+│  HandleTerminationRequests mode) and the WaitSet reports it.         │
 │                                                                      │
-│  For a programmatic stop:                                            │
+│  Both paths end in:                                                  │
 │    │                                                                  │
 │    ▼                                                                  │
-│  global_cancel_token().cancel()                                      │
+│  request_shutdown()  -> logs and cancels both tokens                 │
 │    → every transport dispatch thread observes is_cancelled()         │
 │      and exits its loop                                              │
 │    │                                                                  │

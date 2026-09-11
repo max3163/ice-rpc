@@ -38,7 +38,7 @@ echo "[bench-load] building release examples (features: $FEATURES)..."
 cargo build -p ice-rpc-rx --release --example provider-app --example benchmark-app --features "$FEATURES"
 
 echo "[bench-load] starting provider ($PROVIDER_BIN)..."
-"$PROVIDER_BIN" &
+"$PROVIDER_BIN" > "$OUT_DIR/provider.log" 2>&1 &
 PROVIDER_PID=$!
 
 cleanup() {
@@ -50,6 +50,20 @@ trap cleanup EXIT
 
 echo "[bench-load] waiting ${WAIT_READY}s for the provider to be ready..."
 sleep "$WAIT_READY"
+
+# A provider that dies during startup leaves the benchmark measuring nothing:
+# the calls reach no subscriber and every request times out.
+if ! kill -0 "$PROVIDER_PID" 2>/dev/null; then
+  echo "[bench-load] ERROR: the provider died during startup (log: $OUT_DIR/provider.log)." >&2
+  echo "[bench-load] hint: iceoryx2 refuses a service left behind by a build with a" >&2
+  echo "[bench-load]       different wire format, and a half-created service makes it" >&2
+  echo "[bench-load]       recurse until the stack overflows. Remove the root path:" >&2
+  echo "[bench-load]         Windows: %APPDATA%\\ice-rpc\\iceoryx2" >&2
+  echo "[bench-load]         Unix:    \$XDG_DATA_HOME/ice-rpc/iceoryx2 (or ~/.local/share/ice-rpc/iceoryx2)" >&2
+  echo "[bench-load]       ...after making sure no process still runs the previous build." >&2
+  exit 1
+fi
+echo "[bench-load] provider is alive (pid $PROVIDER_PID), log: $OUT_DIR/provider.log"
 
 run_mode() {
   local key="$1"

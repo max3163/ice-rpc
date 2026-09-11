@@ -192,6 +192,23 @@ pub fn registry_cancel_token() -> &'static CancellationToken {
     TOKEN.get_or_init(CancellationToken::new)
 }
 
+/// Cancels both tokens to propagate a termination signal to the IPC threads.
+///
+/// Called by the transport loops when iceoryx2 reports a termination through its
+/// `WaitSet`
+/// ([`Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt) for SIGINT /
+/// Ctrl+C, [`TerminationRequest`](iceoryx2::waitset::WaitSetRunResult::TerminationRequest)
+/// for SIGTERM) or when they observe the termination flag while polling.
+///
+/// `HandleTerminationRequests` mode makes iceoryx2 own the SIGINT/SIGTERM
+/// handler, so the process does **not** die on its own: cancelling the tokens
+/// lets [`wait_for_shutdown`] return and the caller shut down cleanly.
+pub(crate) fn request_shutdown() {
+    log::info!("Termination signal received, shutting down...");
+    global_cancel_token().cancel();
+    registry_cancel_token().cancel();
+}
+
 /// Cancels the IPC threads and waits for their termination in a single call.
 ///
 /// # Example
@@ -293,15 +310,34 @@ pub async fn wait_for_shutdown() {
 // Initialization functions
 // ────────────────────────────────────────────────────────────────────
 
-/// Whether the framework must let the host keep full control of the process
-/// signals.
+/// Whether the framework handles the process signals through iceoryx2.
 ///
-/// Set by [`init`] (the default) and cleared by [`init_without_ctrl_c`]. The
-/// native request/response transport does not install a signal handler, so the
-/// flag is currently informational; it is kept so the two entry points stay
-/// distinguishable for future signal-aware transports.
+/// Set by [`init`] (the default) and cleared by [`init_without_ctrl_c`]. It
+/// selects the `WaitSet` [`SignalHandlingMode`](iceoryx2::prelude::SignalHandlingMode):
+/// enabled, iceoryx2 captures SIGINT/SIGTERM and the transport turns the
+/// termination request into a cancellation of [`global_cancel_token`] (a clean
+/// stop); disabled, iceoryx2 installs no signal handler and the host keeps the
+/// default disposition.
 static SIGNAL_HANDLING_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
+
+/// Maps the signal-handling flag to the iceoryx2 `WaitSet` mode.
+fn resolve_signal_handling_mode(enabled: bool) -> iceoryx2::prelude::SignalHandlingMode {
+    if enabled {
+        iceoryx2::prelude::SignalHandlingMode::HandleTerminationRequests
+    } else {
+        iceoryx2::prelude::SignalHandlingMode::Disabled
+    }
+}
+
+/// Returns the signal-handling mode the transport must give to its `WaitSet`s.
+///
+/// With `HandleTerminationRequests` iceoryx2 owns the SIGINT/SIGTERM handler, so
+/// the process does **not** die by default: the request is reported by the
+/// `WaitSet` and the transport cancels [`global_cancel_token`] to stop cleanly.
+pub(crate) fn waitset_signal_handling_mode() -> iceoryx2::prelude::SignalHandlingMode {
+    resolve_signal_handling_mode(SIGNAL_HANDLING_ENABLED.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 /// Performs the one-time process bootstrap.
 ///
@@ -593,5 +629,25 @@ mod tests {
         // Without a created iceoryx2 Node, shutdown_and_release must terminate
         // cleanly. It uses `rt::timeout` internally, hence `test_block_on`.
         crate::rt::test_block_on(shutdown_and_release());
+    }
+
+    // ── signal handling ──────────────────────────────────────────────
+
+    #[test]
+    fn signal_handling_flag_selects_the_waitset_mode() {
+        use iceoryx2::prelude::SignalHandlingMode;
+
+        // Enabled: iceoryx2 captures SIGINT/SIGTERM and the transport cancels
+        // the global token, so Ctrl+C stops the process cleanly.
+        assert_eq!(
+            resolve_signal_handling_mode(true),
+            SignalHandlingMode::HandleTerminationRequests
+        );
+        // Disabled: the host keeps the default disposition (Node.js gateway,
+        // tests), so iceoryx2 installs no signal handler at all.
+        assert_eq!(
+            resolve_signal_handling_mode(false),
+            SignalHandlingMode::Disabled
+        );
     }
 }

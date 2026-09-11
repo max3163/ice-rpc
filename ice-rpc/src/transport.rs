@@ -40,6 +40,8 @@ use std::time::Duration;
 
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc_threadsafe;
+use iceoryx2::waitset::WaitSetRunResult;
+use iceoryx2_bb_posix::signal::SignalHandler;
 
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, EventKind, Observable, ObservableError,
@@ -115,12 +117,27 @@ const PUBLISH_RETRY_SLEEP: Duration = Duration::from_millis(1);
 /// that makes a missed notification cost at most this much.
 const WAITSET_DEADLINE: Duration = Duration::from_millis(1);
 
+/// Processed samples between two termination checks on the hot path.
+///
+/// `SignalHandler::termination_requested()` takes a process-wide mutex, so
+/// calling it for every sample serializes the dispatch threads and divides the
+/// throughput by ~10. Sampling every this many calls keeps the added cost
+/// negligible while still bounding the Ctrl+C latency under load; an idle
+/// service is covered by the `WaitSet` path, which detects the signal within
+/// [`WAITSET_DEADLINE`].
+const SIGNAL_CHECK_SAMPLES: u32 = 256;
+
 /// Consecutive empty polls spent spinning before the thread blocks on its
 /// `WaitSet`.
 ///
 /// A saturated service finds a sample on (almost) every poll, so it never
 /// reaches the blocking path and keeps the polling throughput. A bursty service
 /// blocks instead of burning a core, and the notification wakes it immediately.
+///
+/// Once blocked the thread **stays** blocked: it only re-arms the spin burst
+/// when a notification arrived, never on a plain deadline expiry. Re-spinning on
+/// every expiry would run thousands of `yield_now` per millisecond and cost
+/// ~30% of a core for a completely idle process (debug builds).
 const IDLE_SPINS: u32 = 2_000;
 
 /// Set while a dispatch thread is blocked on its `WaitSet`.
@@ -327,6 +344,39 @@ fn consumer_ports(service_name: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
     Ok(ports)
 }
 
+/// Blocks on `waitset` until the notifier fires or [`WAITSET_DEADLINE`] expires.
+///
+/// Returns `true` when the wake-up came from the attached notification, which
+/// lets the caller tell "data is probably available" from "still idle". Without
+/// that distinction an idle thread restarts its spin burst on every deadline
+/// expiry, i.e. thousands of `yield_now` calls per millisecond, and burns CPU
+/// while doing nothing.
+fn wait_for_wakeup(waitset: &WaitSet<Iox>, guard: &WaitSetGuard<'_, '_, Iox>) -> bool {
+    let mut notified = false;
+    let result = waitset.wait_and_process_once_with_timeout(
+        |attachment_id| {
+            if attachment_id.has_event_from(guard) {
+                notified = true;
+            }
+            CallbackProgression::Continue
+        },
+        WAITSET_DEADLINE,
+    );
+
+    if matches!(
+        result,
+        Ok(WaitSetRunResult::TerminationRequest) | Ok(WaitSetRunResult::Interrupt)
+    ) {
+        // In `HandleTerminationRequests` mode iceoryx2 owns the SIGINT/SIGTERM
+        // handler: the signal is reported here instead of killing the process,
+        // so the framework cancels its tokens and the caller exits cleanly.
+        crate::request_shutdown();
+        return true;
+    }
+
+    notified
+}
+
 /// Blocks on the response event and routes every sample to its handler.
 fn spawn_response_dispatcher(
     service_name: String,
@@ -335,15 +385,19 @@ fn spawn_response_dispatcher(
     _response_notify: IoxEvent,
 ) {
     let handle = crate::rt::spawn_blocking(move || {
-        let Ok(waitset) = WaitSetBuilder::new().create::<Iox>() else {
+        let Ok(waitset) = WaitSetBuilder::new()
+            .signal_handling_mode(crate::waitset_signal_handling_mode())
+            .create::<Iox>()
+        else {
             return;
         };
-        let Ok(_guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
+        let Ok(guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
             return;
         };
 
         let cancel = crate::global_cancel_token().clone();
         let mut idle_spins: u32 = 0;
+        let mut signal_ticks: u32 = 0;
         loop {
             if cancel.is_cancelled() {
                 break;
@@ -351,6 +405,13 @@ fn spawn_response_dispatcher(
             match subscriber.receive() {
                 Ok(Some(sample)) => {
                     idle_spins = 0;
+                    signal_ticks = signal_ticks.wrapping_add(1);
+                    if signal_ticks & (SIGNAL_CHECK_SAMPLES - 1) == 0
+                        && SignalHandler::termination_requested()
+                    {
+                        crate::request_shutdown();
+                        break;
+                    }
                     let cid = sample.user_header().correlation_id;
                     let payload: &[u8] = &sample;
                     let handler = crate::sync::lock(response_handlers()).get(&cid).cloned();
@@ -364,12 +425,11 @@ fn spawn_response_dispatcher(
                         std::thread::yield_now();
                     } else {
                         RESPONSE_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
-                        let _ = waitset.wait_and_process_once_with_timeout(
-                            |_| CallbackProgression::Continue,
-                            WAITSET_DEADLINE,
-                        );
+                        let notified = wait_for_wakeup(&waitset, &guard);
                         RESPONSE_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
-                        idle_spins = 0;
+                        // Only a notification means there is something to poll
+                        // for; a bare deadline expiry keeps the thread blocked.
+                        idle_spins = if notified { 0 } else { IDLE_SPINS };
                     }
                 }
                 Err(e) => {
@@ -574,21 +634,35 @@ where
             }
         };
 
-        let Ok(waitset) = WaitSetBuilder::new().create::<Iox>() else {
+        let Ok(waitset) = WaitSetBuilder::new()
+            .signal_handling_mode(crate::waitset_signal_handling_mode())
+            .create::<Iox>()
+        else {
             log::error!("[transport] waitset creation failed");
             return;
         };
-        let Ok(_guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
+        let Ok(guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
             log::error!("[transport] waitset attach failed");
             return;
         };
 
         log::info!("[transport] service '{service_name}' ready");
         let mut idle_spins: u32 = 0;
+        let mut signal_ticks: u32 = 0;
         while !stop.is_cancelled() {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
                     idle_spins = 0;
+                    // A saturated service never reaches the blocking path below,
+                    // where iceoryx2 reports the termination request: sampling
+                    // the flag here keeps Ctrl+C responsive under load.
+                    signal_ticks = signal_ticks.wrapping_add(1);
+                    if signal_ticks & (SIGNAL_CHECK_SAMPLES - 1) == 0
+                        && SignalHandler::termination_requested()
+                    {
+                        crate::request_shutdown();
+                        break;
+                    }
                     let request_header = *sample.user_header();
                     let payload: &[u8] = &sample;
 
@@ -623,12 +697,11 @@ where
                         std::thread::yield_now();
                     } else {
                         REQUEST_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
-                        let _ = waitset.wait_and_process_once_with_timeout(
-                            |_| CallbackProgression::Continue,
-                            WAITSET_DEADLINE,
-                        );
+                        let notified = wait_for_wakeup(&waitset, &guard);
                         REQUEST_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
-                        idle_spins = 0;
+                        // Only a notification means there is something to poll
+                        // for; a bare deadline expiry keeps the thread blocked.
+                        idle_spins = if notified { 0 } else { IDLE_SPINS };
                     }
                 }
                 Err(e) => {

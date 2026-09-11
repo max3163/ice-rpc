@@ -988,6 +988,7 @@ dependencies = [
  "ice-rpc-macros",
  "iceoryx2",
  "iceoryx2-bb-container",
+ "iceoryx2-bb-posix",
  "iceoryx2-bb-system-types",
  "log",
  "pin-project-lite",

@@ -104,9 +104,10 @@ impl MyService for MyServiceImpl {
     }
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `run_provider!` bootstraps ice-rpc and shuts it down on exit.
+    // `#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and shuts it down
+    // on exit; `run_provider!` starts the services and waits for Ctrl+C.
     ice_rpc::run_provider!(
         MyServiceProxy::provide(MyServiceImpl),
     ).await
@@ -202,7 +203,7 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
 }
 ```
 
-For services that consume other services, register with `provide_with_init`; `run_provider!` bootstraps ice-rpc:
+For services that consume other services, register with `provide_with_init`. `#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and owns the clean shutdown, while `run_provider!` starts the services and waits for Ctrl+C:
 
 ```rust,ignore
 ice_rpc::run_provider!(

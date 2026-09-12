@@ -48,9 +48,10 @@
 //!     }
 //! }
 //!
-//! #[tokio::main]
+//! #[ice_rpc::main(tokio)]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // `run_provider!` performs the full bootstrap (init + shutdown).
+//!     // `#[ice_rpc::main]` owns the bootstrap (init + runtime) and the clean
+//!     // shutdown; `run_provider!` only starts the services and waits for Ctrl+C.
 //!     ice_rpc::run_provider!(
 //!         MyServiceProxy::provide(MyServiceImpl),
 //!     ).await
@@ -60,7 +61,7 @@
 //! If an implementation calls `locator().get()` (cross-service dependency):
 //!
 //! ```rust,ignore
-//! #[tokio::main]
+//! #[ice_rpc::main(tokio)]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // This provider also consumes services via locator().get().
 //!     ice_rpc::run_provider!(
@@ -444,23 +445,26 @@ where
     }
 }
 
-/// Registers and initializes a list of Provider services, waits for Ctrl+C,
-/// then performs the clean shutdown.
+/// Registers and initializes a list of Provider services, then blocks until the
+/// process shutdown is requested (Ctrl+C).
 ///
 /// Internal function called by the [`run_provider!`] macro.
 /// Prefer the macro for direct usage.
+///
+/// The process lifecycle (iceoryx2 bootstrap, signal handling, runtime and
+/// clean shutdown) is owned by `#[ice_rpc::main]`. This function only starts the
+/// services and keeps the process alive until cancellation, so it **must** be
+/// awaited from within an `#[ice_rpc::main]` body.
 #[doc(hidden)]
 pub async fn run_provider_inner(
     services: Vec<Box<dyn _ProviderService>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Full bootstrap: `run_provider!` is self-contained and idempotent. Signal
-    // handling is enabled explicitly so a prior `init_without_ctrl_c()` cannot
-    // disable it.
+    // Defensive and idempotent: the bootstrap is normally performed by
+    // `#[ice_rpc::main]`, which also owns the shutdown. Enabling signal handling
+    // here guarantees the `WaitSet`s created below report SIGINT/SIGTERM even if
+    // the macro was bypassed (e.g. after `init_without_ctrl_c()`).
     ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-
-    // RAII guard: cancels the tokens on panic before the explicit shutdown.
-    let guard = ShutdownGuard::new();
 
     let loc = ServiceLocator::global();
     for svc in services {
@@ -469,24 +473,24 @@ pub async fn run_provider_inner(
     loc.initialize_all().await?;
     log::info!("All services are ready. Press Ctrl+C to stop.");
     wait_for_shutdown().await;
-    log::info!("Stopping provider...");
-    guard.shutdown().await;
+    log::info!("Stopping services...");
     Ok(())
 }
 
 /// Starts the provider with the given services.
 ///
-/// Registers each service, initializes everything in topological order,
-/// blocks until Ctrl+C, then performs a clean shutdown.
+/// Registers each service, initializes everything in topological order, then
+/// blocks until the process shutdown is requested (Ctrl+C). The clean shutdown
+/// itself is owned by `#[ice_rpc::main]`: this macro only starts the services.
 ///
-/// Returns a `Future` — must be `.await`ed in an async context.
+/// Returns a `Future` — must be `.await`ed from an `#[ice_rpc::main]` body.
 ///
 /// # Example — Pure provider
 /// ```rust,ignore
-/// #[tokio::main]
+/// #[ice_rpc::main(tokio)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     env_logger::init();
-///     // `run_provider!` bootstraps ice-rpc and shuts it down on exit.
+///     // `#[ice_rpc::main]` owns init + shutdown; `run_provider!` starts them.
 ///     ice_rpc::run_provider!(
 ///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.toml")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
@@ -496,7 +500,7 @@ pub async fn run_provider_inner(
 ///
 /// # Example — Provider that also consumes external services
 /// ```rust,ignore
-/// #[tokio::main]
+/// #[ice_rpc::main(tokio)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     env_logger::init();
 ///     // DatabaseServiceImpl calls ConfigService via get()

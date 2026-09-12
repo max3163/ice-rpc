@@ -327,13 +327,13 @@ impl NotificationService for NotificationServiceImpl {
     }
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("=== PROVIDER STARTUP ===");
 
-    // `run_provider!` performs the full bootstrap (init + shutdown): neither a
-    // guard nor an explicit `init()` is needed here.
+    // `#[ice_rpc::main(tokio)]` owns the bootstrap (init + runtime) and the clean
+    // shutdown; `run_provider!` only starts the services and waits for Ctrl+C.
 
     // ── HTTP REST gateway (optional, requires the `http` feature) ──
     #[cfg(feature = "http")]

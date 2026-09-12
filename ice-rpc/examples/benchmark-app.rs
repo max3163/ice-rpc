@@ -502,15 +502,10 @@ async fn run_phase(proxy: Arc<DatabaseServiceProxy>, cfg: Arc<BenchConfig>) -> (
     (compute_stats(&mut all_outcomes, wall), wall)
 }
 
-#[tokio::main]
+#[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cfg = Arc::new(BenchConfig::from_args());
-
-    // This example keeps the explicit pattern instead of `#[ice_rpc::main]`,
-    // because it calls `std::process::exit`, which bypasses the macro-managed
-    // shutdown. `init()` returns the RAII guard in a single call.
-    let shutdown_guard = ice_rpc::gen::init();
 
     log::info!("=== ice-rpc BENCHMARK ===");
     log::info!("  Service      : {}", cfg.service);
@@ -677,13 +672,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Clean shutdown: wait for the IPC threads, release the iceoryx2 node.
-    // The guard guarantees the token cancellation even on panic before this line.
+    // Clean shutdown (cancel + join of the IPC threads, node release) is
+    // performed by the `#[ice_rpc::main]` guard once `main` returns.
     log::info!("Stopping benchmark...");
-    shutdown_guard.shutdown().await;
 
     if failed {
-        std::process::exit(1);
+        return Err("benchmark thresholds not met".into());
     }
 
     Ok(())

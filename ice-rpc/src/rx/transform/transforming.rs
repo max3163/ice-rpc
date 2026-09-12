@@ -1,8 +1,8 @@
 //! Transforming Observables.
 //!
-//! ReactiveX category: [`map`](super::RxStreamExt::map),
-//! [`scan`](super::RxStreamExt::scan), [`switch_map`](super::RxStreamExt::switch_map)
-//! and [`map_err`](super::RxStreamExt::map_err).
+//! ReactiveX category: [`map`](crate::Observable::map),
+//! [`scan`](crate::Observable::scan), [`switch_map`](crate::Observable::switch_map)
+//! and [`map_err`](crate::Observable::map_err).
 
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use crate::Event;
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::map`](super::RxStreamExt::map).
+    /// See [`Observable::map`](crate::Observable::map).
     pub struct Map<S, F, T, U, E> {
         #[pin]
         stream: S,
@@ -50,7 +50,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::map_err`](super::RxStreamExt::map_err).
+    /// See [`Observable::map_err`](crate::Observable::map_err).
     pub struct MapErr<S, F, T, E, E2> {
         #[pin]
         stream: S,
@@ -102,7 +102,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::scan`](super::RxStreamExt::scan).
+    /// See [`Observable::scan`](crate::Observable::scan).
     pub struct Scan<S, F, T, U, E> {
         #[pin]
         stream: S,
@@ -150,7 +150,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::switch_map`](super::RxStreamExt::switch_map).
+    /// See [`Observable::switch_map`](crate::Observable::switch_map).
     pub struct SwitchMap<S, F, T, U, E> {
         #[pin]
         stream: S,

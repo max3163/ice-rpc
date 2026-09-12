@@ -1,6 +1,6 @@
 //! Conditional and Boolean Operators.
 //!
-//! ReactiveX category: [`take_until`](super::RxStreamExt::take_until) (TakeUntil).
+//! ReactiveX category: [`take_until`](crate::Observable::take_until) (TakeUntil).
 
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -9,7 +9,7 @@ use std::task::{Context, Poll};
 use crate::Event;
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::take_until`](super::RxStreamExt::take_until).
+    /// See [`Observable::take_until`](crate::Observable::take_until).
     pub struct TakeUntil<S, T, E> {
         #[pin]
         stream: S,

@@ -140,7 +140,10 @@ impl<T, E> ShareReplay<T, E> {
     }
 }
 
-#[cfg(test)]
+// `ShareReplay::subscribe` spawns a relay task, so these tests need a live
+// runtime: with the `tokio` facade `rt::spawn` panics without one. Same
+// convention as the `subscribe` tests.
+#[cfg(all(test, not(feature = "tokio")))]
 mod tests {
     use super::ShareReplay;
     use crate::{Event, ObservableError};

@@ -1,58 +1,31 @@
-//! Reactive operators for ice-rpc event streams, inspired by RxJS.
+//! Reactive layer of ice-rpc: operators, constructors and multicast
+//! primitives, inspired by RxJS.
 //!
-//! This module extends the poll-based [`Observable`](crate::Observable) with
-//! composable operators and provides multicast primitives, constructors and
-//! terminal consumption helpers. Operators are pull-based combinators: a
-//! pipeline composes without allocating an intermediate channel or spawning a
-//! task per operator.
-//!
-//! - [`RxStreamExt`] — `map`, `filter`, `map_err`, `scan`, `switch_map`, `take`,
-//!   `skip`, `first`, `first_with`, `start_with`, `tap`, `delay`, `finalize`,
-//!   `timeout`, `catch_error` operators, plus the terminals `first_value`,
-//!   `collect`, `for_each` and `subscribe`, applied directly on
-//!   [`crate::Observable`]. Every operator is a pull-based combinator: it
-//!   allocates no intermediate channel and spawns no task. The terminals
-//!   `first_value` and `collect` delegate to the same canonical implementation
-//!   as the inherent [`crate::Observable::first_value`] /
-//!   [`crate::Observable::collect`], so the two surfaces cannot diverge.
-//! - [`Observer`] / [`Subscription`] — push-based consumption: `subscribe`
-//!   spawns a single task that pushes `next` / `error` / `complete`.
-//! - [`merge`] — merges several streams into one.
-//! - [`retry`] — retries the underlying call on a business `Error`.
-//! - [`from`] — builds a stream from an iterator.
-//! - [`of`] — builds a single-value stream (channel-free).
-//! - [`throw_error`] — builds a stream that only emits a business error.
-//! - [`crate::Observable::first_value`] — awaits the first value of a stream,
-//!   and the same terminal is available through [`RxStreamExt::first_value`].
-//! - [`crate::Observable::collect`] — gathers every value into a `Vec`, and
-//!   the same terminal is available through [`RxStreamExt::collect`].
-//! - [`Subject`] — a multi-producer / multi-consumer multicast source.
-//! - [`ShareReplay`] — a multicast source that replays the last value to late
-//!   subscribers (equivalent to RxJS `shareReplay(1)`).
-//!
-//! ## Quick example
+//! The operators are **inherent methods** on [`crate::Observable`]: there is no
+//! extension trait to import and one single stream type from the first operator
+//! to the last, so a pipeline reads exactly like its RxJS counterpart.
 //!
 //! ```rust,ignore
-//! use crate::RxStreamExt;
-//!
 //! // `stream` is the native type returned by an ice-rpc service.
 //! let stream: crate::Observable<i32, String> = proxy.foo().await;
 //!
-//! // Operators chain on the native type and return poll-based combinator streams.
-//! let odds = stream
-//!     .filter(|v| *v % 2 == 1)
-//!     .map(|v| v * 10)
-//!     .take(5);
+//! let odds = stream.filter(|v| *v % 2 == 1).map(|v| v * 10).take(5);
+//! let first = odds.first_value().await?;
 //! ```
 //!
-//! ## Consuming the first value
-//!
-//! Terminal consumption is provided natively by [`crate::Observable`]:
-//!
-//! ```rust,ignore
-//! let value = proxy.get("my.key".into()).await.first_value().await?;
-//! let all = proxy.list().await.collect().await?; // Vec<T>
-//! ```
+//! - [`crate::Observable`] — the operators (`map`, `filter`, `map_err`, `scan`,
+//!   `switch_map`, `take`, `skip`, `first`, `first_with`, `start_with`, `tap`,
+//!   `finalize`, `delay`, `timeout`, `catch_error`, `take_until`) and the
+//!   terminals (`first_value`, `collect`, `for_each`, `subscribe`,
+//!   `subscribe_with`, `next`, `recv`). Every operator is a pull-based
+//!   combinator: it allocates no intermediate channel and spawns no task — one
+//!   box per operator step, a cost measured by `benches/pipeline.rs`.
+//! - [`Observer`] / [`Subscription`] — push-based consumption: `subscribe`
+//!   spawns a single task that pushes `next` / `error` / `complete`.
+//! - [`from`], [`of`], [`throw_error`] — channel-free local constructors.
+//! - [`Subject`] — a multi-producer / multi-consumer multicast source.
+//! - [`ShareReplay`] — a multicast source that replays the last value to late
+//!   subscribers (equivalent to RxJS `shareReplay(1)`).
 //!
 //! ## Normalization
 //!
@@ -69,10 +42,9 @@
 //!   (`#[service("Name", discovery_timeout = "5s")]`) bounding the node
 //!   discovery performed before the call is sent. This is the only place where a
 //!   discovery deadline applies.
-//! - [`RxStreamExt::timeout`] — a per-event **silence watchdog** on an active
-//!   stream. The timer resets after every received event; once it fires, the
-//!   stream terminates with a technical `RpcError::Timeout`.
-//!
+//! - [`crate::Observable::timeout`] — a per-event **silence watchdog** on an
+//!   active stream. The timer resets after every received event; once it fires,
+//!   the stream terminates with a technical `RpcError::Timeout`.
 
 mod creation;
 mod share_replay;
@@ -84,7 +56,6 @@ pub use creation::{from, of, throw_error};
 pub use share_replay::ShareReplay;
 pub use subject::Subject;
 pub use subscribe::{Observer, ObserverFns, Subscription};
-pub use transform::{merge, retry, retry_with, retry_with_delay, RxStreamExt};
 
 /// Default capacity of the channels created by the multicast primitives.
 ///
@@ -96,7 +67,7 @@ pub(crate) const MULTICAST_CHANNEL_CAPACITY: usize = 8;
 
 #[cfg(test)]
 mod tests {
-    use super::{from, of, throw_error, RxStreamExt};
+    use super::{from, of, throw_error};
     use crate::{Event, ObservableError};
     use std::convert::Infallible;
 
@@ -148,11 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_can_be_frozen_into_an_observable() {
-        // A pipeline is usable as the return value of a service method once it
-        // is frozen into the concrete `Observable`.
-        let stream: crate::Observable<i32, Infallible> =
-            from([1, 2, 3]).map(|v| v * 2).into_observable();
+    fn a_pipeline_stays_one_observable_type() {
+        // An operator returns the same `Observable` type as its source, so a
+        // pipeline can be returned by a service method as-is: no `into_observable`.
+        let stream: crate::Observable<i32, Infallible> = from([1, 2, 3]).map(|v| v * 2);
 
         let events = pollster::block_on(drain(stream));
         assert_eq!(events.len(), 4);
@@ -163,8 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn frozen_single_value_pipeline_keeps_one_wire_sample() {
-        let mut stream: crate::Observable<i32, Infallible> = from([42]).into_observable();
+    fn pipeline_single_value_keeps_one_wire_sample() {
+        let mut stream: crate::Observable<i32, Infallible> = from([42]).map(|v| v);
 
         assert!(matches!(
             pollster::block_on(stream.recv_wire()),
@@ -173,15 +143,14 @@ mod tests {
         assert!(pollster::block_on(stream.recv_wire()).is_err());
     }
 
-    /// Terminal consumption through the inherent [`crate::Observable`] methods.
+    /// Terminal consumption on a plain [`crate::Observable`].
     fn native_first(
         events: Vec<Event<i32, String>>,
     ) -> Result<i32, crate::ObservableError<String>> {
         pollster::block_on(crate::Observable::<i32, String>::from_events(events).first_value())
     }
 
-    /// Same input, consumed through the `RxStreamExt` default method (the
-    /// pipeline type is `Map<…>`, so the trait method is selected).
+    /// Same input, consumed at the end of an operator pipeline.
     fn pipeline_first(
         events: Vec<Event<i32, String>>,
     ) -> Result<i32, crate::ObservableError<String>> {

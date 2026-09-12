@@ -120,8 +120,8 @@ sub.closed().await;
 
 ## 4. Étapes (chacune compile, suite verte, commit séparé)
 
-Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (commit de cette étape),
-4 à 6 à faire.
+Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (`30afc66`), 4 ✅ (commit
+de cette étape), 5 à 6 à faire.
 
 1. **Fusion mécanique** — déplacer `ice-rpc-rx/src/{creation.rs, subject.rs,
    share_replay.rs, subscribe.rs, transform/}` vers `ice-rpc/src/rx/`, puis
@@ -154,12 +154,29 @@ Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (commit de cette étape
    `first`, `first_with`, `start_with`, `scan`, `tap`, `finalize`,
    `catch_error`, `delay`, `timeout`, `switch_map`, `take_until` retournant
    `Observable` (via `from_stream`) ; les structs d'opérateurs deviennent
-   **privées** ; suppression de `RxStreamExt`, `into_observable` et de l'`impl
-   futures_lite::Stream for Observable` public (adaptateur interne si encore
-   nécessaire).
+   **privées** ; suppression de `RxStreamExt` et d'`into_observable`.
    *Validation :* nouveau bench criterion `ice-rpc/benches/pipeline.rs`
-   (`map`/`filter`/`take` sur 100 000 événements) comparant le chaînage
-   `Box<dyn Stream>` à un appel direct — le chiffre documente le coût du boxing.
+   (`filter`/`map`/`take` sur 100 000 événements) comparant le chaînage
+   `Box<dyn Stream>` à un appel direct.
+   *Résultat (100 000 événements) :* `direct_loop` 97 µs (0,97 ns/élément),
+   `source_observable` 1,51 ms (15,1 ns/élément, source + `for_each` sans
+   opérateur), `pipeline_boxed` 1,73 ms (17,3 ns/élément). Le boxing coûte donc
+   **≈ 2,2 ns/élément pour 3 opérateurs** (≈ 0,7 ns par étape) : le coût
+   dominant reste la machinerie de pull elle-même, pas les boîtes — le
+   trade-off « un seul type » est bien celui décrit en §2.
+   Deux écarts assumés par rapport au texte ci-dessus :
+   - `impl futures_lite::Stream for Observable` **est conservé** : c'est la glu
+     interne de `from_stream`, de `switch_map` et des terminaux ; il n'est plus
+     nécessaire côté utilisateur (les opérateurs sont inhérents) mais il ne coûte
+     rien et reste utile pour composer avec `futures_lite` ;
+   - `merge`, `retry`, `retry_with`, `retry_with_delay` sont **supprimés** :
+     aucun usage hors de leurs propres tests unitaires (vérifié sur les exemples,
+     `gateway_nodejs`, `ice-rpc-macros-tests`), et ils renvoyaient des types
+     d'opérateurs non nommables publiquement — c'est-à-dire déjà inutilisables.
+   Au passage : les 4 tests `delay`/`timeout` et le module `share_replay`
+   s'exécutaient hors runtime et faisaient **échouer** le job CI « Test
+   (ice-rpc, tokio facade) » ; ils utilisent désormais `rt::test_block_on` (ou
+   sont gated comme les tests de `subscribe`).
 5. **Push unifié, contrat Rx conservé** — `Subject<T, E>` avec `replay: usize`
    (absorbe `ShareReplay`) ; les trois rappels **restent**, exposés par deux
    méthodes : `subscribe(next)` et `subscribe_all(next, error, complete)`.

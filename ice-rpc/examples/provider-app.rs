@@ -32,7 +32,7 @@ use common::{
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
     HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
 };
-use ice_rpc::{from, of, throw_error, RxStreamExt};
+use ice_rpc::{from, of, throw_error};
 use ice_rpc::{Observable, ObservableError, ServiceInit};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -317,15 +317,13 @@ struct NotificationServiceImpl;
 impl NotificationService for NotificationServiceImpl {
     async fn watch(&self, count: u32) -> Observable<u32, String> {
         // A pure pipeline — no channel, no task, no `spawn`: one value every
-        // 100 ms, then `Complete`. `into_observable()` freezes it into the
-        // concrete `Observable` required by the service signature.
+        // 100 ms, then `Complete`. Each operator returns the same `Observable`
+        // type as its source, so the pipeline is the service return value as-is.
         //
         // Trade-off: a pipeline cannot detect that the consumer unsubscribed, so
         // it runs to completion. A `channel` + `send_next` (which errors on a
         // closed receiver) is the way to stop early.
-        from(1..=count)
-            .delay(std::time::Duration::from_millis(100))
-            .into_observable()
+        from(1..=count).delay(std::time::Duration::from_millis(100))
     }
 
     async fn ping(&self) -> Observable<u32, String> {

@@ -22,7 +22,7 @@ use common::{
     PersonneInfo, PersonneQuery,
 };
 use ice_rpc::ObservableError;
-use ice_rpc::{from, of, throw_error, Observer, RxStreamExt};
+use ice_rpc::{from, of, throw_error, Observer};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 

@@ -1,8 +1,8 @@
 //! Filtering Observables.
 //!
-//! ReactiveX category: [`filter`](super::RxStreamExt::filter),
-//! [`take`](super::RxStreamExt::take), [`skip`](super::RxStreamExt::skip),
-//! [`first`](super::RxStreamExt::first) and [`first_with`](super::RxStreamExt::first_with).
+//! ReactiveX category: [`filter`](crate::Observable::filter),
+//! [`take`](crate::Observable::take), [`skip`](crate::Observable::skip),
+//! [`first`](crate::Observable::first) and [`first_with`](crate::Observable::first_with).
 
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use crate::Event;
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::filter`](super::RxStreamExt::filter).
+    /// See [`Observable::filter`](crate::Observable::filter).
     pub struct Filter<S, F, T, E> {
         #[pin]
         stream: S,
@@ -55,7 +55,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::take`](super::RxStreamExt::take).
+    /// See [`Observable::take`](crate::Observable::take).
     pub struct Take<S, T, E> {
         #[pin]
         stream: S,
@@ -104,7 +104,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::skip`](super::RxStreamExt::skip).
+    /// See [`Observable::skip`](crate::Observable::skip).
     pub struct Skip<S, T, E> {
         #[pin]
         stream: S,
@@ -149,7 +149,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::first_with`](super::RxStreamExt::first_with).
+    /// See [`Observable::first_with`](crate::Observable::first_with).
     pub struct First<S, F, T, E> {
         #[pin]
         stream: S,

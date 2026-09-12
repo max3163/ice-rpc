@@ -1,280 +1,272 @@
-//! Composable operators for [`crate::Observable`].
+//! Reactive operators, as **inherent methods** on [`crate::Observable`].
 //!
-//! The [`RxStreamExt`] trait extends any poll-based stream of [`crate::Event`]
-//! with the classic reactive operators. Operators are implemented as pull-based
-//! combinators: they wrap the source and implement `futures_lite::Stream`, so a
-//! pipeline `take(filter(map(source)))` pulls events through a call stack with
-//! no intermediate channel allocation and no spawned task.
+//! There is no extension trait to import and no second stream type to name:
+//! every operator is called directly on the `Observable` returned by a service
+//! and returns another `Observable`, so a pipeline reads like RxJS:
 //!
-//! Available operators:
-//! - [`map`](RxStreamExt::map) — transforms every `Next` value;
-//! - [`filter`](RxStreamExt::filter) — keeps only the `Next` values matching a
-//!   predicate;
-//! - [`take`](RxStreamExt::take) — emits at most `n` `Next` values then
+//! ```rust,ignore
+//! // `stream` is the native type returned by an ice-rpc service.
+//! let stream: crate::Observable<i32, String> = proxy.foo().await;
+//!
+//! let odds = stream
+//!     .filter(|v| *v % 2 == 1)
+//!     .map(|v| v * 10)
+//!     .take(5);
+//! ```
+//!
+//! Each step wraps the previous one through
+//! [`Observable::from_stream`](crate::Observable::from_stream), i.e. a boxed
+//! poll-based combinator: no intermediate channel, no spawned task, no
+//! `Arc`/lock. The cost is one box per operator, measured by
+//! `benches/pipeline.rs`.
+//!
+//! Operators:
+//! - [`Observable::map`] / [`Observable::map_err`] — transform the value / the
+//!   business error;
+//! - [`Observable::filter`] — keeps the values matching a predicate;
+//! - [`Observable::take`] / [`Observable::skip`] — limits / skips the first
+//!   `n` values;
+//! - [`Observable::first`] / [`Observable::first_with`] — emits one value then
 //!   completes;
-//! - [`skip`](RxStreamExt::skip) — ignores the first `n` values;
-//! - [`first`](RxStreamExt::first) — emits only the first `Next` value;
-//! - [`first_with`](RxStreamExt::first_with) — emits the first `Next` value
-//!   matching a predicate;
-//! - [`start_with`](RxStreamExt::start_with) — prefixes the stream with a value;
-//! - [`map_err`](RxStreamExt::map_err) — maps the error type to another one;
-//! - [`scan`](RxStreamExt::scan) — emits a running accumulator state;
-//! - [`tap`](RxStreamExt::tap) — runs a side effect per value;
-//! - [`finalize`](RxStreamExt::finalize) — runs a callback once at termination;
-//! - [`catch_error`](RxStreamExt::catch_error) — replaces a business `Error`
-//!   with a fallback value and completes;
-//! - [`delay`](RxStreamExt::delay) — delays every event;
-//! - [`timeout`](RxStreamExt::timeout) — emits a technical timeout error on
-//!   silence;
-//! - [`switch_map`](RxStreamExt::switch_map) — projects each value to an inner
-//!   stream and emits from the latest one.
+//! - [`Observable::start_with`] — prefixes an initial value;
+//! - [`Observable::scan`] — emits a running accumulator;
+//! - [`Observable::tap`] / [`Observable::finalize`] — side effects per value /
+//!   at termination;
+//! - [`Observable::catch_error`] — replaces a business error with a fallback;
+//! - [`Observable::delay`] / [`Observable::timeout`] — time-based operators;
+//! - [`Observable::switch_map`] — projects each value to the latest inner
+//!   stream;
+//! - [`Observable::take_until`] — stops when a [`crate::CancellationToken`]
+//!   fires.
+//!
+//! Terminals (`first_value`, `collect`, [`Observable::for_each`],
+//! [`Observable::subscribe`], [`Observable::subscribe_with`]) consume the
+//! stream and are the only ones that end the chain.
 
-use crate::Event;
+use std::time::Duration;
 
-/// Extension trait adding reactive operators to any poll-based stream of
-/// [`crate::Event`].
-pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
-    /// Transforms every `Next` value with `f`. Terminal events are forwarded
-    /// unchanged.
-    fn map<U, F>(self, f: F) -> Map<Self, F, T, U, E>
+use crate::{Observable, ObservableError};
+
+use super::{Observer, ObserverFns, Subscription};
+
+impl<T, E> Observable<T, E> {
+    /// Transforms every `Next` value with `f`; terminal events pass through
+    /// unchanged (RxJS `map`).
+    pub fn map<U, F>(self, f: F) -> Observable<U, E>
     where
-        F: FnMut(T) -> U,
+        F: FnMut(T) -> U + Send + 'static,
+        T: Send + 'static,
+        U: Send + 'static,
+        E: Send + 'static,
     {
-        Map::new(self, f)
+        Observable::from_stream(Map::new(self, f))
     }
 
-    /// Keeps only the `Next` values for which `f` returns `true`.
-    fn filter<F>(self, f: F) -> Filter<Self, F, T, E>
+    /// Transforms the **business** error type with `f`; technical errors pass
+    /// through unchanged (RxJS `map`, error channel only).
+    pub fn map_err<F, E2>(self, f: F) -> Observable<T, E2>
     where
-        F: FnMut(&T) -> bool,
+        F: FnMut(E) -> E2 + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+        E2: Send + 'static,
     {
-        Filter::new(self, f)
+        Observable::from_stream(MapErr::new(self, f))
     }
 
-    /// Emits at most `n` `Next` values, then forces a `Complete`.
-    fn take(self, n: usize) -> Take<Self, T, E> {
-        Take::new(self, n)
-    }
-
-    /// Ignores the first `n` `Next` values, then forwards the rest.
-    fn skip(self, n: usize) -> Skip<Self, T, E> {
-        Skip::new(self, n)
-    }
-
-    /// Emits only the first `Next` value, then forces a `Complete`.
-    fn first(self) -> First<Self, fn(&T) -> bool, T, E> {
-        self.first_with((|_| true) as fn(&T) -> bool)
-    }
-
-    /// Emits the first `Next` value matching `predicate`, then completes.
-    fn first_with<F>(self, predicate: F) -> First<Self, F, T, E>
+    /// Keeps only the `Next` values for which `predicate` returns `true`
+    /// (RxJS `filter`).
+    pub fn filter<F>(self, predicate: F) -> Observable<T, E>
     where
-        F: FnMut(&T) -> bool,
+        F: FnMut(&T) -> bool + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        First::new(self, predicate)
+        Observable::from_stream(Filter::new(self, predicate))
     }
 
-    /// Prefixes the stream with an initial `Next(value)`.
-    fn start_with(self, value: T) -> StartWith<Self, T, E> {
-        StartWith::new(self, value)
-    }
-
-    /// Transforms the error type `E` into `E2` with `f`.
-    fn map_err<F, E2>(self, f: F) -> MapErr<Self, F, T, E, E2>
+    /// Emits at most `n` values, then completes (RxJS `take`).
+    pub fn take(self, n: usize) -> Observable<T, E>
     where
-        F: FnMut(E) -> E2,
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        MapErr::new(self, f)
+        Observable::from_stream(Take::new(self, n))
     }
 
-    /// Accumulates every `Next` value into a running state.
-    fn scan<U, F>(self, initial: U, f: F) -> Scan<Self, F, T, U, E>
+    /// Ignores the first `n` values, then forwards the rest (RxJS `skip`).
+    pub fn skip(self, n: usize) -> Observable<T, E>
     where
-        U: Clone,
-        F: FnMut(U, T) -> U,
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        Scan::new(self, initial, f)
+        Observable::from_stream(Skip::new(self, n))
     }
 
-    /// Runs a side effect on each `Next` value without altering it.
-    fn tap<F>(self, f: F) -> Tap<Self, F, T, E>
+    /// Emits only the first value, then completes (RxJS `first`).
+    pub fn first(self) -> Observable<T, E>
     where
-        F: FnMut(&T),
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        Tap::new(self, f)
+        self.first_with(|_: &T| true)
     }
 
-    /// Runs `f` exactly once when the stream terminates.
-    fn finalize<F>(self, f: F) -> Finalize<Self, F, T, E>
+    /// Emits the first value matching `predicate`, then completes.
+    pub fn first_with<F>(self, predicate: F) -> Observable<T, E>
     where
-        F: FnOnce(),
+        F: FnMut(&T) -> bool + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        Finalize::new(self, f)
+        Observable::from_stream(First::new(self, predicate))
     }
 
-    /// Replaces an `Error` with a fallback value, then completes.
-    fn catch_error<F>(self, f: F) -> CatchError<Self, F, T, E>
+    /// Prefixes the stream with an initial value (RxJS `startWith`).
+    pub fn start_with(self, value: T) -> Observable<T, E>
     where
-        F: FnOnce(E) -> T,
+        T: Send + 'static,
+        E: Send + 'static,
     {
-        CatchError::new(self, f)
+        Observable::from_stream(StartWith::new(self, value))
     }
 
-    /// Delays every event by `duration`.
-    fn delay(self, duration: std::time::Duration) -> Delay<Self, T, E> {
-        Delay::new(self, duration)
+    /// Emits a running accumulator, one value per source value (RxJS `scan`).
+    pub fn scan<U, F>(self, initial: U, accumulator: F) -> Observable<U, E>
+    where
+        U: Clone + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Scan::new(self, initial, accumulator))
     }
 
-    /// Emits a technical timeout error if no event arrives within `duration`.
-    fn timeout(self, duration: std::time::Duration) -> Timeout<Self, T, E> {
-        Timeout::new(self, duration)
+    /// Runs `f` on every value without altering it (RxJS `tap`).
+    pub fn tap<F>(self, f: F) -> Observable<T, E>
+    where
+        F: FnMut(&T) + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Tap::new(self, f))
+    }
+
+    /// Runs `f` exactly once when the stream terminates, whatever the outcome
+    /// (RxJS `finalize`).
+    pub fn finalize<F>(self, f: F) -> Observable<T, E>
+    where
+        F: FnOnce() + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Finalize::new(self, f))
+    }
+
+    /// Replaces a **business** error with a fallback value, then completes
+    /// (RxJS `catchError`). Technical errors are forwarded unchanged.
+    pub fn catch_error<F>(self, f: F) -> Observable<T, E>
+    where
+        F: FnOnce(E) -> T + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(CatchError::new(self, f))
+    }
+
+    /// Delays every event by `duration` (RxJS `delay`).
+    pub fn delay(self, duration: Duration) -> Observable<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Delay::new(self, duration))
+    }
+
+    /// Emits a technical [`crate::RpcError::Timeout`] if no event arrives
+    /// within `duration`; the timer resets after every event (RxJS `timeout`).
+    pub fn timeout(self, duration: Duration) -> Observable<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Timeout::new(self, duration))
     }
 
     /// Projects each value to an inner stream and emits from the latest one,
-    /// cancelling previous subscriptions (RxJS `switchMap`).
-    fn switch_map<F, U>(self, f: F) -> SwitchMap<Self, F, T, U, E>
+    /// cancelling the previous one (RxJS `switchMap`).
+    pub fn switch_map<F, U>(self, f: F) -> Observable<U, E>
     where
-        F: FnMut(T) -> crate::Observable<U, E>,
+        F: FnMut(T) -> Observable<U, E> + Send + 'static,
+        T: Send + 'static,
+        U: Send + 'static,
+        E: Send + 'static,
     {
-        SwitchMap::new(self, f)
+        Observable::from_stream(SwitchMap::new(self, f))
     }
 
-    /// Emits a technical `Cancelled` error and stops once `token` is cancelled
-    /// (RxJS `takeUntil`).
-    fn take_until(self, token: &crate::CancellationToken) -> TakeUntil<Self, T, E> {
-        TakeUntil::new(self, token.clone())
-    }
-
-    /// Freezes the pipeline into the concrete [`crate::Observable`], so it can
-    /// be returned by a **service method**.
-    ///
-    /// A service must return `Observable<T, E>`: the generated proxy needs a
-    /// single return type shared by its `Provider` (in-process implementation)
-    /// and `Consumer` (IPC client) modes, so an operator type (`Map<…>`,
-    /// `Delay<…>`, …) cannot be returned directly. This wraps the pipeline into
-    /// the boxed variant of `Observable`.
-    ///
-    /// The `CompleteWith` single-sample optimization is preserved.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// async fn watch(&self, count: u32) -> Observable<u32, String> {
-    ///     from(1..=count)
-    ///         .delay(Duration::from_millis(100))
-    ///         .into_observable()
-    ///     }
-    /// ```
-    fn into_observable(self) -> crate::Observable<T, E>
+    /// Emits a technical [`crate::RpcError::Cancelled`] and stops once `token`
+    /// is cancelled (RxJS `takeUntil`).
+    pub fn take_until(self, token: &crate::CancellationToken) -> Observable<T, E>
     where
-        Self: Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
     {
-        crate::Observable::from_stream(self)
+        Observable::from_stream(TakeUntil::new(self, token.clone()))
     }
 
-    /// Awaits the first emitted value of the stream.
+    /// Consumes the stream value by value (RxJS `forEach`).
     ///
-    /// `Next(v)` → `Ok(v)`, `Error(e)` → `Err(e.into())`,
-    /// `Complete`/closed → `Err(ObservableError::Empty)`.
-    ///
-    /// Same implementation as [`crate::Observable::first_value`]: both
-    /// surfaces delegate to the canonical `crate::gen::first_event`, so they
-    /// cannot diverge. Use this one on an operator pipeline, and the inherent
-    /// method on a raw [`crate::Observable`].
-    #[allow(async_fn_in_trait)]
-    async fn first_value(self) -> Result<T, crate::ObservableError<E>>
-    where
-        Self: Sized,
-    {
-        crate::gen::first_event(self).await
-    }
-
-    /// Collects every emitted value into a `Vec`.
-    ///
-    /// The stream is consumed until `Complete` (or until it is closed). On a
-    /// terminal `Error` the collected values are discarded and the error is
-    /// returned.
-    ///
-    /// Same implementation as [`crate::Observable::collect`]: both surfaces
-    /// delegate to the canonical `crate::gen::collect_values`.
-    #[allow(async_fn_in_trait)]
-    async fn collect(self) -> Result<Vec<T>, crate::ObservableError<E>>
-    where
-        Self: Sized,
-    {
-        crate::gen::collect_values(self).await
-    }
-
-    /// Consumes the stream with a callback per value (RxJS `forEach`).
-    ///
-    /// Fully pull-based: no task is spawned. `Complete` (or a closed source)
-    /// yields `Ok(())`; a terminal error yields `Err(ObservableError)`.
-    #[allow(async_fn_in_trait)]
-    async fn for_each<F>(self, mut f: F) -> Result<(), crate::ObservableError<E>>
+    /// Fully pull-based: no task is spawned. Returns `Ok(())` on a normal end
+    /// and the terminal error (business or technical) otherwise.
+    pub async fn for_each<F>(mut self, mut f: F) -> Result<(), ObservableError<E>>
     where
         F: FnMut(T),
-        Self: Sized,
     {
-        let mut stream = Box::pin(self);
-        loop {
-            match crate::rx::subscribe::next_event(&mut stream).await {
-                Some(Event::Next(v)) => f(v),
-                Some(Event::Complete) | None => return Ok(()),
-                Some(Event::Error(e)) => return Err(e),
+        while let Some(event) = self.next().await {
+            match event {
+                Ok(value) => f(value),
+                Err(error) => return Err(error),
             }
         }
+        Ok(())
     }
 
-    /// Subscribes to the stream with an [`Observer`](crate::rx::Observer).
+    /// Subscribes with an [`Observer`]: **one** task pulls the stream and
+    /// pushes `next` / `error` / `complete`.
     ///
-    /// Spawns **one** task that pulls the pipeline and pushes events. Dropping
-    /// the returned [`Subscription`](crate::rx::Subscription) cancels it silently.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let sub = stream.subscribe_with(
-    ///     |v| println!("next: {v:?}"),
-    ///     |e| eprintln!("error: {e:?}"),
-    ///     || println!("complete"),
-    /// );
-    /// // ... later
-    /// drop(sub);
-    /// ```
-    fn subscribe<O>(self, observer: O) -> crate::rx::Subscription
+    /// Dropping the returned [`Subscription`] cancels it silently.
+    pub fn subscribe<O>(self, observer: O) -> Subscription
     where
-        O: crate::rx::Observer<T, E>,
+        O: Observer<T, E>,
         T: Send + 'static,
         E: Send + 'static,
-        Self: Send + 'static,
     {
         let cancel = crate::CancellationToken::new();
-        crate::rx::subscribe::spawn_push(self, observer, cancel.clone());
-        crate::rx::Subscription::new(cancel)
+        super::subscribe::spawn_push(self, observer, cancel.clone());
+        Subscription::new(cancel)
     }
 
-    /// Subscribes with three closures (see [`RxStreamExt::subscribe`]).
-    fn subscribe_with<N, Er, C>(
-        self,
-        on_next: N,
-        on_error: Er,
-        on_complete: C,
-    ) -> crate::rx::Subscription
+    /// Subscribes with the three RxJS callbacks: `on_next`, `on_error`
+    /// (business **or** technical) and `on_complete`.
+    ///
+    /// Exactly one of `on_error` / `on_complete` runs, and neither runs when the
+    /// [`Subscription`] is dropped (RxJS `unsubscribe`).
+    pub fn subscribe_with<N, Er, C>(self, on_next: N, on_error: Er, on_complete: C) -> Subscription
     where
         N: FnMut(T) + Send + 'static,
-        Er: FnMut(crate::ObservableError<E>) + Send + 'static,
+        Er: FnMut(ObservableError<E>) + Send + 'static,
         C: FnMut() + Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
-        Self: Send + 'static,
     {
-        self.subscribe(crate::rx::ObserverFns::new(on_next, on_error, on_complete))
+        self.subscribe(ObserverFns::new(on_next, on_error, on_complete))
     }
 }
 
-impl<S, T, E> RxStreamExt<T, E> for S where S: futures_lite::Stream<Item = Event<T, E>> + Sized {}
-
-// Operator implementations, grouped by ReactiveX category.
+// Operator implementations, grouped by ReactiveX category. They are private to
+// the crate: the operator *types* never appear in a public signature anymore
+// (every method above returns `Observable`).
 mod combining;
 mod conditional;
 mod error_handling;
@@ -285,9 +277,9 @@ mod utility;
 #[cfg(test)]
 mod tests;
 
-pub use combining::{merge, StartWith};
-pub use conditional::TakeUntil;
-pub use error_handling::{retry, retry_with, retry_with_delay, CatchError};
-pub use filtering::{Filter, First, Skip, Take};
-pub use transforming::{Map, MapErr, Scan, SwitchMap};
-pub use utility::{Delay, Finalize, Tap, Timeout};
+pub(crate) use combining::StartWith;
+pub(crate) use conditional::TakeUntil;
+pub(crate) use error_handling::CatchError;
+pub(crate) use filtering::{Filter, First, Skip, Take};
+pub(crate) use transforming::{Map, MapErr, Scan, SwitchMap};
+pub(crate) use utility::{Delay, Finalize, Tap, Timeout};

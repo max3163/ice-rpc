@@ -168,14 +168,10 @@ pub use service_traits::ServiceInit;
 pub use types::{Event, Observable, ObservableError, RpcError};
 
 // ── Public API: reactive operators and multicast primitives ─────────
-// The operators, the constructors and the multicast primitives live in
-// `ice_rpc::rx` and are re-exported here so a single crate exposes the whole
-// user-facing surface. The operator *types* stay reachable through
-// `ice_rpc::rx::…` — they only appear in return types.
-pub use rx::{
-    from, merge, of, retry, retry_with, retry_with_delay, throw_error, Observer, ObserverFns,
-    RxStreamExt, ShareReplay, Subject, Subscription,
-};
+// The operators are **inherent methods** on `Observable` (nothing to import);
+// only the constructors and the multicast primitives are re-exported here.
+// The operator *types* are private: every operator returns `Observable`.
+pub use rx::{from, of, throw_error, Observer, ObserverFns, ShareReplay, Subject, Subscription};
 
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;

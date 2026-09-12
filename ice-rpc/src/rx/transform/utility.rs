@@ -1,8 +1,8 @@
 //! Observable Utility Operators.
 //!
-//! ReactiveX category: [`tap`](super::RxStreamExt::tap) (Do),
-//! [`finalize`](super::RxStreamExt::finalize), [`delay`](super::RxStreamExt::delay)
-//! and [`timeout`](super::RxStreamExt::timeout).
+//! ReactiveX category: [`tap`](crate::Observable::tap) (Do),
+//! [`finalize`](crate::Observable::finalize), [`delay`](crate::Observable::delay)
+//! and [`timeout`](crate::Observable::timeout).
 
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -12,7 +12,7 @@ use crate::Event;
 use futures_lite::future::FutureExt;
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::tap`](super::RxStreamExt::tap).
+    /// See [`Observable::tap`](crate::Observable::tap).
     pub struct Tap<S, F, T, E> {
         #[pin]
         stream: S,
@@ -53,7 +53,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::finalize`](super::RxStreamExt::finalize).
+    /// See [`Observable::finalize`](crate::Observable::finalize).
     pub struct Finalize<S, F, T, E> {
         #[pin]
         stream: S,
@@ -102,7 +102,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::delay`](super::RxStreamExt::delay).
+    /// See [`Observable::delay`](crate::Observable::delay).
     pub struct Delay<S, T, E> {
         #[pin]
         stream: S,
@@ -161,7 +161,7 @@ where
 }
 
 pin_project_lite::pin_project! {
-    /// See [`RxStreamExt::timeout`](super::RxStreamExt::timeout).
+    /// See [`Observable::timeout`](crate::Observable::timeout).
     pub struct Timeout<S, T, E> {
         #[pin]
         stream: S,

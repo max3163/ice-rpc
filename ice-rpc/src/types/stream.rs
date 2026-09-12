@@ -108,11 +108,10 @@ impl<T, E> Observable<T, E> {
 
     /// Builds an [`Observable`] from any stream of [`Event`].
     ///
-    /// This is what makes an **operator pipeline** usable as the return value of
-    /// a service method: the generated proxy has a single return type for both
-    /// its `Provider` (in-process implementation) and `Consumer` (IPC client)
-    /// modes, so an operator type (`Map<…>`, `Delay<…>`, …) cannot be returned
-    /// directly.
+    /// This is what makes **any** poll-based stream usable as the return value
+    /// of a service method: an operator of [`crate::rx`] already returns an
+    /// `Observable`, so this constructor is only needed to wrap a hand-rolled
+    /// `futures_lite::Stream`.
     ///
     /// The `CompleteWith` single-sample optimization is preserved: a `Next(v)`
     /// immediately followed by a `Complete` is folded into one wire sample.
@@ -120,13 +119,9 @@ impl<T, E> Observable<T, E> {
     /// # Example
     /// ```rust,ignore
     /// async fn watch(&self, count: u32) -> Observable<u32, String> {
-    ///     ice_rpc::Observable::from_stream(
-    ///         ice_rpc::rx::from(1..=count).delay(Duration::from_millis(100)),
-    ///     )
+    ///     ice_rpc::from(1..=count).delay(Duration::from_millis(100))
     /// }
     /// ```
-    ///
-    /// In practice `RxStreamExt::into_observable()` is the shorter form.
     #[doc(hidden)]
     pub fn from_stream<S>(stream: S) -> Self
     where
@@ -298,8 +293,7 @@ impl<T, E> Observable<T, E> {
     /// `Next(v)` → `Ok(v)`, `Error(e)` → `Err(e)`,
     /// `Complete`/closed → `Err(ObservableError::Empty)`.
     ///
-    /// Delegates to [`first_event`], the canonical implementation also used by
-    /// the `RxStreamExt::first_value` default method.
+    /// Delegates to [`first_event`], the canonical terminal implementation.
     pub async fn first_value(self) -> Result<T, ObservableError<E>> {
         first_event(self).await
     }
@@ -310,8 +304,7 @@ impl<T, E> Observable<T, E> {
     /// terminal `Error` the collected values are discarded and the error is
     /// returned.
     ///
-    /// Delegates to [`collect_values`], the canonical implementation also used
-    /// by the `RxStreamExt::collect` default method.
+    /// Delegates to [`collect_values`], the canonical terminal implementation.
     pub async fn collect(self) -> Result<Vec<T>, ObservableError<E>> {
         collect_values(self).await
     }
@@ -319,10 +312,9 @@ impl<T, E> Observable<T, E> {
 
 /// Awaits the first event of any stream of [`Event`].
 ///
-/// This is the **single** implementation behind [`Observable::first_value`] and
-/// the `RxStreamExt::first_value` default method. The two surfaces cannot share
-/// a method body directly (one is inherent, the other is a trait default over a
-/// generic `Self`), so the logic lives here.
+/// This is the **single** implementation behind [`Observable::first_value`];
+/// living in a free function lets the generated code and the operators reuse it
+/// on a raw `futures_lite::Stream`.
 ///
 /// Reachable as `ice_rpc::gen::first_event`.
 #[doc(hidden)]
@@ -345,8 +337,7 @@ where
 /// The stream is drained until `Complete` (or until it is closed). On a terminal
 /// `Error` the collected values are discarded and the error is returned.
 ///
-/// This is the **single** implementation behind [`Observable::collect`] and the
-/// `RxStreamExt::collect` default method.
+/// This is the **single** implementation behind [`Observable::collect`].
 ///
 /// Reachable as `ice_rpc::gen::collect_values`.
 #[doc(hidden)]

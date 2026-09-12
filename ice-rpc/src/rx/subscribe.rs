@@ -1,6 +1,6 @@
 //! Terminal subscription: adapts a pull-based stream to Rx-style callbacks.
 //!
-//! [`RxStreamExt::subscribe`](crate::rx::RxStreamExt::subscribe) spawns a **single**
+//! [`RxStreamExt::subscribe`](crate::Observable::subscribe) spawns a **single**
 //! task that pulls the pipeline and pushes the events into an [`Observer`].
 //! This is the only operator that spawns; `for_each`, `first_value` and
 //! `collect` stay purely pull-based.
@@ -31,7 +31,7 @@ pub trait Observer<T, E>: Send + 'static {
 }
 
 /// Observer built from three closures (see
-/// [`RxStreamExt::subscribe_with`](crate::rx::RxStreamExt::subscribe_with)).
+/// [`Observable::subscribe_with`](crate::Observable::subscribe_with)).
 pub struct ObserverFns<N, Er, C> {
     on_next: N,
     on_error: Er,
@@ -139,7 +139,7 @@ where
 }
 
 /// Spawns the pushing task backing
-/// [`subscribe`](crate::rx::RxStreamExt::subscribe).
+/// [`subscribe`](crate::Observable::subscribe).
 pub(crate) fn spawn_push<S, O, T, E>(stream: S, mut observer: O, cancel: crate::CancellationToken)
 where
     S: futures_lite::Stream<Item = Event<T, E>> + Send + 'static,
@@ -202,7 +202,6 @@ mod tests {
     use std::time::Duration;
 
     use super::{Event, ObservableError};
-    use crate::rx::RxStreamExt;
 
     /// Waits (bounded) for a condition set by the subscription task.
     fn wait_for(cond: impl Fn() -> bool) -> bool {

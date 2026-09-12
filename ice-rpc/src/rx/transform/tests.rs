@@ -2,8 +2,6 @@
 
 use std::pin::Pin;
 
-use super::RxStreamExt;
-use crate::rx::{merge, of, retry, retry_with};
 use crate::{Event, ObservableError};
 
 /// Builds a local `Observable<T, String>` from an iterator (test helper).
@@ -185,7 +183,9 @@ fn delay_postpones_events() {
 
     let mut stream = Box::pin(stream);
     let start = std::time::Instant::now();
-    let event = pollster::block_on(next_event(&mut stream));
+    // `delay` sleeps through `rt::sleep`, which needs a runtime under the
+    // `tokio` facade: `test_block_on` supplies one for the whole poll.
+    let event = crate::rt::test_block_on(next_event(&mut stream));
     let elapsed = start.elapsed();
 
     assert!(matches!(event, Some(Event::Next(1))));
@@ -202,7 +202,7 @@ fn delay_forwards_terminal_events() {
 
     let mut stream = Box::pin(stream);
     let start = std::time::Instant::now();
-    let event = pollster::block_on(next_event(&mut stream));
+    let event = crate::rt::test_block_on(next_event(&mut stream));
     let elapsed = start.elapsed();
 
     assert!(matches!(event, Some(Event::Complete)));
@@ -481,7 +481,7 @@ fn timeout_emits_technical_error_on_silence() {
     let stream = rx.timeout(std::time::Duration::from_millis(20));
 
     let mut stream = Box::pin(stream);
-    let event = pollster::block_on(next_event(&mut stream));
+    let event = crate::rt::test_block_on(next_event(&mut stream));
     assert!(matches!(
         event,
         Some(Event::Error(ObservableError::Technical(_)))
@@ -499,7 +499,7 @@ fn timeout_forwards_values_before_deadline() {
     pollster::block_on(tx.send_complete()).unwrap();
     drop(tx);
 
-    let events = pollster::block_on(drain(stream));
+    let events = crate::rt::test_block_on(drain(stream));
     assert_eq!(events.len(), 2);
     assert!(matches!(&events[0], Event::Next(v) if *v == 1));
     assert!(matches!(&events[1], Event::Complete));
@@ -634,90 +634,4 @@ fn take_until_forwards_values_when_not_cancelled() {
     assert!(matches!(&events[1], Event::Next(v) if *v == 2));
     assert!(matches!(&events[2], Event::Next(v) if *v == 3));
     assert!(matches!(&events[3], Event::Complete));
-}
-
-// ── Combining ───────────────────────────────────────────────────────
-
-#[test]
-fn merge_combines_streams() {
-    let s1: crate::Observable<i32, String> = of(1);
-    let s2: crate::Observable<i32, String> = of(2);
-    let stream = merge(vec![s1, s2]);
-    let events = pollster::block_on(drain(stream));
-
-    let mut values = Vec::new();
-    let mut completed = 0;
-    for ev in events {
-        match ev {
-            Event::Next(v) => values.push(v),
-            Event::Complete => completed += 1,
-            other => panic!("unexpected event: {:?}", other),
-        }
-    }
-    values.sort_unstable();
-    assert_eq!(values, vec![1, 2]);
-    assert_eq!(completed, 2);
-}
-
-// ── Error handling ──────────────────────────────────────────────────
-
-#[test]
-fn retry_recovers_after_business_error() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let attempts_clone = attempts.clone();
-    let factory = move || {
-        let a = attempts_clone.clone();
-        async move {
-            let n = a.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, rx) = crate::gen::channel::<i32, String>(2);
-            if n < 3 {
-                let _ = tx.try_send_error("boom".to_string());
-            } else {
-                let _ = tx.try_send_next(42);
-                let _ = tx.try_send_complete();
-            }
-            rx
-        }
-    };
-
-    let stream = retry(factory, 2);
-    let events = pollster::block_on(drain(stream));
-    assert_eq!(events.len(), 2);
-    assert!(matches!(&events[0], Event::Next(v) if *v == 42));
-    assert!(matches!(&events[1], Event::Complete));
-    assert_eq!(attempts.load(Ordering::SeqCst), 3);
-}
-
-#[test]
-fn retry_with_respects_predicate() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let attempts_clone = attempts.clone();
-    let factory = move || {
-        let a = attempts_clone.clone();
-        async move {
-            let n = a.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, rx) = crate::gen::channel::<i32, String>(1);
-            if n == 1 {
-                let _ = tx.try_send_error("retryable".to_string());
-            } else {
-                let _ = tx.try_send_error("fatal".to_string());
-            }
-            rx
-        }
-    };
-
-    let stream = retry_with(factory, 3, |e| e == "retryable");
-    let events = pollster::block_on(drain(stream));
-    assert_eq!(events.len(), 1);
-    assert!(matches!(
-        &events[0],
-        Event::Error(ObservableError::Business(e)) if e == "fatal"
-    ));
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }

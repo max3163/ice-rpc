@@ -83,6 +83,11 @@ common = { path = "../examples/common" }
 name = "concurrency"
 harness = false
 
+# Measures the cost of the boxed `Box<dyn Stream>` operator chain.
+[[bench]]
+name = "pipeline"
+harness = false
+
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here (see `plans/merge-rx.md`) so a single crate ships the library,
 # its reactive layer, its examples and its benches. They all need the Tokio

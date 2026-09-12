@@ -41,9 +41,9 @@ pub use crate::types::{
     PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
-// Canonical terminal implementations shared by the inherent `Observable`
-// methods and the `RxStreamExt` default methods, so the two surfaces cannot
-// drift.
+// Canonical terminal implementations behind the inherent `Observable` methods
+// (`first_value` / `collect`), so a single implementation serves every
+// consumption style.
 pub use crate::types::{collect_values, first_event};
 
 // ── Service traits implemented by the generated code ────────────────

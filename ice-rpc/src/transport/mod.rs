@@ -2,15 +2,9 @@
 //! **channel** (a `group` of services), correlated by the request id carried in
 //! the zero-copy header.
 //!
-//! A service joins a channel through the `group` parameter of `#[service]`
-//! (default: its name). Services sharing a channel share its pub/sub services and
-//! its dispatch thread; the provider routes with the `service_id` of the header,
-//! which every process derives from the service name without discovery.
-//!
-//! Every sample carries a [`RpcHeader`] in iceoryx2's `user_header` (no
-//! serialization) and the rkyv bytes as payload. A subscribe port cannot be
-//! attached to a `WaitSet`, so each side also owns an event service used as a
-//! wake-up signal.
+//! Every sample carries a [`RpcHeader`] in iceoryx2's `user_header` and the rkyv
+//! bytes as payload. A subscribe port cannot be attached to a `WaitSet`, so each
+//! side also owns an event service used as a wake-up signal.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -48,10 +42,8 @@ const MAX_SUBSCRIBERS: usize = 16;
 /// Processes that can open the same channel at once.
 const MAX_NODES: usize = 32;
 
-/// Samples a publisher can keep loaned at once.
-///
-/// It sizes the publisher's data segment (`max_loaned_samples × sample`), i.e.
-/// most of the memory a channel reserves.
+/// Samples a publisher can keep loaned at once; sizes the publisher's data
+/// segment.
 const MAX_LOANED_SAMPLES: usize = 1024;
 
 /// Initial slice length of a sample; large payloads grow the segment on demand.
@@ -73,8 +65,7 @@ const PUBLISH_RETRY_SLEEP: Duration = Duration::from_millis(1);
 
 /// Consecutive delivery attempts spent yielding before the retry loop sleeps.
 ///
-/// A full channel is the normal case of a burst (the receiver frees a slot in
-/// microseconds) while a sleep costs at least the system timer.
+/// A full channel is the normal case of a burst; a sleep costs the system timer.
 const PUBLISH_SPIN_ATTEMPTS: u32 = 4_096;
 
 /// Upper bound on how long a dispatch thread blocks before it drains again.
@@ -85,9 +76,7 @@ const WAITSET_DEADLINE: Duration = Duration::from_millis(1);
 
 /// Processed samples between two termination checks on the busy path.
 ///
-/// `SignalHandler::termination_requested()` takes a process-wide mutex, so
-/// sampling it keeps Ctrl+C responsive under load without serializing the
-/// dispatch threads.
+/// `SignalHandler::termination_requested()` takes a process-wide mutex.
 const SIGNAL_CHECK_SAMPLES: u32 = 256;
 
 /// Consecutive empty polls spent spinning before a thread blocks on its

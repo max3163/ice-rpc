@@ -42,8 +42,7 @@ pub(super) fn open_service(
         .max_subscribers(MAX_SUBSCRIBERS)
         .max_nodes(MAX_NODES)
         .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
-        // Enabled, the receiver silently overwrites its oldest pending sample: a
-        // full buffer must report 0 delivered so the sender retries.
+        // Must stay false: enabled, the receiver overwrites its oldest sample.
         .enable_safe_overflow(false)
         .open_or_create()
         .map_err(|e| transport_error("open service", e))
@@ -178,8 +177,8 @@ pub fn spawn_native_service(
                         );
                     }
 
-                    // A channel hosts several services: the id in the header
-                    // selects the dispatcher to run.
+                    // A channel hosts several services: the header id selects
+                    // the dispatcher to run.
                     let Some(dispatcher) = table.get(&request_header.service_id) else {
                         log::warn!(
                             "[transport] channel '{channel}': unknown service_id {:#010x} for method '{}' (service not registered, or id collision)",
@@ -277,8 +276,8 @@ pub fn register_native_service(
     dispatcher: ServiceDispatcher,
 ) -> Result<(), RpcError> {
     if CHANNELS_SEALED.load(Ordering::Acquire) {
-        // A provider created after the seal (a lazily initialized service) can no
-        // longer join its channel: it starts its own thread.
+        // A provider created after the seal (a lazily initialized service)
+        // cannot join its channel: it starts its own thread.
         spawn_native_service(
             channel,
             vec![(service_id, dispatcher)],

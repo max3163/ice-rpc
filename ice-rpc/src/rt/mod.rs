@@ -2,14 +2,8 @@
 //!
 //! All the concurrency primitives used by the ice-rpc core go through this
 //! module so that the crate has no direct dependency on a particular async
-//! runtime. By default (no feature), the facade is backed by
-//! `async-global-executor` (task spawning), `std::thread` (blocking threads)
-//! and `futures-timer` (timers), which work on top of any executor: tokio,
-//! smol, pollster, etc.
-//!
-//! Optional features switch the facade to a dedicated runtime:
-//! - `tokio` → tokio runtime primitives.
-//! - `smol`  → the default agnostic facade, which smol uses natively.
+//! runtime. By default the facade is backed by `async-global-executor`,
+//! `std::thread` and `futures-timer`; the `tokio` feature switches it to tokio.
 
 mod cancel;
 
@@ -67,10 +61,7 @@ mod imp {
 
     /// Pooled variant of [`super::spawn_blocking`].
     ///
-    /// Backed by `async_global_executor::spawn_blocking`, i.e. the [`blocking`]
-    /// crate's pool: it grows on demand and is capped at `BLOCKING_MAX_THREADS`
-    /// (500 by default, clamped to `[1, 10_000]`). A panicking closure is caught
-    /// here so the panic never reaches the awaiter.
+    /// Backed by the `blocking` crate's pool; a panicking closure is caught here.
     pub fn spawn_blocking<F, R>(f: F) -> impl Future<Output = ()> + Send + 'static
     where
         F: FnOnce() -> R + Send + 'static,
@@ -118,10 +109,7 @@ mod imp {
 
     /// Pooled variant of [`super::spawn_blocking`].
     ///
-    /// Backed by tokio's blocking pool (512 threads by default, grown on
-    /// demand). Like [`super::spawn`] and [`super::sleep`], this requires an
-    /// active tokio runtime. A panicking closure is reported by the resulting
-    /// `JoinError` and only logged.
+    /// Requires an active tokio runtime; a panicking closure is logged.
     pub async fn spawn_blocking<F, R>(f: F)
     where
         F: FnOnce() -> R + Send + 'static,
@@ -134,8 +122,8 @@ mod imp {
 
     /// Pooled variant of [`super::spawn_blocking_value`].
     ///
-    /// `tokio::task::spawn_blocking` already catches panics and reports them as
-    /// a `JoinError`, so no `catch_unwind` is needed on this path.
+    /// `tokio::task::spawn_blocking` already catches panics (reported as a
+    /// `JoinError`).
     pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
     where
         F: FnOnce() -> R + Send + 'static,
@@ -163,16 +151,11 @@ where
 /// Runs a blocking closure on a **dedicated** thread and returns an awaitable
 /// handle.
 ///
-/// Reserved for the **long-lived IPC loops** (the transport dispatch threads and
-/// the liveness poller): they run for the whole process lifetime, so they must
-/// own a thread instead of permanently occupying a slot in a
-/// shared pool. For short blocking work offloaded from an async context, use
-/// [`blocking_call`] or [`spawn_blocking_value`], which run on the runtime's
-/// bounded pool.
+/// Reserved for the long-lived IPC loops: they run for the whole process
+/// lifetime and must own a thread instead of occupying a slot in a shared pool.
+/// For short blocking work, use [`blocking_call`] or [`spawn_blocking_value`].
 ///
-/// The thread is started eagerly; awaiting the handle waits for its completion.
-/// Unbounded by design (one thread per call) and runtime-agnostic: it relies on
-/// `std::thread` plus an `async-channel` completion notification.
+/// Awaiting the handle waits for the thread's completion.
 pub fn spawn_blocking<F, R>(f: F) -> BlockingHandle
 where
     F: FnOnce() -> R + Send + 'static,
@@ -191,20 +174,9 @@ where
 /// Runs a short blocking closure on the runtime's **bounded** thread pool and
 /// returns an awaitable handle.
 ///
-/// This is the right primitive for work offloaded from an async context —
-/// publisher creation, node bootstrap, JS bridge calls. Routing those through
-/// [`spawn_blocking`] used to create one OS thread per call, which is unbounded
-/// under load; a busy RPC path could therefore spawn an arbitrary number of
-/// threads.
-///
-/// The pool is the executor's own:
-/// - agnostic configuration → the `blocking` crate's pool (500 threads by
-///   default, `BLOCKING_MAX_THREADS` to tune);
-/// - `tokio` feature → tokio's blocking pool (512 threads by default), which
-///   requires an active runtime.
-///
-/// A panicking closure is caught and logged; it is never propagated to the
-/// awaiter.
+/// The pool is the executor's own (the `blocking` crate by default, tokio's
+/// blocking pool under the `tokio` feature). A panicking closure is caught and
+/// logged, never propagated to the awaiter.
 pub fn blocking_call<F, R>(f: F) -> BlockingHandle
 where
     F: FnOnce() -> R + Send + 'static,
@@ -214,19 +186,12 @@ where
 }
 
 /// Runs a short blocking closure on the runtime's bounded pool and returns its
-/// result.
-///
-/// Pooled counterpart of [`blocking_call`], on the same executor pool.
+/// result (pooled counterpart of [`blocking_call`]).
 ///
 /// # Errors
 ///
 /// Returns `Err` when the closure panics (the panic is caught and its message
 /// returned) or when the task is cancelled before reporting a result.
-///
-/// A panic inside a blocking task must stay a **recoverable error**: the
-/// generated service lifecycle and the client bootstrap both retry on `Err`.
-/// The former `expect("blocking task panicked")` turned it into a process
-/// abort under the `panic = "abort"` release profile.
 pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -286,10 +251,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 
 /// Runs a future on the facade's own runtime (unit tests only).
 ///
-/// Under the `tokio` facade, [`spawn`] and [`sleep`] require an active runtime:
-/// this helper supplies one, so the tests exercise the *real* facade instead of
-/// panicking with "there is no reactor running". The agnostic facade needs no
-/// runtime, so the plain [`block_on`] is enough there.
+/// Under the `tokio` facade, [`spawn`] and [`sleep`] require an active runtime.
 #[cfg(test)]
 pub(crate) fn test_block_on<F: Future>(future: F) -> F::Output {
     #[cfg(feature = "tokio")]
@@ -331,9 +293,7 @@ mod tests {
 
     #[test]
     fn spawn_blocking_value_reports_panic_as_error() {
-        // Tests run under the `dev` profile, which unwinds — the panic is
-        // caught and surfaced instead of poisoning the whole process. The exact
-        // wording depends on the facade: the agnostic pool returns the panic
+        // The wording depends on the facade: the agnostic pool returns the panic
         // payload, tokio wraps it in a `JoinError`.
         let result = test_block_on(spawn_blocking_value(|| -> i32 { panic!("boom") }));
         let message = result.expect_err("a panicking task must surface as Err");
@@ -380,8 +340,7 @@ mod tests {
 
     #[test]
     fn spawn_runs_detached_future() {
-        // `spawn` must be called with an active runtime under the `tokio`
-        // facade, so the whole test body runs inside `test_block_on`.
+        // `spawn` requires an active runtime under the `tokio` facade.
         let flag = Arc::new(AtomicBool::new(false));
         let flag_spawn = flag.clone();
         let flag_wait = flag.clone();

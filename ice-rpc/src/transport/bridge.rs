@@ -9,10 +9,8 @@ pub type ResponseIter = Box<dyn Iterator<Item = Vec<u8>> + Send>;
 
 /// Wraps an [`Observable`] into a lazy [`ResponseIter`] of encoded [`WireEvent`].
 ///
-/// The events are taken raw (`recv_wire`), which preserves the `CompleteWith`
-/// single-sample optimization: a `Next(v)` immediately followed by the terminal
-/// `Complete` travels as one sample. The consumer expands it back transparently
-/// (`recv` / `next` never expose the optimization).
+/// Takes the events raw (`recv_wire`), preserving the `CompleteWith`
+/// single-sample optimization.
 pub fn observable_to_responses<T, E>(mut observable: Observable<T, E>) -> ResponseIter
 where
     T: Send + 'static,

@@ -21,9 +21,7 @@ pub(super) fn wait_for_wakeup(waitset: &WaitSet<Iox>, guard: &WaitSetGuard<'_, '
         WAITSET_DEADLINE,
     );
 
-    // In `HandleTerminationRequests` mode iceoryx2 owns the SIGINT/SIGTERM
-    // handler: the signal is reported here instead of killing the process, so the
-    // framework cancels its tokens and the caller exits cleanly.
+    // iceoryx2 reports SIGINT/SIGTERM here instead of killing the process.
     if matches!(
         result,
         Ok(WaitSetRunResult::TerminationRequest) | Ok(WaitSetRunResult::Interrupt)

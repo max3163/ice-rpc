@@ -72,10 +72,8 @@ fn provider_wait_timeout() -> Duration {
 /// starts the response dispatch thread.
 ///
 /// The ports are per channel, not per service: every service of a channel sends
-/// on the same request channel and is served by the same response dispatcher
-/// (the routing is by correlation id). The cache lock is held across the creation
-/// so a single set of ports is created even when many workers race on the first
-/// call.
+/// on the same request channel, routed by correlation id. The cache lock is held
+/// across the creation so a single set of ports is created under a race.
 fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
     let mut cache = crate::sync::lock(consumer_cache());
     if let Some(ports) = cache.get(channel) {
@@ -257,10 +255,6 @@ where
 
 /// Publishes `header ++ payload` on `publisher`, retrying until at least one
 /// subscriber receives it or `timeout` elapses.
-///
-/// `send()` reports how many subscribers received the sample; `0` means it was
-/// dropped because nobody was connected. The loop is also the place where a call
-/// started before its provider waits, so it observes the shutdown itself.
 pub(super) fn publish_until_delivered(
     publisher: &IoxPublisher,
     header: RpcHeader,

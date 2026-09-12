@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use ice_rpc::Event;
+use crate::Event;
 
 type BoxedStream<T, E> = Pin<Box<dyn futures_lite::Stream<Item = Event<T, E>> + Send>>;
 

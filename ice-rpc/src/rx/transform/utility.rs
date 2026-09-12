@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::Event;
 use futures_lite::future::FutureExt;
-use ice_rpc::Event;
 
 pin_project_lite::pin_project! {
     /// See [`RxStreamExt::tap`](super::RxStreamExt::tap).
@@ -151,7 +151,7 @@ where
             match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
                 Poll::Ready(Some(event)) => {
                     *this.pending = Some(event);
-                    *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+                    *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -196,12 +196,12 @@ where
             return Poll::Ready(None);
         }
         if this.sleep.is_none() {
-            *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+            *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());
         }
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(event)) => {
                 // Reset the silence deadline after every received event.
-                *this.sleep = Some(ice_rpc::rt::sleep(*this.duration).boxed());
+                *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());
                 if event.is_terminal() {
                     *this.done = true;
                 }
@@ -211,8 +211,8 @@ where
             Poll::Pending => match this.sleep.as_mut().expect("sleep future").as_mut().poll(cx) {
                 Poll::Ready(()) => {
                     *this.done = true;
-                    Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(
-                        ice_rpc::RpcError::Timeout,
+                    Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(
+                        crate::RpcError::Timeout,
                     ))))
                 }
                 Poll::Pending => Poll::Pending,

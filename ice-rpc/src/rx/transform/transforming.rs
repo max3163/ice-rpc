@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use ice_rpc::Event;
+use crate::Event;
 
 pin_project_lite::pin_project! {
     /// See [`RxStreamExt::map`](super::RxStreamExt::map).
@@ -81,13 +81,14 @@ where
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
             // Only the business error is remapped; technical errors pass through.
-            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
-                Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(
-                    (this.f)(e),
-                ))))
+            Poll::Ready(Some(Event::Error(crate::ObservableError::Business(e)))) => {
+                Poll::Ready(Some(Event::Error(crate::ObservableError::Business((this
+                    .f)(
+                    e
+                )))))
             }
-            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(e)))) => {
-                Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(e))))
+            Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(e)))) => {
+                Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(e))))
             }
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
             Poll::Ready(None) => Poll::Ready(None),
@@ -151,7 +152,7 @@ pin_project_lite::pin_project! {
         stream: S,
         f: F,
         #[pin]
-        inner: Option<ice_rpc::Observable<U, E>>,
+        inner: Option<crate::Observable<U, E>>,
         done: bool,
         _marker: PhantomData<T>,
     }
@@ -172,7 +173,7 @@ impl<S, F, T, U, E> SwitchMap<S, F, T, U, E> {
 impl<S, F, T, U, E> futures_lite::Stream for SwitchMap<S, F, T, U, E>
 where
     S: futures_lite::Stream<Item = Event<T, E>>,
-    F: FnMut(T) -> ice_rpc::Observable<U, E>,
+    F: FnMut(T) -> crate::Observable<U, E>,
 {
     type Item = Event<U, E>;
 

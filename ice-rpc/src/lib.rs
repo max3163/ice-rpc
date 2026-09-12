@@ -116,6 +116,7 @@
 //! | Module | Role |
 //! |--------|------|
 //! | `types` | Public Rx types (`Event`, `Observable`, `ObservableError`, `RpcError`, `StreamError`) and the wire types re-exported through `gen` |
+//! | `rx` | Reactive operators, constructors and multicast primitives (absorbed from the former `ice-rpc-rx` crate) |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
@@ -132,6 +133,7 @@ mod config;
 mod locator;
 mod node_liveness;
 pub mod rt;
+pub mod rx;
 mod service_traits;
 mod shutdown;
 mod sync;
@@ -164,6 +166,17 @@ pub use service_traits::ServiceInit;
 // transport entry points, `setup_iceoryx2_*`) lives in `ice_rpc::gen`,
 // alongside the plumbing invoked by the macros.
 pub use types::{Event, Observable, ObservableError, RpcError, StreamError};
+
+// ── Public API: reactive operators and multicast primitives ─────────
+// Absorbed from the former `ice-rpc-rx` crate (see `plans/merge-rx.md`): the
+// operators, the constructors and the multicast primitives live in
+// `ice_rpc::rx` and are re-exported here so a single crate exposes the whole
+// user-facing surface. The operator *types* stay reachable through
+// `ice_rpc::rx::…` — they only appear in return types.
+pub use rx::{
+    from, merge, of, retry, retry_with, retry_with_delay, throw_error, Observer, ObserverFns,
+    RxStreamExt, ShareReplay, Subject, Subscription,
+};
 
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;

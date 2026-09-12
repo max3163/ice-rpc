@@ -1,18 +1,18 @@
 //! Terminal subscription: adapts a pull-based stream to Rx-style callbacks.
 //!
-//! [`RxStreamExt::subscribe`](crate::RxStreamExt::subscribe) spawns a **single**
+//! [`RxStreamExt::subscribe`](crate::rx::RxStreamExt::subscribe) spawns a **single**
 //! task that pulls the pipeline and pushes the events into an [`Observer`].
 //! This is the only operator that spawns; `for_each`, `first_value` and
 //! `collect` stay purely pull-based.
 //!
 //! Because the unified model carries the error inside the stream
-//! ([`ice_rpc::Event::Error`]), the mapping event → callback is 1:1: the
+//! ([`crate::Event::Error`]), the mapping event → callback is 1:1: the
 //! observer receives the [`ObservableError`] unchanged, with no projection and
 //! no `Empty` case.
 
 use std::pin::Pin;
 
-use ice_rpc::{Event, ObservableError};
+use crate::{Event, ObservableError};
 
 /// Push-based consumer of an observable (Rx `Observer`).
 ///
@@ -30,7 +30,7 @@ pub trait Observer<T, E>: Send + 'static {
 }
 
 /// Observer built from three closures (see
-/// [`RxStreamExt::subscribe_with`](crate::RxStreamExt::subscribe_with)).
+/// [`RxStreamExt::subscribe_with`](crate::rx::RxStreamExt::subscribe_with)).
 pub struct ObserverFns<N, Er, C> {
     on_next: N,
     on_error: Er,
@@ -87,11 +87,11 @@ where
 /// Dropping it cancels the underlying task (Rx `unsubscribe`, silent: no
 /// callback is invoked).
 pub struct Subscription {
-    cancel: ice_rpc::CancellationToken,
+    cancel: crate::CancellationToken,
 }
 
 impl Subscription {
-    pub(crate) fn new(cancel: ice_rpc::CancellationToken) -> Self {
+    pub(crate) fn new(cancel: crate::CancellationToken) -> Self {
         Self { cancel }
     }
 
@@ -138,8 +138,8 @@ where
 }
 
 /// Spawns the pushing task backing
-/// [`subscribe`](crate::RxStreamExt::subscribe).
-pub(crate) fn spawn_push<S, O, T, E>(stream: S, mut observer: O, cancel: ice_rpc::CancellationToken)
+/// [`subscribe`](crate::rx::RxStreamExt::subscribe).
+pub(crate) fn spawn_push<S, O, T, E>(stream: S, mut observer: O, cancel: crate::CancellationToken)
 where
     S: futures_lite::Stream<Item = Event<T, E>> + Send + 'static,
     O: Observer<T, E>,
@@ -147,7 +147,7 @@ where
     E: Send + 'static,
 {
     let token = cancel.clone();
-    ice_rpc::rt::spawn(async move {
+    crate::rt::spawn(async move {
         run_push(stream, &mut observer, &token).await;
         // Signal completion (either terminal event or cancellation) so that
         // `Subscription::is_closed` becomes observable.
@@ -156,7 +156,7 @@ where
 }
 
 /// Pulls the stream and pushes each event into the observer.
-async fn run_push<S, O, T, E>(stream: S, observer: &mut O, cancel: &ice_rpc::CancellationToken)
+async fn run_push<S, O, T, E>(stream: S, observer: &mut O, cancel: &crate::CancellationToken)
 where
     S: futures_lite::Stream<Item = Event<T, E>>,
     O: Observer<T, E>,
@@ -201,7 +201,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{Event, ObservableError};
-    use crate::RxStreamExt;
+    use crate::rx::RxStreamExt;
 
     /// Waits (bounded) for a condition set by the subscription task.
     fn wait_for(cond: impl Fn() -> bool) -> bool {
@@ -221,7 +221,7 @@ mod tests {
 
         let seen_c = seen.clone();
         let done_c = done.clone();
-        let stream: ice_rpc::Observable<i32, String> = crate::from([1, 2, 3]);
+        let stream: crate::Observable<i32, String> = crate::rx::from([1, 2, 3]);
         let _sub = stream.subscribe_with(
             move |v| seen_c.lock().unwrap().push(v),
             |_e: ObservableError<String>| {},
@@ -238,7 +238,7 @@ mod tests {
         let got_c = got.clone();
 
         let stream =
-            ice_rpc::Observable::<i32, String>::from_technical_error(ice_rpc::RpcError::Timeout);
+            crate::Observable::<i32, String>::from_technical_error(crate::RpcError::Timeout);
         let _sub = stream.subscribe_with(
             |_v| {},
             move |e: ObservableError<String>| *got_c.lock().unwrap() = Some(e),
@@ -248,7 +248,7 @@ mod tests {
         assert!(wait_for(|| got.lock().unwrap().is_some()));
         assert!(matches!(
             got.lock().unwrap().as_ref(),
-            Some(ObservableError::Technical(ice_rpc::RpcError::Timeout))
+            Some(ObservableError::Technical(crate::RpcError::Timeout))
         ));
     }
 
@@ -257,8 +257,8 @@ mod tests {
         let got: Arc<Mutex<Option<ObservableError<String>>>> = Arc::new(Mutex::new(None));
         let got_c = got.clone();
 
-        let stream: ice_rpc::Observable<i32, String> =
-            ice_rpc::Observable::from_events([Event::Error(ObservableError::Business(
+        let stream: crate::Observable<i32, String> =
+            crate::Observable::from_events([Event::Error(ObservableError::Business(
                 "boom".into(),
             ))]);
         let _sub = stream.subscribe_with(
@@ -280,7 +280,7 @@ mod tests {
         let next_c = next_called.clone();
 
         // A channel-backed stream that never emits: the task parks on the pull.
-        let (tx, rx) = ice_rpc::gen::channel::<i32, String>(1);
+        let (tx, rx) = crate::gen::channel::<i32, String>(1);
         let sub = rx.subscribe(move |_v| next_c.store(true, Ordering::SeqCst));
 
         // Dropping cancels silently: no callback, no panic.
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn subscription_closed_resolves_on_complete() {
-        let stream: ice_rpc::Observable<i32, String> = crate::of(1);
+        let stream: crate::Observable<i32, String> = crate::rx::of(1);
         let sub = stream.subscribe(|_v| {});
 
         // The push task cancels its token when it returns, so `closed` resolves
@@ -306,7 +306,7 @@ mod tests {
     fn for_each_runs_to_completion() {
         let sum = Arc::new(AtomicI32::new(0));
         let sum_c = sum.clone();
-        let stream: ice_rpc::Observable<i32, String> = crate::from([1, 2, 3]);
+        let stream: crate::Observable<i32, String> = crate::rx::from([1, 2, 3]);
 
         let result = pollster::block_on(stream.for_each(move |v| {
             sum_c.fetch_add(v, Ordering::SeqCst);
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn for_each_returns_business_error() {
-        let stream: ice_rpc::Observable<i32, String> = ice_rpc::Observable::from_events([
+        let stream: crate::Observable<i32, String> = crate::Observable::from_events([
             Event::Next(1),
             Event::Error(ObservableError::Business("boom".into())),
         ]);

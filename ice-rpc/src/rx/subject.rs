@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ice_rpc_rx::Subject;
+//! use crate::Subject;
 //!
 //! let subject = Subject::<i32, String>::new();
 //! let rx = subject.subscribe().await;
@@ -17,12 +17,12 @@
 //! subject.complete().await;
 //! ```
 
-use ice_rpc::gen::Sender;
-use ice_rpc::Observable;
+use crate::gen::Sender;
+use crate::Observable;
 
 /// A multi-producer / multi-consumer multicast source.
 pub struct Subject<T, E> {
-    subscribers: std::sync::Arc<ice_rpc::gen::async_lock::Mutex<Vec<Sender<T, E>>>>,
+    subscribers: std::sync::Arc<crate::gen::async_lock::Mutex<Vec<Sender<T, E>>>>,
 }
 
 impl<T, E> Subject<T, E> {
@@ -33,13 +33,13 @@ impl<T, E> Subject<T, E> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// use ice_rpc_rx::Subject;
+    /// use crate::Subject;
     ///
     /// let subject = Subject::<i32, String>::new();
     /// ```
     pub fn new() -> Self {
         Self {
-            subscribers: std::sync::Arc::new(ice_rpc::gen::async_lock::Mutex::new(Vec::new())),
+            subscribers: std::sync::Arc::new(crate::gen::async_lock::Mutex::new(Vec::new())),
         }
     }
 
@@ -56,7 +56,7 @@ impl<T, E> Subject<T, E> {
     /// let rx = subject.subscribe().await;
     /// ```
     pub async fn subscribe(&self) -> Observable<T, E> {
-        let (tx, rx) = ice_rpc::gen::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = crate::gen::channel::<T, E>(crate::rx::MULTICAST_CHANNEL_CAPACITY);
         self.subscribers.lock().await.push(tx);
         rx
     }
@@ -151,7 +151,7 @@ impl<T, E> Default for Subject<T, E> {
 #[cfg(test)]
 mod tests {
     use super::Subject;
-    use ice_rpc::{Event, ObservableError};
+    use crate::{Event, ObservableError};
 
     #[test]
     fn subject_multicasts_to_subscribers() {

@@ -6,21 +6,21 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use ice_rpc::Event;
+use crate::Event;
 
 pin_project_lite::pin_project! {
     /// See [`RxStreamExt::take_until`](super::RxStreamExt::take_until).
     pub struct TakeUntil<S, T, E> {
         #[pin]
         stream: S,
-        token: ice_rpc::CancellationToken,
+        token: crate::CancellationToken,
         done: bool,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, T, E> TakeUntil<S, T, E> {
-    pub(super) fn new(stream: S, token: ice_rpc::CancellationToken) -> Self {
+    pub(super) fn new(stream: S, token: crate::CancellationToken) -> Self {
         Self {
             stream,
             token,
@@ -43,8 +43,8 @@ where
         }
         if this.token.is_cancelled() {
             *this.done = true;
-            return Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Technical(
-                ice_rpc::RpcError::Cancelled,
+            return Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(
+                crate::RpcError::Cancelled,
             ))));
         }
         futures_lite::Stream::poll_next(this.stream.as_mut(), cx)

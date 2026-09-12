@@ -1,6 +1,6 @@
-//! Composable operators for [`ice_rpc::Observable`].
+//! Composable operators for [`crate::Observable`].
 //!
-//! The [`RxStreamExt`] trait extends any poll-based stream of [`ice_rpc::Event`]
+//! The [`RxStreamExt`] trait extends any poll-based stream of [`crate::Event`]
 //! with the classic reactive operators. Operators are implemented as pull-based
 //! combinators: they wrap the source and implement `futures_lite::Stream`, so a
 //! pipeline `take(filter(map(source)))` pulls events through a call stack with
@@ -29,10 +29,10 @@
 //! - [`switch_map`](RxStreamExt::switch_map) — projects each value to an inner
 //!   stream and emits from the latest one.
 
-use ice_rpc::Event;
+use crate::Event;
 
 /// Extension trait adding reactive operators to any poll-based stream of
-/// [`ice_rpc::Event`].
+/// [`crate::Event`].
 pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// Transforms every `Next` value with `f`. Terminal events are forwarded
     /// unchanged.
@@ -134,18 +134,18 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// cancelling previous subscriptions (RxJS `switchMap`).
     fn switch_map<F, U>(self, f: F) -> SwitchMap<Self, F, T, U, E>
     where
-        F: FnMut(T) -> ice_rpc::Observable<U, E>,
+        F: FnMut(T) -> crate::Observable<U, E>,
     {
         SwitchMap::new(self, f)
     }
 
     /// Emits a technical `Cancelled` error and stops once `token` is cancelled
     /// (RxJS `takeUntil`).
-    fn take_until(self, token: &ice_rpc::CancellationToken) -> TakeUntil<Self, T, E> {
+    fn take_until(self, token: &crate::CancellationToken) -> TakeUntil<Self, T, E> {
         TakeUntil::new(self, token.clone())
     }
 
-    /// Freezes the pipeline into the concrete [`ice_rpc::Observable`], so it can
+    /// Freezes the pipeline into the concrete [`crate::Observable`], so it can
     /// be returned by a **service method**.
     ///
     /// A service must return `Observable<T, E>`: the generated proxy needs a
@@ -164,13 +164,13 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     ///         .into_observable()
     ///     }
     /// ```
-    fn into_observable(self) -> ice_rpc::Observable<T, E>
+    fn into_observable(self) -> crate::Observable<T, E>
     where
         Self: Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
     {
-        ice_rpc::Observable::from_stream(self)
+        crate::Observable::from_stream(self)
     }
 
     /// Awaits the first emitted value of the stream.
@@ -178,16 +178,16 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// `Next(v)` → `Ok(v)`, `Error(e)` → `Err(e.into())`,
     /// `Complete`/closed → `Err(StreamError::Empty)`.
     ///
-    /// Same implementation as [`ice_rpc::Observable::first_value`]: both
-    /// surfaces delegate to the canonical `ice_rpc::gen::first_event`, so they
+    /// Same implementation as [`crate::Observable::first_value`]: both
+    /// surfaces delegate to the canonical `crate::gen::first_event`, so they
     /// cannot diverge. Use this one on an operator pipeline, and the inherent
-    /// method on a raw [`ice_rpc::Observable`].
+    /// method on a raw [`crate::Observable`].
     #[allow(async_fn_in_trait)]
-    async fn first_value(self) -> Result<T, ice_rpc::StreamError<E>>
+    async fn first_value(self) -> Result<T, crate::StreamError<E>>
     where
         Self: Sized,
     {
-        ice_rpc::gen::first_event(self).await
+        crate::gen::first_event(self).await
     }
 
     /// Collects every emitted value into a `Vec`.
@@ -196,14 +196,14 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// terminal `Error` the collected values are discarded and the error is
     /// returned.
     ///
-    /// Same implementation as [`ice_rpc::Observable::collect`]: both surfaces
-    /// delegate to the canonical `ice_rpc::gen::collect_values`.
+    /// Same implementation as [`crate::Observable::collect`]: both surfaces
+    /// delegate to the canonical `crate::gen::collect_values`.
     #[allow(async_fn_in_trait)]
-    async fn collect(self) -> Result<Vec<T>, ice_rpc::ObservableError<E>>
+    async fn collect(self) -> Result<Vec<T>, crate::ObservableError<E>>
     where
         Self: Sized,
     {
-        ice_rpc::gen::collect_values(self).await
+        crate::gen::collect_values(self).await
     }
 
     /// Consumes the stream with a callback per value (RxJS `forEach`).
@@ -211,14 +211,14 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// Fully pull-based: no task is spawned. `Complete` (or a closed source)
     /// yields `Ok(())`; a terminal error yields `Err(ObservableError)`.
     #[allow(async_fn_in_trait)]
-    async fn for_each<F>(self, mut f: F) -> Result<(), ice_rpc::ObservableError<E>>
+    async fn for_each<F>(self, mut f: F) -> Result<(), crate::ObservableError<E>>
     where
         F: FnMut(T),
         Self: Sized,
     {
         let mut stream = Box::pin(self);
         loop {
-            match crate::subscribe::next_event(&mut stream).await {
+            match crate::rx::subscribe::next_event(&mut stream).await {
                 Some(Event::Next(v)) => f(v),
                 Some(Event::Complete) | None => return Ok(()),
                 Some(Event::Error(e)) => return Err(e),
@@ -226,10 +226,10 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
         }
     }
 
-    /// Subscribes to the stream with an [`Observer`](crate::Observer).
+    /// Subscribes to the stream with an [`Observer`](crate::rx::Observer).
     ///
     /// Spawns **one** task that pulls the pipeline and pushes events. Dropping
-    /// the returned [`Subscription`](crate::Subscription) cancels it silently.
+    /// the returned [`Subscription`](crate::rx::Subscription) cancels it silently.
     ///
     /// # Example
     /// ```rust,ignore
@@ -241,16 +241,16 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// // ... later
     /// drop(sub);
     /// ```
-    fn subscribe<O>(self, observer: O) -> crate::Subscription
+    fn subscribe<O>(self, observer: O) -> crate::rx::Subscription
     where
-        O: crate::Observer<T, E>,
+        O: crate::rx::Observer<T, E>,
         T: Send + 'static,
         E: Send + 'static,
         Self: Send + 'static,
     {
-        let cancel = ice_rpc::CancellationToken::new();
-        crate::subscribe::spawn_push(self, observer, cancel.clone());
-        crate::Subscription::new(cancel)
+        let cancel = crate::CancellationToken::new();
+        crate::rx::subscribe::spawn_push(self, observer, cancel.clone());
+        crate::rx::Subscription::new(cancel)
     }
 
     /// Subscribes with three closures (see [`RxStreamExt::subscribe`]).
@@ -259,16 +259,16 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
         on_next: N,
         on_error: Er,
         on_complete: C,
-    ) -> crate::Subscription
+    ) -> crate::rx::Subscription
     where
         N: FnMut(T) + Send + 'static,
-        Er: FnMut(ice_rpc::ObservableError<E>) + Send + 'static,
+        Er: FnMut(crate::ObservableError<E>) + Send + 'static,
         C: FnMut() + Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
         Self: Send + 'static,
     {
-        self.subscribe(crate::ObserverFns::new(on_next, on_error, on_complete))
+        self.subscribe(crate::rx::ObserverFns::new(on_next, on_error, on_complete))
     }
 }
 

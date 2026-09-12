@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use ice_rpc::Event;
+use crate::Event;
 
 pin_project_lite::pin_project! {
     /// See [`RxStreamExt::filter`](super::RxStreamExt::filter).

@@ -8,11 +8,11 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::Event;
 use futures_lite::future::FutureExt;
-use ice_rpc::Event;
 
 /// Boxed factory future and stream, used internally by [`Retry`].
-type BoxedFuture<T, E> = Pin<Box<dyn Future<Output = ice_rpc::Observable<T, E>> + Send>>;
+type BoxedFuture<T, E> = Pin<Box<dyn Future<Output = crate::Observable<T, E>> + Send>>;
 type BoxedStream<T, E> = Pin<Box<dyn futures_lite::Stream<Item = Event<T, E>> + Send>>;
 type BoxedFactory<T, E> = Box<dyn FnMut() -> BoxedFuture<T, E> + Send>;
 
@@ -59,7 +59,7 @@ where
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
             // Only a business error can be caught; a technical error is fatal.
-            Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
+            Poll::Ready(Some(Event::Error(crate::ObservableError::Business(e)))) => {
                 match this.f.take() {
                     Some(f) => {
                         *this.completed = true;
@@ -89,7 +89,7 @@ where
     T: Send + 'static,
     E: Send + 'static,
     F: FnMut() -> Fut + Send + 'static,
-    Fut: Future<Output = ice_rpc::Observable<T, E>> + Send + 'static,
+    Fut: Future<Output = crate::Observable<T, E>> + Send + 'static,
 {
     let factory: BoxedFactory<T, E> = Box::new(move || Box::pin(factory()) as BoxedFuture<T, E>);
     Retry::new(factory, retries, |_| true, None)
@@ -101,7 +101,7 @@ where
     T: Send + 'static,
     E: Send + 'static,
     F: FnMut() -> Fut + Send + 'static,
-    Fut: Future<Output = ice_rpc::Observable<T, E>> + Send + 'static,
+    Fut: Future<Output = crate::Observable<T, E>> + Send + 'static,
     P: Fn(&E) -> bool + Send + 'static,
 {
     let factory: BoxedFactory<T, E> = Box::new(move || Box::pin(factory()) as BoxedFuture<T, E>);
@@ -118,7 +118,7 @@ where
     T: Send + 'static,
     E: Send + 'static,
     F: FnMut() -> Fut + Send + 'static,
-    Fut: Future<Output = ice_rpc::Observable<T, E>> + Send + 'static,
+    Fut: Future<Output = crate::Observable<T, E>> + Send + 'static,
 {
     let factory: BoxedFactory<T, E> = Box::new(move || Box::pin(factory()) as BoxedFuture<T, E>);
     Retry::new(factory, retries, |_| true, Some(delay))
@@ -203,17 +203,17 @@ where
                         return Poll::Ready(Some(Event::Next(v)));
                     }
                     // Only a business error is retryable; a technical error is fatal.
-                    Poll::Ready(Some(Event::Error(ice_rpc::ObservableError::Business(e)))) => {
+                    Poll::Ready(Some(Event::Error(crate::ObservableError::Business(e)))) => {
                         if this.retries > 0 && (this.should_retry)(&e) {
                             this.retries -= 1;
                             this.pending_factory = Some((this.factory)());
                             if let Some(d) = this.delay {
-                                this.delay_sleep = Some(ice_rpc::rt::sleep(d).boxed());
+                                this.delay_sleep = Some(crate::rt::sleep(d).boxed());
                             }
                         } else {
                             this.done = true;
                             return Poll::Ready(Some(Event::Error(
-                                ice_rpc::ObservableError::Business(e),
+                                crate::ObservableError::Business(e),
                             )));
                         }
                     }

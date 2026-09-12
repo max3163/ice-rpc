@@ -75,7 +75,34 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
+# The demo services are declared once, in the `common` crate (not published), and
+# shared with the `gateway_nodejs` examples: no local copy is maintained here.
+common = { path = "../examples/common" }
 
 [[bench]]
 name = "concurrency"
 harness = false
+
+# ── Demo applications ───────────────────────────────────────────────
+# Moved out of the former `ice-rpc-rx` crate (see `plans/merge-rx.md`) so a
+# single crate hosts the library, its examples and its benches. They all need
+# the Tokio runtime facade.
+[[example]]
+name = "state_service"
+required-features = ["tokio"]
+
+[[example]]
+name = "provider-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-http-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "benchmark-app"
+required-features = ["tokio"]

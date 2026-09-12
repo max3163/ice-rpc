@@ -17,7 +17,7 @@
 //! min→max spread, which is the noise floor of the run:
 //!
 //! ```bash
-//! cargo run --release -p ice-rpc-rx --example benchmark-app --features tokio -- \
+//! cargo run --release -p ice-rpc --example benchmark-app --features tokio -- \
 //!     --workers 8 --requests 2000 --blast --repeat 5
 //! ```
 //!

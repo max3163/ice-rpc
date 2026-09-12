@@ -10,19 +10,19 @@
 //! Run the provider in one terminal:
 //!
 //! ```bash
-//! cargo run -p ice-rpc-rx --example state_service --features tokio -- provider
+//! cargo run -p ice-rpc --example state_service --features tokio -- provider
 //! ```
 //!
 //! And the consumer in another:
 //!
 //! ```bash
-//! cargo run -p ice-rpc-rx --example state_service --features tokio -- consumer
+//! cargo run -p ice-rpc --example state_service --features tokio -- consumer
 //! ```
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use ice_rpc::{service, Observable};
-use ice_rpc_rx::{ShareReplay, Subject};
+use ice_rpc::{ShareReplay, Subject};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Status of a service or component.
@@ -81,7 +81,7 @@ impl StateService for StateServiceImpl {
     async fn set_state(&self, status: Status) -> Observable<(), String> {
         self.subject.next(status).await;
         // Acknowledge with a single terminal value (channel-free source).
-        ice_rpc_rx::of(())
+        ice_rpc::of(())
     }
 }
 

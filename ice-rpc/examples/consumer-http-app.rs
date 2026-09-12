@@ -10,8 +10,8 @@
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use common::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+use ice_rpc::RxStreamExt;
 use ice_rpc::StreamError;
-use ice_rpc_rx::RxStreamExt;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 

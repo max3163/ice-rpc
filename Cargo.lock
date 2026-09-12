@@ -980,6 +980,7 @@ dependencies = [
  "async-lock",
  "async-trait",
  "base64",
+ "common",
  "criterion",
  "env_logger",
  "futures",
@@ -1026,25 +1027,6 @@ dependencies = [
  "log",
  "rkyv",
  "trybuild",
-]
-
-[[package]]
-name = "ice-rpc-rx"
-version = "0.2.2"
-dependencies = [
- "async-trait",
- "common",
- "env_logger",
- "futures-lite",
- "ice-rpc",
- "log",
- "pin-project-lite",
- "pollster",
- "rkyv",
- "serde",
- "serde_json",
- "tokio",
- "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

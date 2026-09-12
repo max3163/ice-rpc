@@ -21,8 +21,8 @@ use common::{
     DatabaseService, DatabaseServiceProxy, NotificationService, NotificationServiceProxy,
     PersonneInfo, PersonneQuery,
 };
+use ice_rpc::{from, of, throw_error, Observer, RxStreamExt};
 use ice_rpc::{ObservableError, StreamError};
-use ice_rpc_rx::{from, of, throw_error, Observer, RxStreamExt};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 

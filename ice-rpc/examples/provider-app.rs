@@ -32,8 +32,8 @@ use common::{
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
     HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
 };
+use ice_rpc::{from, of, throw_error, RxStreamExt};
 use ice_rpc::{Observable, ServiceInit, StreamError};
-use ice_rpc_rx::{from, of, throw_error, RxStreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

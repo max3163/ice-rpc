@@ -1,9 +1,8 @@
 //! Reactive layer of ice-rpc: operators, constructors and multicast
 //! primitives, inspired by RxJS.
 //!
-//! The operators are **inherent methods** on [`crate::Observable`]: there is no
-//! extension trait to import and one single stream type from the first operator
-//! to the last, so a pipeline reads exactly like its RxJS counterpart.
+//! The operators are **inherent methods** on [`crate::Observable`]: no extension
+//! trait to import, one single stream type from the first operator to the last.
 //!
 //! ```rust,ignore
 //! // `stream` is the native type returned by an ice-rpc service.
@@ -18,15 +17,13 @@
 //!   `finalize`, `delay`, `timeout`, `catch_error`, `take_until`) and the
 //!   terminals (`first_value`, `collect`, `for_each`, `subscribe`,
 //!   `subscribe_with`, `next`, `recv`). Every operator is a pull-based
-//!   combinator: it allocates no intermediate channel and spawns no task — one
-//!   box per operator step, a cost measured by `benches/pipeline.rs`.
+//!   combinator: no intermediate channel, no spawned task.
 //! - [`Subject`] — the push side: a multi-producer / multi-consumer multicast
 //!   source. [`Subject::new`] multicasts to the current subscribers,
 //!   [`Subject::replay`] also replays the last `n` values (and the terminal
-//!   state) to late subscribers — the `shareReplay(1)` idiom.
+//!   state) to late subscribers.
 //! - [`Observable::subscribe`] / [`Observable::subscribe_all`] — push-based
-//!   consumption: one task pulls the stream and calls the callbacks of RxJS
-//!   (`next`; or `next` / `error` / `complete`). [`Subscription`] is the
+//!   consumption through RxJS-style callbacks. [`Subscription`] is the
 //!   cancellation handle.
 //! - [`from`], [`of`], [`throw_error`] — channel-free local constructors.
 //!
@@ -39,15 +36,9 @@
 //!
 //! ## Timeouts
 //!
-//! Two independent timeouts exist, and they cover disjoint phases:
-//!
-//! - `discovery_timeout` — a **service-level** attribute
-//!   (`#[service("Name", discovery_timeout = "5s")]`) bounding the node
-//!   discovery performed before the call is sent. This is the only place where a
-//!   discovery deadline applies.
-//! - [`crate::Observable::timeout`] — a per-event **silence watchdog** on an
-//!   active stream. The timer resets after every received event; once it fires,
-//!   the stream terminates with a technical `RpcError::Timeout`.
+//! `discovery_timeout` (a **service-level** attribute) bounds the node discovery
+//! performed before the call is sent; [`crate::Observable::timeout`] is a
+//! per-event **silence watchdog** on an active stream, reset after every event.
 
 mod creation;
 mod subject;
@@ -60,10 +51,8 @@ pub use subscribe::Subscription;
 
 /// Default capacity of the channels created by the multicast primitive.
 ///
-/// The operators themselves are pull-based combinators and create no channel;
-/// only [`Subject`] fans out to per-subscriber channels. A bounded channel
-/// provides backpressure: a producer waits when the queue is full, which keeps
-/// memory usage bounded.
+/// A bounded channel provides backpressure: a producer waits when the queue is
+/// full, which keeps memory usage bounded.
 pub(crate) const MULTICAST_CHANNEL_CAPACITY: usize = 8;
 
 #[cfg(test)]

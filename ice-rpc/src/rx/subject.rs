@@ -28,13 +28,10 @@ use crate::{Event, Observable, ObservableError};
 ///
 /// `Subject::new()` multicasts only to the subscribers present at emission time
 /// (RxJS `Subject`); `Subject::replay(n)` keeps the last `n` values and the
-/// terminal state and replays them to every late subscriber (RxJS
-/// `ReplaySubject(n)`).
+/// terminal state and replays them to late subscribers (`ReplaySubject(n)`).
 ///
-/// Once the subject is terminated (by [`Subject::complete`] or
-/// [`Subject::error`]) every later event is **ignored**, and a new subscriber
-/// immediately observes the replayed terminal state — the standard RxJS
-/// behaviour.
+/// Once terminated every later event is **ignored**, and a new subscriber
+/// immediately observes the replayed terminal state.
 pub struct Subject<T, E> {
     state: std::sync::Arc<crate::gen::async_lock::Mutex<State<T, E>>>,
 }

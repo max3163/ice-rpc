@@ -3,20 +3,12 @@
 //! [`Observable::subscribe`](crate::Observable::subscribe) and
 //! [`Observable::subscribe_all`](crate::Observable::subscribe_all) spawn a
 //! **single** task that pulls the stream and pushes the events into an
-//! [`Observer`].
-//! This is the only operator that spawns; `for_each`, `first_value` and
-//! `collect` stay purely pull-based.
+//! [`Observer`]. This is the only operator that spawns; `for_each`,
+//! `first_value` and `collect` stay purely pull-based.
 //!
-//! Because the unified model carries the error inside the stream
-//! ([`crate::Event::Error`]), the mapping event → callback is 1:1: the
-//! observer receives the [`ObservableError`] unchanged, with no projection.
-//! ([`ObservableError::Empty`] only comes from the terminal pull helpers —
-//! `first_value` — never from a pushed stream.)
-//!
-//! [`Observer`] and [`ObserverFns`] are **internal**: the user-facing entry
-//! points are [`Observable::subscribe`](crate::Observable::subscribe) and
-//! [`Observable::subscribe_all`](crate::Observable::subscribe_all), so the
-//! callbacks of RxJS are reachable without naming a trait.
+//! The mapping event → callback is 1:1: the observer receives the
+//! [`ObservableError`] unchanged. [`Observer`] and [`ObserverFns`] are internal,
+//! so the RxJS callbacks are reachable without naming a trait.
 
 use std::pin::Pin;
 
@@ -158,8 +150,7 @@ where
     let token = cancel.clone();
     crate::rt::spawn(async move {
         run_push(stream, &mut observer, &token).await;
-        // Signal completion (either terminal event or cancellation) so that
-        // `Subscription::is_closed` becomes observable.
+        // Signal completion so `Subscription::is_closed` becomes observable.
         token.cancel();
     });
 }

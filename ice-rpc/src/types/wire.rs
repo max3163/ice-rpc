@@ -1,11 +1,7 @@
 //! Wire-level types and the conversion rules between them.
 //!
 //! [`Event`] is what consumers observe, [`WireEvent`] is what travels over
-//! iceoryx2 (it carries the `CompleteWith` single-sample optimization), and
-//! [`Sender`] is the producer side. The two conversions — [`From<Event>`] and
-//! [`normalize_wire_event`] — are described here and nowhere else.
-//!
-//! [`From<Event>`]: From
+//! iceoryx2, and [`Sender`] is the producer side.
 
 use rkyv::{Archive, Deserialize, Serialize};
 
@@ -13,12 +9,10 @@ use super::error::RpcError;
 
 /// The single error type of the whole streaming API.
 ///
-/// Follows the Rx pattern: a single `error` channel, where the payload
-/// distinguishes a **business** error (authored by the service) from a
-/// **technical** one (raised by the framework/transport). The third variant,
-/// [`ObservableError::Empty`], covers the terminal pull helpers
-/// ([`crate::Observable::first_value`]): the source completed **without ever
-/// emitting a value**. It is a local artefact and never travels over the wire.
+/// Follows the Rx pattern: a single `error` channel whose payload distinguishes
+/// a **business** error (authored by the service) from a **technical** one
+/// (raised by the framework/transport). [`ObservableError::Empty`] is a
+/// pull-side artefact and never travels over the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservableError<E> {
     /// Business error emitted by the service.
@@ -185,9 +179,7 @@ impl<T, E> Sender<T, E> {
 
     /// Forwards any consumer [`Event`] (transport/relay passthrough).
     ///
-    /// This is the only way a technical error transits: an
-    /// [`ObservableError::Technical`] is mapped to [`WireEvent::RpcError`] by
-    /// the [`From`] conversion described below.
+    /// The only way a technical error transits, via the [`From`] conversion.
     #[inline]
     pub async fn send_event(
         &self,
@@ -240,10 +232,8 @@ impl<T, E> Sender<T, E> {
 
     /// Forwards a raw transport event (relay passthrough, consumer side).
     ///
-    /// Used by the generated client to relay an IPC sample to the consumer
-    /// channel **without re-encoding it**: the [`WireEvent::CompleteWith`]
-    /// single-sample optimization therefore survives as a single channel
-    /// message instead of being split into `Next` + `Complete`.
+    /// Relays an IPC sample **without re-encoding it**, so the
+    /// [`WireEvent::CompleteWith`] optimization survives as a single message.
     #[doc(hidden)]
     #[inline]
     pub fn try_send_wire(
@@ -253,10 +243,9 @@ impl<T, E> Sender<T, E> {
         self.inner.try_send(event)
     }
 }
-/// Converts a user-facing [`Event`] into its transport representation.
-///
-/// This is the **only** place describing the mapping rule: a business error
-/// becomes [`WireEvent::Error`], a technical one becomes [`WireEvent::RpcError`].
+/// Converts a user-facing [`Event`] into its transport representation: a
+/// business error becomes [`WireEvent::Error`], a technical one
+/// [`WireEvent::RpcError`].
 impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
     fn from(event: Event<T, E>) -> Self {
         match event {
@@ -264,8 +253,7 @@ impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
             Event::Complete => WireEvent::Complete,
             Event::Error(ObservableError::Business(e)) => WireEvent::Error(e),
             Event::Error(ObservableError::Technical(e)) => WireEvent::RpcError(e),
-            // `Empty` is a pull-side artefact ("no value was produced"): on the
-            // wire the only thing left to say is that the stream ends here.
+            // `Empty` is a pull-side artefact: on the wire the stream just ends.
             Event::Error(ObservableError::Empty) => WireEvent::Complete,
         }
     }
@@ -273,11 +261,9 @@ impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
 
 /// Normalizes a transport [`WireEvent`] into the user-facing form.
 ///
-/// Returns the event to yield **now**, plus an optional **follow-up** event: the
-/// [`WireEvent::CompleteWith`] single-sample optimization expands into
-/// `Next(v)` followed by `Complete`. This is the only place describing the
-/// expansion, shared by [`crate::Observable::recv`] and the
-/// [`futures_lite::Stream`] implementation of `crate::Observable`.
+/// Returns the event to yield **now** plus an optional **follow-up**: the
+/// [`WireEvent::CompleteWith`] optimization expands into `Next(v)` then
+/// `Complete`.
 pub(crate) fn normalize_wire_event<T, E>(
     event: WireEvent<T, E>,
 ) -> (Event<T, E>, Option<Event<T, E>>) {

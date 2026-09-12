@@ -174,8 +174,7 @@ fn next_maps_the_event_vocabulary_and_keeps_none_for_a_clean_end() {
 
 #[test]
 fn next_turns_an_abrupt_close_into_a_technical_error() {
-    // The producer disappears without completing: `next` reports it instead of
-    // pretending the stream completed.
+    // The producer disappears without completing: `next` reports it.
     let (tx, mut stream) = channel::<i32, String>(4);
     tx.try_send_next(1).unwrap();
     drop(tx);

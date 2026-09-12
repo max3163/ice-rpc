@@ -1,10 +1,9 @@
 //! Name-length limits shared with `ice-rpc-macros`.
 //!
 //! `METHOD_NAME_LEN` and `SERVICE_NAME_LEN` are the maximum **byte lengths**
-//! accepted by `#[service]`; they are duplicated as private constants in
-//! `ice-rpc-macros`, which rejects any longer name at compile time. Both values
-//! equal the `StaticString` capacity used by the generated wire types, so a name
-//! accepted by the macro always fits without truncation.
+//! accepted by `#[service]`, duplicated as private constants in `ice-rpc-macros`
+//! (which rejects any longer name at compile time). Both equal the
+//! `StaticString` capacity used by the generated wire types.
 
 /// Maximum byte length of a method name (**inclusive**).
 ///

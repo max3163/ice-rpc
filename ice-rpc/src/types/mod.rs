@@ -32,6 +32,5 @@ pub use node::*;
 pub use stream::{channel, collect_values, first_event, unbounded_channel, Observable};
 pub use wire::{Event, ObservableError, Sender, WireEvent};
 
-// Shared by the transport to normalize the `WireEvent` it receives over the
-// wire into the user-facing `Event`.
+// Used by the transport to normalize a received `WireEvent` into an `Event`.
 pub(crate) use wire::normalize_wire_event;

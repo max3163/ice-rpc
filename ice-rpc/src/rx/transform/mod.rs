@@ -17,27 +17,11 @@
 //! Each step wraps the previous one through
 //! [`Observable::from_stream`](crate::Observable::from_stream), i.e. a boxed
 //! poll-based combinator: no intermediate channel, no spawned task, no
-//! `Arc`/lock. The cost is one box per operator, measured by
-//! `benches/pipeline.rs`.
+//! `Arc`/lock.
 //!
-//! Operators:
-//! - [`Observable::map`] / [`Observable::map_err`] — transform the value / the
-//!   business error;
-//! - [`Observable::filter`] — keeps the values matching a predicate;
-//! - [`Observable::take`] / [`Observable::skip`] — limits / skips the first
-//!   `n` values;
-//! - [`Observable::first`] / [`Observable::first_with`] — emits one value then
-//!   completes;
-//! - [`Observable::start_with`] — prefixes an initial value;
-//! - [`Observable::scan`] — emits a running accumulator;
-//! - [`Observable::tap`] / [`Observable::finalize`] — side effects per value /
-//!   at termination;
-//! - [`Observable::catch_error`] — replaces a business error with a fallback;
-//! - [`Observable::delay`] / [`Observable::timeout`] — time-based operators;
-//! - [`Observable::switch_map`] — projects each value to the latest inner
-//!   stream;
-//! - [`Observable::take_until`] — stops when a [`crate::CancellationToken`]
-//!   fires.
+//! Operators: `map` / `map_err`, `filter`, `take` / `skip`, `first` /
+//! `first_with`, `start_with`, `scan`, `tap` / `finalize`, `catch_error`,
+//! `delay` / `timeout`, `switch_map`, `take_until`.
 //!
 //! Terminals (`first_value`, `collect`, [`Observable::for_each`],
 //! [`Observable::subscribe`], [`Observable::subscribe_all`]) consume the stream
@@ -288,9 +272,8 @@ impl<T, E> Observable<T, E> {
     }
 }
 
-// Operator implementations, grouped by ReactiveX category. They are private to
-// the crate: the operator *types* never appear in a public signature anymore
-// (every method above returns `Observable`).
+// Operator implementations, grouped by ReactiveX category. They are private:
+// the operator *types* never appear in a public signature.
 mod combining;
 mod conditional;
 mod error_handling;

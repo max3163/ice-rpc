@@ -2,11 +2,9 @@
 //!
 //! The header is `ZeroCopySend` and lives *next to* the payload in the shared
 //! memory sample, not inside it: reading the correlation id, the method name or
-//! the protocol version never deserializes the payload. It is also what makes
-//! the payload start at the beginning of the sample, so the alignment requested
-//! from iceoryx2 is the alignment rkyv sees.
+//! the protocol version never deserializes the payload.
 //!
-//! The layout is `#[repr(C)]` and is part of the wire contract shared by every
+//! The layout is `#[repr(C)]` and part of the wire contract shared by every
 //! process on the machine: it must not drift silently.
 
 use iceoryx2::prelude::ZeroCopySend;
@@ -68,10 +66,8 @@ pub struct RpcHeader {
     pub correlation_id: [u8; CORRELATION_ID_LEN],
     /// Identifier of the target service inside the channel it is published on.
     ///
-    /// Several services can share one request/response channel (their *group*);
-    /// this id — [`service_id_of`] of the service name — is what the provider
-    /// uses to pick the right dispatcher. Zero on a response that does not
-    /// belong to a registered service.
+    /// Several services can share one channel (their *group*); this id —
+    /// [`service_id_of`] of the service name — selects the provider dispatcher.
     pub service_id: u32,
     /// Method invoked by the request (left empty on a response).
     pub method_name: StaticString<METHOD_NAME_LEN>,
@@ -126,15 +122,12 @@ impl RpcHeader {
     }
 }
 
-/// Computes the stable identifier of a service inside its channel.
+/// Computes the stable identifier of a service inside its channel (FNV-1a).
 ///
-/// FNV-1a, chosen because it is a `const fn`: the generated code can pass the
-/// result of `service_id_of("DatabaseService")` as a constant, and **every**
-/// process — as well as `ice-rpc-macros` — derives the same value from the same
-/// name without any coordination or discovery step.
-///
-/// The 32-bit space keeps the id in the header; a collision between two
-/// co-located services is detected when the channel is registered.
+/// A `const fn`, so the generated code can use the result as a constant, and
+/// every process derives the same value from the same name without discovery.
+/// A collision between two co-located services is detected at channel
+/// registration.
 #[inline]
 pub const fn service_id_of(name: &str) -> u32 {
     const OFFSET_BASIS: u32 = 0x811c_9dc5;
@@ -202,8 +195,7 @@ mod tests {
 
     #[test]
     fn a_name_longer_than_the_capacity_falls_back_to_empty() {
-        // `#[service]` rejects this at compile time, so the runtime fallback is
-        // only a safety net.
+        // `#[service]` rejects this at compile time: the fallback is a safety net.
         let long = "x".repeat(METHOD_NAME_LEN + 20);
         let header = RpcHeader::request(&long, 0, 1);
         assert!(header.method().is_empty());
@@ -211,8 +203,7 @@ mod tests {
 
     #[test]
     fn service_id_is_stable_and_distinguishes_names() {
-        // Offset basis of FNV-1a: pins the algorithm, so a change of hash would
-        // be caught here instead of silently breaking the routing.
+        // Offset basis of FNV-1a: pins the algorithm.
         assert_eq!(service_id_of(""), 0x811c_9dc5);
 
         // Usable in a constant expression, which is how the macro passes it.
@@ -226,8 +217,7 @@ mod tests {
 
     #[test]
     fn the_header_layout_stays_bounded_and_aligned() {
-        // The layout is part of the wire contract shared by every process: it
-        // must stay small (it is copied per sample) and 8-byte aligned.
+        // Part of the wire contract: small (copied per sample) and 8-byte aligned.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
         assert!(std::mem::size_of::<RpcHeader>() <= 128);
     }

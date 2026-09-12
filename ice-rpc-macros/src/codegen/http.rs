@@ -14,11 +14,8 @@ pub struct HttpGenInput {
     pub http_methods: Vec<HttpMethodData>,
 }
 
-/// Owned data of a method needed for the HTTP dispatch.
-///
-/// Only the fields actually read by [`gen_http_method_arm`] are kept: the
-/// success/error types are not needed, since the response is already converted
-/// to `serde_json::Value` by the generated call.
+/// Owned data of a method needed for the HTTP dispatch (the success/error types
+/// are not needed: the response is already a `serde_json::Value`).
 pub struct HttpMethodData {
     pub fn_name: Ident,
     pub arg_names: Vec<Ident>,

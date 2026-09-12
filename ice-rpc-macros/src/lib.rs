@@ -4,20 +4,18 @@
 //! generates the Proxy, Client, Server and the lifecycle code
 //! for an RPC service trait.
 
-#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 mod codegen;
 mod entry;
 
-// PRIVATE constants — the public versions are in ice-rpc (`types.rs`).
-// The values MUST be identical to `ice_rpc::types::{SERVICE_NAME_LEN, METHOD_NAME_LEN}`
-// (64) because `RpcHeader` stores the names in a `StaticString<SERVICE_NAME_LEN>`
-// and truncates silently past that length.
+// Private: the public versions live in `ice-rpc` (`types/consts.rs`). The values
+// MUST stay identical (64), the maximum name lengths the wire framing accepts.
 const SERVICE_NAME_LEN: usize = 64;
 const METHOD_NAME_LEN: usize = 64;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
+use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitInt, LitStr, TraitItem};
 
 use crate::codegen::{
     client::{
@@ -27,48 +25,79 @@ use crate::codegen::{
     helpers::{extract_rpc_result_types, g_variant_name},
     http::{gen_http_callable_impl, HttpGenInput, HttpMethodData},
     lifecycle::{gen_lifecycle, LifecycleGenInput},
-    nodejs::{gen_nodejs_deserialize_fn, gen_nodejs_serialize_fn, NodeJsGenInput, NodeJsMethod},
+    nodejs::{
+        gen_nodejs_deserialize_fn, gen_nodejs_native_method, gen_nodejs_serialize_fn,
+        NodeJsGenInput, NodeJsMethod,
+    },
     proxy::{gen_proxy, gen_proxy_method, ProxyGenInput},
-    server::{gen_server, gen_server_match_arm, ServerGenInput},
+    server::{gen_native_method, gen_server, ServerGenInput},
 };
+
+/// Validates the `group` parameter of `#[service]`.
+///
+/// Same rules as the service name: the group becomes part of the iceoryx2
+/// service names of the channel (`{group}_req`, `{group}_resp`, …).
+fn validate_channel_name(name: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    if name.len() > SERVICE_NAME_LEN {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "Channel name '{name}' too long ({} > {SERVICE_NAME_LEN} characters). \
+                 Use #[service(..., group = \"ShortName\")].",
+                name.len(),
+            ),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "Invalid channel name '{name}': only ASCII alphanumeric characters, '_' and '-' are allowed."
+            ),
+        ));
+    }
+    if let Some(first) = name.chars().next() {
+        if !first.is_ascii_alphanumeric() {
+            return Err(syn::Error::new(
+                span,
+                format!("Invalid channel name '{name}': must start with a letter or a digit."),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Optional parameters of the `#[service]` macro.
 ///
 /// - `#[service]` → the logical name = the trait name in lowercase.
 /// - `#[service("MyService")]` → explicit logical name.
-/// - `#[service(allow_large_payload = true)]` → enables the second shared-memory
-///   segment (default: `false`).
-/// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
-///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
-/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline for
-///   locating the provider before the first call (default:
-///   `ice_rpc::gen::RPC_CALL_TIMEOUT_SECS`, 30s). Accepts the `s` / `m` / `h`
-///   suffixes. It bounds the *discovery* phase only, never the response wait.
-/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
+/// - `#[service(..., group = "db")]` → the **channel** this service shares with
+///   the other services of the same group. A channel is the unit of transport:
+///   it owns one request channel, one response channel and one dispatch thread,
+///   and the samples are routed by the service id carried in the header.
+///   Defaults to the service name, i.e. one channel per service.
+/// - `#[service("MyService", version = 2, group = "db")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
-    allow_large_payload: bool,
-    default_size_message_kb: Option<u64>,
+    group: Option<String>,
     service_version: u16,
-    discovery_timeout_secs: Option<u64>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut logical_name: Option<String> = None;
-        let mut allow_large_payload = false;
-        let mut default_size_message_kb: Option<u64> = None;
+        let mut group: Option<String> = None;
         let mut service_version: u16 = 1;
-        let mut discovery_timeout_secs: Option<u64> = None;
 
         if input.is_empty() {
             return Ok(Self {
                 logical_name: None,
-                allow_large_payload: false,
-                default_size_message_kb: None,
+                group: None,
                 service_version,
-                discovery_timeout_secs: None,
             });
         }
 
@@ -78,28 +107,14 @@ impl syn::parse::Parse for ServiceAttr {
                 logical_name = Some(name.value());
             } else {
                 let ident: syn::Ident = input.parse()?;
-                if ident == "allow_large_payload" {
+                if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
-                    let lit: LitBool = input.parse()?;
-                    allow_large_payload = lit.value;
-                } else if ident == "default_size_message" {
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitInt = input.parse()?;
-                    default_size_message_kb = Some(lit.base10_parse::<u64>()?);
+                    let lit: LitStr = input.parse()?;
+                    group = Some(lit.value());
                 } else if ident == "version" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
-                } else if ident == "discovery_timeout" {
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitStr = input.parse()?;
-                    discovery_timeout_secs =
-                        Some(parse_duration_str(&lit.value()).ok_or_else(|| {
-                            syn::Error::new(
-                                lit.span(),
-                                "invalid duration; expected forms like \"30s\", \"5m\" or \"1h\"",
-                            )
-                        })?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -116,27 +131,9 @@ impl syn::parse::Parse for ServiceAttr {
 
         Ok(Self {
             logical_name,
-            allow_large_payload,
-            default_size_message_kb,
+            group,
             service_version,
-            discovery_timeout_secs,
         })
-    }
-}
-
-/// Parses a duration string like `"60s"`, `"5m"`, `"1h"` into seconds.
-///
-/// Used by the `discovery_timeout` parameter of `#[service]`.
-fn parse_duration_str(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(rest) = s.strip_suffix('s') {
-        rest.parse::<u64>().ok()
-    } else if let Some(rest) = s.strip_suffix('m') {
-        rest.parse::<u64>().ok().map(|v| v * 60)
-    } else if let Some(rest) = s.strip_suffix('h') {
-        rest.parse::<u64>().ok().map(|v| v * 3600)
-    } else {
-        s.parse::<u64>().ok()
     }
 }
 
@@ -206,12 +203,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> syn::Result<Vec<NodeJsMethod>> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `allow_large_payload`, `default_size_message` (KiB),
-/// `version` and `discovery_timeout` (duration string such as `"5s"`, `"2m"`,
-/// `"1h"`). The discovery timeout is **service-wide**: it bounds the provider
-/// lookup performed by `ClientCore::resolve_target` for every method of the
-/// service. It does not bound the response wait — use the `timeout` operator
-/// (provider-side `ice-rpc-rx`) for that.
+/// `"LogicalName"`, `version` and `group` (see [`ServiceAttr`]).
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
@@ -241,12 +233,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         .logical_name
         .unwrap_or_else(|| trait_name.to_string().to_lowercase());
 
-    let allow_large_payload = service_attr.allow_large_payload;
-    let default_size_message_kb = service_attr.default_size_message_kb;
     let service_version = service_attr.service_version;
-    // Discovery timeout is a *service-wide* setting: every method of the
-    // service shares the same provider-lookup deadline.
-    let discovery_timeout_secs = service_attr.discovery_timeout_secs;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -295,11 +282,14 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     // ── End of validation ────────────────────────────────────────
 
-    let ipc_prefix = logical_name.to_lowercase();
+    // The channel a service belongs to (defaults to the service name).
+    let group = service_attr.group.unwrap_or_else(|| logical_name.clone());
+    if let Err(e) = validate_channel_name(&group, trait_name.span()) {
+        return e.to_compile_error().into();
+    }
 
-    let topic_ready = format!("{}_server_ready", ipc_prefix);
     let logical_name_lit = logical_name.clone();
-    let blackboard_key: u8 = 1u8;
+    let group_lit = group.clone();
 
     let req_enum_name = format_ident!("{}Request", trait_name);
     let client_name = format_ident!("{}Client", trait_name);
@@ -311,7 +301,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
     let mut variant_discriminant: u8 = 0;
-    let mut server_match_arms = Vec::new();
+    let mut server_native_methods = Vec::new();
+    let mut nodejs_native_methods = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
     for item in &input_trait.items {
@@ -371,19 +362,18 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 err_type: &err_type,
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
-                discovery_timeout_secs,
+                group: &group_lit,
                 service_version,
             }));
 
-            server_match_arms.push(gen_server_match_arm(
-                trait_name,
+            server_native_methods.push(gen_native_method(
                 fn_name,
                 &var_name,
                 &arg_names,
                 &req_enum_name,
-                service_version,
-                (&*ok_type, &*err_type),
             ));
+
+            nodejs_native_methods.push(gen_nodejs_native_method(&proxy_name, fn_name));
 
             node_methods.push(gen_proxy_method(
                 fn_name,
@@ -405,26 +395,16 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let client_input = ClientGenInput {
         visibility,
         client_name: &client_name,
-        logical_name: &logical_name_lit,
         client_methods: &client_methods,
-        allow_large_payload,
-        default_size_message_kb,
     };
     let client_struct = gen_client_struct(&client_input);
     let client_lifecycle = gen_client_lifecycle(&client_input);
 
     let server_input = ServerGenInput {
         trait_name,
-        logical_name: &logical_name_lit,
         visibility,
         server_name: &server_name,
-        req_enum_name: &req_enum_name,
-        topic_ready: &topic_ready,
-        blackboard_key,
-        server_match_arms: &server_match_arms,
-        allow_large_payload,
-        default_size_message_kb,
-        service_version,
+        server_native_methods: &server_native_methods,
     };
     let server_output = gen_server(&server_input);
 
@@ -446,9 +426,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         server_name: &server_name,
         mode_name: &mode_name,
         logical_name_lit: &logical_name_lit,
-        allow_large_payload,
-        default_size_message_kb,
-        service_version,
+        group_lit: &group_lit,
+        nodejs_native_methods: &nodejs_native_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
@@ -473,9 +452,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let http_callable_impl = gen_http_callable_impl(&http_input);
 
-    // Generates a unique symbol to detect name collisions.
-    // If two services have the same logical_name, the linker will fail
-    // with "duplicate symbol".
+    // Unique symbol to detect name collisions: two services with the same
+    // logical name make the linker fail with "duplicate symbol".
     let collision_symbol = syn::Ident::new(
         &format!("__ICE_RPC_SVC_{}", logical_name.replace('-', "_")),
         proc_macro2::Span::call_site(),
@@ -505,10 +483,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         static #collision_symbol: u8 = 0;
     };
 
-    // The generated wrappers are named after the user's trait and cannot be
-    // documented by the consumer, so they must not trip its `missing_docs`
-    // lint. The annotated trait itself is exempted from this guard: it stays
-    // subject to the consumer's lint configuration.
+    // The generated wrappers cannot be documented by the consumer, so they must
+    // not trip its `missing_docs` lint; the annotated trait is not exempted.
     let generated = codegen::helpers::allow_missing_docs(generated);
 
     let expanded = quote! {
@@ -523,19 +499,15 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Bootstraps ice-rpc around an `async fn main`.
 ///
-/// Generates a synchronous `fn main` that:
-/// 1. initializes ice-rpc (`ice_rpc::gen::init()`);
-/// 2. awaits the annotated body;
-/// 3. shuts ice-rpc down (waiting for the IPC threads and releasing the
-///    iceoryx2 node) — **even when the body returns early via `?` or
-///    `return`**, because the body runs inside its own `async` block.
+/// Generates a synchronous `fn main` that initializes ice-rpc, awaits the
+/// annotated body, then shuts ice-rpc down — **even when the body returns early
+/// via `?` or `return`**.
 ///
 /// # Runtime
 ///
 /// No runtime is hard-coded:
 /// - `#[ice_rpc::main]` → runtime-agnostic, driven by `ice_rpc::rt::block_on`;
-/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime
-///   (requires `tokio` with the `rt-multi-thread` and `time` features);
+/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime;
 /// - `#[ice_rpc::main(smol::block_on)]` → any user-provided `fn(Future) -> T`.
 ///
 /// # Example
@@ -598,8 +570,8 @@ mod entry_tests {
     #[test]
     fn main_wraps_body_in_an_inner_async_block() {
         let out = expand(quote! {}, quote! { async fn main() {} });
-        // The shutdown must be emitted after the awaited body, so an early
-        // `return` / `?` inside the body cannot skip it.
+        // The shutdown must come after the awaited body, so an early `return`
+        // cannot skip it.
         let shutdown = out.find("shutdown").expect("shutdown() missing");
         let body_await = out.find(". await").expect("body await missing");
         assert!(body_await < shutdown, "{out}");

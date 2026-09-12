@@ -25,15 +25,14 @@ NODE = "node.exe"
 BASH = "bash"
 
 # --- Rust examples -----------------------------------------------------------
-# The demo apps live in `ice-rpc-rx`; `ice-rpc/examples` only hosts the C7
-# native-liveness diagnostic probe. Running an example needs its crate AND its
-# features (see `required-features` in `ice-rpc-rx/Cargo.toml`):
-#   - most examples            -> `tokio`
+# The demo apps and the C7 native-liveness diagnostic probe all live in
+# `ice-rpc/examples`. Running a demo needs its features (see `required-features`
+# in `ice-rpc/Cargo.toml`):
+#   - the demo apps            -> `tokio`
 #   - `provider-app` + gateway -> `tokio http-tokio`
-#   - `perf_probe`             -> `perf-probe` (opt-in, never built by default)
 # Always run from the workspace root so the generated `config/iceoryx2.toml` is
 # shared by the provider and the consumer.
-EXAMPLES_CRATE = "ice-rpc-rx"
+EXAMPLES_CRATE = "ice-rpc"
 EXAMPLES_FEATURES = "tokio"
 # Defaults for the generic `example` / `example-release` runners.
 EXAMPLE = "provider-app"
@@ -106,35 +105,35 @@ args = ["check", "--workspace", "--all-targets"]
 description = "Shortcut: run the Rust provider example (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer]
 description = "Shortcut: run the Rust consumer example (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.provider-release]
 description = "Shortcut: run the Rust provider example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-release]
 description = "Shortcut: run the Rust consumer example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.bench-app]
 description = "Shortcut: run the benchmark example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "benchmark-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "benchmark-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.probe]
@@ -147,36 +146,22 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 [tasks.examples-build]
 description = "Build all Rust examples (debug), with the correct features"
 workspace = false
-dependencies = ["examples-build-ice-rpc", "examples-build-rx"]
+dependencies = ["examples-build-apps"]
 
 [tasks.examples-build-release]
 description = "Build all Rust examples (release), with the correct features"
 workspace = false
-dependencies = ["examples-build-ice-rpc-release", "examples-build-rx-release"]
+dependencies = ["examples-build-apps-release"]
 
-[tasks.examples-build-ice-rpc]
-description = "Build the ice-rpc examples (debug)"
-workspace = false
-command = "cargo"
-args = ["build", "-p", "ice-rpc", "--examples"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.examples-build-ice-rpc-release]
-description = "Build the ice-rpc examples (release)"
-workspace = false
-command = "cargo"
-args = ["build", "-p", "ice-rpc", "--examples", "--release"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.examples-build-rx]
-description = "Build the ice-rpc-rx examples (debug, features: ${EXAMPLES_FEATURES})"
+[tasks.examples-build-apps]
+description = "Build the ice-rpc examples (debug, features: ${EXAMPLES_FEATURES})"
 workspace = false
 command = "cargo"
 args = ["build", "-p", "${EXAMPLES_CRATE}", "--examples", "--features", "${EXAMPLES_FEATURES}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
-[tasks.examples-build-rx-release]
-description = "Build the ice-rpc-rx examples (release, features: ${EXAMPLES_FEATURES})"
+[tasks.examples-build-apps-release]
+description = "Build the ice-rpc examples (release, features: ${EXAMPLES_FEATURES})"
 workspace = false
 command = "cargo"
 args = ["build", "-p", "${EXAMPLES_CRATE}", "--examples", "--features", "${EXAMPLES_FEATURES}", "--release"]
@@ -185,14 +170,14 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 # --- Generic runners ---------------------------------------------------------
 
 [tasks.example]
-description = "Run an ice-rpc-rx example (debug): --env EXAMPLE=... [--env EXAMPLE_FEATURES=...] [-- args]"
+description = "Run an ice-rpc example (debug): --env EXAMPLE=... [--env EXAMPLE_FEATURES=...] [-- args]"
 workspace = false
 command = "cargo"
 args = ["run", "-p", "${EXAMPLES_CRATE}", "--example", "${EXAMPLE}", "--features", "${EXAMPLE_FEATURES}", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.example-release]
-description = "Run an ice-rpc-rx example (release): --env EXAMPLE=... [--env EXAMPLE_FEATURES=...] [-- args]"
+description = "Run an ice-rpc example (release): --env EXAMPLE=... [--env EXAMPLE_FEATURES=...] [-- args]"
 workspace = false
 command = "cargo"
 args = ["run", "-p", "${EXAMPLES_CRATE}", "--example", "${EXAMPLE}", "--features", "${EXAMPLE_FEATURES}", "--release", "${@}"]
@@ -218,28 +203,28 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 description = "Run the Rust provider example (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.provider-rust-release]
 description = "Run the Rust provider example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.provider-rust-http]
 description = "Run the Rust provider with the HTTP REST gateway (debug, features: tokio http-tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio http-tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio http-tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.provider-rust-http-release]
 description = "Run the Rust provider with the HTTP REST gateway (release, features: tokio http-tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "provider-app", "--features", "tokio http-tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio http-tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 # --- Shortcuts: consumers ----------------------------------------------------
@@ -248,56 +233,56 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 description = "Run the Rust consumer, DatabaseService (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-rust-release]
 description = "Run the Rust consumer, DatabaseService (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-context-rust]
 description = "Run the Rust consumer, ContextService (debug)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--", "--service", "context"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--", "--service", "context"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-context-rust-release]
 description = "Run the Rust consumer, ContextService (release)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--release", "--", "--service", "context"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--release", "--", "--service", "context"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-notifications-rust]
 description = "Run the Rust consumer, NotificationService (debug)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--", "--service", "notifications"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--", "--service", "notifications"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-notifications-rust-release]
 description = "Run the Rust consumer, NotificationService (release)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-app", "--features", "tokio", "--release", "--", "--service", "notifications"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-app", "--features", "tokio", "--release", "--", "--service", "notifications"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-http-rust]
 description = "Run the Rust consumer for the HTTP service (debug)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-http-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-http-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.consumer-http-rust-release]
 description = "Run the Rust consumer for the HTTP service (release)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "consumer-http-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "consumer-http-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 # --- Shortcuts: benchmarks and diagnostics -----------------------------------
@@ -306,56 +291,28 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 description = "Run the parallel benchmark example (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "benchmark-app", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "benchmark-app", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.benchmark-rust-release]
 description = "Run the parallel benchmark example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "benchmark-app", "--features", "tokio", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "benchmark-app", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.state-service-rust]
 description = "Run the state-service example (debug, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "state_service", "--features", "tokio", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "state_service", "--features", "tokio", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.state-service-rust-release]
 description = "Run the state-service example (release, features: tokio)"
 workspace = false
 command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "state_service", "--features", "tokio", "--release", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.pipeline-bench-rust]
-description = "Run the pipeline benchmark example (debug, features: tokio)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "pipeline_bench", "--features", "tokio", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.pipeline-bench-rust-release]
-description = "Run the pipeline benchmark example (release, features: tokio)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "pipeline_bench", "--features", "tokio", "--release", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.perf-probe-rust]
-description = "Run the opt-in timing harness (debug, features: perf-probe)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "perf_probe", "--features", "perf-probe", "${@}"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-
-[tasks.perf-probe-rust-release]
-description = "Run the opt-in timing harness (release, features: perf-probe)"
-workspace = false
-command = "cargo"
-args = ["run", "-p", "ice-rpc-rx", "--example", "perf_probe", "--features", "perf-probe", "--release", "${@}"]
+args = ["run", "-p", "ice-rpc", "--example", "state_service", "--features", "tokio", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.liveness-probe]

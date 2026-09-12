@@ -41,6 +41,7 @@ log = { workspace = true }
 iceoryx2 = "0.9.3"
 iceoryx2-bb-system-types = "0.9.3"
 iceoryx2-bb-container = "0.9.3"
+iceoryx2-bb-posix = "0.9.3"
 rkyv = { workspace = true }
 async-trait = { workspace = true }
 toml = { workspace = true }
@@ -71,7 +72,39 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
+# The demo services are declared once, in the `common` crate (not published), and
+# shared with the `gateway_nodejs` examples: no local copy is maintained here.
+common = { path = "../examples/common" }
 
 [[bench]]
 name = "concurrency"
 harness = false
+
+# Measures the cost of the boxed `Box<dyn Stream>` operator chain.
+[[bench]]
+name = "pipeline"
+harness = false
+
+# ── Demo applications ───────────────────────────────────────────────
+# Hosted here (see `plans/merge-rx.md`) so a single crate ships the library,
+# its reactive layer, its examples and its benches. They all need the Tokio
+# runtime facade.
+[[example]]
+name = "state_service"
+required-features = ["tokio"]
+
+[[example]]
+name = "provider-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "consumer-http-app"
+required-features = ["tokio"]
+
+[[example]]
+name = "benchmark-app"
+required-features = ["tokio"]

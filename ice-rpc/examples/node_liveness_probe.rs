@@ -1,6 +1,6 @@
-//! Diagnostic harness for audit **C7**: validate that iceoryx2's *native* node
-//! monitoring detects a provider killed with `SIGKILL`. This is the mechanism
-//! ice-rpc now relies on; the hand-written kernel lock it replaced is gone.
+//! Diagnostic harness validating that iceoryx2's *native* node monitoring
+//! detects a provider killed with `SIGKILL`. This is the mechanism ice-rpc relies
+//! on.
 //!
 //! It is deliberately standalone: it uses the same iceoryx2 service as ice-rpc
 //! (`ipc_threadsafe::Service`) and `Node::list` / `NodeState`.
@@ -8,10 +8,8 @@
 //! # Usage
 //! ```bash
 //! cargo build -p ice-rpc --example node_liveness_probe
-//! node_liveness_probe provider [hold_secs] [direct]
-//!     # create a Node; `direct` uses NodeBuilder (local Drop is decisive),
-//!     # otherwise it goes through ServiceLocator::get_node_sync (realistic
-//!     # provider path, whose Node is also kept by the global singleton)
+//! node_liveness_probe provider [hold_secs]
+//!     # create a Node via NodeBuilder; dropping it is the clean shutdown
 //! node_liveness_probe list                          # print "<pid> <state>" for every node
 //! node_liveness_probe watch <pid>                   # poll until <pid> is Dead, print latency
 //! node_liveness_probe bench <iters>                 # cost of Node::list
@@ -19,7 +17,7 @@
 //!
 //! See `scripts/validate-node-liveness.sh` for the orchestrated T1/T2/T3 runs.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -100,26 +98,16 @@ fn print_pid_and_hold(hold: Option<u64>) {
     }
 }
 
-fn provider_cmd(hold: Option<u64>, direct: bool) {
+fn provider_cmd(hold: Option<u64>) {
     setup();
 
-    if direct {
-        // A locally owned Node: dropping it *is* the clean shutdown, so this
-        // isolates the monitoring semantics (clean removal vs crash).
-        let node = NodeBuilder::new()
-            .create::<ipc_threadsafe::Service>()
-            .expect("NodeBuilder::create");
-        print_pid_and_hold(hold);
-        drop(node);
-    } else {
-        // Realistic provider path: the Node is also held by the global
-        // singleton, so only `ShutdownGuard`/`release_node` removes it.
-        let node = ice_rpc::ServiceLocator::global()
-            .get_node_sync()
-            .expect("get_node_sync");
-        print_pid_and_hold(hold);
-        drop(node);
-    }
+    // A locally owned Node: dropping it *is* the clean shutdown, so this
+    // isolates the monitoring semantics (clean removal vs crash).
+    let node = NodeBuilder::new()
+        .create::<ipc_threadsafe::Service>()
+        .expect("NodeBuilder::create");
+    print_pid_and_hold(hold);
+    drop(node);
 }
 
 fn main() {
@@ -127,8 +115,7 @@ fn main() {
     match args.get(1).map(String::as_str).unwrap_or("") {
         "provider" => {
             let hold = args.get(2).and_then(|s| s.parse().ok());
-            let direct = args.iter().any(|a| a == "direct");
-            provider_cmd(hold, direct);
+            provider_cmd(hold);
         }
         "list" => list_cmd(),
         "watch" => {
@@ -145,7 +132,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: node_liveness_probe provider [hold_secs] [direct] | list | watch <pid> | bench <iters>"
+                "usage: node_liveness_probe provider [hold_secs] | list | watch <pid> | bench <iters>"
             );
             std::process::exit(1);
         }

@@ -1,24 +1,16 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 #![allow(unexpected_cfgs)]
-// =============================================================================
 // Integration tests for the `#[service]` procedural macro.
 //
-// RULES:
-//   1. `#[service]` MUST be placed BEFORE `#[async_trait::async_trait]`
-//      so that the macro sees the original `async fn` signatures.
-//   2. The trait MUST have `Send + Sync + 'static` as supertraits
-//      so that `Arc<dyn Trait>` (used in the generated Provider Mode)
-//      is `Send + Sync` and compatible with `RwLock<Mode>`.
-// =============================================================================
+// `#[service]` MUST be placed before `#[async_trait::async_trait]`, and the
+// trait MUST have `Send + Sync + 'static` as supertraits.
 
 use ice_rpc::gen::ServiceNamed;
 use ice_rpc::{self, Observable, ServiceInit};
 use ice_rpc_macros::service;
 
-// -----------------------------------------------------------------------------
-// Test 1: Macro without parameter (name = the trait name in lowercase)
-// -----------------------------------------------------------------------------
+// Test 1: macro without parameter (name = the trait name in lowercase)
 
 #[service]
 #[async_trait::async_trait]
@@ -43,9 +35,7 @@ fn test_request_enum_has_variant() {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Test 2: Macro with explicit name
-// -----------------------------------------------------------------------------
+// Test 2: macro with an explicit name
 
 #[service("CustomName")]
 #[async_trait::async_trait]
@@ -67,9 +57,7 @@ fn test_custom_name_request_enum() {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Test 3: Proxy provides ServiceInit and ServiceNamed
-// -----------------------------------------------------------------------------
+// Test 3: the proxy implements ServiceInit and ServiceNamed
 
 #[test]
 fn test_proxy_implements_service_init() {
@@ -78,9 +66,7 @@ fn test_proxy_implements_service_init() {
     _assert_service_init(&*proxy);
 }
 
-// -----------------------------------------------------------------------------
-// Test 4: Provider Mode with provide()
-// -----------------------------------------------------------------------------
+// Test 4: Provider mode with provide()
 
 struct CalcImpl;
 
@@ -118,9 +104,7 @@ fn test_proxy_provide_with_init_creates_provider_with_deps() {
     let _proxy = CalculatorProxy::provide_with_init(CalcWithInit(CalcImpl));
 }
 
-// -----------------------------------------------------------------------------
-// Test 5: Client struct is Send + Sync
-// -----------------------------------------------------------------------------
+// Test 5: the client struct is Send + Sync
 
 #[test]
 fn test_client_struct_is_send_sync() {
@@ -129,43 +113,10 @@ fn test_client_struct_is_send_sync() {
     let _: &dyn Sync = &client;
 }
 
-// -----------------------------------------------------------------------------
-// Test 7: `allow_large_payload` parameter
-// -----------------------------------------------------------------------------
+// Test 7: a service name of exactly 64 bytes (= SERVICE_NAME_LEN) is accepted
 
-#[service(allow_large_payload = true)]
-#[async_trait::async_trait]
-pub trait LargePayloadService: Send + Sync + 'static {
-    async fn big(&self, data: String) -> Observable<String, String>;
-}
-
-#[service("DefaultPayloadService", allow_large_payload = false)]
-#[async_trait::async_trait]
-pub trait DefaultPayloadService: Send + Sync + 'static {
-    async fn small(&self, data: String) -> Observable<String, String>;
-}
-
-#[test]
-fn test_allow_large_payload_parameter_compiles() {
-    // The `allow_large_payload = true` service must generate a working client
-    // and enable the large-payload segment on the global hub.
-    let _large = LargePayloadServiceClient::new();
-    assert!(ice_rpc::ServiceLocator::global()
-        .hub()
-        .is_large_payload_enabled());
-
-    // `allow_large_payload = false` (explicit default) still compiles.
-    let _default = DefaultPayloadServiceClient::new();
-}
-
-// -----------------------------------------------------------------------------
-// Test 7b: a service name of exactly 64 bytes (= SERVICE_NAME_LEN) is accepted
-// -----------------------------------------------------------------------------
-
-/// Exactly 64 bytes: the maximum the macro accepts, and the capacity of both
-/// the `RpcHeader` `StaticString<64>` and the discovery blackboard key. A
-/// name at the limit must be preserved verbatim end to end, otherwise the
-/// service would be published but never discoverable.
+/// Exactly 64 bytes: the maximum the macro accepts, and the capacity of the
+/// `RpcHeader` `StaticString<64>`. A name at the limit must survive verbatim.
 #[service("MaxLenServiceAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
 #[async_trait::async_trait]
 pub trait MaxLenNameService: Send + Sync + 'static {
@@ -182,46 +133,7 @@ fn test_service_name_at_max_length_is_accepted_verbatim() {
     assert_eq!(MaxLenNameServiceProxy::consume().service_name().len(), 64);
 }
 
-// -----------------------------------------------------------------------------
-// Test 8: `default_size_message` parameter (in KiB)
-// -----------------------------------------------------------------------------
-
-#[service(default_size_message = 4)]
-#[async_trait::async_trait]
-pub trait SizedMessageService: Send + Sync + 'static {
-    async fn echo(&self, data: String) -> Observable<String, String>;
-}
-
-#[service("FullService", allow_large_payload = true, default_size_message = 8)]
-#[async_trait::async_trait]
-pub trait FullService: Send + Sync + 'static {
-    async fn ping(&self) -> Observable<(), String>;
-}
-
-#[test]
-fn test_default_size_message_parameter() {
-    // Creating the client must configure the default segment size in bytes.
-    let _sized = SizedMessageServiceClient::new();
-    assert!(
-        ice_rpc::ServiceLocator::global()
-            .hub()
-            .default_message_size_bytes()
-            >= 4 * 1024
-    );
-
-    // A larger value wins (the hub keeps the maximum requested size).
-    let _full = FullServiceClient::new();
-    assert!(
-        ice_rpc::ServiceLocator::global()
-            .hub()
-            .default_message_size_bytes()
-            >= 8 * 1024
-    );
-}
-
-// -----------------------------------------------------------------------------
-// Test 9: #[service(version = N)]
-// -----------------------------------------------------------------------------
+// Test 8: `#[service(version = N)]`
 
 #[service(version = 2)]
 #[async_trait::async_trait]
@@ -235,48 +147,16 @@ fn test_versioned_service_compiles() {
     let _ = &client;
 }
 
-// -----------------------------------------------------------------------------
-// Test 10: #[service(discovery_timeout = "5s")] — service-wide parameter
-// -----------------------------------------------------------------------------
+// Test 9: several `#[service]` parameters at once
 
-#[service("DiscoveryTimeoutService", discovery_timeout = "5s")]
-#[async_trait::async_trait]
-pub trait DiscoveryTimeoutService: Send + Sync + 'static {
-    async fn ping(&self) -> Observable<(), String>;
-
-    async fn other(&self, value: i32) -> Observable<i32, String>;
-}
-
-#[service(
-    "AllParamsService",
-    allow_large_payload = true,
-    default_size_message = 4,
-    version = 3,
-    discovery_timeout = "2m"
-)]
+#[service("AllParamsService", version = 3, group = "allparams")]
 #[async_trait::async_trait]
 pub trait AllParamsService: Send + Sync + 'static {
     async fn ping(&self) -> Observable<(), String>;
 }
 
-#[service("HourTimeoutService", discovery_timeout = "1h")]
-#[async_trait::async_trait]
-pub trait HourTimeoutService: Send + Sync + 'static {
-    async fn ping(&self) -> Observable<(), String>;
-}
-
 #[test]
-fn test_discovery_timeout_parameter_compiles() {
-    // The discovery timeout is declared once for the whole service: both
-    // methods share it.
-    let client = DiscoveryTimeoutServiceClient::new();
+fn test_all_service_parameters_compile() {
+    let client = AllParamsServiceClient::new();
     let _ = &client;
-
-    // All the `#[service]` parameters coexist.
-    let all = AllParamsServiceClient::new();
-    let _ = &all;
-
-    // The `s`, `m` and `h` duration suffixes are accepted.
-    let hour = HourTimeoutServiceClient::new();
-    let _ = &hour;
 }

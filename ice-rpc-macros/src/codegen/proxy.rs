@@ -36,9 +36,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
-        // The `ProviderNodeJs` variant is only built by the Node.js gateway; a
-        // pure-Rust consumer never constructs it, so it is dead there. The
-        // attribute is scoped to the whole enum to keep one auditable exception.
+        // The `ProviderNodeJs` variant is only built by the Node.js gateway.
         #[allow(dead_code)]
         #visibility enum #mode_name {
             Provider {
@@ -55,11 +53,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             deps: Vec<&'static str>,
         }
 
-        // `provide_nodejs` (below) is the proxy-side entry point of the Node.js
-        // surface: like the `ProviderNodeJs` variant, it is emitted
-        // unconditionally but only used by the `gateway_nodejs` bridge, so a
-        // pure-Rust build sees it as dead code. One commented exception for the
-        // whole generated impl.
+        // `provide_nodejs` is emitted unconditionally but used only by the bridge.
         #[allow(dead_code)]
         impl #proxy_name {
             /// Logical name of the service, injected by the `#[service]` macro.

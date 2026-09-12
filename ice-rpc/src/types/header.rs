@@ -1,163 +1,236 @@
-//! Zero-copy RPC header and the correlation-id helpers.
+//! Zero-copy RPC header carried in iceoryx2's `user_header`.
+//!
+//! The header is `ZeroCopySend` and lives *next to* the payload in the shared
+//! memory sample, not inside it: reading the correlation id, the method name or
+//! the protocol version never deserializes the payload.
+//!
+//! The layout is `#[repr(C)]` and part of the wire contract shared by every
+//! process on the machine: it must not drift silently.
 
-use iceoryx2::prelude::*;
+use iceoryx2::prelude::ZeroCopySend;
+use iceoryx2_bb_container::string::StaticString;
 
-use super::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN};
-use super::wire::EventKind;
-use super::StaticString;
+use crate::types::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION};
 
-/// Zero-copy iceoryx2 header carried in the `user_header` of each sample.
+/// Correlation id prefixing every request/response pair.
+pub const CORRELATION_ID_LEN: usize = 16;
+
+/// Kind of the sample carried by a [`RpcHeader`].
 ///
-/// Multiplexes several services on the same topics via the `service_name` field.
+/// Stored as a `u8` in the header so the zero-copy layout stays plain data; the
+/// values are part of the wire contract.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventKind {
+    /// Request emitted by a client (non-terminal).
+    #[default]
+    Request = 0,
+    /// Intermediate event carrying a business value (non-terminal).
+    Next = 1,
+    /// Normal end of the stream (terminal).
+    Complete = 2,
+    /// Terminal error (business or technical).
+    Error = 3,
+}
+
+impl EventKind {
+    /// Returns `true` if this kind terminates the stream.
+    #[inline]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, EventKind::Complete | EventKind::Error)
+    }
+
+    /// Returns the wire value of this kind.
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Decodes a wire value; unknown values map to [`EventKind::Error`].
+    #[inline]
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => EventKind::Request,
+            1 => EventKind::Next,
+            3 => EventKind::Error,
+            _ => EventKind::Complete,
+        }
+    }
+}
+
+/// Zero-copy RPC header attached to every request and response sample.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, ZeroCopySend, Default)]
+#[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
 pub struct RpcHeader {
-    /// Request↔response correlation UUID (128 bits).
-    pub correlation_id: [u8; 16],
-    /// Emission timestamp in nanoseconds since `UNIX_EPOCH`.
-    pub sent_at_ns: u64,
-    /// Name of the target service.
-    pub service_name: StaticString<SERVICE_NAME_LEN>,
-    /// Name of the RPC method.
+    /// Request↔response correlation id (16 bytes).
+    pub correlation_id: [u8; CORRELATION_ID_LEN],
+    /// Identifier of the target service inside the channel it is published on.
+    ///
+    /// Several services can share one channel (their *group*); this id —
+    /// [`service_id_of`] of the service name — selects the provider dispatcher.
+    pub service_id: u32,
+    /// Method invoked by the request (left empty on a response).
     pub method_name: StaticString<METHOD_NAME_LEN>,
-    /// Type of the carried event.
-    pub event_kind: EventKind,
-    /// Version of the ice-rpc wire protocol.
+    /// Kind of the sample (request / next / complete / error), as a wire value.
+    pub event_kind: u8,
+    /// ice-rpc wire protocol version of the emitter.
     pub protocol_version: u16,
-    /// Version of the service interface (methods + request enum).
+    /// Service interface version of the emitter.
     pub service_version: u16,
 }
 
 impl RpcHeader {
-    /// Creates a **request** header with a unique correlation_id and the current timestamp.
-    pub fn new(service: &str, method: &str) -> Self {
-        Self {
-            correlation_id: RpcHeader::next_correlation_id(),
-            sent_at_ns: RpcHeader::now_ns(),
-            service_name: Self::pack_name(service, "service"),
-            method_name: Self::pack_name(method, "method"),
-            event_kind: EventKind::Request,
-            protocol_version: PROTOCOL_VERSION,
-            service_version: 0,
-        }
-    }
-
-    /// Packs a name into its fixed-capacity `StaticString`, truncating at the
-    /// capacity (64 bytes) at most.
+    /// Creates a **request** header with a fresh correlation id.
     ///
-    /// `#[service]` already rejects longer names at compile time, so truncation
-    /// is only reachable through direct calls to this public constructor. A
-    /// packing failure is **logged** rather than silently replaced by an empty
-    /// name: an empty `service_name` makes the message non-routable, so the
-    /// request would be dropped by the dispatch loop without any trace.
-    fn pack_name<const N: usize>(value: &str, kind: &str) -> StaticString<N> {
-        match StaticString::from_bytes_truncated(value.as_bytes()) {
-            Ok(name) => name,
-            Err(e) => {
-                log::error!("[ice-rpc] RpcHeader: cannot pack the {kind} name '{value}': {e:?}");
-                StaticString::default()
-            }
-        }
-    }
-
-    /// Sets the service interface version carried in the header.
+    /// A method name longer than [`METHOD_NAME_LEN`] is truncated; the
+    /// `#[service]` macro already rejects such names at compile time.
     #[inline]
-    pub fn with_service_version(mut self, service_version: u16) -> Self {
-        self.service_version = service_version;
-        self
-    }
-
-    /// Creates a **request** header with a service interface version.
-    #[inline]
-    pub fn request(service: &str, method: &str, service_version: u16) -> Self {
-        Self::new(service, method).with_service_version(service_version)
-    }
-
-    /// Creates a **response** header from a request header.
-    ///
-    /// Reuses the correlation id, service and method names of the request and
-    /// stamps the protocol/service versions and the current timestamp.
-    #[inline]
-    pub fn response_from(request: &RpcHeader, event_kind: EventKind, service_version: u16) -> Self {
+    pub fn request(method: &str, service_id: u32, service_version: u16) -> Self {
         Self {
-            correlation_id: request.correlation_id,
-            sent_at_ns: RpcHeader::now_ns(),
-            service_name: request.service_name,
-            method_name: request.method_name,
-            event_kind,
+            correlation_id: next_correlation_id(),
+            service_id,
+            method_name: StaticString::try_from(method).unwrap_or_default(),
+            event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
         }
     }
 
-    /// Returns `true` if this header is a request (client → server).
+    /// Builds the response header of `request`.
     #[inline]
-    pub fn is_request(&self) -> bool {
-        self.event_kind == EventKind::Request
+    pub fn response_from(request: &RpcHeader, event_kind: EventKind, service_version: u16) -> Self {
+        Self {
+            correlation_id: request.correlation_id,
+            service_id: request.service_id,
+            method_name: StaticString::default(),
+            event_kind: event_kind.as_u8(),
+            protocol_version: PROTOCOL_VERSION,
+            service_version,
+        }
     }
 
-    /// Returns `true` if this header is a response (server → client).
-    #[inline]
-    pub fn is_response(&self) -> bool {
-        self.event_kind != EventKind::Request
-    }
-
-    /// Returns the service name as a `&str`.
-    #[inline]
-    pub fn service(&self) -> &str {
-        core::str::from_utf8(self.service_name.as_bytes_const()).unwrap_or("")
-    }
-
-    /// Generates a unique correlation id without a CSPRNG syscall.
-    ///
-    /// Layout of the 16 bytes:
-    /// - `[0..4]`   : PID (u32 LE) — cross-process uniqueness.
-    /// - `[4..12]`  : atomic counter u64 LE — intra-process uniqueness.
-    /// - `[12..16]` : padding (zeros).
-    pub fn next_correlation_id() -> [u8; 16] {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let mut id = [0u8; 16];
-        id[0..4].copy_from_slice(&pid.to_le_bytes());
-        id[4..12].copy_from_slice(&seq.to_le_bytes());
-        id
-    }
-
-    /// Returns the method name as a `&str`.
+    /// Returns the method name carried by the header.
     #[inline]
     pub fn method(&self) -> &str {
-        core::str::from_utf8(self.method_name.as_bytes_const()).unwrap_or("")
+        std::str::from_utf8(self.method_name.as_bytes_const()).unwrap_or("")
     }
 
-    /// Returns the current timestamp in nanoseconds since `UNIX_EPOCH`.
-    pub fn now_ns() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
+    /// Returns the kind of the sample.
+    #[inline]
+    pub fn event_kind(&self) -> EventKind {
+        EventKind::from_u8(self.event_kind)
     }
 }
 
-/// Extracts the emitting PID from a raw `correlation_id`.
+/// Computes the stable identifier of a service inside its channel (FNV-1a).
+///
+/// A `const fn`, so the generated code can use the result as a constant, and
+/// every process derives the same value from the same name without discovery.
+/// A collision between two co-located services is detected at channel
+/// registration.
 #[inline]
-pub fn caller_pid_from_cid(cid: &[u8; 16]) -> u32 {
-    u32::from_le_bytes([cid[0], cid[1], cid[2], cid[3]])
+pub const fn service_id_of(name: &str) -> u32 {
+    const OFFSET_BASIS: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+
+    let bytes = name.as_bytes();
+    let mut hash = OFFSET_BASIS;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(PRIME);
+        i += 1;
+    }
+    hash
 }
 
-/// Formats a correlation id as hexadecimal (UUID-like format).
-pub fn fmt_correlation_id(cid: &[u8; 16]) -> String {
+/// Allocates a process-unique correlation id: `pid ++ counter`.
+#[inline]
+pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let pid = std::process::id() as u64;
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut out = [0u8; CORRELATION_ID_LEN];
+    out[..8].copy_from_slice(&pid.to_be_bytes());
+    out[8..].copy_from_slice(&counter.to_be_bytes());
+    out
+}
+
+/// Formats a correlation id as a UUID-like hexadecimal string.
+pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
     let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = cid;
     format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15,
+        "{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}-{b6:02x}{b7:02x}-\
+         {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"
     )
 }
 
-/// Formats the first 4 bytes of a correlation_id in hex (8 characters).
-///
-/// These 4 bytes contain the PID of the emitting process.
-pub fn fmt_correlation_id_short(cid: &[u8; 16]) -> String {
-    format!("{:02x}{:02x}{:02x}{:02x}", cid[0], cid[1], cid[2], cid[3])
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_header_carries_the_method_and_a_fresh_id() {
+        let id = service_id_of("DatabaseService");
+        let a = RpcHeader::request("get_user_age", id, 2);
+        let b = RpcHeader::request("get_user_age", id, 2);
+        assert_eq!(a.method(), "get_user_age");
+        assert_eq!(a.event_kind(), EventKind::Request);
+        assert_eq!(a.service_id, id);
+        assert_eq!(a.service_version, 2);
+        assert_ne!(a.correlation_id, b.correlation_id);
+    }
+
+    #[test]
+    fn response_header_reuses_the_request_id_and_service() {
+        let id = service_id_of("GetPerson");
+        let request = RpcHeader::request("ping", id, 1);
+        let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
+        assert_eq!(response.correlation_id, request.correlation_id);
+        assert_eq!(response.service_id, id);
+        assert_eq!(response.event_kind(), EventKind::Complete);
+        assert!(response.method().is_empty());
+    }
+
+    #[test]
+    fn a_name_longer_than_the_capacity_falls_back_to_empty() {
+        // `#[service]` rejects this at compile time: the fallback is a safety net.
+        let long = "x".repeat(METHOD_NAME_LEN + 20);
+        let header = RpcHeader::request(&long, 0, 1);
+        assert!(header.method().is_empty());
+    }
+
+    #[test]
+    fn service_id_is_stable_and_distinguishes_names() {
+        // Offset basis of FNV-1a: pins the algorithm.
+        assert_eq!(service_id_of(""), 0x811c_9dc5);
+
+        // Usable in a constant expression, which is how the macro passes it.
+        const ID: u32 = service_id_of("DatabaseService");
+        assert_eq!(ID, service_id_of("DatabaseService"));
+        assert_ne!(
+            service_id_of("DatabaseService"),
+            service_id_of("ConfigService")
+        );
+    }
+
+    #[test]
+    fn the_header_layout_stays_bounded_and_aligned() {
+        // Part of the wire contract: small (copied per sample) and 8-byte aligned.
+        assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
+        assert!(std::mem::size_of::<RpcHeader>() <= 128);
+    }
+
+    #[test]
+    fn fmt_correlation_id_is_uuid_shaped() {
+        let cid = [
+            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77,
+        ];
+        assert_eq!(
+            fmt_correlation_id(&cid),
+            "deadbeef-cafe-babe-0011-223344556677"
+        );
+    }
 }

@@ -7,7 +7,7 @@
 use ice_rpc::{service, Observable};
 
 /// Streams notifications to whoever subscribes to `watch`.
-#[service("NotificationService", discovery_timeout = "5s")]
+#[service("NotificationService")]
 pub trait NotificationService {
     /// Emits `count` notifications, one every 100 ms, then completes.
     ///

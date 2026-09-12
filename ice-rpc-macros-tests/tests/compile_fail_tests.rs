@@ -3,12 +3,11 @@
 //! Each file in `compile_fail/` must fail to compile
 //! with a specific error message.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 #[test]
 fn compile_fail_validation() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/compile_fail/service_name_too_long.rs");
-    t.compile_fail("tests/compile_fail/invalid_discovery_timeout.rs");
     t.compile_fail("tests/compile_fail/service_name_invalid_chars.rs");
     t.compile_fail("tests/compile_fail/service_name_underscore_start.rs");
     t.compile_fail("tests/compile_fail/method_name_too_long.rs");

@@ -1,96 +1,67 @@
 //! Contract test for the `#[doc(hidden)] pub mod gen` facade of `ice-rpc`.
 //!
-//! `ice-rpc-macros` emits code that references every symbol below, and
-//! `ice-rpc-rx` uses the provider primitives (`channel`, `Sender`, `WireEvent`,
-//! …). `gen` is therefore an internal contract between those crates and the
-//! runtime (see the "Versioning contract" note in `ice-rpc/src/gen.rs`).
-//!
-//! Importing/mentioning each symbol explicitly makes the test fail to compile as
-//! soon as one of them is renamed or removed — which is exactly the
-//! compatibility guarantee we want to pin: `gen` is semver-exempt for the
-//! consumers of `ice-rpc`, but **not** for `ice-rpc-macros` / `ice-rpc-rx`.
+//! `ice-rpc-macros` emits code that references every symbol below. Importing each
+//! one explicitly makes the test fail to compile as soon as one is renamed or
+//! removed: `gen` is semver-exempt for the consumers of `ice-rpc`, but **not**
+//! for `ice-rpc-macros`.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 /// Referencing each symbol pins it in the compilation unit: a rename or a
 /// removal in `ice_rpc::gen` turns this function into a compile error.
 #[test]
 fn gen_facade_symbols_resolve() {
-    // The compilation of this explicit import list *is* the assertion: an
-    // unknown or renamed path is a hard error. `allow(unused_imports)` is
+    // Compiling this import list *is* the assertion: `allow(unused_imports)` is
     // required because pinning the symbols, not using them, is the point.
     #[allow(unused_imports)]
     use ice_rpc::gen::{
         _ProviderService,
         // Plumbing invoked by the generated entry points
-        announce_dead_node,
-        announce_node_ready,
-        caller_pid_from_cid,
         channel,
         clear_ipc_cleanup,
         collect_values,
-        create_node_blackboard,
-        fire_reconnect_callbacks,
+        decode_aligned,
         first_event,
         fmt_correlation_id,
-        fmt_correlation_id_short,
         global_cancel_token,
         init,
         init_without_ctrl_c,
         is_pid_alive,
         is_provider,
-        list_services,
         mark_provider,
+        native_call,
+        next_correlation_id,
+        observable_to_responses,
+        raw_pid_to_u32,
         register_ipc_cleanup,
+        register_native_service,
         register_node_liveness_watcher,
         registry_cancel_token,
         run_provider_inner,
+        service_id_of,
         setup_iceoryx2_global_config,
         shutdown_and_release,
-        spawn_node_registry_listener,
+        spawn_native_service,
+        start_registered_channels,
         unbounded_channel,
         unregister_node_liveness_watcher,
         wait_for_shutdown,
-        ClientCore,
-        ConnectionState,
-        DiscoveryEvent,
         EventKind,
         HttpCallable,
-        NodeDiscovery,
-        NodeHub,
         NodeId,
-        NodeRecord,
-        NodeSupervisor,
-        PayloadSegment,
-        PendingService,
-        ReconnectCallback,
-        ReconnectManager,
-        RequestHandler,
-        ResponseHandler,
+        ResponseIter,
         RpcHeader,
         Sender,
         ServiceConsumer,
+        ServiceDispatcher,
         ServiceLifecycle,
         ServiceNamed,
         ShutdownGuard,
-        StaticString,
-        SubscriberId,
-        Subscription,
         WireEvent,
-        BLACKBOARD_MAX_READERS,
-        DEFAULT_TOPIC_BUFFER_SIZE,
-        INITIALIZE_ALL_TIMEOUT_SECS,
-        INIT_RETRY_INTERVAL_MS,
-        LARGE_PAYLOAD_THRESHOLD,
-        LARGE_TOPIC_BUFFER_SIZE,
         LIVENESS_POLL_MS,
         METHOD_NAME_LEN,
         PROTOCOL_VERSION,
-        PUBLISHER_DEFAULT_MAX_SLICE_LEN,
-        PUBLISHER_LARGE_MAX_SLICE_LEN,
-        RPC_CALL_TIMEOUT_SECS,
-        SERVER_READY_POLL_MS,
-        WAITSET_TIMEOUT_US,
+        SERVICE_NAME_LEN,
     };
 
     // The symbols above are only valid as a set; no runtime behaviour is

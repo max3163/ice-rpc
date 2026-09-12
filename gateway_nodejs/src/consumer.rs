@@ -17,7 +17,7 @@
 //! 5. Return of the first event (`Next`) as `serde_json::Value`
 
 use common::{ConfigService, DatabaseService, HttpService};
-use ice_rpc::{ServiceLocator, StreamError};
+use ice_rpc::{ObservableError, ServiceLocator};
 use serde_json::Value;
 
 /// Calls a method of a remote IPC service and returns the result as JSON.
@@ -59,12 +59,12 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .first_value()
                 .await
                 .map_err(|e| match e {
-                    StreamError::Business(common::DatabaseError::NotFound) => {
+                    ObservableError::Business(common::DatabaseError::NotFound) => {
                         "NotFound: unknown name in database".to_string()
                     }
-                    StreamError::Business(e) => format!("Database business error: {}", e),
-                    StreamError::Technical(e) => format!("RPC error: {}", e),
-                    StreamError::Empty => "Stream ended without a value".to_string(),
+                    ObservableError::Business(e) => format!("Database business error: {}", e),
+                    ObservableError::Technical(e) => format!("RPC error: {}", e),
+                    ObservableError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
             Ok(serde_json::json!(age))
@@ -85,12 +85,12 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .first_value()
                 .await
                 .map_err(|e| match e {
-                    StreamError::Business(common::DatabaseError::NotFound) => {
+                    ObservableError::Business(common::DatabaseError::NotFound) => {
                         "NotFound: person not found".to_string()
                     }
-                    StreamError::Business(e) => format!("Database business error: {}", e),
-                    StreamError::Technical(e) => format!("RPC error: {}", e),
-                    StreamError::Empty => "Stream ended without a value".to_string(),
+                    ObservableError::Business(e) => format!("Database business error: {}", e),
+                    ObservableError::Technical(e) => format!("RPC error: {}", e),
+                    ObservableError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
             Ok(serde_json::to_value(&info)
@@ -112,11 +112,11 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .first_value()
                 .await
                 .map_err(|e| match e {
-                    StreamError::Business(common::ConfigError::KeyNotFound) => {
+                    ObservableError::Business(common::ConfigError::KeyNotFound) => {
                         "KeyNotFound: key not found".to_string()
                     }
-                    StreamError::Technical(e) => format!("RPC error: {}", e),
-                    StreamError::Empty => "Stream ended without a value".to_string(),
+                    ObservableError::Technical(e) => format!("RPC error: {}", e),
+                    ObservableError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
             Ok(serde_json::json!(value))
@@ -138,9 +138,9 @@ async fn dispatch_consumer_call(service: &str, method: &str, args: Value) -> Res
                 .first_value()
                 .await
                 .map_err(|e| match e {
-                    StreamError::Business(e) => format!("Http business error: {}", e),
-                    StreamError::Technical(e) => format!("RPC error: {}", e),
-                    StreamError::Empty => "Stream ended without a value".to_string(),
+                    ObservableError::Business(e) => format!("Http business error: {}", e),
+                    ObservableError::Technical(e) => format!("RPC error: {}", e),
+                    ObservableError::Empty => "Stream ended without a value".to_string(),
                 })?;
 
             Ok(serde_json::to_value(&response)

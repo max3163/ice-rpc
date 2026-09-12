@@ -4,9 +4,8 @@
 //! functions for each service.
 //!
 //! These functions are always generated (not feature-gated) and reference only
-//! types re-exported by `ice-rpc` (`ice_rpc::gen::rkyv`, `ice_rpc::gen::serde_json`,
-//! `ice_rpc::gen::base64`), so no extra dependency nor feature is required from the
-//! consuming crate.
+//! types re-exported by `ice-rpc`, so no extra dependency nor feature is required
+//! from the consuming crate.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -98,7 +97,7 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
 
             quote! {
                 #fn_name_str => {
-                    let req: #req_enum_name = ice_rpc::gen::rkyv::from_bytes::<#req_enum_name, ice_rpc::gen::rkyv::rancor::Error>(bytes).ok()?;
+                    let req: #req_enum_name = ice_rpc::gen::decode_aligned::<#req_enum_name>(bytes).ok()?;
                     match req {
                         #req_enum_name::#var_name { #(#arg_names),* } => {
                             Some(#args_expr)
@@ -111,9 +110,7 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         .collect();
 
     quote! {
-        // Emitted unconditionally so `#[service]` has a uniform surface; only the
-        // `gateway_nodejs` bridge calls these converters, hence dead code in any
-        // pure-Rust consumer.
+        // Emitted unconditionally but called only by the `gateway_nodejs` bridge.
         #[allow(dead_code)]
         impl #proxy_name {
             #visibility fn deserialize_request_to_value(method: &str, bytes: &[u8]) -> Option<ice_rpc::gen::serde_json::Value> {
@@ -147,13 +144,11 @@ fn is_type_vec_u8(ty: &Type) -> bool {
     false
 }
 
-/// Generates the `serialize_response_from_value(method, value) -> Option<(Vec<u8>, EventKind)>` function.
+/// Generates the `serialize_response_from_value(method, value) -> Option<Vec<u8>>`
+/// function.
 ///
 /// The JS returns an object `{ "type": "next"|"complete"|"error", "data": ... }`.
-/// We manually build `Event<Ok, Err>` then serialize it to rkyv.
-///
-/// Also returns the [`EventKind`] to avoid a double rkyv deserialization
-/// in the ProviderNodeJs handler.
+/// We manually build a `WireEvent` then serialize it to rkyv.
 pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
     let NodeJsGenInput {
         visibility,
@@ -172,7 +167,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
             quote! {
                 #fn_name_str => {
                     let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("next");
-                    let (event, event_kind) = match event_type {
+                    let event = match event_type {
                         "next" => {
                             let data: #ok_type = match value.get("data") {
                                 Some(d) => match ice_rpc::gen::serde_json::from_value(d.clone()) {
@@ -181,7 +176,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::gen::WireEvent::Next(data), ice_rpc::gen::EventKind::Next)
+                            ice_rpc::gen::WireEvent::Next(data)
                         }
                         "complete" => match value.get("data") {
                             Some(d) => {
@@ -189,9 +184,9 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                (ice_rpc::gen::WireEvent::CompleteWith(data), ice_rpc::gen::EventKind::Complete)
+                                ice_rpc::gen::WireEvent::CompleteWith(data)
                             }
-                            None => (ice_rpc::gen::WireEvent::Complete, ice_rpc::gen::EventKind::Complete),
+                            None => ice_rpc::gen::WireEvent::Complete,
                         },
                         "error" => {
                             let err: #err_type = match value.get("data") {
@@ -201,30 +196,76 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                                 },
                                 None => return None,
                             };
-                            (ice_rpc::gen::WireEvent::Error(err), ice_rpc::gen::EventKind::Error)
+                            ice_rpc::gen::WireEvent::Error(err)
                         }
                         _ => return None,
                     };
-                    let bytes = ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                    ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
                         .ok()
-                        .map(|aligned| aligned.to_vec())?;
-                    Some((bytes, event_kind))
+                        .map(|aligned| aligned.to_vec())
                 }
             }
         })
         .collect();
 
     quote! {
-        // Same rationale as `deserialize_request_to_value` above: the Node.js
-        // surface is emitted for every service but consumed only by the bridge.
+        // Same rationale as `deserialize_request_to_value` above.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<(Vec<u8>, ice_rpc::gen::EventKind)> {
+            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<Vec<u8>> {
                 match method {
                     #(#match_arms)*
                     _ => None,
                 }
             }
+        }
+    }
+}
+
+/// Generates one `ServiceDispatcher::method(...)` registration that bridges an
+/// RPC method to the injected Node.js dispatch callback.
+///
+/// The callback receives the JSON-decoded request and returns a JSON response
+/// that is converted back into rkyv-encoded `WireEvent` samples. The service
+/// name comes from the proxy's own `SERVICE_NAME` constant, so no extra
+/// parameter is needed.
+pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStream {
+    let method_name_str = fn_name.to_string();
+    quote! {
+        {
+            dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
+                let Some(args) =
+                    #proxy_name::deserialize_request_to_value(#method_name_str, payload)
+                else {
+                    ::log::error!(
+                        "[{}::{}] Failed to deserialize the request",
+                        <#proxy_name>::SERVICE_NAME,
+                        #method_name_str
+                    );
+                    return Box::new(std::iter::empty());
+                };
+                let value = match ice_rpc::nodejs_dispatch::call(
+                    [0u8; 16],
+                    <#proxy_name>::SERVICE_NAME,
+                    #method_name_str,
+                    args,
+                ) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        ::log::error!(
+                            "[{}::{}] NodeJS dispatch failed: {}",
+                            <#proxy_name>::SERVICE_NAME,
+                            #method_name_str,
+                            e
+                        );
+                        return Box::new(std::iter::empty());
+                    }
+                };
+                match #proxy_name::serialize_response_from_value(#method_name_str, value) {
+                    Some(bytes) => Box::new(std::iter::once(bytes)),
+                    None => Box::new(std::iter::empty()),
+                }
+            });
         }
     }
 }

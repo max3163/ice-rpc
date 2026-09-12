@@ -24,7 +24,7 @@
 //! is needed: `ice_rpc::locator().get()` instantiates any
 //! proxy on demand, from its type.
 
-#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 mod consumer;
 mod nodejs_bridge;
 mod runtime;
@@ -51,11 +51,9 @@ static SHUTDOWN_GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> =
 ///
 /// # Supported values
 ///
-/// Every service listed in `common::with_nodejs_providers!` — currently
-/// `"ConfigService"`, `"ContextService"`, `"DatabaseService"`, `"HttpService"`
-/// and `"NotificationService"`. That inventory lives in the `common` crate,
-/// next to the `#[service]` declarations, so the Node.js surface cannot drift
-/// from them (the `nodejs_provider_inventory_is_exhaustive` test enforces it).
+/// Every service listed in `common::with_nodejs_providers!` — `"ConfigService"`,
+/// `"ContextService"`, `"DatabaseService"`, `"HttpService"` and
+/// `"NotificationService"`.
 ///
 /// # Returns
 /// `true` if the service was registered successfully.
@@ -97,30 +95,14 @@ pub fn init(callback: Function<'_, serde_json::Value, Unknown<'static>>) -> bool
         )
     });
 
-    // `init_without_ctrl_c` returns the RAII guard; it must be kept alive for
-    // the whole gateway lifetime, hence the process-wide storage.
+    // The guard must be kept alive for the whole gateway lifetime.
     let _ = SHUTDOWN_GUARD.set(ice_rpc::gen::init_without_ctrl_c());
 
-    match ice_rpc::locator().get_node_sync() {
-        Ok(node) => {
-            log::info!(
-                "iceoryx2 Node created (pid={}, strong_count={}).",
-                std::process::id(),
-                std::sync::Arc::strong_count(&node)
-            );
-        }
-        Err(e) => {
-            log::error!("Failed to create the iceoryx2 Node: {:?}", e);
-            return false;
-        }
-    }
-
-    {
-        runtime::block_on(async {
-            ice_rpc::locator().start_discovery();
-            ice_rpc::locator().start_dispatch_if_needed();
-        });
-    }
+    // The native transport creates its own shared iceoryx2 node lazily.
+    log::info!(
+        "iceoryx2 native transport ready (pid={}).",
+        std::process::id()
+    );
 
     services::start_initialize_all();
 

@@ -4,46 +4,17 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{GenericArgument, PathArguments, Type};
 
-/// Generates the hub configuration statements for the `#[service]` attributes
-/// `allow_large_payload` and `default_size_message`.
-///
-/// Shared by the server, client and lifecycle generators to avoid duplicating
-/// the same block in each code path.
-pub(crate) fn gen_hub_config(
-    allow_large_payload: bool,
-    default_size_message_kb: Option<u64>,
-) -> TokenStream {
-    let mut hub_config = TokenStream::new();
-    if allow_large_payload {
-        hub_config.extend(quote! {
-            ice_rpc::ServiceLocator::global().hub().enable_large_payload();
-        });
-    }
-    if let Some(kb) = default_size_message_kb {
-        let bytes = kb as usize * 1024;
-        hub_config.extend(quote! {
-            ice_rpc::ServiceLocator::global().hub().set_default_message_size_bytes(#bytes);
-        });
-    }
-    hub_config
-}
-
 /// Prefixes every top-level item of `tokens` with `#[allow(missing_docs)]`.
 ///
-/// The generated surface (`{Trait}Client`, `{Trait}Server`, `{Trait}Proxy`, the
-/// request enum, and every method, field and variant they contain) mechanically
-/// mirrors the user's `#[service]` trait, whose own documentation the attribute
-/// keeps verbatim. A consumer crate that opts into the `missing_docs` lint would
-/// otherwise receive dozens of warnings on items it can neither rename nor
-/// document; this guard is what makes the lint usable there (finding M15).
+/// The generated surface mechanically mirrors the user's `#[service]` trait, so
+/// a consumer crate that opts into the `missing_docs` lint would receive dozens
+/// of warnings on items it can neither rename nor document.
 ///
-/// The user's trait is deliberately *not* routed through this helper: it stays
-/// subject to the consumer's own lint configuration.
+/// The user's trait is deliberately *not* routed through this helper.
 pub(crate) fn allow_missing_docs(tokens: TokenStream) -> TokenStream {
     let file: syn::File = match syn::parse2(tokens.clone()) {
         Ok(file) => file,
-        // The generated code is always syntactically valid; if parsing ever
-        // failed, emitting it unchanged is strictly better than dropping it.
+        // If parsing ever failed, emitting the tokens unchanged is better.
         Err(_) => return tokens,
     };
     let mut out = TokenStream::new();

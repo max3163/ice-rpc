@@ -1,28 +1,26 @@
 //! Wire-level types and the conversion rules between them.
 //!
 //! [`Event`] is what consumers observe, [`WireEvent`] is what travels over
-//! iceoryx2 (it carries the `CompleteWith` single-sample optimization), and
-//! [`Sender`] is the producer side. The two conversions — [`From<Event>`] and
-//! [`normalize_wire_event`] — are described here and nowhere else.
-//!
-//! [`From<Event>`]: From
+//! iceoryx2, and [`Sender`] is the producer side.
 
-use iceoryx2::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::error::RpcError;
 
-/// Error carried by an [`Event`].
+/// The single error type of the whole streaming API.
 ///
-/// Follows the Rx pattern: a single `error` channel, where the payload
-/// distinguishes a **business** error (authored by the service) from a
-/// **technical** one (raised by the framework/transport).
-#[derive(Debug, Clone)]
+/// Follows the Rx pattern: a single `error` channel whose payload distinguishes
+/// a **business** error (authored by the service) from a **technical** one
+/// (raised by the framework/transport). [`ObservableError::Empty`] is a
+/// pull-side artefact and never travels over the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservableError<E> {
     /// Business error emitted by the service.
     Business(E),
     /// Technical RPC error (transport, discovery, protocol, ...).
     Technical(RpcError),
+    /// The stream ended without emitting any value.
+    Empty,
 }
 
 impl<E> ObservableError<E> {
@@ -43,7 +41,7 @@ impl<E> ObservableError<E> {
     pub fn as_business(&self) -> Option<&E> {
         match self {
             ObservableError::Business(e) => Some(e),
-            ObservableError::Technical(_) => None,
+            ObservableError::Technical(_) | ObservableError::Empty => None,
         }
     }
 
@@ -52,7 +50,7 @@ impl<E> ObservableError<E> {
     pub fn as_technical(&self) -> Option<&RpcError> {
         match self {
             ObservableError::Technical(e) => Some(e),
-            ObservableError::Business(_) => None,
+            ObservableError::Business(_) | ObservableError::Empty => None,
         }
     }
 }
@@ -62,6 +60,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ObservableError<E> {
         match self {
             ObservableError::Business(e) => write!(f, "{e}"),
             ObservableError::Technical(e) => write!(f, "{e}"),
+            ObservableError::Empty => write!(f, "stream ended without a value"),
         }
     }
 }
@@ -73,7 +72,7 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for ObservableErr
 /// This is the user-facing event type: the transport-level [`WireEvent`]
 /// `CompleteWith` optimization is never exposed here. A single `Error` variant
 /// carries both business and technical failures ([`ObservableError`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event<T, E> {
     /// Intermediate business value.
     Next(T),
@@ -96,7 +95,7 @@ impl<T, E> Event<T, E> {
 /// Internal counterpart of [`Event`]: it adds the [`WireEvent::CompleteWith`]
 /// single-sample optimization used by producers. Consumers never observe it —
 /// [`crate::Observable::recv`] normalizes it into [`Event`].
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum WireEvent<T, E> {
     /// Intermediate business value.
@@ -130,8 +129,7 @@ impl<T, E> WireEvent<T, E> {
 /// Producers emit through the ergonomic methods [`Sender::send_next`],
 /// [`Sender::send_complete`], [`Sender::send_complete_with`] and
 /// [`Sender::send_error`]. [`Sender::send_event`] is a passthrough used by the
-/// transport and the `ice-rpc-rx` relays to forward any [`Event`], including
-/// technical errors.
+/// transport relays to forward any [`Event`], including technical errors.
 pub struct Sender<T, E> {
     /// Shared with `channel` in [`super::stream`].
     pub(crate) inner: async_channel::Sender<WireEvent<T, E>>,
@@ -181,9 +179,7 @@ impl<T, E> Sender<T, E> {
 
     /// Forwards any consumer [`Event`] (transport/relay passthrough).
     ///
-    /// This is the only way a technical error transits: an
-    /// [`ObservableError::Technical`] is mapped to [`WireEvent::RpcError`] by
-    /// the [`From`] conversion described below.
+    /// The only way a technical error transits, via the [`From`] conversion.
     #[inline]
     pub async fn send_event(
         &self,
@@ -236,10 +232,8 @@ impl<T, E> Sender<T, E> {
 
     /// Forwards a raw transport event (relay passthrough, consumer side).
     ///
-    /// Used by the generated client to relay an IPC sample to the consumer
-    /// channel **without re-encoding it**: the [`WireEvent::CompleteWith`]
-    /// single-sample optimization therefore survives as a single channel
-    /// message instead of being split into `Next` + `Complete`.
+    /// Relays an IPC sample **without re-encoding it**, so the
+    /// [`WireEvent::CompleteWith`] optimization survives as a single message.
     #[doc(hidden)]
     #[inline]
     pub fn try_send_wire(
@@ -249,10 +243,9 @@ impl<T, E> Sender<T, E> {
         self.inner.try_send(event)
     }
 }
-/// Converts a user-facing [`Event`] into its transport representation.
-///
-/// This is the **only** place describing the mapping rule: a business error
-/// becomes [`WireEvent::Error`], a technical one becomes [`WireEvent::RpcError`].
+/// Converts a user-facing [`Event`] into its transport representation: a
+/// business error becomes [`WireEvent::Error`], a technical one
+/// [`WireEvent::RpcError`].
 impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
     fn from(event: Event<T, E>) -> Self {
         match event {
@@ -260,17 +253,17 @@ impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
             Event::Complete => WireEvent::Complete,
             Event::Error(ObservableError::Business(e)) => WireEvent::Error(e),
             Event::Error(ObservableError::Technical(e)) => WireEvent::RpcError(e),
+            // `Empty` is a pull-side artefact: on the wire the stream just ends.
+            Event::Error(ObservableError::Empty) => WireEvent::Complete,
         }
     }
 }
 
 /// Normalizes a transport [`WireEvent`] into the user-facing form.
 ///
-/// Returns the event to yield **now**, plus an optional **follow-up** event: the
-/// [`WireEvent::CompleteWith`] single-sample optimization expands into
-/// `Next(v)` followed by `Complete`. This is the only place describing the
-/// expansion, shared by [`crate::Observable::recv`] and the
-/// [`futures_lite::Stream`] implementation of `crate::Observable`.
+/// Returns the event to yield **now** plus an optional **follow-up**: the
+/// [`WireEvent::CompleteWith`] optimization expands into `Next(v)` then
+/// `Complete`.
 pub(crate) fn normalize_wire_event<T, E>(
     event: WireEvent<T, E>,
 ) -> (Event<T, E>, Option<Event<T, E>>) {
@@ -280,31 +273,5 @@ pub(crate) fn normalize_wire_event<T, E>(
         WireEvent::CompleteWith(v) => (Event::Next(v), Some(Event::Complete)),
         WireEvent::Error(e) => (Event::Error(ObservableError::Business(e)), None),
         WireEvent::RpcError(e) => (Event::Error(ObservableError::Technical(e)), None),
-    }
-}
-/// Discriminant of the RPC event type carried in the [`RpcHeader`].
-///
-/// `#[repr(C)]` is required by `ZeroCopySend`. The values are fixed.
-#[repr(C)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, ZeroCopySend, Default, Archive, Serialize, Deserialize,
-)]
-pub enum EventKind {
-    /// Request emitted by the client (non-terminal).
-    #[default]
-    Request = 0,
-    /// Intermediate event carrying a business value.
-    Next = 1,
-    /// Normal end of the stream (terminal).
-    Complete = 2,
-    /// Business error (terminal).
-    Error = 3,
-}
-
-impl EventKind {
-    /// Returns `true` if this event terminates the stream.
-    #[inline]
-    pub fn is_terminal(self) -> bool {
-        matches!(self, EventKind::Complete | EventKind::Error)
     }
 }

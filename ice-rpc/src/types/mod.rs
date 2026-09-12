@@ -5,14 +5,12 @@
 //!
 //! | Sub-module   | Contents                                                        |
 //! |--------------|-----------------------------------------------------------------|
-//! | [`node`]     | [`NodeId`] and the iceoryx2 topic names                         |
-//! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`], [`EventKind`] |
-//! | [`stream`]   | [`Observable`] (the concrete stream), [`StreamError`], [`channel`] |
-//! | [`header`]   | [`RpcHeader`] and the correlation-id helpers                    |
+//! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
+//! | [`header`]   | [`RpcHeader`] (zero-copy `user_header`), [`EventKind`]          |
+//! | [`wire`]     | [`ObservableError`] (the single error type), [`Event`], [`WireEvent`], [`Sender`] |
+//! | [`stream`]   | [`Observable`] (the concrete stream), [`channel`]               |
 //! | [`error`]    | [`RpcError`]                                                    |
-//! | [`consts`]   | Tuning constants (timeouts, buffer sizes, …)                    |
-
-pub use iceoryx2_bb_container::string::StaticString;
+//! | [`consts`]   | Name-length limits shared with `ice-rpc-macros`                 |
 
 mod consts;
 mod error;
@@ -26,9 +24,13 @@ mod tests;
 
 pub use consts::*;
 pub use error::RpcError;
-pub use header::{caller_pid_from_cid, fmt_correlation_id, fmt_correlation_id_short, RpcHeader};
-pub use node::*;
-pub use stream::{
-    channel, collect_values, first_event, unbounded_channel, Observable, StreamError,
+pub use header::{
+    fmt_correlation_id, next_correlation_id, service_id_of, EventKind, RpcHeader,
+    CORRELATION_ID_LEN,
 };
-pub use wire::{Event, EventKind, ObservableError, Sender, WireEvent};
+pub use node::*;
+pub use stream::{channel, collect_values, first_event, unbounded_channel, Observable};
+pub use wire::{Event, ObservableError, Sender, WireEvent};
+
+// Used by the transport to normalize a received `WireEvent` into an `Event`.
+pub(crate) use wire::normalize_wire_event;

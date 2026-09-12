@@ -2,13 +2,10 @@
 //! (Ctrl+C), through iceoryx2's **native** `WaitSet` signal handling — with no
 //! `ctrlc` handler involved.
 //!
-//! The test re-executes its own binary as a child process (same pattern as
-//! `crash_reconnect.rs`): the child starts the dispatch `WaitSet`, prints
-//! `READY` once the native handler is armed, and the parent sends `SIGINT`.
-//! The child must then exit by itself with a success code and report
-//! `SHUTDOWN OK`.
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
-#![cfg(unix)]
+//! The child starts a dispatch `WaitSet`, prints `READY` once the native handler
+//! is armed, and the parent sends `SIGINT`: the child must exit by itself with a
+//! success code and report `SHUTDOWN OK`.
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -20,6 +17,10 @@ const CHILD_ENV: &str = "ICE_RPC_SIGNAL_CHILD";
 
 /// Test name re-run in the child, so only the provider role executes.
 const TEST_NAME: &str = "sigint_triggers_clean_shutdown";
+
+/// Logical service the child provides: it only has to exist so a dispatch
+/// thread — and therefore a `WaitSet` — is created.
+const CHILD_SERVICE: &str = "SignalProbeService";
 
 /// Maximum time allowed for the child to arm its signal handling and print
 /// `READY`. Generous: instrumented (`llvm-cov`) builds are much slower than a
@@ -64,12 +65,12 @@ fn sigint_triggers_clean_shutdown() {
 
     // Send SIGINT (Ctrl+C) to the child process.
     let pid = child.id();
-    let status = Command::new("kill")
-        .arg("-INT")
-        .arg(pid.to_string())
-        .status()
-        .expect("send SIGINT with kill");
-    assert!(status.success(), "kill -INT failed");
+    if !send_sigint(pid) {
+        let _ = child.kill();
+        let _ = child.wait();
+        eprintln!("skipping: no `kill` available on this platform (pid {pid})");
+        return;
+    }
 
     // The child must exit on its own (no SIGKILL) within the deadline.
     wait_for_clean_exit(&mut child);
@@ -102,6 +103,36 @@ fn spawn_child() -> Child {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn child")
+}
+
+/// Delivers `SIGINT` to `pid` through the `kill` command.
+///
+/// Returns `false` when no signal could be sent, so the caller skips the test
+/// instead of failing it.
+///
+/// Unix only: `kill` resolves a *native* Windows pid only when the process was
+/// registered by an MSYS shell, so a child spawned by `std::process` cannot be
+/// signalled that way — and Rust's std exposes no `GenerateConsoleCtrlEvent`.
+#[cfg(unix)]
+fn send_sigint(pid: u32) -> bool {
+    match Command::new("kill")
+        .arg("-INT")
+        .arg(pid.to_string())
+        .status()
+    {
+        Ok(status) => {
+            assert!(status.success(), "kill -INT failed for pid {pid}");
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => panic!("could not run kill: {e}"),
+    }
+}
+
+/// `SendConsoleCtrlEvent` is unavailable to Rust's std, see [`send_sigint`].
+#[cfg(not(unix))]
+fn send_sigint(_pid: u32) -> bool {
+    false
 }
 
 /// Blocks until the child announces `READY`, enforcing [`READY_TIMEOUT`].
@@ -157,19 +188,23 @@ fn wait_for_clean_exit(child: &mut Child) {
     }
 }
 
-/// Child role: enable the native signal handling, arm the dispatch `WaitSet`,
+/// Child role: enable the native signal handling, arm a dispatch `WaitSet`,
 /// then wait for the shutdown triggered by the signal.
 fn child_provider() {
-    // `init()` enables iceoryx2's native SIGINT/SIGTERM handling for the
-    // `WaitSet` loops. The returned guard must stay alive for the process.
+    // `init()` selects iceoryx2's native SIGINT/SIGTERM handling for the
+    // transport `WaitSet`s. The returned guard must stay alive for the process.
     let _guard = ice_rpc::gen::init();
 
-    // Create the node and start the dispatch loop: its `WaitSet` is what arms
-    // iceoryx2's signal handler on first wait.
-    let _node = ice_rpc::ServiceLocator::global()
-        .get_node_sync()
-        .expect("get_node_sync");
-    ice_rpc::ServiceLocator::global().start_dispatch_if_needed();
+    // Start one real channel: spawning its dispatch thread is what creates the
+    // `WaitSet` that arms iceoryx2's signal handler.
+    let _handle = ice_rpc::gen::spawn_native_service(
+        CHILD_SERVICE,
+        vec![(
+            ice_rpc::gen::service_id_of(CHILD_SERVICE),
+            ice_rpc::gen::ServiceDispatcher::new(),
+        )],
+        ice_rpc::global_cancel_token().clone(),
+    );
 
     // Give the dispatch loop time to enter its first `wait_and_process` so the
     // native SIGINT handler is registered before the parent sends the signal.

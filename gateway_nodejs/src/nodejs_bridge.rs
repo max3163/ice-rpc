@@ -159,10 +159,7 @@ impl NodeJsBridge {
         }
     }
 
-    /// Cleans up the expired calls (timeout).
-    ///
-    /// Kept for future use: a periodic call (timer/spawn)
-    /// will free the memory of the expired correlations.
+    /// Cleans up the calls whose deadline has expired.
     #[allow(dead_code)]
     pub fn cleanup_expired(&self) {
         let now = std::time::Instant::now();
@@ -228,7 +225,7 @@ mod tests {
 
     #[test]
     fn roundtrip_correlation_id() {
-        let cid_orig = ice_rpc::gen::RpcHeader::next_correlation_id();
+        let cid_orig = ice_rpc::gen::next_correlation_id();
         let hex = ice_rpc::gen::fmt_correlation_id(&cid_orig);
         let cid_parsed = parse_correlation_id_hex(&hex).unwrap();
         assert_eq!(cid_orig, cid_parsed);

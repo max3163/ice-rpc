@@ -1,8 +1,7 @@
 //! Runtime facade for the Node.js gateway.
 //!
-//! Delegates to [`ice_rpc::rt`] (runtime-agnostic). The gateway no longer
-//! embeds a dedicated Tokio runtime: task spawning and blocking execution
-//! are handled by the ice-rpc core facade.
+//! Delegates to [`ice_rpc::rt`] (runtime-agnostic): task spawning and blocking
+//! execution are handled by the ice-rpc core facade.
 
 /// Initializes the runtime facade.
 ///

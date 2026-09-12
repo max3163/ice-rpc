@@ -38,11 +38,8 @@ pub fn set_dispatch(f: DispatchFn) {
 ///
 /// # Errors
 ///
-/// Returns `Err` when [`set_dispatch`] has not been called beforehand. The
-/// former implementation panicked here, which turned a missing gateway
-/// initialization into a process abort under the `panic = "abort"` release
-/// profile. The generated `ProviderNodeJs` handler already logs and drops the
-/// call on `Err`, so returning is the recoverable behaviour.
+/// Returns `Err` when [`set_dispatch`] has not been called beforehand; the
+/// generated `ProviderNodeJs` handler logs and drops the call on `Err`.
 pub fn call(
     cid: [u8; 16],
     service: &str,

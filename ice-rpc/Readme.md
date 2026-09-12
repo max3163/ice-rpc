@@ -47,7 +47,7 @@ ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
 `full` is a convenience feature that enables `http` and `tokio` in one shot.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
-  `ice-rpc-rx` constructors (`of`, `from`, `throw_error`, `Subject`); an advanced
+  stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
   provider may use the raw channel via `ice_rpc::gen::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `sleep`, `timeout`,
   `block_on`, `oneshot` and `CancellationToken`.
@@ -73,14 +73,13 @@ pub trait MyService: Send + Sync + 'static {
 
 The macro generates `MyServiceRequest`, `MyServiceClient`, `MyServiceServer`, `MyServiceProxy` and `MyServiceMode`.
 
-`#[service]` also accepts three optional parameters:
+`#[service]` also accepts two optional parameters:
 
-- `allow_large_payload` (`bool`, default `false`) — creates the second shared-memory segment (`_large`) for payloads above `LARGE_PAYLOAD_THRESHOLD`;
-- `default_size_message` (integer, in KiB) — initial slice size of the `_default` shared-memory segment publisher;
-- `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.
+- `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
+- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.
 
 ```rust,ignore
-#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 1)]
+#[service("MyService", version = 1, group = "db")]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -94,8 +93,8 @@ struct MyServiceImpl;
 #[async_trait::async_trait]
 impl MyService for MyServiceImpl {
     async fn hello(&self, name: String) -> Observable<String, MyError> {
-        // Single response: with `ice-rpc-rx`, this is just
-        //     ice_rpc_rx::of(format!("Hello {name} !"))
+        // Single response: this is just
+        //     ice_rpc::of(format!("Hello {name} !"))
         // The raw channel stays available for long-lived push streams:
         let (tx, rx) = ice_rpc::gen::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
@@ -136,30 +135,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
 | `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
-| `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
+| `ObservableError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
 | `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
 | `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
 
-Internal concepts (`NodeId`, `ConnectionState`, `NodeHub`, `RpcHeader`, …) are
-exposed through the doc-hidden `ice_rpc::gen` module and described in the
-architecture sections below.
+Internal concepts (`NodeId`, `WireEvent`, the transport entry points, …) are
+exposed through the doc-hidden `ice_rpc::gen` module and used by
+`ice-rpc-macros`. The transport itself is a publish/subscribe pair of channels
+per service, correlated by a 16-byte id: see `ice_rpc::transport`.
 
 ## Consumption
 
-Consuming a stream is done natively on `ice_rpc::Observable` (or through the
-`ice-rpc-rx` operators); a call never fails at the call site — a
-discovery/transport failure becomes an in-stream technical error:
+Consuming a stream is done natively on `ice_rpc::Observable`, whose operators are
+inherent methods (nothing to import); a call never fails at the call site — a
+connection/transport failure becomes an in-stream technical error:
 
 ```rust,ignore
 let value = proxy.hello("Alice".into()).await.first_value().await?;
 let all   = proxy.list().await.collect().await?; // Vec<T>
 ```
 
-- `first_value() -> Result<T, StreamError<E>>` (`Empty` when the stream completes
+- `first_value() -> Result<T, ObservableError<E>>` (`Empty` when the stream completes
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
-- `#[service(..., discovery_timeout = "5s")]` sets the **service-wide** provider-lookup deadline (default `RPC_CALL_TIMEOUT_SECS` = 30s). It bounds the *discovery* phase only; use the `timeout` operator to bound the response wait.
+- the `timeout` and `take_until` operators bound the response wait and cancel a stream.
 
 ## Error semantics
 

@@ -29,8 +29,8 @@
 //!
 
 #![allow(missing_docs)]
-// example crate: rkyv's Archive derive emits an undocumented Archived* struct per service that no consumer-side attribute can reach
-#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
+// example crate: rkyv's Archive derive emits an undocumented Archived* struct per service
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 pub mod config;
 pub mod context;
 pub mod database;
@@ -45,24 +45,18 @@ pub use notification::*;
 
 /// Inventory of the services this crate exposes as **Node.js providers**.
 ///
-/// # Why this lives here
-///
 /// `gateway_nodejs` must register one `#[service]` proxy per service it
-/// advertises. Keeping that list inside the gateway — far from the
-/// declarations — let it drift silently: `NotificationService` was declared
-/// here with `#[service]` but was missing from the gateway list, so the Node.js
-/// process could never expose it as a provider. The list therefore lives next
-/// to the declarations, and the
-/// [`nodejs_provider_inventory_is_exhaustive`](self) test fails as soon as a
-/// declared service is missing from it.
+/// advertises; keeping that list next to the declarations stops it from drifting
+/// silently. The [`nodejs_provider_inventory_is_exhaustive`](self) test fails as
+/// soon as a declared service is missing from it.
 ///
 /// # Usage
 ///
 /// `with_nodejs_providers!(my_macro, extra_args…)` expands to
 /// `my_macro!(extra_args…, Proxy1, Proxy2, …)`.
 ///
-/// See `gateway_nodejs::services::register_service` (registration) for the only
-/// production consumer.
+/// See `gateway_nodejs::services::register_service` for the only production
+/// consumer.
 #[macro_export]
 macro_rules! with_nodejs_providers {
     ($callback:ident $(, $arg:expr)* $(,)?) => {
@@ -88,11 +82,11 @@ mod nodejs_provider_inventory {
         include_str!("notification.rs"),
     ];
 
-    /// Guard for M14: every `#[service("Name")]` of this crate must be listed in
+    /// Every `#[service("Name")]` of this crate must be listed in
     /// [`with_nodejs_providers!`](crate::with_nodejs_providers).
     ///
     /// Without it, a new service compiles and runs but is silently absent from
-    /// the Node.js surface — exactly the failure `NotificationService` hit.
+    /// the Node.js surface.
     #[test]
     fn nodejs_provider_inventory_is_exhaustive() {
         // 1. Logical names declared in the sources.

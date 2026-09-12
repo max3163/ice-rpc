@@ -66,11 +66,7 @@ impl ShutdownRegistry {
 static IPC_CLEANUP_RESOURCES: OnceLock<Mutex<Vec<Box<dyn Any + Send>>>> = OnceLock::new();
 
 /// Registers an iceoryx2 resource (port, writer, notifier, ...) that must be
-/// dropped during shutdown.
-///
-/// Some generated code stores iceoryx2 ports in `static OnceLock`s for the
-/// whole process lifetime. Dropping them is mandatory to trigger iceoryx2's
-/// `shm_unlink` cleanup of the `.shm_state` backing files.
+/// dropped during shutdown, so that iceoryx2 cleans up its backing files.
 pub fn register_ipc_cleanup(resource: Box<dyn Any + Send>) {
     if let Ok(mut resources) = IPC_CLEANUP_RESOURCES
         .get_or_init(|| Mutex::new(Vec::new()))

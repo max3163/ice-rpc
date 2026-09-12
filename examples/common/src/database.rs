@@ -52,7 +52,7 @@ pub struct PersonneInfo {
 ///
 /// Depends on `ConfigService` to obtain the connection parameters
 /// (connection string, credentials, etc.).
-#[service("DatabaseService", discovery_timeout = "10s")]
+#[service("DatabaseService")]
 pub trait DatabaseService {
     /// Returns the age associated with a person's name.
     ///

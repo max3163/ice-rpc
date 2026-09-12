@@ -1,16 +1,13 @@
 //! A provider wait must be interruptible.
 //!
 //! `native_call` publishes until a subscriber appears, which blocks for the
-//! whole provider-wait deadline (30 s by default) when no provider is running.
-//! Ctrl+C — and the end of `main`, which cancels the same token — must abort
-//! that wait: otherwise the process ignores the signal for the whole deadline,
-//! and `main` cannot return, because dropping the runtime waits for the
-//! blocking task stuck in it.
+//! whole provider-wait deadline (30 s by default) when no provider is running;
+//! Ctrl+C — and the end of `main` — must abort that wait.
 //!
 //! This test runs in its own binary: it cancels the process-wide shutdown
 //! token, which would leak into every other test of the same process.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use std::time::{Duration, Instant};
 
 use ice_rpc::{CancellationToken, RpcError};

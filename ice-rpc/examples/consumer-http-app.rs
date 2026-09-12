@@ -8,7 +8,7 @@
 //! cargo run --example consumer-http-app
 //! ```
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use common::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
 use ice_rpc::ObservableError;
 use std::time::Instant;

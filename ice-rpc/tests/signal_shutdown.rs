@@ -2,18 +2,10 @@
 //! (Ctrl+C), through iceoryx2's **native** `WaitSet` signal handling — with no
 //! `ctrlc` handler involved.
 //!
-//! The test re-executes its own binary as a child process (same pattern as
-//! `crash_reconnect.rs`): the child starts a dispatch `WaitSet`, prints `READY`
-//! once the native handler is armed, and the parent sends `SIGINT`. The child
-//! must then exit by itself with a success code and report `SHUTDOWN OK`.
-//!
-//! This is the regression test for the `HandleTerminationRequests` contract:
-//! iceoryx2 **owns** the SIGINT/SIGTERM handler in that mode, so the process
-//! does not die on its own. Without the transport reacting to
-//! `WaitSetRunResult::TerminationRequest` (or to
-//! `SignalHandler::termination_requested()` on the busy path), Ctrl+C would be
-//! swallowed and the child would hang until the timeout.
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+//! The child starts a dispatch `WaitSet`, prints `READY` once the native handler
+//! is armed, and the parent sends `SIGINT`: the child must exit by itself with a
+//! success code and report `SHUTDOWN OK`.
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -121,9 +113,6 @@ fn spawn_child() -> Child {
 /// Unix only: `kill` resolves a *native* Windows pid only when the process was
 /// registered by an MSYS shell, so a child spawned by `std::process` cannot be
 /// signalled that way — and Rust's std exposes no `GenerateConsoleCtrlEvent`.
-/// The Ctrl+C path was verified manually on Windows when the regression was
-/// fixed (the provider logs `Termination signal received, shutting down...` and
-/// stops); this test keeps the coverage on the platforms that can send it.
 #[cfg(unix)]
 fn send_sigint(pid: u32) -> bool {
     match Command::new("kill")

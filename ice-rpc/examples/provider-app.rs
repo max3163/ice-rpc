@@ -25,7 +25,7 @@
 //! - `POST http://localhost:8080/HttpService/send_request` with a JSON body
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use async_trait::async_trait;
 use common::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,
@@ -316,13 +316,8 @@ struct NotificationServiceImpl;
 #[async_trait]
 impl NotificationService for NotificationServiceImpl {
     async fn watch(&self, count: u32) -> Observable<u32, String> {
-        // A pure pipeline — no channel, no task, no `spawn`: one value every
-        // 100 ms, then `Complete`. Each operator returns the same `Observable`
-        // type as its source, so the pipeline is the service return value as-is.
-        //
-        // Trade-off: a pipeline cannot detect that the consumer unsubscribed, so
-        // it runs to completion. A `channel` + `send_next` (which errors on a
-        // closed receiver) is the way to stop early.
+        // A pure pipeline: one value every 100 ms, then `Complete`. A pipeline
+        // cannot detect that the consumer unsubscribed, so it runs to completion.
         from(1..=count).delay(std::time::Duration::from_millis(100))
     }
 
@@ -339,9 +334,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // `run_provider!` performs the full bootstrap (init + shutdown): neither a
     // guard nor an explicit `init()` is needed here.
-    //
-    // DatabaseServiceImpl::on_init() calls locator().get::<ConfigServiceProxy>()
-    // — this provider also consumes a service internally.
 
     // ── HTTP REST gateway (optional, requires the `http` feature) ──
     #[cfg(feature = "http")]
@@ -367,9 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "   Example: curl http://localhost:{}/DatabaseService/get_user_age?name=Alice",
                 port
             );
-            // Starts the HTTP server in the background via tokio::spawn.
-            // The task will stop automatically when the global cancellation
-            // token is triggered (Ctrl+C).
+            // The task stops when the global cancellation token is triggered.
             tokio::spawn(async move {
                 ice_rpc::start_http_gateway!(
                     port,

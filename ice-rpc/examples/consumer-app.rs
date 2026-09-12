@@ -15,7 +15,7 @@
 //! - `cargo run --example consumer-app -- --service context`
 //! - `cargo run --example consumer-app -- --service notifications`
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use common::{
     ContextEntry, ContextError, ContextService, ContextServiceProxy, DatabaseError,
     DatabaseService, DatabaseServiceProxy, NotificationService, NotificationServiceProxy,

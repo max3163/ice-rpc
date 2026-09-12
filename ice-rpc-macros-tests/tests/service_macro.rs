@@ -1,24 +1,16 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 #![allow(unexpected_cfgs)]
-// =============================================================================
 // Integration tests for the `#[service]` procedural macro.
 //
-// RULES:
-//   1. `#[service]` MUST be placed BEFORE `#[async_trait::async_trait]`
-//      so that the macro sees the original `async fn` signatures.
-//   2. The trait MUST have `Send + Sync + 'static` as supertraits
-//      so that `Arc<dyn Trait>` (used in the generated Provider Mode)
-//      is `Send + Sync` and compatible with `RwLock<Mode>`.
-// =============================================================================
+// `#[service]` MUST be placed before `#[async_trait::async_trait]`, and the
+// trait MUST have `Send + Sync + 'static` as supertraits.
 
 use ice_rpc::gen::ServiceNamed;
 use ice_rpc::{self, Observable, ServiceInit};
 use ice_rpc_macros::service;
 
-// -----------------------------------------------------------------------------
-// Test 1: Macro without parameter (name = the trait name in lowercase)
-// -----------------------------------------------------------------------------
+// Test 1: macro without parameter (name = the trait name in lowercase)
 
 #[service]
 #[async_trait::async_trait]
@@ -43,9 +35,7 @@ fn test_request_enum_has_variant() {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Test 2: Macro with explicit name
-// -----------------------------------------------------------------------------
+// Test 2: macro with an explicit name
 
 #[service("CustomName")]
 #[async_trait::async_trait]
@@ -67,9 +57,7 @@ fn test_custom_name_request_enum() {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Test 3: Proxy provides ServiceInit and ServiceNamed
-// -----------------------------------------------------------------------------
+// Test 3: the proxy implements ServiceInit and ServiceNamed
 
 #[test]
 fn test_proxy_implements_service_init() {
@@ -78,9 +66,7 @@ fn test_proxy_implements_service_init() {
     _assert_service_init(&*proxy);
 }
 
-// -----------------------------------------------------------------------------
-// Test 4: Provider Mode with provide()
-// -----------------------------------------------------------------------------
+// Test 4: Provider mode with provide()
 
 struct CalcImpl;
 
@@ -118,9 +104,7 @@ fn test_proxy_provide_with_init_creates_provider_with_deps() {
     let _proxy = CalculatorProxy::provide_with_init(CalcWithInit(CalcImpl));
 }
 
-// -----------------------------------------------------------------------------
-// Test 5: Client struct is Send + Sync
-// -----------------------------------------------------------------------------
+// Test 5: the client struct is Send + Sync
 
 #[test]
 fn test_client_struct_is_send_sync() {
@@ -129,9 +113,7 @@ fn test_client_struct_is_send_sync() {
     let _: &dyn Sync = &client;
 }
 
-// -----------------------------------------------------------------------------
-// Test 7: `allow_large_payload` parameter
-// -----------------------------------------------------------------------------
+// Test 7: the `allow_large_payload` parameter
 
 #[service(allow_large_payload = true)]
 #[async_trait::async_trait]
@@ -147,21 +129,16 @@ pub trait DefaultPayloadService: Send + Sync + 'static {
 
 #[test]
 fn test_allow_large_payload_parameter_compiles() {
-    // The attribute is accepted for source compatibility and ignored by the
-    // native request/response transport; both services must still generate a
-    // working client.
+    // Accepted for source compatibility and ignored: both services must still
+    // generate a working client.
     let _large = LargePayloadServiceClient::new();
     let _default = DefaultPayloadServiceClient::new();
 }
 
-// -----------------------------------------------------------------------------
 // Test 7b: a service name of exactly 64 bytes (= SERVICE_NAME_LEN) is accepted
-// -----------------------------------------------------------------------------
 
-/// Exactly 64 bytes: the maximum the macro accepts, and the capacity of both
-/// the `RpcHeader` `StaticString<64>` and the discovery blackboard key. A
-/// name at the limit must be preserved verbatim end to end, otherwise the
-/// service would be published but never discoverable.
+/// Exactly 64 bytes: the maximum the macro accepts, and the capacity of the
+/// `RpcHeader` `StaticString<64>`. A name at the limit must survive verbatim.
 #[service("MaxLenServiceAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
 #[async_trait::async_trait]
 pub trait MaxLenNameService: Send + Sync + 'static {
@@ -178,9 +155,7 @@ fn test_service_name_at_max_length_is_accepted_verbatim() {
     assert_eq!(MaxLenNameServiceProxy::consume().service_name().len(), 64);
 }
 
-// -----------------------------------------------------------------------------
-// Test 8: `default_size_message` parameter (in KiB)
-// -----------------------------------------------------------------------------
+// Test 8: the `default_size_message` parameter (in KiB)
 
 #[service(default_size_message = 4)]
 #[async_trait::async_trait]
@@ -196,16 +171,13 @@ pub trait FullService: Send + Sync + 'static {
 
 #[test]
 fn test_default_size_message_parameter() {
-    // The attribute is accepted for source compatibility and ignored by the
-    // native request/response transport; both services must still generate a
-    // working client.
+    // Accepted for source compatibility and ignored: both services must still
+    // generate a working client.
     let _sized = SizedMessageServiceClient::new();
     let _full = FullServiceClient::new();
 }
 
-// -----------------------------------------------------------------------------
-// Test 9: #[service(version = N)]
-// -----------------------------------------------------------------------------
+// Test 9: `#[service(version = N)]`
 
 #[service(version = 2)]
 #[async_trait::async_trait]
@@ -219,9 +191,7 @@ fn test_versioned_service_compiles() {
     let _ = &client;
 }
 
-// -----------------------------------------------------------------------------
-// Test 10: #[service(discovery_timeout = "5s")] — service-wide parameter
-// -----------------------------------------------------------------------------
+// Test 10: `#[service(discovery_timeout = "5s")]` — service-wide parameter
 
 #[service("DiscoveryTimeoutService", discovery_timeout = "5s")]
 #[async_trait::async_trait]

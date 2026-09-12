@@ -20,7 +20,7 @@
 //! ```
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use ice_rpc::Subject;
 use ice_rpc::{service, Observable};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -63,9 +63,8 @@ struct StateServiceImpl {
 
 impl StateServiceImpl {
     fn new() -> Self {
-        // `Subject::replay(1)` is the `shareReplay(1)` idiom in a single
-        // primitive: `get_state` immediately hands the last status to a late
-        // subscriber instead of making it wait for the next update.
+        // `Subject::replay(1)` is the `shareReplay(1)` idiom: `get_state`
+        // immediately hands the last status to a late subscriber.
         Self {
             state: Subject::replay(1),
         }

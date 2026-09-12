@@ -2,10 +2,8 @@
 //! services on their own channels: the routing relies on the service id carried
 //! by the zero-copy header.
 //!
-//! The test lives in its own binary on purpose: the channel registry of a
-//! process is sealed once `ServiceLocator::initialize_all` has run, and a later
-//! registration starts its own thread instead of joining a shared channel. Only
-//! a dedicated process can therefore guarantee that both services are grouped.
+//! Dedicated binary: the channel registry is sealed once `initialize_all` has
+//! run, so only a fresh process guarantees that both services are grouped.
 
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]

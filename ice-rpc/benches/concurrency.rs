@@ -6,7 +6,7 @@
 //!
 //! Run with: `cargo bench -p ice-rpc`.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::{Arc, Barrier};
 

@@ -69,8 +69,7 @@ fn provider_consumer_roundtrip() {
     );
 
     // Sparse traffic: let both dispatch threads fall back to their idle state
-    // (WaitSet), then measure a lone call. This is the "salvo" case where a
-    // polling loop would pay the whole idle sleep on both hops.
+    // (WaitSet), then measure a lone call.
     let mut sparse_worst = std::time::Duration::ZERO;
     let mut sparse_total = std::time::Duration::ZERO;
     for i in 0..20 {

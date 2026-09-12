@@ -1,12 +1,11 @@
-//! C7 / C12 integration test: iceoryx2's native node monitoring detects a
-//! provider that disappeared — for both an abnormal end (`SIGKILL`) and a clean
-//! shutdown.
+//! Integration test: iceoryx2's native node monitoring detects a provider that
+//! disappeared — for both an abnormal end (`SIGKILL`) and a clean shutdown.
 //!
 //! The test re-executes its own binary as a child provider, using environment
 //! variables to switch roles — the standard way to obtain a real second process
 //! from `cargo test`.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

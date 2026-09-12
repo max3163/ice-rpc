@@ -1,6 +1,6 @@
-//! Diagnostic harness for audit **C7**: validate that iceoryx2's *native* node
-//! monitoring detects a provider killed with `SIGKILL`. This is the mechanism
-//! ice-rpc now relies on; the hand-written kernel lock it replaced is gone.
+//! Diagnostic harness validating that iceoryx2's *native* node monitoring
+//! detects a provider killed with `SIGKILL`. This is the mechanism ice-rpc relies
+//! on.
 //!
 //! It is deliberately standalone: it uses the same iceoryx2 service as ice-rpc
 //! (`ipc_threadsafe::Service`) and `Node::list` / `NodeState`.
@@ -17,7 +17,7 @@
 //!
 //! See `scripts/validate-node-liveness.sh` for the orchestrated T1/T2/T3 runs.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use std::io::Write;
 use std::time::{Duration, Instant};
 

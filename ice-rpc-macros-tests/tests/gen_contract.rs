@@ -1,23 +1,17 @@
 //! Contract test for the `#[doc(hidden)] pub mod gen` facade of `ice-rpc`.
 //!
-//! `ice-rpc-macros` emits code that references every symbol below (`channel`,
-//! `Sender`, `WireEvent`, …). `gen` is therefore an internal contract between
-//! that crate and the runtime (see the "Versioning contract" note in
-//! `ice-rpc/src/gen.rs`).
-//!
-//! Importing/mentioning each symbol explicitly makes the test fail to compile as
-//! soon as one of them is renamed or removed — which is exactly the
-//! compatibility guarantee we want to pin: `gen` is semver-exempt for the
-//! consumers of `ice-rpc`, but **not** for `ice-rpc-macros`.
+//! `ice-rpc-macros` emits code that references every symbol below. Importing each
+//! one explicitly makes the test fail to compile as soon as one is renamed or
+//! removed: `gen` is semver-exempt for the consumers of `ice-rpc`, but **not**
+//! for `ice-rpc-macros`.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 /// Referencing each symbol pins it in the compilation unit: a rename or a
 /// removal in `ice_rpc::gen` turns this function into a compile error.
 #[test]
 fn gen_facade_symbols_resolve() {
-    // The compilation of this explicit import list *is* the assertion: an
-    // unknown or renamed path is a hard error. `allow(unused_imports)` is
+    // Compiling this import list *is* the assertion: `allow(unused_imports)` is
     // required because pinning the symbols, not using them, is the point.
     #[allow(unused_imports)]
     use ice_rpc::gen::{

@@ -7,11 +7,10 @@
 //!
 //! # Getting trustworthy numbers
 //!
-//! Each measured phase is preceded by an **untimed warm-up phase**. The very
-//! first calls pay one-off costs — provider discovery, publisher creation,
-//! shared-memory growth, OS page-in — which roughly halve the reported
-//! throughput if they land inside the measured window (44k req/s instead of
-//! ~110k on this workload).
+//! Each measured phase is preceded by an **untimed warm-up phase**: the first
+//! calls pay one-off costs — provider discovery, publisher creation,
+//! shared-memory growth, OS page-in — which would otherwise land inside the
+//! measured window.
 //!
 //! A single phase is still noisy, so use `--repeat` to get a **median** plus the
 //! min→max spread, which is the noise floor of the run:
@@ -24,7 +23,7 @@
 //! Any difference smaller than the reported spread is **not** attributable to
 //! the code.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use common::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -546,8 +545,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = db_proxy.expect("DatabaseServiceProxy not initialized");
 
     // ── Untimed warm-up phase ────────────────────────────────────────
-    // Absorbs the one-off costs (discovery, publisher creation, shared-memory
-    // growth, page-in) that would otherwise halve the first measured phase.
+    // Absorbs the one-off connection costs before the measured phase(s).
     log::info!("Warm-up phase (not measured)...");
     let (warm, _) = run_phase(proxy.clone(), cfg.clone()).await;
     log::info!(

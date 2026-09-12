@@ -3,7 +3,7 @@
 //! Each file in `compile_fail/` must fail to compile
 //! with a specific error message.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 #[test]
 fn compile_fail_validation() {
     let t = trybuild::TestCases::new();

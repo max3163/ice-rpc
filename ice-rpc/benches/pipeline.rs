@@ -3,25 +3,20 @@
 //!
 //! The operators of `ice-rpc` are **inherent methods** returning `Observable`:
 //! each step wraps the previous one in a boxed, poll-based combinator
-//! (`Observable::from_stream`). That design is what makes a pipeline a single
-//! type (`filter(...).map(...).take(...)` are all `Observable`), and this
-//! benchmark measures its price on 100 000 events, by comparing:
+//! (`Observable::from_stream`). This benchmark measures its price on 100 000
+//! events, by comparing:
 //!
-//! - `direct_loop` — a hand-written iterator chain over a range (lower bound:
-//!   no stream, no box, no `await`);
-//! - `source_observable` — draining a bare `from(..)` observable (no operator
-//!   at all: the source + `for_each` cost);
+//! - `direct_loop` — a hand-written iterator chain over a range (lower bound);
+//! - `source_observable` — draining a bare `from(..)` observable;
 //! - `pipeline_boxed` — `from(..).filter(..).map(..).take(..)`, i.e. three
 //!   boxed combinators in series over the same source.
 //!
-//! Read `pipeline_boxed - source_observable` (per element) as the cost of that
-//! boxing, the trade-off documented in `plans/merge-rx.md`. The three variants
-//! are checked to agree before the measurement, so the numbers cannot come from
-//! a pipeline doing the wrong work.
+//! The three variants are checked to agree before the measurement, so the
+//! numbers cannot come from a pipeline doing the wrong work.
 //!
 //! Run with: `cargo bench -p ice-rpc --bench pipeline`.
 
-#![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+#![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::hint::black_box;
 

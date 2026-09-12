@@ -15,7 +15,7 @@ const METHOD_NAME_LEN: usize = 64;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitBool, LitInt, LitStr, TraitItem};
+use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitInt, LitStr, TraitItem};
 
 use crate::codegen::{
     client::{
@@ -74,46 +74,30 @@ fn validate_channel_name(name: &str, span: proc_macro2::Span) -> syn::Result<()>
 ///
 /// - `#[service]` → the logical name = the trait name in lowercase.
 /// - `#[service("MyService")]` → explicit logical name.
-/// - `#[service(allow_large_payload = true)]` → enables the second shared-memory
-///   segment (default: `false`).
-/// - `#[service(default_size_message = 8)]` → initial size (in KiB) of the
-///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
-/// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline, accepted
-///   for source compatibility. Informational: it never bounds the response wait.
-///   Accepts the `s` / `m` / `h` suffixes.
 /// - `#[service(..., group = "db")]` → the **channel** this service shares with
 ///   the other services of the same group. A channel is the unit of transport:
 ///   it owns one request channel, one response channel and one dispatch thread,
 ///   and the samples are routed by the service id carried in the header.
 ///   Defaults to the service name, i.e. one channel per service.
-/// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
+/// - `#[service("MyService", version = 2, group = "db")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
     group: Option<String>,
-    allow_large_payload: bool,
-    default_size_message_kb: Option<u64>,
     service_version: u16,
-    discovery_timeout_secs: Option<u64>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut logical_name: Option<String> = None;
         let mut group: Option<String> = None;
-        let mut allow_large_payload = false;
-        let mut default_size_message_kb: Option<u64> = None;
         let mut service_version: u16 = 1;
-        let mut discovery_timeout_secs: Option<u64> = None;
 
         if input.is_empty() {
             return Ok(Self {
                 logical_name: None,
                 group: None,
-                allow_large_payload: false,
-                default_size_message_kb: None,
                 service_version,
-                discovery_timeout_secs: None,
             });
         }
 
@@ -127,28 +111,10 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitStr = input.parse()?;
                     group = Some(lit.value());
-                } else if ident == "allow_large_payload" {
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitBool = input.parse()?;
-                    allow_large_payload = lit.value;
-                } else if ident == "default_size_message" {
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitInt = input.parse()?;
-                    default_size_message_kb = Some(lit.base10_parse::<u64>()?);
                 } else if ident == "version" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
-                } else if ident == "discovery_timeout" {
-                    input.parse::<syn::Token![=]>()?;
-                    let lit: LitStr = input.parse()?;
-                    discovery_timeout_secs =
-                        Some(parse_duration_str(&lit.value()).ok_or_else(|| {
-                            syn::Error::new(
-                                lit.span(),
-                                "invalid duration; expected forms like \"30s\", \"5m\" or \"1h\"",
-                            )
-                        })?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -166,27 +132,8 @@ impl syn::parse::Parse for ServiceAttr {
         Ok(Self {
             logical_name,
             group,
-            allow_large_payload,
-            default_size_message_kb,
             service_version,
-            discovery_timeout_secs,
         })
-    }
-}
-
-/// Parses a duration string like `"60s"`, `"5m"`, `"1h"` into seconds.
-///
-/// Used by the `discovery_timeout` parameter of `#[service]`.
-fn parse_duration_str(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if let Some(rest) = s.strip_suffix('s') {
-        rest.parse::<u64>().ok()
-    } else if let Some(rest) = s.strip_suffix('m') {
-        rest.parse::<u64>().ok().map(|v| v * 60)
-    } else if let Some(rest) = s.strip_suffix('h') {
-        rest.parse::<u64>().ok().map(|v| v * 3600)
-    } else {
-        s.parse::<u64>().ok()
     }
 }
 
@@ -256,12 +203,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> syn::Result<Vec<NodeJsMethod>> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `allow_large_payload`, `default_size_message` (KiB),
-/// `version` and `discovery_timeout` (duration string such as `"5s"`, `"2m"`,
-/// `"1h"`). The discovery timeout is **service-wide**: it bounds the provider
-/// lookup performed by `ClientCore::resolve_target` for every method of the
-/// service. It does not bound the response wait — use the `timeout` operator
-/// on the returned stream for that.
+/// `"LogicalName"`, `version` and `group` (see [`ServiceAttr`]).
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
@@ -291,11 +233,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         .logical_name
         .unwrap_or_else(|| trait_name.to_string().to_lowercase());
 
-    let allow_large_payload = service_attr.allow_large_payload;
-    let default_size_message_kb = service_attr.default_size_message_kb;
     let service_version = service_attr.service_version;
-    // Service-wide: every method shares the same provider-lookup deadline.
-    let discovery_timeout_secs = service_attr.discovery_timeout_secs;
 
     // ── Service name validation ──────────────────────────────────
     if logical_name.len() > SERVICE_NAME_LEN {
@@ -343,10 +281,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     // ── End of validation ────────────────────────────────────────
-
-    // `allow_large_payload` / `default_size_message` are accepted but ignored:
-    // the native transport negotiates sizes itself.
-    let _ = (allow_large_payload, default_size_message_kb);
 
     // The channel a service belongs to (defaults to the service name).
     let group = service_attr.group.unwrap_or_else(|| logical_name.clone());
@@ -429,7 +363,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
                 group: &group_lit,
-                discovery_timeout_secs,
                 service_version,
             }));
 
@@ -462,10 +395,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let client_input = ClientGenInput {
         visibility,
         client_name: &client_name,
-        logical_name: &logical_name_lit,
         client_methods: &client_methods,
-        allow_large_payload,
-        default_size_message_kb,
     };
     let client_struct = gen_client_struct(&client_input);
     let client_lifecycle = gen_client_lifecycle(&client_input);

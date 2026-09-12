@@ -73,14 +73,13 @@ pub trait MyService: Send + Sync + 'static {
 
 The macro generates `MyServiceRequest`, `MyServiceClient`, `MyServiceServer`, `MyServiceProxy` and `MyServiceMode`.
 
-`#[service]` also accepts three optional parameters:
+`#[service]` also accepts two optional parameters:
 
-- `allow_large_payload` (`bool`, default `false`) — creates the second shared-memory segment (`_large`) for payloads above `LARGE_PAYLOAD_THRESHOLD`;
-- `default_size_message` (integer, in KiB) — initial slice size of the `_default` shared-memory segment publisher;
-- `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.
+- `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
+- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.
 
 ```rust,ignore
-#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 1)]
+#[service("MyService", version = 1, group = "db")]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -148,9 +147,9 @@ per service, correlated by a 16-byte id: see `ice_rpc::transport`.
 
 ## Consumption
 
-Consuming a stream is done natively on `ice_rpc::Observable` (or through the
-`RxStreamExt` operators); a call never fails at the call site — a
-discovery/transport failure becomes an in-stream technical error:
+Consuming a stream is done natively on `ice_rpc::Observable`, whose operators are
+inherent methods (nothing to import); a call never fails at the call site — a
+connection/transport failure becomes an in-stream technical error:
 
 ```rust,ignore
 let value = proxy.hello("Alice".into()).await.first_value().await?;
@@ -160,7 +159,7 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
 - `first_value() -> Result<T, ObservableError<E>>` (`Empty` when the stream completes
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
-- `#[service(..., discovery_timeout = "5s")]` sets the **service-wide** provider-lookup deadline (default `RPC_CALL_TIMEOUT_SECS` = 30s). It bounds the *discovery* phase only; use the `timeout` operator to bound the response wait.
+- the `timeout` and `take_until` operators bound the response wait and cancel a stream.
 
 ## Error semantics
 

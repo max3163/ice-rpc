@@ -121,7 +121,11 @@ sub.closed().await;
 ## 4. Étapes (chacune compile, suite verte, commit séparé)
 
 Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (`30afc66`), 4 ✅
-(`0045913`), 5 ✅ (commit de cette étape), 6 à faire.
+(`0045913`), 5 ✅ (`868de2a`), 6 ✅ (commit de cette étape). En plus du plan :
+deux correctifs de transport (`ae1de0d` réveil du pair coalescé, `a4dacfc`
+attente du provider interruptible + arrêt du runtime), le découpage de
+`transport.rs` en 6 modules (`1f6a4e2`) et un nettoyage des commentaires de tout
+le projet (`afe60dd`…`fd73ea0`).
 
 1. **Fusion mécanique** — déplacer `ice-rpc-rx/src/{creation.rs, subject.rs,
    share_replay.rs, subscribe.rs, transform/}` vers `ice-rpc/src/rx/`, puis
@@ -208,6 +212,14 @@ Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (`30afc66`), 4 ✅
    `ice-rpc-rx/Readme.md` dans `Readme.md`, et réaligner les commentaires de
    `gen.rs`, `lib.rs`, `types/mod.rs`, `types/wire.rs`,
    [`gen_contract.rs`](../ice-rpc-macros-tests/tests/gen_contract.rs:1).
+   *Résultat :* `#[service]` ne garde que `version` et `group`
+   (`parse_duration_str`, les champs et le codegen morts ont disparu) ; le test
+   compile-fail `invalid_discovery_timeout` et son `.stderr` sont supprimés ;
+   les tests de `service_macro.rs` sont réduits aux paramètres vivants ; les
+   `#[service(...)]` de `examples/common` sont nettoyés ; les 3 Readmes
+   documentent `version` / `group`, la couche `rx` (opérateurs inhérents,
+   `Subject` avec replay) et l'arborescence `transport/` en 6 modules.
+   `grep ice-rpc-rx` : aucune occurrence dans le dépôt.
 
 ## 5. Impact par fichier
 

@@ -39,13 +39,7 @@ pub trait MyService: Send + Sync + 'static {
 `#[service]` accepts optional parameters, combinable in any order:
 
 ```rust,ignore
-#[service(
-    "MyService",
-    allow_large_payload = true,
-    default_size_message = 8,
-    version = 1,
-    discovery_timeout = "5s",
-)]
+#[service("MyService", version = 1, group = "db")]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -53,30 +47,12 @@ pub trait MyService: Send + Sync + 'static {
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `allow_large_payload` | `bool` | `false` | Creates the second shared-memory segment (`_large`) used for payloads above `LARGE_PAYLOAD_THRESHOLD`. |
-| `default_size_message` | integer (KiB) | `256` bytes | Initial slice size of the `_default` shared-memory segment publisher. |
 | `version` | integer | `1` | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`. |
-| `discovery_timeout` | duration string (`"30s"`, `"5m"`, `"1h"`) | `RPC_CALL_TIMEOUT_SECS` (30s) | **Service-wide** deadline for locating the provider before the first call. |
+| `group` | string | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id. |
 
-## Discovery timeout
-
-`discovery_timeout` is a property of the **service**, not of a method: every
-method of the trait shares the same provider-lookup deadline.
-
-```rust,ignore
-#[service("DatabaseService", discovery_timeout = "5s")]
-pub trait DatabaseService: Send + Sync + 'static {
-    async fn get_user_age(&self, name: String) -> Observable<i32, DatabaseError>;
-    async fn get_person(&self, query: PersonneQuery) -> Observable<PersonneInfo, DatabaseError>;
-}
-```
-
-It is accepted for source compatibility. The native iceoryx2 request/response
-transport connects on demand, so the deadline is currently informational and
-**does not bound the response wait**: a provider that accepts the call and never
-answers is not interrupted by it. On the consumer side, use the
-`RxStreamExt::timeout(duration)` operator to bound the
-response latency (and the silence between two values of a streaming response).
+The macro does not bound the response wait: use the `Observable` operators
+(`timeout`, `take_until`) to bound the latency, or the silence between two values
+of a streaming response.
 
 ## Validation
 

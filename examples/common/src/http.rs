@@ -66,7 +66,7 @@ impl std::fmt::Display for HttpError {
 ///
 /// Demonstrates iceoryx2's ability to transmit multi-megabyte buffers
 /// without memory copies, through inter-process shared memory.
-#[service("HttpService", allow_large_payload = true)]
+#[service("HttpService")]
 pub trait HttpService {
     /// Sends an HTTP request and returns the response.
     ///

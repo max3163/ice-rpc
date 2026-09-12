@@ -103,13 +103,21 @@ sequenceDiagram
 ice-rpc/                        ← Main crate (library + runtime)
 ├── src/
 │   ├── lib.rs                  ← Public exports, cancellation tokens, shutdown()
-│   ├── transport.rs            ← Publish/subscribe transport: one request and one
-│   │                              response channel per service, correlated by a
-│   │                              16-byte id, Notifier/Listener/WaitSet wake-ups
+│   ├── transport/              ← Publish/subscribe transport: one request and one
+│   │   │                          response channel per channel (group of services),
+│   │   │                          correlated by the 16-byte id of the zero-copy header
+│   │   ├── mod.rs              ← aliases, tuning constants, shared node, rkyv decode
+│   │   ├── notify.rs           ← coalesced wake-up notifications
+│   │   ├── waitset.rs          ← blocking wait (Notifier / Listener / WaitSet)
+│   │   ├── bridge.rs           ← Observable → wire samples, ServiceDispatcher
+│   │   ├── client.rs           ← request publication + response routing
+│   │   └── server.rs           ← channel creation, dispatch, response publication
+│   ├── rx/                     ← Reactive layer: operators on Observable, Subject
+│   │                              (with replay), constructors, Subscription
 │   ├── types/                  ← RPC fundamental types, one file per concern:
 │   │   ├── node.rs             ← NodeId (PID) + raw_pid_to_u32
 │   │   ├── wire.rs             ← Event, WireEvent, Sender, ObservableError
-│   │   ├── stream.rs           ← Observable, ObservableError, channel()
+│   │   ├── stream.rs           ← Observable (next/recv/collect), channel()
 │   │   ├── error.rs            ← RpcError
 │   │   └── consts.rs           ← name-length limits shared with the macros
 │   ├── node_liveness.rs        ← Native iceoryx2 node monitoring (Node::list,
@@ -227,17 +235,15 @@ pub trait DatabaseService: Send + Sync + 'static {
 ### 3.2. Optional parameters
 
 ```rust
-#[service]                                                       // logical name = trait name in lowercase
-#[service("MyService")]                                          // explicit logical name
-#[service("MyService", version = 2, discovery_timeout = "5s")]   // version + deadline
+#[service]                                             // logical name = trait name in lowercase
+#[service("MyService")]                                // explicit logical name
+#[service("MyService", version = 2, group = "db")]      // version + channel
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `version` | integer | `1` | Service interface version (part of the request frame). |
-| `discovery_timeout` | string (`s`/`m`/`h`) | `30s` | Accepted for compatibility; the transport connects on demand, so it is currently informational. |
-| `allow_large_payload` | `bool` | `false` | Accepted for compatibility; ignored (the shared-memory segment grows on demand). |
-| `default_size_message` | integer (KiB) | — | Accepted for compatibility; ignored. |
+| `group` | string | service name | Channel shared with the other services of the group: one request channel, one response channel and one dispatch thread, routed by the service id. |
 
 ---
 
@@ -1067,11 +1073,10 @@ The `shm/` directory is created automatically by iceoryx2 for its shared-memory 
 A service method returns the observable directly (no `Result`), and a terminal
 error travels in-band as `Event::Error(ObservableError<E>)`.
 
-Terminal consumption is provided by the Rx layer of `ice_rpc` :
+Every terminal and operator is an inherent method on the `Observable` (nothing to
+import):
 
 ```rust
-use ice_rpc::RxStreamExt;
-
 // First value only. `Complete`/closed → `ObservableError::Empty`,
 // terminal error → `ObservableError::Business` or `ObservableError::Technical`.
 let age = db.get_user_age("Alice".into()).await.first_value().await?;

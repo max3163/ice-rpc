@@ -36,9 +36,8 @@
 //!
 //! ## Timeouts
 //!
-//! `discovery_timeout` (a **service-level** attribute) bounds the node discovery
-//! performed before the call is sent; [`crate::Observable::timeout`] is a
-//! per-event **silence watchdog** on an active stream, reset after every event.
+//! [`crate::Observable::timeout`] is a per-event **silence watchdog** on an
+//! active stream, reset after every event.
 
 mod creation;
 mod subject;

@@ -82,11 +82,20 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
         Driver::Agnostic => quote! { ice_rpc::rt::block_on(#wrapped) },
         Driver::Custom(path) => quote! { #path(#wrapped) },
         Driver::Tokio => quote! {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build the tokio runtime for #[ice_rpc::main]")
-                .block_on(#wrapped)
+            {
+                let __ice_rpc_runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build the tokio runtime for #[ice_rpc::main]");
+                let __ice_rpc_output = __ice_rpc_runtime.block_on(#wrapped);
+                // Blocking tasks cannot be cancelled, and dropping the runtime
+                // waits for them: a parked one (a console read, a user
+                // `spawn_blocking` loop) would then keep the process alive *after*
+                // the clean shutdown above. A bounded grace period is enough for
+                // the tasks shutdown stops, and the process can exit.
+                __ice_rpc_runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+                __ice_rpc_output
+            }
         },
     };
 

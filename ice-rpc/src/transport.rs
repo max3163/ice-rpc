@@ -934,6 +934,16 @@ fn publish_until_delivered(
     let deadline = std::time::Instant::now() + timeout;
     let mut attempts: u32 = 0;
     loop {
+        // This is a **blocking** loop, and it can be the only thing running (a
+        // consumer started before its provider, a provider whose consumer went
+        // away). It must therefore observe the shutdown itself: otherwise Ctrl+C
+        // is ignored for the whole deadline, and `main` cannot return — dropping
+        // the runtime waits for this very thread.
+        if crate::global_cancel_token().is_cancelled()
+            || crate::registry_cancel_token().is_cancelled()
+        {
+            return Err(RpcError::Cancelled);
+        }
         let len = payload.len().max(1);
         let sample = publisher
             .loan_slice_uninit(len)
@@ -958,6 +968,14 @@ fn publish_until_delivered(
             attempts += 1;
             std::thread::yield_now();
         } else {
+            // Slow path: this call path owns no `WaitSet`, so if nothing else in
+            // the process is parked on one nobody would report the termination
+            // request. Sampling the flag here keeps Ctrl+C effective even when
+            // this wait is the only running code.
+            if SignalHandler::termination_requested() {
+                crate::request_shutdown();
+                return Err(RpcError::Cancelled);
+            }
             std::thread::sleep(PUBLISH_RETRY_SLEEP);
         }
     }

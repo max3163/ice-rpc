@@ -1,4 +1,4 @@
-//! StateService over ice-rpc, using `Subject` + `ShareReplay`.
+//! StateService over ice-rpc, using a replaying `Subject`.
 //!
 //! Two programs communicate over ice-rpc:
 //!
@@ -21,8 +21,8 @@
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
+use ice_rpc::Subject;
 use ice_rpc::{service, Observable};
-use ice_rpc::{ShareReplay, Subject};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Status of a service or component.
@@ -56,19 +56,19 @@ pub trait StateService {
     async fn set_state(&self, status: Status) -> Observable<(), String>;
 }
 
-/// Provider implementation backed by a `Subject` + `ShareReplay`.
+/// Provider implementation backed by a replaying `Subject`.
 struct StateServiceImpl {
-    subject: Subject<Status, String>,
-    state: ShareReplay<Status, String>,
+    state: Subject<Status, String>,
 }
 
 impl StateServiceImpl {
-    async fn new() -> Self {
-        let subject = Subject::new();
-        // Feed the ShareReplay with the Subject stream so that `get_state`
-        // replays the last value to late subscribers.
-        let state = ShareReplay::new(subject.subscribe().await);
-        Self { subject, state }
+    fn new() -> Self {
+        // `Subject::replay(1)` is the `shareReplay(1)` idiom in a single
+        // primitive: `get_state` immediately hands the last status to a late
+        // subscriber instead of making it wait for the next update.
+        Self {
+            state: Subject::replay(1),
+        }
     }
 }
 
@@ -79,14 +79,14 @@ impl StateService for StateServiceImpl {
     }
 
     async fn set_state(&self, status: Status) -> Observable<(), String> {
-        self.subject.next(status).await;
+        self.state.next(status).await;
         // Acknowledge with a single terminal value (channel-free source).
         ice_rpc::of(())
     }
 }
 
 async fn run_provider() {
-    let impl_ = StateServiceImpl::new().await;
+    let impl_ = StateServiceImpl::new();
 
     // The provider subscribes to its own state and is notified of changes.
     let mut rx = impl_.get_state().await;

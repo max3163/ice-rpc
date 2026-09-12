@@ -20,12 +20,15 @@
 //!   `subscribe_with`, `next`, `recv`). Every operator is a pull-based
 //!   combinator: it allocates no intermediate channel and spawns no task — one
 //!   box per operator step, a cost measured by `benches/pipeline.rs`.
-//! - [`Observer`] / [`Subscription`] — push-based consumption: `subscribe`
-//!   spawns a single task that pushes `next` / `error` / `complete`.
+//! - [`Subject`] — the push side: a multi-producer / multi-consumer multicast
+//!   source. [`Subject::new`] multicasts to the current subscribers,
+//!   [`Subject::replay`] also replays the last `n` values (and the terminal
+//!   state) to late subscribers — the `shareReplay(1)` idiom.
+//! - [`Observable::subscribe`] / [`Observable::subscribe_all`] — push-based
+//!   consumption: one task pulls the stream and calls the callbacks of RxJS
+//!   (`next`; or `next` / `error` / `complete`). [`Subscription`] is the
+//!   cancellation handle.
 //! - [`from`], [`of`], [`throw_error`] — channel-free local constructors.
-//! - [`Subject`] — a multi-producer / multi-consumer multicast source.
-//! - [`ShareReplay`] — a multicast source that replays the last value to late
-//!   subscribers (equivalent to RxJS `shareReplay(1)`).
 //!
 //! ## Normalization
 //!
@@ -47,22 +50,20 @@
 //!   the stream terminates with a technical `RpcError::Timeout`.
 
 mod creation;
-mod share_replay;
 mod subject;
 mod subscribe;
 mod transform;
 
 pub use creation::{from, of, throw_error};
-pub use share_replay::ShareReplay;
 pub use subject::Subject;
-pub use subscribe::{Observer, ObserverFns, Subscription};
+pub use subscribe::Subscription;
 
-/// Default capacity of the channels created by the multicast primitives.
+/// Default capacity of the channels created by the multicast primitive.
 ///
 /// The operators themselves are pull-based combinators and create no channel;
-/// only [`Subject`] and [`ShareReplay`] fan out to per-subscriber channels. A
-/// bounded channel provides backpressure: a producer waits when the queue is
-/// full, which keeps memory usage bounded.
+/// only [`Subject`] fans out to per-subscriber channels. A bounded channel
+/// provides backpressure: a producer waits when the queue is full, which keeps
+/// memory usage bounded.
 pub(crate) const MULTICAST_CHANNEL_CAPACITY: usize = 8;
 
 #[cfg(test)]

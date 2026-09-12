@@ -22,7 +22,7 @@ use common::{
     PersonneInfo, PersonneQuery,
 };
 use ice_rpc::ObservableError;
-use ice_rpc::{from, of, throw_error, Observer};
+use ice_rpc::{from, of, throw_error};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -448,53 +448,41 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
     true
 }
 
-/// A hand-written observer: keeps its state and side effects off the callbacks.
-struct NotificationPrinter {
-    received: usize,
-}
-
-impl Observer<u32, String> for NotificationPrinter {
-    fn next(&mut self, value: u32) {
-        self.received += 1;
-        log::info!("  next({}) — {} notification(s)", value, self.received);
-    }
-
-    fn error(&mut self, error: ObservableError<String>) {
-        log::warn!("  error: {}", error);
-    }
-
-    fn complete(&mut self) {
-        log::info!("  complete — {} notification(s) in total", self.received);
-    }
-}
-
-/// Demonstrates the `subscribe` (push) mechanism: first on local sources (no IPC
+/// Demonstrates the two push entry points: first on local sources (no IPC
 /// involved), then on a real streaming RPC.
 ///
-/// The two `subscribe` names are involved:
-/// - `Subject::subscribe()` returns an `Observable` (multicast registration);
-/// - `RxStreamExt::subscribe` is the terminal activation: one task pulls the
-///   pipeline and pushes into an `Observer`.
+/// - [`Observable::subscribe`] takes the value callback only (RxJS
+///   `subscribe(next)`): errors and completion are ignored.
+/// - [`Observable::subscribe_all`] takes the three RxJS callbacks (`next`,
+///   `error`, `complete`).
+///
+/// (`Subject::subscribe()` is a different, unrelated call: it registers a
+/// subscriber and returns an `Observable`.)
 async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
-    // ── Local sources: no provider needed, same Observer contract ─────
+    // ── Local sources: no provider needed, same callbacks ─────────────
     log::info!("--- subscribe over local sources (no IPC) ---");
 
-    // A plain closure is used as a value-only observer.
+    // `subscribe`: values only, the terminal event is ignored.
     let sub = from::<u32, String, _>([1, 2, 3]).subscribe(|v| log::info!("  [from] next {v}"));
     sub.closed().await; // resolves on Complete
     log::info!("   closed: {}", sub.is_closed());
 
     // The business error travels through the `error` callback, not as an `Err`.
-    let sub = throw_error::<u32, String>("nothing to notify".to_string()).subscribe_with(
+    let sub = throw_error::<u32, String>("nothing to notify".to_string()).subscribe_all(
         |v| log::info!("  [error] next {v}"),
         |e| log::warn!("  [error] error: {e}"),
         || log::info!("  [error] complete"),
     );
     sub.closed().await;
 
-    // A hand-written `Observer` implementation.
-    let sub = of::<u32, String>(0).subscribe(NotificationPrinter { received: 0 });
+    // The same stream through the value-only view: the error is dropped.
+    let sub = of::<u32, String>(0).subscribe(|v| log::info!("  [value-only] next {v}"));
     sub.closed().await;
+    let sub = throw_error::<u32, String>("ignored".to_string()).subscribe(|v| {
+        log::info!("  [value-only] next {v}");
+    });
+    sub.closed().await;
+    log::info!("   value-only `subscribe` ignored the business error");
 
     // ── Over ice-rpc ─────────────────────────────────────────────────
     log::info!("--- subscribe over ice-rpc ---");
@@ -507,7 +495,7 @@ async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
 
     // A whole stream, subscribed until completion.
     log::info!("-> watch(5) — subscribing until completion…");
-    let sub = notif.watch(5).await.subscribe_with(
+    let sub = notif.watch(5).await.subscribe_all(
         |v| log::info!("<- notification {v}"),
         |e| log::error!("<- error: {e}"),
         || log::info!("<- complete"),

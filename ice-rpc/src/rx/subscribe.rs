@@ -1,7 +1,9 @@
 //! Terminal subscription: adapts a pull-based stream to Rx-style callbacks.
 //!
-//! [`RxStreamExt::subscribe`](crate::Observable::subscribe) spawns a **single**
-//! task that pulls the pipeline and pushes the events into an [`Observer`].
+//! [`Observable::subscribe`](crate::Observable::subscribe) and
+//! [`Observable::subscribe_all`](crate::Observable::subscribe_all) spawn a
+//! **single** task that pulls the stream and pushes the events into an
+//! [`Observer`].
 //! This is the only operator that spawns; `for_each`, `first_value` and
 //! `collect` stay purely pull-based.
 //!
@@ -10,6 +12,11 @@
 //! observer receives the [`ObservableError`] unchanged, with no projection.
 //! ([`ObservableError::Empty`] only comes from the terminal pull helpers —
 //! `first_value` — never from a pushed stream.)
+//!
+//! [`Observer`] and [`ObserverFns`] are **internal**: the user-facing entry
+//! points are [`Observable::subscribe`](crate::Observable::subscribe) and
+//! [`Observable::subscribe_all`](crate::Observable::subscribe_all), so the
+//! callbacks of RxJS are reachable without naming a trait.
 
 use std::pin::Pin;
 
@@ -17,9 +24,10 @@ use crate::{Event, ObservableError};
 
 /// Push-based consumer of an observable (Rx `Observer`).
 ///
+/// Internal seam between the subscription task and the callbacks:
 /// [`Observer::next`] is called for every value, then exactly one of
 /// [`Observer::error`] / [`Observer::complete`] terminates the subscription.
-pub trait Observer<T, E>: Send + 'static {
+pub(crate) trait Observer<T, E>: Send + 'static {
     /// Receives a business value.
     fn next(&mut self, value: T);
 
@@ -30,9 +38,9 @@ pub trait Observer<T, E>: Send + 'static {
     fn complete(&mut self);
 }
 
-/// Observer built from three closures (see
-/// [`Observable::subscribe_with`](crate::Observable::subscribe_with)).
-pub struct ObserverFns<N, Er, C> {
+/// Observer built from the three closures of
+/// [`Observable::subscribe_all`](crate::Observable::subscribe_all).
+pub(crate) struct ObserverFns<N, Er, C> {
     on_next: N,
     on_error: Er,
     on_complete: C,
@@ -40,7 +48,7 @@ pub struct ObserverFns<N, Er, C> {
 
 impl<N, Er, C> ObserverFns<N, Er, C> {
     /// Creates an observer from its three callbacks.
-    pub fn new(on_next: N, on_error: Er, on_complete: C) -> Self {
+    pub(crate) fn new(on_next: N, on_error: Er, on_complete: C) -> Self {
         Self {
             on_next,
             on_error,
@@ -68,8 +76,8 @@ where
     }
 }
 
-/// A plain `FnMut(T)` can be used directly as a value-only observer: it ignores
-/// errors and completion.
+/// A plain `FnMut(T)` can be used directly as a value-only observer (what
+/// [`Observable::subscribe`](crate::Observable::subscribe) builds on).
 impl<T, E, F> Observer<T, E> for F
 where
     F: FnMut(T) + Send + 'static,
@@ -222,7 +230,7 @@ mod tests {
         let seen_c = seen.clone();
         let done_c = done.clone();
         let stream: crate::Observable<i32, String> = crate::rx::from([1, 2, 3]);
-        let _sub = stream.subscribe_with(
+        let _sub = stream.subscribe_all(
             move |v| seen_c.lock().unwrap().push(v),
             |_e: ObservableError<String>| {},
             move || done_c.store(true, Ordering::SeqCst),
@@ -239,7 +247,7 @@ mod tests {
 
         let stream =
             crate::Observable::<i32, String>::from_technical_error(crate::RpcError::Timeout);
-        let _sub = stream.subscribe_with(
+        let _sub = stream.subscribe_all(
             |_v| {},
             move |e: ObservableError<String>| *got_c.lock().unwrap() = Some(e),
             || {},
@@ -261,7 +269,7 @@ mod tests {
             crate::Observable::from_events([Event::Error(ObservableError::Business(
                 "boom".into(),
             ))]);
-        let _sub = stream.subscribe_with(
+        let _sub = stream.subscribe_all(
             |_v| {},
             move |e: ObservableError<String>| *got_c.lock().unwrap() = Some(e),
             || {},

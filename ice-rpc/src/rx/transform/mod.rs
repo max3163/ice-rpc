@@ -40,14 +40,15 @@
 //!   fires.
 //!
 //! Terminals (`first_value`, `collect`, [`Observable::for_each`],
-//! [`Observable::subscribe`], [`Observable::subscribe_with`]) consume the
-//! stream and are the only ones that end the chain.
+//! [`Observable::subscribe`], [`Observable::subscribe_all`]) consume the stream
+//! and are the only ones that end the chain.
 
 use std::time::Duration;
 
 use crate::{Observable, ObservableError};
 
-use super::{Observer, ObserverFns, Subscription};
+use super::subscribe::{spawn_push, ObserverFns};
+use super::Subscription;
 
 impl<T, E> Observable<T, E> {
     /// Transforms every `Next` value with `f`; terminal events pass through
@@ -232,27 +233,44 @@ impl<T, E> Observable<T, E> {
         Ok(())
     }
 
-    /// Subscribes with an [`Observer`]: **one** task pulls the stream and
-    /// pushes `next` / `error` / `complete`.
+    /// Subscribes with a value-only callback (RxJS `subscribe(next)`).
     ///
-    /// Dropping the returned [`Subscription`] cancels it silently.
-    pub fn subscribe<O>(self, observer: O) -> Subscription
+    /// **One** task pulls the stream and calls `on_next` for every value;
+    /// errors and completion are ignored (use [`Observable::subscribe_all`] to
+    /// observe them). Dropping the returned [`Subscription`] cancels the task
+    /// silently, as does [`Subscription::unsubscribe`].
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let sub = stream.subscribe(|v| log::info!("{v}"));
+    /// sub.closed().await;
+    /// ```
+    pub fn subscribe<F>(self, on_next: F) -> Subscription
     where
-        O: Observer<T, E>,
+        F: FnMut(T) + Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
     {
-        let cancel = crate::CancellationToken::new();
-        super::subscribe::spawn_push(self, observer, cancel.clone());
-        Subscription::new(cancel)
+        self.subscribe_all(on_next, |_| {}, || {})
     }
 
     /// Subscribes with the three RxJS callbacks: `on_next`, `on_error`
     /// (business **or** technical) and `on_complete`.
     ///
-    /// Exactly one of `on_error` / `on_complete` runs, and neither runs when the
-    /// [`Subscription`] is dropped (RxJS `unsubscribe`).
-    pub fn subscribe_with<N, Er, C>(self, on_next: N, on_error: Er, on_complete: C) -> Subscription
+    /// This is the counterpart of `subscribe({ next, error, complete })` in
+    /// RxJS: exactly one of `on_error` / `on_complete` runs, and neither runs
+    /// when the [`Subscription`] is dropped or
+    /// [`unsubscribe`](Subscription::unsubscribe)d.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let sub = stream.subscribe_all(
+    ///     |v| log::info!("next {v}"),
+    ///     |e: ObservableError<String>| log::error!("error {e}"),
+    ///     || log::info!("complete"),
+    /// );
+    /// ```
+    pub fn subscribe_all<N, Er, C>(self, on_next: N, on_error: Er, on_complete: C) -> Subscription
     where
         N: FnMut(T) + Send + 'static,
         Er: FnMut(ObservableError<E>) + Send + 'static,
@@ -260,7 +278,13 @@ impl<T, E> Observable<T, E> {
         T: Send + 'static,
         E: Send + 'static,
     {
-        self.subscribe(ObserverFns::new(on_next, on_error, on_complete))
+        let cancel = crate::CancellationToken::new();
+        spawn_push(
+            self,
+            ObserverFns::new(on_next, on_error, on_complete),
+            cancel.clone(),
+        );
+        Subscription::new(cancel)
     }
 }
 

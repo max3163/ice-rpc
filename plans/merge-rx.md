@@ -120,8 +120,8 @@ sub.closed().await;
 
 ## 4. Étapes (chacune compile, suite verte, commit séparé)
 
-Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (`30afc66`), 4 ✅ (commit
-de cette étape), 5 à 6 à faire.
+Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (`30afc66`), 4 ✅
+(`0045913`), 5 ✅ (commit de cette étape), 6 à faire.
 
 1. **Fusion mécanique** — déplacer `ice-rpc-rx/src/{creation.rs, subject.rs,
    share_replay.rs, subscribe.rs, transform/}` vers `ice-rpc/src/rx/`, puis
@@ -185,6 +185,21 @@ de cette étape), 5 à 6 à faire.
    (annulation au drop, `unsubscribe()`, `closed()`) est inchangé. Suppression de
    `ShareReplay` et de `retry*` / `merge` si les usages confirment qu'ils sont
    morts ; migration de `state_service` et `consumer-app`.
+   *Résultat :* `Subject::new()` (multicast pur) et `Subject::replay(n)`
+   (dernières `n` valeurs **et** état terminal rejoués aux nouveaux abonnés : le
+   `shareReplay(1)` en une seule primitive) ; `Observable::subscribe(next)` =
+   valeur seule, `Observable::subscribe_all(next, error, complete)` = les trois
+   rappels de RxJS ; `Observer` / `ObserverFns` sont `pub(crate)` et
+   `ShareReplay` **supprimé** (fichier, ré-exports, tests) ; `state_service`
+   remplace le couple `Subject` + `ShareReplay` par un `Subject::replay(1)`, et
+   `consumer-app` illustre les deux points d'entrée au lieu d'un `Observer`
+   écrit à la main. Sémantique RxJS adoptée au passage : un `Subject`
+   **terminé est inerte** (`next` / `error` / `complete` ultérieurs ignorés, un
+   nouvel abonné ne reçoit que l'état terminal), et `Subject::subscribe`
+   demande `T: Clone, E: Clone` (le `replay` doit cloner).
+   *Validation :* `cargo test --workspace` (144 tests lib), `cargo test
+   -p ice-rpc --features tokio --lib` (137), clippy `-D warnings`,
+   `bench-load.sh` 3 modes à 100 % (0 erreur, p50 séquentiel 7 µs).
 6. **Macro et documentation** — retirer `allow_large_payload`,
    `default_size_message` et `discovery_timeout` de
    [`ServiceAttr`](../ice-rpc-macros/src/lib.rs:51) et du codegen ; supprimer le

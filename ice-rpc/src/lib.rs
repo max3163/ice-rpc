@@ -168,10 +168,11 @@ pub use service_traits::ServiceInit;
 pub use types::{Event, Observable, ObservableError, RpcError};
 
 // ── Public API: reactive operators and multicast primitives ─────────
-// The operators are **inherent methods** on `Observable` (nothing to import);
-// only the constructors and the multicast primitives are re-exported here.
-// The operator *types* are private: every operator returns `Observable`.
-pub use rx::{from, of, throw_error, Observer, ObserverFns, ShareReplay, Subject, Subscription};
+// The operators, the terminals (`subscribe`, `subscribe_all`) and the
+// observers are carried by `Observable` and `Subject` themselves (nothing to
+// import); only the constructors and the cancellation handle are re-exported
+// here. The operator *types* and the internal `Observer` are private.
+pub use rx::{from, of, throw_error, Subject, Subscription};
 
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;

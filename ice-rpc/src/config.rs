@@ -99,10 +99,10 @@ pub fn setup_iceoryx2_global_config() {
 }
 
 /// Serializes the configuration to TOML and writes it to `./config/iceoryx2.toml`
-/// if the file does not already exist (avoids an unnecessary rewrite on each start).
+/// if the file does not already exist.
 ///
-/// Builds the absolute path manually via `std::env::current_dir()` to
-/// avoid the UNC prefix `\\?\` that Windows adds and that `FilePath` rejects.
+/// Builds the absolute path via `std::env::current_dir()` to avoid the Windows
+/// UNC prefix `\\?\` that `FilePath` rejects.
 ///
 /// # Returns
 /// The absolute path of the file, or `None` on error.
@@ -118,13 +118,8 @@ fn write_config_toml(config: &iceoryx2::config::Config) -> Option<std::path::Pat
 
     let file_path = config_dir.join("iceoryx2.toml");
 
-    // The generated file embeds a machine-specific absolute root-path. Reusing a
-    // file produced on another machine/OS (or with a different
-    // `ICE_RPC_ROOT_PATH`) would make iceoryx2 operate on a non-existent path —
-    // e.g. a POSIX `/home/...` root-path reused on Windows, where the directory
-    // listing then fails with a Win32 `FindFirstFileA` error and `Service::list`
-    // returns `InternalError`. Validate the recorded root-path and regenerate on
-    // mismatch (this also avoids an unnecessary rewrite on each start).
+    // The file embeds a machine-specific root-path: validate it and regenerate
+    // on mismatch (e.g. a POSIX path reused on Windows).
     if file_path.exists() {
         let expected_root =
             String::from_utf8_lossy(config.global.root_path().as_bytes()).to_string();
@@ -224,9 +219,7 @@ mod tests {
     #[test]
     fn build_config_has_expected_structure() {
         let cfg = build_iceoryx2_config();
-        // The config is built without panicking.
-        // The specific flags depend on the iceoryx2 default values
-        // and the APPDATA path; we only check that the config is valid.
+        // The config is built without panicking; the flags depend on the defaults.
         let _ = cfg;
     }
 
@@ -244,9 +237,8 @@ mod tests {
             std::env::set_var("APPDATA", val);
         }
 
-        // Without APPDATA, we must obtain a valid Config (no panic).
-        // We only check that the returned type is an iceoryx2 Config.
-        let _ = cfg; // The construction succeeded without panicking.
+        // Without APPDATA, we must still obtain a valid Config (no panic).
+        let _ = cfg;
     }
 
     #[test]

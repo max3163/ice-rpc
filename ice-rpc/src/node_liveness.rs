@@ -1,26 +1,10 @@
 //! Node liveness through iceoryx2's native node monitoring.
 //!
-//! # Why
-//!
-//! A former implementation held a hand-written kernel lock (Unix `flock` /
-//! Win32 `CreateMutexA`) purely as a liveness beacon. iceoryx2 already
-//! provides that exact mechanism: `<ipc_threadsafe::Service as Service>::Monitoring`
-//! is `FileLockMonitoring`, i.e. a file lock released by the OS on crash
-//! (`iceoryx2_bb_posix::process_state`). `Node::list` exposes it as
-//! [`NodeState::Alive`] / [`NodeState::Dead`], and `UniqueNodeId::pid()` maps a
-//! node back to the process — which is exactly ice-rpc's [`NodeId`].
-//!
-//! # Design
-//!
-//! `Node::list` costs ~680 µs per call (measured with the
-//! `node_liveness_probe` example) versus ~3 µs for a bare `flock`, so it
-//! must **not** be called per watched node. This module keeps a single set of
-//! watched PIDs and a **single** background poller that performs one
-//! `Node::list` per tick for all of them.
-//!
-//! Detection is triggered only on an explicit [`NodeState::Dead`]: a clean
-//! shutdown makes the node disappear (`DoesNotExist`), which must not be
-//! reported as a crash.
+//! `Node::list` exposes each node as [`NodeState::Alive`] / [`NodeState::Dead`],
+//! and `UniqueNodeId::pid()` maps it back to the process ([`NodeId`]). The list
+//! is expensive, so a single background poller scans every watched node once per
+//! tick. Only an explicit `Dead` state counts as a crash; a clean shutdown makes
+//! the node disappear instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,12 +17,9 @@ use crate::types::{raw_pid_to_u32, NodeId};
 
 /// Polling interval of the liveness poller (ms).
 ///
-/// `Node::list` is ~250× the cost of the former `flock` check (~475–680 µs
-/// versus ~3 µs) and perturbs the shared-memory notifier path if called too
-/// often. Measured on the `blast` benchmark: at 100 ms it tips iceoryx2 into a
-/// notifier warning spiral and the `blast` p50 collapses; at 250–500 ms the
-/// benchmark stays within its reference noise. Detection latency is bounded by
-/// this interval and is amortised across every watched node.
+/// A too frequent `Node::list` perturbs the shared-memory notifier path.
+/// Detection latency is bounded by this interval and amortised across every
+/// watched node.
 pub const LIVENESS_POLL_MS: u64 = 500;
 
 /// Granularity of the interruptible sleep (ms).
@@ -47,14 +28,10 @@ pub const LIVENESS_POLL_MS: u64 = 500;
 /// is honoured within this bound instead of waiting for the whole interval.
 const SLEEP_SLICE_MS: u64 = 100;
 
-/// Effective poll interval, overridable with `ICE_RPC_LIVENESS_POLL_MS`
-/// (ops tuning and A/B measurements).
+/// Effective poll interval, overridable with `ICE_RPC_LIVENESS_POLL_MS`.
 ///
-/// Read **once** per process. The polling loop calls this on every tick, and
-/// `std::env::var` takes the process-wide environment lock: re-reading it
-/// several times per second on the liveness path is pure overhead. The value is
-/// intentionally a snapshot — the override is an ops tuning knob, not a
-/// runtime-reconfigurable setting.
+/// Read **once** per process: the polling loop calls this on every tick, and
+/// `std::env::var` takes the process-wide environment lock.
 fn poll_interval_ms() -> u64 {
     static INTERVAL: OnceLock<u64> = OnceLock::new();
     *INTERVAL.get_or_init(|| {
@@ -68,9 +45,7 @@ fn poll_interval_ms() -> u64 {
 
 /// Number of [`SLEEP_SLICE_MS`] slices making up one poll interval.
 ///
-/// Rounds **up**, so the configured interval is a lower bound: the former
-/// `interval / 100` truncated it, and a documented 250 ms override actually
-/// slept only 200 ms.
+/// Rounds **up**, so the configured interval is a lower bound.
 fn sleep_slices() -> u64 {
     poll_interval_ms().div_ceil(SLEEP_SLICE_MS)
 }
@@ -164,9 +139,7 @@ pub fn unregister_node_liveness_watcher(node_id: NodeId) {
 
 /// Returns `true` when `node_id` is currently registered (tests).
 ///
-/// Deliberately per-node instead of a global count: the tests run in parallel
-/// and other modules register nodes of their own, so a count-based assertion
-/// would be non-deterministic.
+/// Per-node rather than a global count: the tests run in parallel.
 #[cfg(test)]
 pub fn is_watched(node_id: NodeId) -> bool {
     crate::sync::lock(watched_registry()).contains_key(&node_id.0)
@@ -199,10 +172,8 @@ fn poller_loop() {
                     if alive.contains(&pid) {
                         continue;
                     }
-                    // The node is gone. Only an explicit `Dead` counts as a
-                    // crash; a clean shutdown removes the node entirely, but
-                    // `alive_pids()` cannot tell them apart once absent. We
-                    // therefore confirm with a targeted state query.
+                    // Confirm with a targeted query: absence alone is ambiguous
+                    // between a crash and a clean shutdown.
                     if !is_confirmed_dead(pid) {
                         continue;
                     }
@@ -225,14 +196,9 @@ fn poller_loop() {
 
 /// Confirms that a watched node is really gone.
 ///
-/// `alive_pids()` only reports `Alive` nodes, so a missing PID means the node
-/// either **crashed** (listed as `Dead` — the OS released its monitoring lock)
-/// or **shut down cleanly** (its resources were removed, so it is not listed at
-/// all). Both must be reported: requiring a `Dead` state alone would miss clean
-/// shutdowns, so a stopped provider would only be noticed once a new one starts.
-///
-/// `Inaccessible` / `Undefined` (permissions or a transient inconsistency) are
-/// treated as inconclusive and retried on the next tick.
+/// `alive_pids()` only reports `Alive` nodes: a missing PID means the node
+/// either crashed (listed as `Dead`) or shut down cleanly (not listed at all).
+/// `Inaccessible` / `Undefined` states are treated as inconclusive and retried.
 fn is_confirmed_dead(pid: u32) -> bool {
     let config = crate::config::build_iceoryx2_config();
     let mut found = false;
@@ -271,8 +237,7 @@ mod tests {
 
     #[test]
     fn register_and_unregister_are_tracked() {
-        // Assert on the *specific* node rather than on the global count: other
-        // tests register their own nodes concurrently.
+        // Assert on the *specific* node rather than on the global count.
         let fake = NodeId(0x0D1E_0001);
         assert_ne!(fake, NodeId::current());
 
@@ -290,8 +255,7 @@ mod tests {
         assert!(!is_watched(NodeId::current()));
     }
 
-    /// The interval is memoized: every call must agree, on a value that is
-    /// usable as a sleep duration.
+    /// The interval is memoized and usable as a sleep duration.
     #[test]
     fn poll_interval_is_stable_and_positive() {
         let first = poll_interval_ms();
@@ -299,8 +263,7 @@ mod tests {
         assert_eq!(first, poll_interval_ms());
     }
 
-    /// The slept duration must be at least the configured interval (the former
-    /// truncating division made a 250 ms override sleep only 200 ms).
+    /// The slept duration must be at least the configured interval.
     #[test]
     fn sleep_slices_covers_at_least_the_interval() {
         let slices = sleep_slices();

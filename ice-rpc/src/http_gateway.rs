@@ -101,7 +101,7 @@ struct HttpGateway {
 
 impl Handler for HttpGateway {
     async fn run(&self, mut conn: Conn) -> Conn {
-        // Origin check (same behavior as the previous axum middleware).
+        // Origin check.
         let origin_header = conn.request_headers().get_str("origin").map(str::to_string);
         if let Some(origin) = origin_header {
             if !is_origin_allowed(&origin) {
@@ -257,13 +257,10 @@ fn json_response(conn: Conn, status: u16, value: Value) -> Conn {
 fn params_to_json(params: &HashMap<String, String>) -> Value {
     match params.len() {
         0 => Value::Null,
-        // Single parameter: pass the value directly, the key is the method
-        // argument name and is not part of the payload.
+        // Single parameter: pass the value directly, without the key.
         1 => match params.values().next() {
             Some(val) => parse_scalar(val),
-            // Defensive: `len() == 1` guarantees a value, but the HTTP path
-            // must never be able to abort the process via `unwrap()`
-            // (finding B2, aggravated by `panic = "abort"`).
+            // Defensive: never abort the process here.
             None => Value::Null,
         },
         _ => Value::Object(
@@ -437,10 +434,8 @@ pub async fn start_http_server(
         port
     );
 
-    // Graceful shutdown driven by the ice-rpc global cancellation token, itself
-    // cancelled by iceoryx2's native SIGINT/SIGTERM handling (the `WaitSet`
-    // loops) or by a programmatic cancellation. Trillium's own signal handling
-    // is disabled so that ice-rpc keeps a single shutdown path.
+    // Graceful shutdown driven by the global cancellation token; Trillium's own
+    // signal handling is disabled so ice-rpc keeps a single shutdown path.
     let swansong = trillium::Swansong::new();
     let signal_swansong = swansong.clone();
     let cancel = crate::global_cancel_token().clone();
@@ -449,9 +444,8 @@ pub async fn start_http_server(
         signal_swansong.shut_down().await;
     });
 
-    // The runtime adapter is selected by the `http-tokio` feature:
-    // - `http-tokio` → trillium-tokio (HTTP server on the tokio runtime)
-    // - otherwise    → trillium-smol (runtime-agnostic, no tokio required)
+    // Runtime adapter: `http-tokio` → trillium-tokio, otherwise trillium-smol
+    // (runtime-agnostic, no tokio required).
     #[cfg(feature = "http-tokio")]
     {
         trillium_tokio::config()

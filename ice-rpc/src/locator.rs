@@ -1,13 +1,8 @@
 //! Central service registry (Service Locator pattern).
 //!
-//! Minimal registry kept for the publish/subscribe transport:
-//! - **Providers** call [`ServiceLocator::register`] (via `run_provider!`);
-//! - **Consumers** are instantiated lazily on demand from their type during the
-//!   first [`ServiceLocator::get`], using [`ServiceConsumer::consume_proxy`].
-//!
-//! Service discovery and the transport itself are handled by iceoryx2
-//! (`ice_rpc::transport`): a client opens the service by name on the first call,
-//! so no node resolution, registry or dispatch loop is needed here.
+//! Providers call [`ServiceLocator::register`] (via `run_provider!`); consumers
+//! are instantiated lazily on the first [`ServiceLocator::get`]. Service
+//! discovery and the transport itself are handled by iceoryx2.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -128,15 +123,8 @@ impl ServiceLocator {
 
     /// Initializes all the registered services, **in dependency order**.
     ///
-    /// `DatabaseService::on_init()` may consume `ConfigService`, so a service
-    /// must be initialized only once every registered dependency it declares
-    /// ([`ServiceInit::dependencies`]) is ready. The order is a Kahn topological
-    /// sort; a dependency that is not registered locally is treated as external
-    /// (it is provided by another process) and never blocks initialization.
-    ///
-    /// Each service `init()` starts its transport service (see the generated
-    /// lifecycle). A cyclic graph falls back to the registration order instead
-    /// of failing.
+    /// A dependency that is not registered locally is treated as external and
+    /// never blocks. A cyclic graph falls back to the registration order.
     pub async fn initialize_all(&self) -> Result<(), String> {
         let snapshot: Vec<(&'static str, Arc<dyn ServiceLifecycle>, Vec<&'static str>)> = {
             let entries = self.entries.read().await;
@@ -158,11 +146,7 @@ impl ServiceLocator {
             }
         }
 
-        // Every provider has registered its channel by now: start the channel
-        // threads. Deferring them here is what guarantees that a channel never
-        // receives a request before the dispatcher able to answer it is
-        // installed, since a consumer treats "a subscriber exists" as "the
-        // provider is ready" (see `transport::publish_until_delivered`).
+        // Every provider has registered its channel: start the channel threads.
         crate::transport::start_registered_channels();
         Ok(())
     }

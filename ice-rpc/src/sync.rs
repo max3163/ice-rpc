@@ -1,18 +1,9 @@
 //! Locking helpers with a single, documented poisoning policy.
 //!
-//! # Poisoning policy
-//!
-//! A poisoned lock means a thread panicked while holding it. Every value guarded
-//! in this crate is a plain map, a set of shared pointers or a state machine,
-//! always updated through short critical sections that cannot panic. A poisoned
-//! lock is therefore not actionable: propagating a second panic — or a `Result`
-//! that every caller would have to handle — would only hide the original
-//! failure.
-//!
-//! The guard is recovered with [`std::sync::PoisonError::into_inner`], so the
-//! protected data is still readable and writable. Using these helpers everywhere
-//! keeps the call sites free of `.lock().expect("... poisoning")` noise and
-//! makes the policy explicit, documented and tested in one place.
+//! A poisoned lock is recovered with [`std::sync::PoisonError::into_inner`] so
+//! the protected data stays accessible: the guarded values are plain collections
+//! updated through short critical sections, and the original panic is what
+//! matters, not a second one.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

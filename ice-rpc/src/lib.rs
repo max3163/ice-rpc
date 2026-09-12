@@ -122,12 +122,10 @@
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
 //! | `gen` | Internal contract for the generated code: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 
-// The entry-point macros are the primary public API.
-#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 pub use ice_rpc_macros::{main, service};
 
-// Dependency re-exports (`rkyv`, `serde_json`, `base64`, `async_channel`, …)
-// now live in `ice_rpc::gen`: the generated code is their only consumer.
+// Dependency re-exports (`rkyv`, `serde_json`, `base64`, …) live in `ice_rpc::gen`.
 
 mod config;
 mod locator;
@@ -155,23 +153,16 @@ pub mod transport;
 mod http_gateway;
 
 // ── Public API: service traits ─────────────────────────────────────
-// Only `ServiceInit` is implemented by the developer (dependency declaration
-// and the `on_init` hook). `ServiceConsumer`, `ServiceLifecycle`,
-// `ServiceNamed` and `HttpCallable` are implemented by the generated code and
-// remain reachable through `ice_rpc::gen`.
+// Only `ServiceInit` is implemented by the developer.
 pub use service_traits::ServiceInit;
 
 // ── Public API: Rx vocabulary used in service signatures ────────────
-// Everything wire-level (`WireEvent`, `Sender`, `channel`, `NodeId`, the
-// transport entry points, `setup_iceoryx2_*`) lives in `ice_rpc::gen`,
-// alongside the plumbing invoked by the macros.
+// Wire-level items live in `ice_rpc::gen`.
 pub use types::{Event, Observable, ObservableError, RpcError};
 
 // ── Public API: reactive operators and multicast primitives ─────────
-// The operators, the terminals (`subscribe`, `subscribe_all`) and the
-// observers are carried by `Observable` and `Subject` themselves (nothing to
-// import); only the constructors and the cancellation handle are re-exported
-// here. The operator *types* and the internal `Observer` are private.
+// The operators are carried by `Observable` and `Subject`; only the
+// constructors and the cancellation handle are re-exported here.
 pub use rx::{from, of, throw_error, Subject, Subscription};
 
 // ── Public API: locator ─────────────────────────────────────────────
@@ -203,15 +194,8 @@ pub fn registry_cancel_token() -> &'static CancellationToken {
 
 /// Cancels both tokens to propagate a termination signal to the IPC threads.
 ///
-/// Called by the transport loops when iceoryx2 reports a termination through its
-/// `WaitSet`
-/// ([`Interrupt`](iceoryx2::waitset::WaitSetRunResult::Interrupt) for SIGINT /
-/// Ctrl+C, [`TerminationRequest`](iceoryx2::waitset::WaitSetRunResult::TerminationRequest)
-/// for SIGTERM) or when they observe the termination flag while polling.
-///
-/// `HandleTerminationRequests` mode makes iceoryx2 own the SIGINT/SIGTERM
-/// handler, so the process does **not** die on its own: cancelling the tokens
-/// lets [`wait_for_shutdown`] return and the caller shut down cleanly.
+/// Called by the transport loops when iceoryx2 reports a termination through
+/// its `WaitSet`, or when they observe the termination flag while polling.
 pub(crate) fn request_shutdown() {
     log::info!("Termination signal received, shutting down...");
     global_cancel_token().cancel();
@@ -302,14 +286,6 @@ pub fn locator() -> &'static ServiceLocator {
 /// Waits for the stop signal (SIGINT/SIGTERM or programmatic cancellation).
 ///
 /// Syntactic sugar over `global_cancel_token().cancelled().await`.
-/// Used at the end of `main` to block until shutdown.
-///
-/// # Signal handling
-///
-/// The transport does not install a SIGINT/SIGTERM handler, so the operating
-/// system's default disposition applies: Ctrl+C terminates the process. A
-/// programmatic shutdown must cancel [`global_cancel_token`] (which is what
-/// [`ShutdownGuard`] does when it is dropped).
 #[doc(hidden)]
 pub async fn wait_for_shutdown() {
     global_cancel_token().cancelled().await;
@@ -321,12 +297,7 @@ pub async fn wait_for_shutdown() {
 
 /// Whether the framework handles the process signals through iceoryx2.
 ///
-/// Set by [`init`] (the default) and cleared by [`init_without_ctrl_c`]. It
-/// selects the `WaitSet` [`SignalHandlingMode`](iceoryx2::prelude::SignalHandlingMode):
-/// enabled, iceoryx2 captures SIGINT/SIGTERM and the transport turns the
-/// termination request into a cancellation of [`global_cancel_token`] (a clean
-/// stop); disabled, iceoryx2 installs no signal handler and the host keeps the
-/// default disposition.
+/// Set by [`init`] (the default) and cleared by [`init_without_ctrl_c`].
 static SIGNAL_HANDLING_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
@@ -340,19 +311,13 @@ fn resolve_signal_handling_mode(enabled: bool) -> iceoryx2::prelude::SignalHandl
 }
 
 /// Returns the signal-handling mode the transport must give to its `WaitSet`s.
-///
-/// With `HandleTerminationRequests` iceoryx2 owns the SIGINT/SIGTERM handler, so
-/// the process does **not** die by default: the request is reported by the
-/// `WaitSet` and the transport cancels [`global_cancel_token`] to stop cleanly.
 pub(crate) fn waitset_signal_handling_mode() -> iceoryx2::prelude::SignalHandlingMode {
     resolve_signal_handling_mode(SIGNAL_HANDLING_ENABLED.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Performs the one-time process bootstrap.
+/// Performs the one-time process bootstrap (iceoryx2 global configuration).
 ///
-/// The iceoryx2 global configuration is applied exactly once. Calling this
-/// several times is safe and has no effect after the first call — which is what
-/// allows [`run_provider!`] and `#[ice_rpc::main]` to bootstrap on their own.
+/// Idempotent: calling it several times has no effect after the first call.
 fn ensure_initialized() {
     static CONFIG: std::sync::Once = std::sync::Once::new();
     CONFIG.call_once(config::setup_iceoryx2_global_config);
@@ -360,15 +325,10 @@ fn ensure_initialized() {
 
 /// Initializes the framework and returns the RAII shutdown guard.
 ///
-/// Configures iceoryx2, enables the native signal handling of the `WaitSet`
-/// loops (SIGINT/SIGTERM) and returns the [`ShutdownGuard`] owning the process
-/// lifetime. Suitable for consumers, providers and provider+consumer processes
-/// alike: no service registry is needed, proxies are instantiated on demand
-/// from their type.
-///
-/// The returned guard **must be kept alive**: dropping it cancels the global
-/// tokens. Call [`ShutdownGuard::shutdown`] for a clean stop (waiting for the
-/// IPC threads and releasing the iceoryx2 node).
+/// Configures iceoryx2 and enables the native signal handling of the `WaitSet`
+/// loops (SIGINT/SIGTERM). The returned guard **must be kept alive**: dropping
+/// it cancels the global tokens. Call [`ShutdownGuard::shutdown`] for a clean
+/// stop.
 ///
 /// # Example
 /// ```rust,ignore
@@ -388,12 +348,8 @@ pub fn init() -> ShutdownGuard {
 /// Initializes the framework **without** signal handling and returns the RAII
 /// shutdown guard (Node.js gateway, tests…).
 ///
-/// Variant of [`init`] for contexts that must manage shutdown manually (N-API
-/// thread, tests, embedded executors). The `WaitSet` loops are created with
-/// [`SignalHandlingMode::Disabled`](iceoryx2::prelude::SignalHandlingMode), so
-/// iceoryx2 registers no SIGINT/SIGTERM handler and the host keeps full control
-/// of the process signals. The returned guard should be **stored** for the host
-/// lifetime, otherwise dropping it cancels the tokens.
+/// Variant of [`init`] for contexts that must manage shutdown manually. The
+/// returned guard should be **stored** for the host lifetime.
 ///
 /// # Example
 /// ```rust,ignore
@@ -497,16 +453,13 @@ where
 pub async fn run_provider_inner(
     services: Vec<Box<dyn _ProviderService>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Full bootstrap: `run_provider!` is self-contained, so a provider `main`
-    // does not need a preliminary `init()`. Idempotent, so a process that
-    // already called `init()` is unaffected. Signal handling is enabled
-    // explicitly so a prior `init_without_ctrl_c()` cannot disable it.
+    // Full bootstrap: `run_provider!` is self-contained and idempotent. Signal
+    // handling is enabled explicitly so a prior `init_without_ctrl_c()` cannot
+    // disable it.
     ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // RAII guard: cancels the tokens on panic before the final shutdown_and_release.
-    // The explicit shutdown() at the end of the function ensures a clean stop waiting
-    // for the IPC threads and releasing the iceoryx2 node.
+    // RAII guard: cancels the tokens on panic before the explicit shutdown.
     let guard = ShutdownGuard::new();
 
     let loc = ServiceLocator::global();
@@ -623,9 +576,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             token.cancel();
         });
-        // Must not block indefinitely. `test_block_on` provides a tokio runtime
-        // when the `tokio` facade is active, since `rt::timeout` relies on
-        // `rt::sleep` under that feature.
+        // Must not block indefinitely.
         crate::rt::test_block_on(crate::rt::timeout(
             std::time::Duration::from_secs(2),
             wait_for_shutdown(),
@@ -636,7 +587,7 @@ mod tests {
     #[test]
     fn shutdown_and_release_does_not_panic_when_no_node() {
         // Without a created iceoryx2 Node, shutdown_and_release must terminate
-        // cleanly. It uses `rt::timeout` internally, hence `test_block_on`.
+        // cleanly.
         crate::rt::test_block_on(shutdown_and_release());
     }
 
@@ -646,14 +597,12 @@ mod tests {
     fn signal_handling_flag_selects_the_waitset_mode() {
         use iceoryx2::prelude::SignalHandlingMode;
 
-        // Enabled: iceoryx2 captures SIGINT/SIGTERM and the transport cancels
-        // the global token, so Ctrl+C stops the process cleanly.
+        // Enabled: iceoryx2 captures SIGINT/SIGTERM.
         assert_eq!(
             resolve_signal_handling_mode(true),
             SignalHandlingMode::HandleTerminationRequests
         );
-        // Disabled: the host keeps the default disposition (Node.js gateway,
-        // tests), so iceoryx2 installs no signal handler at all.
+        // Disabled: the host keeps the default disposition.
         assert_eq!(
             resolve_signal_handling_mode(false),
             SignalHandlingMode::Disabled

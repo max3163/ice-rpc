@@ -4,13 +4,12 @@
 //! generates the Proxy, Client, Server and the lifecycle code
 //! for an RPC service trait.
 
-#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
+#![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 mod codegen;
 mod entry;
 
-// PRIVATE constants — the public versions are in ice-rpc (`types/consts.rs`).
-// The values MUST be identical to `ice_rpc::types::{SERVICE_NAME_LEN, METHOD_NAME_LEN}`
-// (64): they are the maximum name lengths the generated wire framing accepts.
+// Private: the public versions live in `ice-rpc` (`types/consts.rs`). The values
+// MUST stay identical (64), the maximum name lengths the wire framing accepts.
 const SERVICE_NAME_LEN: usize = 64;
 const METHOD_NAME_LEN: usize = 64;
 
@@ -81,9 +80,8 @@ fn validate_channel_name(name: &str, span: proc_macro2::Span) -> syn::Result<()>
 ///   default shared-memory segment.
 /// - `#[service(version = 1)]` → service interface version (default: `1`).
 /// - `#[service(discovery_timeout = "5s")]` → **service-wide** deadline, accepted
-///   for source compatibility. The publish/subscribe transport connects on
-///   demand, so the value is currently informational and never bounds the
-///   response wait. Accepts the `s` / `m` / `h` suffixes.
+///   for source compatibility. Informational: it never bounds the response wait.
+///   Accepts the `s` / `m` / `h` suffixes.
 /// - `#[service(..., group = "db")]` → the **channel** this service shares with
 ///   the other services of the same group. A channel is the unit of transport:
 ///   it owns one request channel, one response channel and one dispatch thread,
@@ -296,8 +294,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let allow_large_payload = service_attr.allow_large_payload;
     let default_size_message_kb = service_attr.default_size_message_kb;
     let service_version = service_attr.service_version;
-    // Discovery timeout is a *service-wide* setting: every method of the
-    // service shares the same provider-lookup deadline.
+    // Service-wide: every method shares the same provider-lookup deadline.
     let discovery_timeout_secs = service_attr.discovery_timeout_secs;
 
     // ── Service name validation ──────────────────────────────────
@@ -347,13 +344,11 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     // ── End of validation ────────────────────────────────────────
 
-    // `allow_large_payload` / `default_size_message` are kept as accepted (and
-    // ignored) attributes for source compatibility; the native iceoryx2
-    // request/response transport negotiates sizes itself.
+    // `allow_large_payload` / `default_size_message` are accepted but ignored:
+    // the native transport negotiates sizes itself.
     let _ = (allow_large_payload, default_size_message_kb);
 
-    // The channel a service belongs to. A service alone on its channel (the
-    // default) behaves exactly like before the introduction of channels.
+    // The channel a service belongs to (defaults to the service name).
     let group = service_attr.group.unwrap_or_else(|| logical_name.clone());
     if let Err(e) = validate_channel_name(&group, trait_name.span()) {
         return e.to_compile_error().into();
@@ -527,9 +522,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let http_callable_impl = gen_http_callable_impl(&http_input);
 
-    // Generates a unique symbol to detect name collisions.
-    // If two services have the same logical_name, the linker will fail
-    // with "duplicate symbol".
+    // Unique symbol to detect name collisions: two services with the same
+    // logical name make the linker fail with "duplicate symbol".
     let collision_symbol = syn::Ident::new(
         &format!("__ICE_RPC_SVC_{}", logical_name.replace('-', "_")),
         proc_macro2::Span::call_site(),
@@ -559,10 +553,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         static #collision_symbol: u8 = 0;
     };
 
-    // The generated wrappers are named after the user's trait and cannot be
-    // documented by the consumer, so they must not trip its `missing_docs`
-    // lint. The annotated trait itself is exempted from this guard: it stays
-    // subject to the consumer's lint configuration.
+    // The generated wrappers cannot be documented by the consumer, so they must
+    // not trip its `missing_docs` lint; the annotated trait is not exempted.
     let generated = codegen::helpers::allow_missing_docs(generated);
 
     let expanded = quote! {
@@ -577,19 +569,15 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Bootstraps ice-rpc around an `async fn main`.
 ///
-/// Generates a synchronous `fn main` that:
-/// 1. initializes ice-rpc (`ice_rpc::gen::init()`);
-/// 2. awaits the annotated body;
-/// 3. shuts ice-rpc down (waiting for the IPC threads and releasing the
-///    iceoryx2 node) — **even when the body returns early via `?` or
-///    `return`**, because the body runs inside its own `async` block.
+/// Generates a synchronous `fn main` that initializes ice-rpc, awaits the
+/// annotated body, then shuts ice-rpc down — **even when the body returns early
+/// via `?` or `return`**.
 ///
 /// # Runtime
 ///
 /// No runtime is hard-coded:
 /// - `#[ice_rpc::main]` → runtime-agnostic, driven by `ice_rpc::rt::block_on`;
-/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime
-///   (requires `tokio` with the `rt-multi-thread` and `time` features);
+/// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime;
 /// - `#[ice_rpc::main(smol::block_on)]` → any user-provided `fn(Future) -> T`.
 ///
 /// # Example
@@ -652,8 +640,8 @@ mod entry_tests {
     #[test]
     fn main_wraps_body_in_an_inner_async_block() {
         let out = expand(quote! {}, quote! { async fn main() {} });
-        // The shutdown must be emitted after the awaited body, so an early
-        // `return` / `?` inside the body cannot skip it.
+        // The shutdown must come after the awaited body, so an early `return`
+        // cannot skip it.
         let shutdown = out.find("shutdown").expect("shutdown() missing");
         let body_await = out.find(". await").expect("body await missing");
         assert!(body_await < shutdown, "{out}");

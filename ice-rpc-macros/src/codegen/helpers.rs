@@ -6,20 +6,15 @@ use syn::{GenericArgument, PathArguments, Type};
 
 /// Prefixes every top-level item of `tokens` with `#[allow(missing_docs)]`.
 ///
-/// The generated surface (`{Trait}Client`, `{Trait}Server`, `{Trait}Proxy`, the
-/// request enum, and every method, field and variant they contain) mechanically
-/// mirrors the user's `#[service]` trait, whose own documentation the attribute
-/// keeps verbatim. A consumer crate that opts into the `missing_docs` lint would
-/// otherwise receive dozens of warnings on items it can neither rename nor
-/// document; this guard is what makes the lint usable there (finding M15).
+/// The generated surface mechanically mirrors the user's `#[service]` trait, so
+/// a consumer crate that opts into the `missing_docs` lint would receive dozens
+/// of warnings on items it can neither rename nor document.
 ///
-/// The user's trait is deliberately *not* routed through this helper: it stays
-/// subject to the consumer's own lint configuration.
+/// The user's trait is deliberately *not* routed through this helper.
 pub(crate) fn allow_missing_docs(tokens: TokenStream) -> TokenStream {
     let file: syn::File = match syn::parse2(tokens.clone()) {
         Ok(file) => file,
-        // The generated code is always syntactically valid; if parsing ever
-        // failed, emitting it unchanged is strictly better than dropping it.
+        // If parsing ever failed, emitting the tokens unchanged is better.
         Err(_) => return tokens,
     };
     let mut out = TokenStream::new();

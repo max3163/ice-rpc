@@ -44,13 +44,8 @@ pub fn gen_client_struct(input: &ClientGenInput<'_>) -> TokenStream {
 
 /// Generates the [`ServiceLifecycle::init`] implementation for the client.
 ///
-/// # Initialization flow
-/// 1. Create the iceoryx2 Node.
-/// 2. Start the discovery channel (NODE_REGISTRY listener).
-/// 3. Locate the provider Node (cache + Blackboard).
-/// 4. Start the dispatch loop.
-/// 5. Pre-create the publishers towards the provider.
-/// 6. Populate the atomic cache of the target NodeId.
+/// The native transport connects lazily on the first call, so `init` is a no-op
+/// that always reports success.
 pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput {
         logical_name,
@@ -72,12 +67,11 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     }
 }
 
-/// Generates the body of a client RPC method.
+/// Client method generation parameters.
 ///
-/// # Call flow (native iceoryx2 request/response)
-/// 1. Serialization of the request (rkyv).
-/// 2. Native call through `ice_rpc::gen::native_call`; the responses are
-///    streamed back as an [`Observable`](ice_rpc).
+/// The generated body serializes the request (rkyv) then calls
+/// `ice_rpc::gen::native_call`, streaming the responses back as an
+/// [`Observable`](ice_rpc).
 pub struct ClientMethodGenInput<'a> {
     pub visibility: &'a Visibility,
     pub fn_name: &'a Ident,
@@ -113,7 +107,6 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     // Service-wide discovery deadline; mirrors `RPC_CALL_TIMEOUT_SECS` (30s).
     let _locate_timeout = input.discovery_timeout_secs.unwrap_or(30);
 
-    // ── Single method body (native iceoryx2 request/response) ────────
     quote! {
         #visibility async fn #fn_name(&self, #(#arg_names: #arg_types),*)
             -> ice_rpc::Observable<#ok_type, #err_type>

@@ -4,9 +4,8 @@
 //! functions for each service.
 //!
 //! These functions are always generated (not feature-gated) and reference only
-//! types re-exported by `ice-rpc` (`ice_rpc::gen::rkyv`, `ice_rpc::gen::serde_json`,
-//! `ice_rpc::gen::base64`), so no extra dependency nor feature is required from the
-//! consuming crate.
+//! types re-exported by `ice-rpc`, so no extra dependency nor feature is required
+//! from the consuming crate.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -111,9 +110,7 @@ pub fn gen_nodejs_deserialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         .collect();
 
     quote! {
-        // Emitted unconditionally so `#[service]` has a uniform surface; only the
-        // `gateway_nodejs` bridge calls these converters, hence dead code in any
-        // pure-Rust consumer.
+        // Emitted unconditionally but called only by the `gateway_nodejs` bridge.
         #[allow(dead_code)]
         impl #proxy_name {
             #visibility fn deserialize_request_to_value(method: &str, bytes: &[u8]) -> Option<ice_rpc::gen::serde_json::Value> {
@@ -212,8 +209,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         .collect();
 
     quote! {
-        // Same rationale as `deserialize_request_to_value` above: the Node.js
-        // surface is emitted for every service but consumed only by the bridge.
+        // Same rationale as `deserialize_request_to_value` above.
         #[allow(dead_code)]
         impl #proxy_name {
             #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<Vec<u8>> {

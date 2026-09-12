@@ -72,11 +72,8 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 return false;
                             }
 
-                            // The dispatcher is registered on the channel of the
-                            // service; the channel thread itself starts in
-                            // `ServiceLocator::initialize_all`, once every
-                            // provider has registered, so a request never
-                            // reaches a channel before its dispatcher exists.
+                            // Registered on the channel; the channel thread starts
+                            // in `initialize_all`, once every provider registered.
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
                             if let Err(e) = ice_rpc::gen::register_native_service(
                                 #group_lit,

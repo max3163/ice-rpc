@@ -1,10 +1,8 @@
 //! Expansion of the `#[ice_rpc::main]` attribute.
 //!
 //! Wraps an `async fn main` so that ice-rpc is bootstrapped before the body and
-//! shut down after it — **including on early `return` / `?`**, which is what
-//! removes the per-application shutdown wrapper.
-//!
-//! No runtime is hard-coded; the macro only chooses how `main` is driven:
+//! shut down after it, including on early `return` / `?`. No runtime is
+//! hard-coded; the macro only chooses how `main` is driven:
 //! - `#[ice_rpc::main]` → the runtime-agnostic `ice_rpc::rt::block_on`;
 //! - `#[ice_rpc::main(tokio)]` → a dedicated tokio multi-thread runtime;
 //! - `#[ice_rpc::main(smol::block_on)]` → any `fn(Future) -> T` driver.
@@ -89,10 +87,7 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
                     .expect("failed to build the tokio runtime for #[ice_rpc::main]");
                 let __ice_rpc_output = __ice_rpc_runtime.block_on(#wrapped);
                 // Blocking tasks cannot be cancelled, and dropping the runtime
-                // waits for them: a parked one (a console read, a user
-                // `spawn_blocking` loop) would then keep the process alive *after*
-                // the clean shutdown above. A bounded grace period is enough for
-                // the tasks shutdown stops, and the process can exit.
+                // waits for them: a bounded grace period lets the process exit.
                 __ice_rpc_runtime.shutdown_timeout(std::time::Duration::from_millis(500));
                 __ice_rpc_output
             }

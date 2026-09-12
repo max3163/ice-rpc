@@ -33,7 +33,7 @@ use common::{
     HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
 };
 use ice_rpc::{from, of, throw_error, RxStreamExt};
-use ice_rpc::{Observable, ServiceInit, StreamError};
+use ice_rpc::{Observable, ObservableError, ServiceInit};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -227,7 +227,7 @@ impl ServiceInit for DatabaseServiceImpl {
 
         let db_url = match rx.first_value().await {
             Ok(url) => url,
-            Err(StreamError::Business(ConfigError::KeyNotFound)) => {
+            Err(ObservableError::Business(ConfigError::KeyNotFound)) => {
                 log::error!("[DatabaseService] Key \"database.url\" missing from the config.");
                 return false;
             }

@@ -11,17 +11,22 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use super::error::RpcError;
 
-/// Error carried by an [`Event`].
+/// The single error type of the whole streaming API.
 ///
 /// Follows the Rx pattern: a single `error` channel, where the payload
 /// distinguishes a **business** error (authored by the service) from a
-/// **technical** one (raised by the framework/transport).
+/// **technical** one (raised by the framework/transport). The third variant,
+/// [`ObservableError::Empty`], covers the terminal pull helpers
+/// ([`crate::Observable::first_value`]): the source completed **without ever
+/// emitting a value**. It is a local artefact and never travels over the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservableError<E> {
     /// Business error emitted by the service.
     Business(E),
     /// Technical RPC error (transport, discovery, protocol, ...).
     Technical(RpcError),
+    /// The stream ended without emitting any value.
+    Empty,
 }
 
 impl<E> ObservableError<E> {
@@ -42,7 +47,7 @@ impl<E> ObservableError<E> {
     pub fn as_business(&self) -> Option<&E> {
         match self {
             ObservableError::Business(e) => Some(e),
-            ObservableError::Technical(_) => None,
+            ObservableError::Technical(_) | ObservableError::Empty => None,
         }
     }
 
@@ -51,7 +56,7 @@ impl<E> ObservableError<E> {
     pub fn as_technical(&self) -> Option<&RpcError> {
         match self {
             ObservableError::Technical(e) => Some(e),
-            ObservableError::Business(_) => None,
+            ObservableError::Business(_) | ObservableError::Empty => None,
         }
     }
 }
@@ -61,6 +66,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ObservableError<E> {
         match self {
             ObservableError::Business(e) => write!(f, "{e}"),
             ObservableError::Technical(e) => write!(f, "{e}"),
+            ObservableError::Empty => write!(f, "stream ended without a value"),
         }
     }
 }
@@ -129,8 +135,7 @@ impl<T, E> WireEvent<T, E> {
 /// Producers emit through the ergonomic methods [`Sender::send_next`],
 /// [`Sender::send_complete`], [`Sender::send_complete_with`] and
 /// [`Sender::send_error`]. [`Sender::send_event`] is a passthrough used by the
-/// transport and the `ice-rpc-rx` relays to forward any [`Event`], including
-/// technical errors.
+/// transport relays to forward any [`Event`], including technical errors.
 pub struct Sender<T, E> {
     /// Shared with `channel` in [`super::stream`].
     pub(crate) inner: async_channel::Sender<WireEvent<T, E>>,
@@ -259,6 +264,9 @@ impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
             Event::Complete => WireEvent::Complete,
             Event::Error(ObservableError::Business(e)) => WireEvent::Error(e),
             Event::Error(ObservableError::Technical(e)) => WireEvent::RpcError(e),
+            // `Empty` is a pull-side artefact ("no value was produced"): on the
+            // wire the only thing left to say is that the stream ends here.
+            Event::Error(ObservableError::Empty) => WireEvent::Complete,
         }
     }
 }

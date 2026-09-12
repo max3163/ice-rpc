@@ -160,32 +160,30 @@ const REQ_TIMEOUT: Duration = Duration::from_secs(5);
 async fn send_one_db(db: Arc<DatabaseServiceProxy>, name: String) -> ReqOutcome {
     let t0 = Instant::now();
     let mut rx = db.get_user_age(name).await;
-    match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
+    // `next()` is the concise view of the stream: `None` = the provider
+    // completed without a value, `Some(Err(..))` = business or technical error.
+    match tokio::time::timeout(REQ_TIMEOUT, rx.next()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Business(_)))) => {
+        Ok(Some(Ok(_))) => ReqOutcome::Ok(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Business(_)))) => {
             ReqOutcome::ErrService(t0.elapsed())
         }
-        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Technical(_)))) => {
-            ReqOutcome::ErrIpc(t0.elapsed())
-        }
-        Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Technical(_)))) => ReqOutcome::ErrIpc(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Empty)) | None) => ReqOutcome::ErrEmpty(t0.elapsed()),
     }
 }
 
 async fn send_one_person(db: Arc<DatabaseServiceProxy>, query: PersonneQuery) -> ReqOutcome {
     let t0 = Instant::now();
     let mut rx = db.get_person(query).await;
-    match tokio::time::timeout(REQ_TIMEOUT, rx.recv()).await {
+    match tokio::time::timeout(REQ_TIMEOUT, rx.next()).await {
         Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Next(_))) => ReqOutcome::Ok(t0.elapsed()),
-        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Business(_)))) => {
+        Ok(Some(Ok(_))) => ReqOutcome::Ok(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Business(_)))) => {
             ReqOutcome::ErrService(t0.elapsed())
         }
-        Ok(Ok(ice_rpc::Event::Error(ice_rpc::ObservableError::Technical(_)))) => {
-            ReqOutcome::ErrIpc(t0.elapsed())
-        }
-        Ok(Ok(ice_rpc::Event::Complete) | Err(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Technical(_)))) => ReqOutcome::ErrIpc(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Empty)) | None) => ReqOutcome::ErrEmpty(t0.elapsed()),
     }
 }
 

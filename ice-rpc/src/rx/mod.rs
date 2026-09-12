@@ -174,13 +174,17 @@ mod tests {
     }
 
     /// Terminal consumption through the inherent [`crate::Observable`] methods.
-    fn native_first(events: Vec<Event<i32, String>>) -> Result<i32, crate::StreamError<String>> {
+    fn native_first(
+        events: Vec<Event<i32, String>>,
+    ) -> Result<i32, crate::ObservableError<String>> {
         pollster::block_on(crate::Observable::<i32, String>::from_events(events).first_value())
     }
 
     /// Same input, consumed through the `RxStreamExt` default method (the
     /// pipeline type is `Map<…>`, so the trait method is selected).
-    fn pipeline_first(events: Vec<Event<i32, String>>) -> Result<i32, crate::StreamError<String>> {
+    fn pipeline_first(
+        events: Vec<Event<i32, String>>,
+    ) -> Result<i32, crate::ObservableError<String>> {
         pollster::block_on(
             crate::Observable::<i32, String>::from_events(events)
                 .map(|v| v)
@@ -246,7 +250,7 @@ mod tests {
         );
         assert!(matches!(
             pipeline_first(vec![Event::Complete]),
-            Err(crate::StreamError::Empty)
+            Err(crate::ObservableError::Empty)
         ));
     }
 

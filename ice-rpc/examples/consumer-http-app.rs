@@ -10,8 +10,8 @@
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 use common::{HttpError, HttpRequestParams, HttpService, HttpServiceProxy};
+use ice_rpc::ObservableError;
 use ice_rpc::RxStreamExt;
-use ice_rpc::StreamError;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -115,7 +115,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
     let result = stream.take_until(cancel).first_value().await;
 
     match result {
-        Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
+        Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {
             log::info!("   (cancelled by Ctrl+C)");
             false
         }
@@ -151,7 +151,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
 
             true
         }
-        Err(StreamError::Business(HttpError::PayloadTooLarge {
+        Err(ObservableError::Business(HttpError::PayloadTooLarge {
             max_bytes,
             actual_bytes,
         })) => {
@@ -165,7 +165,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Err(StreamError::Business(e)) => {
+        Err(ObservableError::Business(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] Business error: {:?}  [{}]",
@@ -175,7 +175,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Err(StreamError::Technical(e)) => {
+        Err(ObservableError::Technical(e)) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::error!(
                 "  ✗ [{}] IPC error: {}  [{}]",
@@ -185,7 +185,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
             );
             true
         }
-        Err(StreamError::Empty) => {
+        Err(ObservableError::Empty) => {
             let elapsed_ms = t_send.elapsed().as_secs_f64() * 1000.0;
             log::warn!(
                 "  ✗ [{}] No value received  [{}]",

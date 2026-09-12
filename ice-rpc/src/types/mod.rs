@@ -7,8 +7,8 @@
 //! |--------------|-----------------------------------------------------------------|
 //! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
 //! | [`header`]   | [`RpcHeader`] (zero-copy `user_header`), [`EventKind`]          |
-//! | [`wire`]     | [`ObservableError`], [`Event`], [`WireEvent`], [`Sender`]       |
-//! | [`stream`]   | [`Observable`] (the concrete stream), [`StreamError`], [`channel`] |
+//! | [`wire`]     | [`ObservableError`] (the single error type), [`Event`], [`WireEvent`], [`Sender`] |
+//! | [`stream`]   | [`Observable`] (the concrete stream), [`channel`]               |
 //! | [`error`]    | [`RpcError`]                                                    |
 //! | [`consts`]   | Name-length limits shared with `ice-rpc-macros`                 |
 
@@ -29,9 +29,7 @@ pub use header::{
     CORRELATION_ID_LEN,
 };
 pub use node::*;
-pub use stream::{
-    channel, collect_values, first_event, unbounded_channel, Observable, StreamError,
-};
+pub use stream::{channel, collect_values, first_event, unbounded_channel, Observable};
 pub use wire::{Event, ObservableError, Sender, WireEvent};
 
 // Shared by the transport to normalize the `WireEvent` it receives over the

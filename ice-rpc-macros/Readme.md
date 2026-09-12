@@ -75,7 +75,7 @@ It is accepted for source compatibility. The native iceoryx2 request/response
 transport connects on demand, so the deadline is currently informational and
 **does not bound the response wait**: a provider that accepts the call and never
 answers is not interrupted by it. On the consumer side, use the
-`RxStreamExt::timeout(duration)` operator from `ice-rpc-rx` to bound the
+`RxStreamExt::timeout(duration)` operator to bound the
 response latency (and the silence between two values of a streaming response).
 
 ## Validation

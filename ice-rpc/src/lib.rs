@@ -115,12 +115,12 @@
 //!
 //! | Module | Role |
 //! |--------|------|
-//! | `types` | Public Rx types (`Event`, `Observable`, `ObservableError`, `RpcError`, `StreamError`) and the wire types re-exported through `gen` |
-//! | `rx` | Reactive operators, constructors and multicast primitives (absorbed from the former `ice-rpc-rx` crate) |
+//! | `types` | Public pull API (`Observable` with `next`/`recv`/`collect`, `Event`, `ObservableError`, `RpcError`) and the wire types re-exported through `gen` |
+//! | `rx` | Reactive operators, constructors and multicast primitives, all reachable from the `Observable` stream |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
-//! | `gen` | Internal contract for the generated code and `ice-rpc-rx`: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
+//! | `gen` | Internal contract for the generated code: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 
 // The entry-point macros are the primary public API.
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic; production libs keep the deny, see [workspace.lints]
@@ -165,11 +165,10 @@ pub use service_traits::ServiceInit;
 // Everything wire-level (`WireEvent`, `Sender`, `channel`, `NodeId`, the
 // transport entry points, `setup_iceoryx2_*`) lives in `ice_rpc::gen`,
 // alongside the plumbing invoked by the macros.
-pub use types::{Event, Observable, ObservableError, RpcError, StreamError};
+pub use types::{Event, Observable, ObservableError, RpcError};
 
 // ── Public API: reactive operators and multicast primitives ─────────
-// Absorbed from the former `ice-rpc-rx` crate (see `plans/merge-rx.md`): the
-// operators, the constructors and the multicast primitives live in
+// The operators, the constructors and the multicast primitives live in
 // `ice_rpc::rx` and are re-exported here so a single crate exposes the whole
 // user-facing surface. The operator *types* stay reachable through
 // `ice_rpc::rx::…` — they only appear in return types.

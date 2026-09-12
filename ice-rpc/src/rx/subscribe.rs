@@ -7,8 +7,9 @@
 //!
 //! Because the unified model carries the error inside the stream
 //! ([`crate::Event::Error`]), the mapping event → callback is 1:1: the
-//! observer receives the [`ObservableError`] unchanged, with no projection and
-//! no `Empty` case.
+//! observer receives the [`ObservableError`] unchanged, with no projection.
+//! ([`ObservableError::Empty`] only comes from the terminal pull helpers —
+//! `first_value` — never from a pushed stream.)
 
 use std::pin::Pin;
 

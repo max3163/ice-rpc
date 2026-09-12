@@ -47,7 +47,7 @@ ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
 `full` is a convenience feature that enables `http` and `tokio` in one shot.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
-  `ice-rpc-rx` constructors (`of`, `from`, `throw_error`, `Subject`); an advanced
+  stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
   provider may use the raw channel via `ice_rpc::gen::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `sleep`, `timeout`,
   `block_on`, `oneshot` and `CancellationToken`.
@@ -94,8 +94,8 @@ struct MyServiceImpl;
 #[async_trait::async_trait]
 impl MyService for MyServiceImpl {
     async fn hello(&self, name: String) -> Observable<String, MyError> {
-        // Single response: with `ice-rpc-rx`, this is just
-        //     ice_rpc_rx::of(format!("Hello {name} !"))
+        // Single response: this is just
+        //     ice_rpc::of(format!("Hello {name} !"))
         // The raw channel stays available for long-lived push streams:
         let (tx, rx) = ice_rpc::gen::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
 | `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
-| `StreamError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
+| `ObservableError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
 | `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
 | `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
@@ -149,7 +149,7 @@ per service, correlated by a 16-byte id: see `ice_rpc::transport`.
 ## Consumption
 
 Consuming a stream is done natively on `ice_rpc::Observable` (or through the
-`ice-rpc-rx` operators); a call never fails at the call site — a
+`RxStreamExt` operators); a call never fails at the call site — a
 discovery/transport failure becomes an in-stream technical error:
 
 ```rust,ignore
@@ -157,7 +157,7 @@ let value = proxy.hello("Alice".into()).await.first_value().await?;
 let all   = proxy.list().await.collect().await?; // Vec<T>
 ```
 
-- `first_value() -> Result<T, StreamError<E>>` (`Empty` when the stream completes
+- `first_value() -> Result<T, ObservableError<E>>` (`Empty` when the stream completes
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
 - `#[service(..., discovery_timeout = "5s")]` sets the **service-wide** provider-lookup deadline (default `RPC_CALL_TIMEOUT_SECS` = 30s). It bounds the *discovery* phase only; use the `timeout` operator to bound the response wait.

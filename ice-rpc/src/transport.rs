@@ -224,6 +224,12 @@ where
 pub type ResponseIter = Box<dyn Iterator<Item = Vec<u8>> + Send>;
 
 /// Wraps an [`Observable`] into a lazy [`ResponseIter`] of encoded [`WireEvent`].
+///
+/// The wire events are taken **raw** (`recv_wire`), which preserves the
+/// [`WireEvent::CompleteWith`] single-sample optimization: a `Next(v)`
+/// immediately followed by the terminal `Complete` travels as **one** iceoryx2
+/// sample instead of two. The consumer expands it back transparently
+/// (`recv` / `next` never expose the optimization).
 pub fn observable_to_responses<T, E>(mut observable: Observable<T, E>) -> ResponseIter
 where
     T: Send + 'static,
@@ -240,13 +246,10 @@ where
     >,
 {
     Box::new(std::iter::from_fn(move || {
-        match crate::rt::block_on(observable.recv()) {
-            Ok(event) => {
-                let wire: WireEvent<T, E> = event.into();
-                rkyv::to_bytes::<rkyv::rancor::Error>(&wire)
-                    .ok()
-                    .map(|bytes| bytes.to_vec())
-            }
+        match crate::rt::block_on(observable.recv_wire()) {
+            Ok(wire) => rkyv::to_bytes::<rkyv::rancor::Error>(&wire)
+                .ok()
+                .map(|bytes| bytes.to_vec()),
             Err(_) => None,
         }
     }))

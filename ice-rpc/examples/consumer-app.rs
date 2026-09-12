@@ -21,8 +21,8 @@ use common::{
     DatabaseService, DatabaseServiceProxy, NotificationService, NotificationServiceProxy,
     PersonneInfo, PersonneQuery,
 };
+use ice_rpc::ObservableError;
 use ice_rpc::{from, of, throw_error, Observer, RxStreamExt};
-use ice_rpc::{ObservableError, StreamError};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -83,7 +83,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             let stream = $query;
             let result = stream.take_until(cancel).first_value().await;
             match result {
-                Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
+                Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
@@ -98,41 +98,44 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
     run_query!(
         "Requesting Alice's age...",
         db.get_user_age("Alice".into()).await,
-        |r: Result<i32, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<i32, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(age) => log::info!("<- Alice is {} years old  [{}]", age, fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "Requesting Bob's age...",
         db.get_user_age("Bob".into()).await,
-        |r: Result<i32, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<i32, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(age) => log::info!("<- Bob is {} years old  [{}]", age, fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "Requesting Max's age (unknown)...",
         db.get_user_age("Max".into()).await,
-        |r: Result<i32, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<i32, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(age) => log::info!("<- Max is {} years old  [{}]", age, fmt_latency(ms)),
-            Err(StreamError::Business(DatabaseError::NotFound)) =>
+            Err(ObservableError::Business(DatabaseError::NotFound)) =>
                 log::warn!("<- Max not found in database  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
@@ -143,7 +146,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             prenom: "Jean".into()
         })
         .await,
-        |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<PersonneInfo, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
                 "<- {} {} - {} years old, {}, {}  [{}]",
                 info.nom,
@@ -153,13 +156,14 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 info.profession,
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(DatabaseError::NotFound)) =>
+            Err(ObservableError::Business(DatabaseError::NotFound)) =>
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
@@ -170,7 +174,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             prenom: "Marie".into()
         })
         .await,
-        |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<PersonneInfo, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
                 "<- {} {} - {} years old, {}, {},  [{}]",
                 info.nom,
@@ -180,13 +184,14 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 info.profession,
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(DatabaseError::NotFound)) =>
+            Err(ObservableError::Business(DatabaseError::NotFound)) =>
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
@@ -197,7 +202,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             prenom: "Pierre".into()
         })
         .await,
-        |r: Result<PersonneInfo, StreamError<DatabaseError>>, ms: f64| match r {
+        |r: Result<PersonneInfo, ObservableError<DatabaseError>>, ms: f64| match r {
             Ok(info) => log::info!(
                 "<- {} {} - {} years old, {}, {}  [{}]",
                 info.nom,
@@ -207,13 +212,14 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
                 info.profession,
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(DatabaseError::NotFound)) =>
+            Err(ObservableError::Business(DatabaseError::NotFound)) =>
                 log::warn!("<- Person not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {:?}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
@@ -230,7 +236,7 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             let stream = $query;
             let result = stream.take_until(cancel).first_value().await;
             match result {
-                Err(StreamError::Technical(ice_rpc::RpcError::Cancelled)) => {
+                Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
                     return false;
                 }
@@ -245,110 +251,116 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
     run_query!(
         "GET app.name (should exist)...",
         ctx.get("app.name".into()).await,
-        |r: Result<String, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<String, ObservableError<ContextError>>, ms: f64| match r {
             Ok(value) => log::info!("<- app.name = \"{}\"  [{}]", value, fmt_latency(ms)),
-            Err(StreamError::Business(ContextError::KeyNotFound)) =>
+            Err(ObservableError::Business(ContextError::KeyNotFound)) =>
                 log::warn!("<- Key 'app.name' not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "GET nonexistent.key (should fail)...",
         ctx.get("nonexistent.key".into()).await,
-        |r: Result<String, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<String, ObservableError<ContextError>>, ms: f64| match r {
             Ok(value) => log::info!("<- nonexistent.key = \"{}\"  [{}]", value, fmt_latency(ms)),
-            Err(StreamError::Business(ContextError::KeyNotFound)) => log::warn!(
+            Err(ObservableError::Business(ContextError::KeyNotFound)) => log::warn!(
                 "<- Key 'nonexistent.key' not found (OK)  [{}]",
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "SET test.key = 'hello-world'...",
         ctx.set("test.key".into(), "hello-world".into()).await,
-        |r: Result<bool, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<bool, ObservableError<ContextError>>, ms: f64| match r {
             Ok(true) => log::info!("<- test.key defined successfully  [{}]", fmt_latency(ms)),
             Ok(false) => log::warn!("<- test.key NOT defined  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "GET test.key (verification)...",
         ctx.get("test.key".into()).await,
-        |r: Result<String, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<String, ObservableError<ContextError>>, ms: f64| match r {
             Ok(value) => log::info!("<- test.key = \"{}\"  [{}]", value, fmt_latency(ms)),
-            Err(StreamError::Business(ContextError::KeyNotFound)) =>
+            Err(ObservableError::Business(ContextError::KeyNotFound)) =>
                 log::warn!("<- Key 'test.key' not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "DELETE test.key...",
         ctx.delete("test.key".into()).await,
-        |r: Result<bool, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<bool, ObservableError<ContextError>>, ms: f64| match r {
             Ok(true) => log::info!("<- test.key deleted  [{}]", fmt_latency(ms)),
             Ok(false) => log::warn!("<- test.key did not exist  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "GET test.key (after deletion)...",
         ctx.get("test.key".into()).await,
-        |r: Result<String, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<String, ObservableError<ContextError>>, ms: f64| match r {
             Ok(value) => log::info!("<- test.key = \"{}\"  [{}]", value, fmt_latency(ms)),
-            Err(StreamError::Business(ContextError::KeyNotFound)) => log::warn!(
+            Err(ObservableError::Business(ContextError::KeyNotFound)) => log::warn!(
                 "<- Key 'test.key' correctly deleted (OK)  [{}]",
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "LIST all entries...",
         ctx.list().await,
-        |r: Result<ContextEntry, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<ContextEntry, ObservableError<ContextError>>, ms: f64| match r {
             Ok(entry) => log::info!(
                 "<- [LIST] {} = \"{}\"  [{}]",
                 entry.key,
                 entry.value,
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) =>
+            Err(ObservableError::Empty) =>
                 log::warn!("<- No entry (empty context)  [{}]", fmt_latency(ms)),
         }
     );
@@ -356,14 +368,15 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
     run_query!(
         "SET 'session.user' = 'Jean Dupont'...",
         ctx.set("session.user".into(), "Jean Dupont".into()).await,
-        |r: Result<bool, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<bool, ObservableError<ContextError>>, ms: f64| match r {
             Ok(true) => log::info!("<- session.user defined  [{}]", fmt_latency(ms)),
             Ok(false) => log::warn!("<- session.user NOT defined  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
@@ -381,51 +394,54 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
     run_query!(
         format!("SET 'large.payload' ({} bytes)...", payload_size),
         ctx.set("large.payload".into(), large_payload).await,
-        |r: Result<bool, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<bool, ObservableError<ContextError>>, ms: f64| match r {
             Ok(true) => log::info!(
                 "<- large.payload ({:.1} KB) defined  [{}]",
                 payload_size as f64 / 1024.0,
                 fmt_latency(ms)
             ),
             Ok(false) => log::warn!("<- large.payload NOT defined  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "GET large.payload (verification)...",
         ctx.get("large.payload".into()).await,
-        |r: Result<String, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<String, ObservableError<ContextError>>, ms: f64| match r {
             Ok(value) => log::info!(
                 "<- large.payload = {} bytes  [{}]",
                 value.len(),
                 fmt_latency(ms)
             ),
-            Err(StreamError::Business(ContextError::KeyNotFound)) =>
+            Err(ObservableError::Business(ContextError::KeyNotFound)) =>
                 log::warn!("<- Key 'large.payload' not found  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 
     run_query!(
         "DELETE large.payload (cleanup)...",
         ctx.delete("large.payload".into()).await,
-        |r: Result<bool, StreamError<ContextError>>, ms: f64| match r {
+        |r: Result<bool, ObservableError<ContextError>>, ms: f64| match r {
             Ok(true) => log::info!("<- large.payload deleted  [{}]", fmt_latency(ms)),
             Ok(false) => log::warn!("<- large.payload did not exist  [{}]", fmt_latency(ms)),
-            Err(StreamError::Business(e)) =>
+            Err(ObservableError::Business(e)) =>
                 log::warn!("<- Business error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Technical(e)) =>
+            Err(ObservableError::Technical(e)) =>
                 log::error!("<- IPC error: {}  [{}]", e, fmt_latency(ms)),
-            Err(StreamError::Empty) => log::warn!("<- No value received  [{}]", fmt_latency(ms)),
+            Err(ObservableError::Empty) =>
+                log::warn!("<- No value received  [{}]", fmt_latency(ms)),
         }
     );
 

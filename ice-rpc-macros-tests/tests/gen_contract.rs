@@ -1,14 +1,14 @@
 //! Contract test for the `#[doc(hidden)] pub mod gen` facade of `ice-rpc`.
 //!
-//! `ice-rpc-macros` emits code that references every symbol below, and
-//! `ice-rpc-rx` uses the Rx primitives (`channel`, `Sender`, `WireEvent`, …).
-//! `gen` is therefore an internal contract between those crates and the runtime
-//! (see the "Versioning contract" note in `ice-rpc/src/gen.rs`).
+//! `ice-rpc-macros` emits code that references every symbol below (`channel`,
+//! `Sender`, `WireEvent`, …). `gen` is therefore an internal contract between
+//! that crate and the runtime (see the "Versioning contract" note in
+//! `ice-rpc/src/gen.rs`).
 //!
 //! Importing/mentioning each symbol explicitly makes the test fail to compile as
 //! soon as one of them is renamed or removed — which is exactly the
 //! compatibility guarantee we want to pin: `gen` is semver-exempt for the
-//! consumers of `ice-rpc`, but **not** for `ice-rpc-macros` / `ice-rpc-rx`.
+//! consumers of `ice-rpc`, but **not** for `ice-rpc-macros`.
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic; production libs keep the deny, see [workspace.lints]
 

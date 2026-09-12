@@ -34,21 +34,13 @@ fn observable_error_display() {
 
     let technical: ObservableError<String> = ObservableError::Technical(RpcError::Timeout);
     assert!(technical.to_string().contains("timeout"));
-}
 
-#[test]
-fn stream_error_from_observable_error() {
-    let business: ObservableError<String> = ObservableError::Business("boom".into());
-    assert!(matches!(
-        StreamError::from(business),
-        StreamError::Business(_)
-    ));
-
-    let technical: ObservableError<String> = ObservableError::Technical(RpcError::Timeout);
-    assert!(matches!(
-        StreamError::from(technical),
-        StreamError::Technical(_)
-    ));
+    let empty: ObservableError<String> = ObservableError::Empty;
+    assert_eq!(empty.to_string(), "stream ended without a value");
+    assert!(empty.as_business().is_none());
+    assert!(empty.as_technical().is_none());
+    assert!(!empty.is_business());
+    assert!(!empty.is_technical());
 }
 
 // ── RpcError ────────────────────────────────────────────────────────
@@ -164,6 +156,45 @@ fn channel_close_without_terminal_is_reported_as_closed() {
 }
 
 #[test]
+fn next_maps_the_event_vocabulary_and_keeps_none_for_a_clean_end() {
+    let mut stream = Observable::<i32, String>::from_events([Event::Next(1), Event::Complete]);
+    assert_eq!(pollster::block_on(stream.next()), Some(Ok(1)));
+    // `Complete` was delivered, so `None` means "the producer finished".
+    assert_eq!(pollster::block_on(stream.next()), None);
+
+    let mut failing = Observable::<i32, String>::from_events([Event::Error(
+        ObservableError::Business("boom".into()),
+    )]);
+    assert!(matches!(
+        pollster::block_on(failing.next()),
+        Some(Err(ObservableError::Business(_)))
+    ));
+    assert_eq!(pollster::block_on(failing.next()), None);
+}
+
+#[test]
+fn next_turns_an_abrupt_close_into_a_technical_error() {
+    // The producer disappears without completing: `next` reports it instead of
+    // pretending the stream completed.
+    let (tx, mut stream) = channel::<i32, String>(4);
+    tx.try_send_next(1).unwrap();
+    drop(tx);
+
+    assert_eq!(pollster::block_on(stream.next()), Some(Ok(1)));
+    match pollster::block_on(stream.next()) {
+        Some(Err(ObservableError::Technical(RpcError::TransportError(message)))) => {
+            assert!(
+                message.contains("before completion"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected an abrupt-close technical error, got {other:?}"),
+    }
+    // The failure is reported once, then the stream reads as finished.
+    assert_eq!(pollster::block_on(stream.next()), None);
+}
+
+#[test]
 fn wire_relay_forwards_terminal_errors_unchanged() {
     let (tx, mut stream) = channel::<i32, String>(4);
     tx.try_send_event(Event::Error(ObservableError::Business("boom".into())))
@@ -190,7 +221,7 @@ fn first_event_reports_business_error() {
     ))]);
     assert!(matches!(
         pollster::block_on(first_event(stream)),
-        Err(StreamError::Business(_))
+        Err(ObservableError::Business(_))
     ));
 }
 

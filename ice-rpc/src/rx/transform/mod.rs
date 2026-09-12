@@ -176,14 +176,14 @@ pub trait RxStreamExt<T, E>: futures_lite::Stream<Item = Event<T, E>> + Sized {
     /// Awaits the first emitted value of the stream.
     ///
     /// `Next(v)` → `Ok(v)`, `Error(e)` → `Err(e.into())`,
-    /// `Complete`/closed → `Err(StreamError::Empty)`.
+    /// `Complete`/closed → `Err(ObservableError::Empty)`.
     ///
     /// Same implementation as [`crate::Observable::first_value`]: both
     /// surfaces delegate to the canonical `crate::gen::first_event`, so they
     /// cannot diverge. Use this one on an operator pipeline, and the inherent
     /// method on a raw [`crate::Observable`].
     #[allow(async_fn_in_trait)]
-    async fn first_value(self) -> Result<T, crate::StreamError<E>>
+    async fn first_value(self) -> Result<T, crate::ObservableError<E>>
     where
         Self: Sized,
     {

@@ -120,6 +120,9 @@ sub.closed().await;
 
 ## 4. Étapes (chacune compile, suite verte, commit séparé)
 
+Avancement : 1 ✅ (`cab7b02`), 2 ✅ (`0bda2d8`), 3 ✅ (commit de cette étape),
+4 à 6 à faire.
+
 1. **Fusion mécanique** — déplacer `ice-rpc-rx/src/{creation.rs, subject.rs,
    share_replay.rs, subscribe.rs, transform/}` vers `ice-rpc/src/rx/`, puis
    `pub use rx::*;` au root. Aucune API ne change : les ~800 lignes de tests du
@@ -135,11 +138,18 @@ sub.closed().await;
    racine `Cargo.toml` (members) et `Cargo.lock`. Puis **supprimer le crate**.
    *Validation :* les 5 exemples compilent et tournent (`provider-app` +
    `benchmark-app` en release, 3 modes à 100 %).
-3. **Un seul type d'erreur + `Event` interne** — `StreamError` →
-   `ObservableError::Empty` ; `recv()` en `pub(crate)`, `next()` public ;
-   `first_event` / `collect_values` deviennent des détails internes (leur
-   commentaire « shared with ice-rpc-rx » disparaît) ; migration des exemples,
+3. **Un seul type d'erreur + `next()`** — `StreamError` fusionne dans
+   `ObservableError::Empty` ; `Event` et `recv()` **restent publics** (décision
+   §2), `next() -> Option<Result<T, ObservableError<E>>>` est ajouté comme vue
+   concise **au-dessus** de `recv()`, et une fermeture abrupte y devient une
+   erreur technique (jamais un `None` ambigu) ; `recv_wire()` passe `pub(crate)`
+   et redevient utilisé — [`observable_to_responses`](../ice-rpc/src/transport.rs:227)
+   le branche pour que le provider conserve l'optimisation `CompleteWith`
+   (une réponse à valeur unique = **un** échantillon) ; `first_event` /
+   `collect_values` deviennent des détails internes ; migration des exemples,
    tests et de [`gen.rs`](../ice-rpc/src/gen.rs:44).
+   *Validation :* suite verte (148 tests lib), bench 3 modes à 100 % (0 erreur),
+   p50 séquentiel 7 µs.
 4. **Opérateurs inhérents** — `Observable::map`, `filter`, `take`, `skip`,
    `first`, `first_with`, `start_with`, `scan`, `tap`, `finalize`,
    `catch_error`, `delay`, `timeout`, `switch_map`, `take_until` retournant

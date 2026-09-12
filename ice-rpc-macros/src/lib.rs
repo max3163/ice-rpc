@@ -263,7 +263,7 @@ fn nodejs_methods_vec(items: &[TraitItem]) -> syn::Result<Vec<NodeJsMethod>> {
 /// `"1h"`). The discovery timeout is **service-wide**: it bounds the provider
 /// lookup performed by `ClientCore::resolve_target` for every method of the
 /// service. It does not bound the response wait — use the `timeout` operator
-/// (provider-side `ice-rpc-rx`) for that.
+/// on the returned stream for that.
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:

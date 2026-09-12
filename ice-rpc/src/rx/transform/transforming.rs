@@ -90,6 +90,10 @@ where
             Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(e)))) => {
                 Poll::Ready(Some(Event::Error(crate::ObservableError::Technical(e))))
             }
+            // `Empty` carries no business payload, so there is nothing to remap.
+            Poll::Ready(Some(Event::Error(crate::ObservableError::Empty))) => {
+                Poll::Ready(Some(Event::Error(crate::ObservableError::Empty)))
+            }
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,

@@ -18,10 +18,10 @@
 //!
 //! # Versioning contract
 //!
-//! This module is a compatibility surface for `ice-rpc-macros` **and**
-//! `ice-rpc-rx`, not a public API: its symbols are semver-exempt for the
-//! consumers of `ice-rpc`, but **not** for those two crates. Renaming or
-//! removing any item below is a breaking change of `ice-rpc-macros`.
+//! This module is a compatibility surface for `ice-rpc-macros`, not a public
+//! API: its symbols are semver-exempt for the consumers of `ice-rpc`, but
+//! **not** for `ice-rpc-macros`. Renaming or removing any item below is a
+//! breaking change of `ice-rpc-macros`.
 //! The `ice-rpc-macros-tests` crate pins every symbol with a dedicated contract
 //! test (`gen_facade_symbols_resolve`).
 
@@ -41,8 +41,8 @@ pub use crate::types::{
     PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
-// Canonical terminal implementations, shared with `ice-rpc-rx` so that the
-// inherent `Observable` methods and the `RxStreamExt` default methods cannot
+// Canonical terminal implementations shared by the inherent `Observable`
+// methods and the `RxStreamExt` default methods, so the two surfaces cannot
 // drift.
 pub use crate::types::{collect_values, first_event};
 

@@ -43,6 +43,7 @@
 //! - the **consumer** runs one dispatch thread per consumed service.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -152,6 +153,53 @@ const PUBLISH_SPIN_ATTEMPTS: u32 = 4_096;
 /// that makes a missed notification cost at most this much.
 const WAITSET_DEADLINE: Duration = Duration::from_millis(1);
 
+/// Coalescing window of the peer wake-up notifications.
+///
+/// The notification is a syscall, and a receiver that is currently *polling*
+/// does not need one: the coalescing removes it from a saturated channel while
+/// a sparse one (the receiver parked on its `WaitSet`) is always notified, since
+/// two calls are then separated by far more than this window.
+///
+/// The window is deliberately far shorter than the time a receiver keeps
+/// spinning before it parks ([`IDLE_SPINS`] yields, i.e. hundreds of
+/// microseconds at worst), so a coalesced wake-up can only be skipped while the
+/// receiver is still awake — the invariant that makes the coalescing safe.
+const NOTIFY_COALESCE_WINDOW: Duration = Duration::from_micros(100);
+
+/// Monotonic microsecond clock shared by the notification coalescers.
+fn notify_clock_us() -> u64 {
+    static BASE: OnceLock<std::time::Instant> = OnceLock::new();
+    BASE.get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_micros() as u64
+}
+
+/// Returns `true` when the peer must be woken up (see
+/// [`NOTIFY_COALESCE_WINDOW`]), and records the wake-up.
+///
+/// `last` holds the microsecond timestamp of the previous wake-up; two callers
+/// racing on the same window is harmless (one notification is enough to wake a
+/// parked receiver, and a spurious one only costs a poll).
+fn should_notify(last: &AtomicU64) -> bool {
+    let now = notify_clock_us();
+    let previous = last.load(Ordering::Relaxed);
+    if now.saturating_sub(previous) < NOTIFY_COALESCE_WINDOW.as_micros() as u64 {
+        return false;
+    }
+    last.store(now, Ordering::Relaxed);
+    true
+}
+
+/// Single-threaded variant of [`should_notify`], for the dispatch loops.
+fn should_notify_local(last: &mut u64) -> bool {
+    let now = notify_clock_us();
+    if now.saturating_sub(*last) < NOTIFY_COALESCE_WINDOW.as_micros() as u64 {
+        return false;
+    }
+    *last = now;
+    true
+}
+
 /// Processed samples between two termination checks on the hot path.
 ///
 /// `SignalHandler::termination_requested()` takes a process-wide mutex, so
@@ -174,17 +222,6 @@ const SIGNAL_CHECK_SAMPLES: u32 = 256;
 /// every expiry would run thousands of `yield_now` per millisecond and cost
 /// ~30% of a core for a completely idle process (debug builds).
 const IDLE_SPINS: u32 = 2_000;
-
-/// Set while a dispatch thread is blocked on its `WaitSet`.
-///
-/// The publisher only notifies when the receiver is actually blocked: under
-/// load the receiver finds samples by itself, so the notification (a syscall)
-/// is skipped and the polling throughput is preserved. A stale read can only
-/// delay a wake-up by [`WAITSET_DEADLINE`], never lose a message.
-static REQUEST_WAITER_BLOCKED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-static RESPONSE_WAITER_BLOCKED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 fn transport_error(context: &str, err: impl std::fmt::Debug) -> RpcError {
     RpcError::TransportError(format!("{context}: {err:?}"))
@@ -320,6 +357,8 @@ struct ConsumerPorts {
     _request_notify: IoxEvent,
     publisher: IoxPublisher,
     request_notifier: IoxNotifier,
+    /// Timestamp of the last provider wake-up (see [`notify_clock_us`]).
+    last_request_notify: AtomicU64,
 }
 
 fn consumer_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<ConsumerPorts>>> {
@@ -373,6 +412,7 @@ fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         _request_service: request_service,
         _response_service: response_service,
         _request_notify: request_notify,
+        last_request_notify: AtomicU64::new(0),
         publisher,
         request_notifier,
     });
@@ -460,9 +500,7 @@ fn spawn_response_dispatcher(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        RESPONSE_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
                         let notified = wait_for_wakeup(&waitset, &guard);
-                        RESPONSE_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
                         // Only a notification means there is something to poll
                         // for; a bare deadline expiry keeps the thread blocked.
                         idle_spins = if notified { 0 } else { IDLE_SPINS };
@@ -537,7 +575,12 @@ where
         unregister_response_handler(&cid);
         return Err(e);
     }
-    if REQUEST_WAITER_BLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+    // Wake the provider's dispatch thread: it runs in **another process**, so its
+    // "parked on the WaitSet" state is not observable from here. Notifying on
+    // every send would cost a syscall per call on a saturated channel, hence the
+    // coalescing window (a parked provider is always notified, since two calls
+    // are then milliseconds apart).
+    if should_notify(&ports.last_request_notify) {
         let _ = ports
             .request_notifier
             .notify_with_custom_event_id(EventId::new(0));
@@ -689,6 +732,8 @@ pub fn spawn_native_service(
         );
         let mut idle_spins: u32 = 0;
         let mut signal_ticks: u32 = 0;
+        // Timestamp of the last consumer wake-up (see [`should_notify`]).
+        let mut last_notify_us: u64 = 0;
         while !stop.is_cancelled() {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
@@ -731,15 +776,18 @@ pub fn spawn_native_service(
                         continue;
                     };
 
-                    let respond =
-                        RESPONSE_WAITER_BLOCKED.load(std::sync::atomic::Ordering::Relaxed);
+                    // Publish first, then wake the consumer's response thread once
+                    // per coalescing window: it runs in another process, so its
+                    // parked state cannot be observed here (see `native_call`).
+                    let mut wake = false;
                     for response in dispatcher.dispatch(request_header.method(), payload) {
                         if publish_response(&publisher, &request_header, &response).is_err() {
                             break;
                         }
-                        if respond {
-                            let _ = response_notifier.notify_with_custom_event_id(EventId::new(0));
-                        }
+                        wake = true;
+                    }
+                    if wake && should_notify_local(&mut last_notify_us) {
+                        let _ = response_notifier.notify_with_custom_event_id(EventId::new(0));
                     }
                 }
                 Ok(None) => {
@@ -747,9 +795,7 @@ pub fn spawn_native_service(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        REQUEST_WAITER_BLOCKED.store(true, std::sync::atomic::Ordering::Relaxed);
                         let notified = wait_for_wakeup(&waitset, &guard);
-                        REQUEST_WAITER_BLOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
                         // Only a notification means there is something to poll
                         // for; a bare deadline expiry keeps the thread blocked.
                         idle_spins = if notified { 0 } else { IDLE_SPINS };

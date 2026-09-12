@@ -66,6 +66,13 @@ impl EventKind {
 pub struct RpcHeader {
     /// Request↔response correlation id (16 bytes).
     pub correlation_id: [u8; CORRELATION_ID_LEN],
+    /// Identifier of the target service inside the channel it is published on.
+    ///
+    /// Several services can share one request/response channel (their *group*);
+    /// this id — [`service_id_of`] of the service name — is what the provider
+    /// uses to pick the right dispatcher. Zero on a response that does not
+    /// belong to a registered service.
+    pub service_id: u32,
     /// Method invoked by the request (left empty on a response).
     pub method_name: StaticString<METHOD_NAME_LEN>,
     /// Kind of the sample (request / next / complete / error), as a wire value.
@@ -82,9 +89,10 @@ impl RpcHeader {
     /// A method name longer than [`METHOD_NAME_LEN`] is truncated; the
     /// `#[service]` macro already rejects such names at compile time.
     #[inline]
-    pub fn request(method: &str, service_version: u16) -> Self {
+    pub fn request(method: &str, service_id: u32, service_version: u16) -> Self {
         Self {
             correlation_id: next_correlation_id(),
+            service_id,
             method_name: StaticString::try_from(method).unwrap_or_default(),
             event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
@@ -97,6 +105,7 @@ impl RpcHeader {
     pub fn response_from(request: &RpcHeader, event_kind: EventKind, service_version: u16) -> Self {
         Self {
             correlation_id: request.correlation_id,
+            service_id: request.service_id,
             method_name: StaticString::default(),
             event_kind: event_kind.as_u8(),
             protocol_version: PROTOCOL_VERSION,
@@ -115,6 +124,31 @@ impl RpcHeader {
     pub fn event_kind(&self) -> EventKind {
         EventKind::from_u8(self.event_kind)
     }
+}
+
+/// Computes the stable identifier of a service inside its channel.
+///
+/// FNV-1a, chosen because it is a `const fn`: the generated code can pass the
+/// result of `service_id_of("DatabaseService")` as a constant, and **every**
+/// process — as well as `ice-rpc-macros` — derives the same value from the same
+/// name without any coordination or discovery step.
+///
+/// The 32-bit space keeps the id in the header; a collision between two
+/// co-located services is detected when the channel is registered.
+#[inline]
+pub const fn service_id_of(name: &str) -> u32 {
+    const OFFSET_BASIS: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+
+    let bytes = name.as_bytes();
+    let mut hash = OFFSET_BASIS;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(PRIME);
+        i += 1;
+    }
+    hash
 }
 
 /// Allocates a process-unique correlation id: `pid ++ counter`.
@@ -145,19 +179,23 @@ mod tests {
 
     #[test]
     fn request_header_carries_the_method_and_a_fresh_id() {
-        let a = RpcHeader::request("get_user_age", 2);
-        let b = RpcHeader::request("get_user_age", 2);
+        let id = service_id_of("DatabaseService");
+        let a = RpcHeader::request("get_user_age", id, 2);
+        let b = RpcHeader::request("get_user_age", id, 2);
         assert_eq!(a.method(), "get_user_age");
         assert_eq!(a.event_kind(), EventKind::Request);
+        assert_eq!(a.service_id, id);
         assert_eq!(a.service_version, 2);
         assert_ne!(a.correlation_id, b.correlation_id);
     }
 
     #[test]
-    fn response_header_reuses_the_request_id() {
-        let request = RpcHeader::request("ping", 1);
+    fn response_header_reuses_the_request_id_and_service() {
+        let id = service_id_of("GetPerson");
+        let request = RpcHeader::request("ping", id, 1);
         let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
         assert_eq!(response.correlation_id, request.correlation_id);
+        assert_eq!(response.service_id, id);
         assert_eq!(response.event_kind(), EventKind::Complete);
         assert!(response.method().is_empty());
     }
@@ -167,8 +205,31 @@ mod tests {
         // `#[service]` rejects this at compile time, so the runtime fallback is
         // only a safety net.
         let long = "x".repeat(METHOD_NAME_LEN + 20);
-        let header = RpcHeader::request(&long, 1);
+        let header = RpcHeader::request(&long, 0, 1);
         assert!(header.method().is_empty());
+    }
+
+    #[test]
+    fn service_id_is_stable_and_distinguishes_names() {
+        // Offset basis of FNV-1a: pins the algorithm, so a change of hash would
+        // be caught here instead of silently breaking the routing.
+        assert_eq!(service_id_of(""), 0x811c_9dc5);
+
+        // Usable in a constant expression, which is how the macro passes it.
+        const ID: u32 = service_id_of("DatabaseService");
+        assert_eq!(ID, service_id_of("DatabaseService"));
+        assert_ne!(
+            service_id_of("DatabaseService"),
+            service_id_of("ConfigService")
+        );
+    }
+
+    #[test]
+    fn the_header_layout_stays_bounded_and_aligned() {
+        // The layout is part of the wire contract shared by every process: it
+        // must stay small (it is copied per sample) and 8-byte aligned.
+        assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
+        assert!(std::mem::size_of::<RpcHeader>() <= 128);
     }
 
     #[test]

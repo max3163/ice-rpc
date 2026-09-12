@@ -12,6 +12,8 @@ pub struct LifecycleGenInput<'a> {
     pub server_name: &'a Ident,
     pub mode_name: &'a Ident,
     pub logical_name_lit: &'a str,
+    /// Channel the service is registered on (the `group` of `#[service]`).
+    pub group_lit: &'a str,
     /// One native `ServiceDispatcher::method(...)` registration per RPC method,
     /// used by the `ProviderNodeJs` mode to bridge calls to the Node.js host.
     pub nodejs_native_methods: &'a [TokenStream],
@@ -26,6 +28,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         server_name,
         mode_name,
         logical_name_lit,
+        group_lit,
         nodejs_native_methods,
     } = input;
 
@@ -40,13 +43,25 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                         // method is bridged to the injected dispatch callback.
                         let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
                         #(#nodejs_native_methods)*
-                        let dispatcher = std::sync::Arc::new(dispatcher);
-                        ice_rpc::gen::spawn_native_service(
+                        // Registered on the channel: the channel thread starts
+                        // once every provider of the process is registered.
+                        if let Err(e) = ice_rpc::gen::register_native_service(
+                            #group_lit,
+                            ice_rpc::gen::service_id_of(#logical_name_lit),
                             #logical_name_lit,
-                            move |method, payload| dispatcher.dispatch(method, payload),
-                            ice_rpc::global_cancel_token().clone(),
+                            dispatcher,
+                        ) {
+                            ::log::error!(
+                                "[{}] channel registration failed: {e:?}",
+                                #logical_name_lit
+                            );
+                            return false;
+                        }
+                        ::log::info!(
+                            "[{}] NodeJS provider registered on channel '{}'.",
+                            #logical_name_lit,
+                            #group_lit
                         );
-                        ::log::info!("[{}] NodeJS provider ready.", #logical_name_lit);
                         true
                     }
                     #mode_name::Provider { local_impl, init_hook, server_started } => {
@@ -57,17 +72,31 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 return false;
                             }
 
-                            // Native iceoryx2 request/response service: one
-                            // dispatcher per service, one background thread.
+                            // The dispatcher is registered on the channel of the
+                            // service; the channel thread itself starts in
+                            // `ServiceLocator::initialize_all`, once every
+                            // provider has registered, so a request never
+                            // reaches a channel before its dispatcher exists.
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
-                            ice_rpc::gen::spawn_native_service(
+                            if let Err(e) = ice_rpc::gen::register_native_service(
+                                #group_lit,
+                                ice_rpc::gen::service_id_of(#logical_name_lit),
                                 #logical_name_lit,
-                                move |method, payload| dispatcher.dispatch(method, payload),
-                                ice_rpc::global_cancel_token().clone(),
-                            );
+                                dispatcher,
+                            ) {
+                                ::log::error!(
+                                    "[{}] channel registration failed: {e:?}",
+                                    stringify!(#trait_name)
+                                );
+                                return false;
+                            }
 
                             *server_started = true;
-                            ::log::info!("[{}] native service started and ready.", stringify!(#trait_name));
+                            ::log::info!(
+                                "[{}] native service registered on channel '{}'.",
+                                stringify!(#trait_name),
+                                #group_lit
+                            );
                         }
                         true
                     },

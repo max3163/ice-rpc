@@ -206,11 +206,14 @@ fn child_provider() {
     // transport `WaitSet`s. The returned guard must stay alive for the process.
     let _guard = ice_rpc::gen::init();
 
-    // Start one real service: spawning its dispatch thread is what creates the
+    // Start one real channel: spawning its dispatch thread is what creates the
     // `WaitSet` that arms iceoryx2's signal handler.
     let _handle = ice_rpc::gen::spawn_native_service(
         CHILD_SERVICE,
-        |_method, _payload| -> ice_rpc::gen::ResponseIter { Box::new(std::iter::empty()) },
+        vec![(
+            ice_rpc::gen::service_id_of(CHILD_SERVICE),
+            ice_rpc::gen::ServiceDispatcher::new(),
+        )],
         ice_rpc::global_cancel_token().clone(),
     );
 

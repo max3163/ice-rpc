@@ -4,7 +4,7 @@
 //! iceoryx2 node and the global lock do not conflict with the unit tests.
 
 #![allow(clippy::unwrap_used)]
-use ice_rpc::gen::{rkyv, WireEvent};
+use ice_rpc::gen::{rkyv, service_id_of, ServiceDispatcher, WireEvent};
 use ice_rpc::transport::{native_call, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
@@ -18,26 +18,26 @@ fn encode_i32(event: WireEvent<i32, String>) -> Vec<u8> {
 /// service closes the connection.
 #[test]
 fn native_request_response_streams_then_completes() {
-    let service = format!("IceRpcIntegration/Roundtrip{}", std::process::id());
+    let channel = format!("IceRpcIntegration/Roundtrip{}", std::process::id());
+    let service_id = service_id_of(&channel);
     let stop = CancellationToken::new();
-    let server = spawn_native_service(
-        &service,
-        |_method, _payload| {
-            // A response stream must end with a terminal event: the transport
-            // has no per-call connection to signal the end of the stream.
-            let mut samples: Vec<Vec<u8>> = (0..3i32)
-                .map(|value| encode_i32(WireEvent::Next(value)))
-                .collect();
-            samples.push(encode_i32(WireEvent::Complete));
-            Box::new(samples.into_iter())
-        },
-        stop.clone(),
-    );
 
-    // Give the service thread time to create the shared node and the service.
+    let mut dispatcher = ServiceDispatcher::new();
+    dispatcher.method("echo", |_payload| {
+        // A response stream must end with a terminal event: the transport has no
+        // per-call connection to signal the end of the stream.
+        let mut samples: Vec<Vec<u8>> = (0..3i32)
+            .map(|value| encode_i32(WireEvent::Next(value)))
+            .collect();
+        samples.push(encode_i32(WireEvent::Complete));
+        Box::new(samples.into_iter())
+    });
+    let server = spawn_native_service(&channel, vec![(service_id, dispatcher)], stop.clone());
+
+    // Give the service thread time to create the shared node and the channel.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let stream = native_call::<i32, String>(&service, "echo", b"go")
+    let stream = native_call::<i32, String>(&channel, service_id, "echo", b"go")
         .expect("native_call must open the native service");
     let values = pollster::block_on(stream.collect()).expect("collect must succeed");
     assert_eq!(values, vec![0, 1, 2], "all streamed responses must arrive");
@@ -65,24 +65,24 @@ fn stream_recv_normalizes_complete_with_as_next_then_complete() {
 /// through the native transport.
 #[test]
 fn native_request_response_streams_a_real_observable() {
-    let service = format!("IceRpcIntegration/Obs{}", std::process::id());
+    let channel = format!("IceRpcIntegration/Obs{}", std::process::id());
+    let service_id = service_id_of(&channel);
     let stop = CancellationToken::new();
-    let server = spawn_native_service(
-        &service,
-        |_method, _payload| {
-            let observable = Observable::<i32, String>::from_events([
-                Event::Next(10),
-                Event::Next(20),
-                Event::Complete,
-            ]);
-            ice_rpc::transport::observable_to_responses(observable)
-        },
-        stop.clone(),
-    );
+
+    let mut dispatcher = ServiceDispatcher::new();
+    dispatcher.method("watch", |_payload| {
+        let observable = Observable::<i32, String>::from_events([
+            Event::Next(10),
+            Event::Next(20),
+            Event::Complete,
+        ]);
+        ice_rpc::transport::observable_to_responses(observable)
+    });
+    let server = spawn_native_service(&channel, vec![(service_id, dispatcher)], stop.clone());
 
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let stream = native_call::<i32, String>(&service, "watch", b"")
+    let stream = native_call::<i32, String>(&channel, service_id, "watch", b"")
         .expect("native_call must open the native service");
     let values = pollster::block_on(stream.collect()).expect("collect");
     assert_eq!(values, vec![10, 20]);

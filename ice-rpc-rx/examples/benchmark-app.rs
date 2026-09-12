@@ -2,7 +2,7 @@
 //!
 //! # Usage
 //! ```bash
-//! cargo run --release --example benchmark-app -- --workers 3 --pipeline 2 --requests 5000
+//! cargo run --release --features="tokio" --example benchmark-app -- --workers 3 --pipeline 2 --requests 5000
 //! ```
 //!
 //! # Getting trustworthy numbers

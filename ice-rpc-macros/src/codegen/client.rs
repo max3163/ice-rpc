@@ -88,6 +88,8 @@ pub struct ClientMethodGenInput<'a> {
     pub err_type: &'a Type,
     pub req_enum_name: &'a Ident,
     pub logical_name: &'a str,
+    /// Channel the request is published on (the `group` of `#[service]`).
+    pub group: &'a str,
     /// Discovery timeout in seconds, shared by every method of the service
     /// (set once via `#[service(..., discovery_timeout = "5s")]`).
     pub discovery_timeout_secs: Option<u64>,
@@ -103,6 +105,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let ok_type = input.ok_type;
     let req_enum_name = input.req_enum_name;
     let logical_name = input.logical_name;
+    let group = input.group;
     let _service_version = input.service_version;
     let err_type = input.err_type;
 
@@ -127,7 +130,8 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             };
 
             ice_rpc::gen::native_call::<#ok_type, #err_type>(
-                #logical_name,
+                #group,
+                ice_rpc::gen::service_id_of(#logical_name),
                 #method_name_str,
                 &bytes,
             )

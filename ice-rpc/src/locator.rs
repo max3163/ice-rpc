@@ -157,6 +157,13 @@ impl ServiceLocator {
                 return Err(format!("service '{name}' failed to initialize"));
             }
         }
+
+        // Every provider has registered its channel by now: start the channel
+        // threads. Deferring them here is what guarantees that a channel never
+        // receives a request before the dispatcher able to answer it is
+        // installed, since a consumer treats "a subscriber exists" as "the
+        // provider is ready" (see `transport::publish_until_delivered`).
+        crate::transport::start_registered_channels();
         Ok(())
     }
 }

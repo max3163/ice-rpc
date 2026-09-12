@@ -25,7 +25,8 @@ mod tests;
 pub use consts::*;
 pub use error::RpcError;
 pub use header::{
-    fmt_correlation_id, next_correlation_id, EventKind, RpcHeader, CORRELATION_ID_LEN,
+    fmt_correlation_id, next_correlation_id, service_id_of, EventKind, RpcHeader,
+    CORRELATION_ID_LEN,
 };
 pub use node::*;
 pub use stream::{

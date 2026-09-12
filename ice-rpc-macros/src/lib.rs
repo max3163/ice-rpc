@@ -34,6 +34,43 @@ use crate::codegen::{
     server::{gen_native_method, gen_server, ServerGenInput},
 };
 
+/// Validates the `group` parameter of `#[service]`.
+///
+/// Same rules as the service name: the group becomes part of the iceoryx2
+/// service names of the channel (`{group}_req`, `{group}_resp`, …).
+fn validate_channel_name(name: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    if name.len() > SERVICE_NAME_LEN {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "Channel name '{name}' too long ({} > {SERVICE_NAME_LEN} characters). \
+                 Use #[service(..., group = \"ShortName\")].",
+                name.len(),
+            ),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "Invalid channel name '{name}': only ASCII alphanumeric characters, '_' and '-' are allowed."
+            ),
+        ));
+    }
+    if let Some(first) = name.chars().next() {
+        if !first.is_ascii_alphanumeric() {
+            return Err(syn::Error::new(
+                span,
+                format!("Invalid channel name '{name}': must start with a letter or a digit."),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Optional parameters of the `#[service]` macro.
 ///
 /// - `#[service]` → the logical name = the trait name in lowercase.
@@ -47,9 +84,15 @@ use crate::codegen::{
 ///   for source compatibility. The publish/subscribe transport connects on
 ///   demand, so the value is currently informational and never bounds the
 ///   response wait. Accepts the `s` / `m` / `h` suffixes.
+/// - `#[service(..., group = "db")]` → the **channel** this service shares with
+///   the other services of the same group. A channel is the unit of transport:
+///   it owns one request channel, one response channel and one dispatch thread,
+///   and the samples are routed by the service id carried in the header.
+///   Defaults to the service name, i.e. one channel per service.
 /// - `#[service("MyService", allow_large_payload = true, default_size_message = 8, version = 2, discovery_timeout = "5s")]` → all.
 struct ServiceAttr {
     logical_name: Option<String>,
+    group: Option<String>,
     allow_large_payload: bool,
     default_size_message_kb: Option<u64>,
     service_version: u16,
@@ -59,6 +102,7 @@ struct ServiceAttr {
 impl syn::parse::Parse for ServiceAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut logical_name: Option<String> = None;
+        let mut group: Option<String> = None;
         let mut allow_large_payload = false;
         let mut default_size_message_kb: Option<u64> = None;
         let mut service_version: u16 = 1;
@@ -67,6 +111,7 @@ impl syn::parse::Parse for ServiceAttr {
         if input.is_empty() {
             return Ok(Self {
                 logical_name: None,
+                group: None,
                 allow_large_payload: false,
                 default_size_message_kb: None,
                 service_version,
@@ -80,7 +125,11 @@ impl syn::parse::Parse for ServiceAttr {
                 logical_name = Some(name.value());
             } else {
                 let ident: syn::Ident = input.parse()?;
-                if ident == "allow_large_payload" {
+                if ident == "group" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitStr = input.parse()?;
+                    group = Some(lit.value());
+                } else if ident == "allow_large_payload" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitBool = input.parse()?;
                     allow_large_payload = lit.value;
@@ -118,6 +167,7 @@ impl syn::parse::Parse for ServiceAttr {
 
         Ok(Self {
             logical_name,
+            group,
             allow_large_payload,
             default_size_message_kb,
             service_version,
@@ -302,7 +352,15 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     // request/response transport negotiates sizes itself.
     let _ = (allow_large_payload, default_size_message_kb);
 
+    // The channel a service belongs to. A service alone on its channel (the
+    // default) behaves exactly like before the introduction of channels.
+    let group = service_attr.group.unwrap_or_else(|| logical_name.clone());
+    if let Err(e) = validate_channel_name(&group, trait_name.span()) {
+        return e.to_compile_error().into();
+    }
+
     let logical_name_lit = logical_name.clone();
+    let group_lit = group.clone();
 
     let req_enum_name = format_ident!("{}Request", trait_name);
     let client_name = format_ident!("{}Client", trait_name);
@@ -375,6 +433,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 err_type: &err_type,
                 req_enum_name: &req_enum_name,
                 logical_name: &logical_name_lit,
+                group: &group_lit,
                 discovery_timeout_secs,
                 service_version,
             }));
@@ -442,6 +501,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         server_name: &server_name,
         mode_name: &mode_name,
         logical_name_lit: &logical_name_lit,
+        group_lit: &group_lit,
         nodejs_native_methods: &nodejs_native_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);

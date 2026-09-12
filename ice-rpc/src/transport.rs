@@ -1,5 +1,14 @@
 //! Publish/subscribe transport: one request channel and one response channel
-//! per service, correlated by the request id carried in the zero-copy header.
+//! per **channel** — a group of services — correlated by the request id carried
+//! in the zero-copy header.
+//!
+//! A service belongs to a channel through the `group` parameter of
+//! `#[service]`, which defaults to the service name (one channel per service,
+//! the historical layout). Services sharing a channel also share its request
+//! and response pub/sub services and its dispatch thread; the provider picks
+//! the right dispatcher with the `service_id` of the header, a value derived
+//! from the service name by [`ice_rpc::types::service_id_of`] and therefore
+//! identical in every process without any discovery step.
 //!
 //! # Why pub/sub
 //!
@@ -67,14 +76,31 @@ const REQUEST_NOTIFY_SUFFIX: &str = "_req_notify";
 const RESPONSE_NOTIFY_SUFFIX: &str = "_resp_notify";
 
 /// Samples a subscriber can buffer before backpressure is reported.
-const SUBSCRIBER_BUFFER: usize = 16_384;
+/// Kept small on purpose: since `enable_safe_overflow` is disabled a full
+/// buffer is backpressure, not data loss, and the buffer is one of the two
+/// terms of the shared-memory budget of a channel (see [`MAX_LOANED_SAMPLES`]).
+const SUBSCRIBER_BUFFER: usize = 1024;
+
+/// Publishers a channel accepts: one per process that sends on it.
+const MAX_PUBLISHERS: usize = 16;
+
+/// Subscribers a channel accepts: one per process and per channel.
+const MAX_SUBSCRIBERS: usize = 16;
+
+/// Processes that can open the same channel at once.
+const MAX_NODES: usize = 32;
 
 /// Samples a publisher can keep loaned at once.
 ///
 /// iceoryx2 defaults it to 8, which caps the number of concurrently in-flight
 /// sends; a high-throughput burst (hundreds of calls in flight) would fail with
 /// `ExceedsMaxLoans` long before that.
-const MAX_LOANED_SAMPLES: usize = 16_384;
+///
+/// It also sizes the data segment of the publisher
+/// (`max_loaned_samples × sample`), i.e. most of the memory a channel reserves:
+/// at 16 384 the ~400-byte sample of a request channel costs ~6.5 MB, which is
+/// untenable with dozens of services. Backpressure makes 1024 (~400 KB) safe.
+const MAX_LOANED_SAMPLES: usize = 1024;
 
 /// Initial slice length of a sample. Large payloads grow the segment on demand.
 ///
@@ -107,8 +133,17 @@ fn provider_wait_timeout() -> Duration {
 /// How long a response waits for the consumer to be connected.
 const CONSUMER_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Sleep between two delivery attempts.
+/// Sleep between two delivery attempts, once the spin budget is exhausted.
 const PUBLISH_RETRY_SLEEP: Duration = Duration::from_millis(1);
+
+/// Consecutive delivery attempts spent yielding before the retry loop sleeps.
+///
+/// A full channel is the normal case of a burst: the receiver frees a slot in
+/// microseconds, while sleeping costs at least the 1 ms system timer on Windows
+/// and would throttle the sender far below what the channel can do. The spin
+/// keeps the burst at full speed and only a genuinely absent subscriber reaches
+/// the sleeping path.
+const PUBLISH_SPIN_ATTEMPTS: u32 = 4_096;
 
 /// Upper bound on how long a dispatch thread blocks before it drains again.
 ///
@@ -289,22 +324,25 @@ fn consumer_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<ConsumerPor
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// Opens (once per process) the ports of `service_name` on the consumer side and
+/// Opens (once per process) the ports of `channel` on the consumer side and
 /// starts the response dispatch thread.
 ///
-/// The cache lock is held across the creation so a single set of ports is
-/// created even when many workers race on the first call.
-fn consumer_ports(service_name: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
+/// The ports are per channel, not per service: every service of a channel sends
+/// on the same request channel and is served by the same response dispatcher
+/// (the routing is by correlation id). The cache lock is held across the
+/// creation so a single set of ports is created even when many workers race on
+/// the first call.
+fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
     let mut cache = crate::sync::lock(consumer_cache());
-    if let Some(ports) = cache.get(service_name) {
+    if let Some(ports) = cache.get(channel) {
         return Ok(ports.clone());
     }
 
     let node = shared_node()?;
-    let request_service = open_service(&node, service_name, REQUEST_SUFFIX)?;
-    let response_service = open_service(&node, service_name, RESPONSE_SUFFIX)?;
-    let request_notify = open_event_service(&node, service_name, REQUEST_NOTIFY_SUFFIX)?;
-    let response_notify = open_event_service(&node, service_name, RESPONSE_NOTIFY_SUFFIX)?;
+    let request_service = open_service(&node, channel, REQUEST_SUFFIX)?;
+    let response_service = open_service(&node, channel, RESPONSE_SUFFIX)?;
+    let request_notify = open_event_service(&node, channel, REQUEST_NOTIFY_SUFFIX)?;
+    let response_notify = open_event_service(&node, channel, RESPONSE_NOTIFY_SUFFIX)?;
 
     let publisher = request_service
         .publisher_builder()
@@ -326,12 +364,7 @@ fn consumer_ports(service_name: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         .map_err(|e| transport_error("response listener", e))?;
 
     // The listener must outlive the dispatch thread that blocks on it.
-    spawn_response_dispatcher(
-        service_name.to_owned(),
-        subscriber,
-        listener,
-        response_notify,
-    );
+    spawn_response_dispatcher(channel.to_owned(), subscriber, listener, response_notify);
 
     let ports = Arc::new(ConsumerPorts {
         _request_service: request_service,
@@ -340,7 +373,7 @@ fn consumer_ports(service_name: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         publisher,
         request_notifier,
     });
-    cache.insert(service_name.to_owned(), ports.clone());
+    cache.insert(channel.to_owned(), ports.clone());
     Ok(ports)
 }
 
@@ -379,7 +412,7 @@ fn wait_for_wakeup(waitset: &WaitSet<Iox>, guard: &WaitSetGuard<'_, '_, Iox>) ->
 
 /// Blocks on the response event and routes every sample to its handler.
 fn spawn_response_dispatcher(
-    service_name: String,
+    channel: String,
     subscriber: IoxSubscriber,
     listener: IoxListener,
     _response_notify: IoxEvent,
@@ -439,15 +472,16 @@ fn spawn_response_dispatcher(
                 }
             }
         }
-        log::debug!("[transport] response dispatcher for '{service_name}' stopped");
+        log::debug!("[transport] response dispatcher for '{channel}' stopped");
     });
     crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
 }
 
-/// Sends `payload` as the `method` call of `service_name` and returns the
-/// streamed responses as an [`Observable`].
+/// Sends `payload` as the `method` call of the service `service_id` on
+/// `channel`, and returns the streamed responses as an [`Observable`].
 pub fn native_call<T, E>(
-    service_name: &str,
+    channel: &str,
+    service_id: u32,
     method: &str,
     payload: &[u8],
 ) -> Result<Observable<T, E>, RpcError>
@@ -462,8 +496,8 @@ where
     for<'a> <WireEvent<T, E> as rkyv::Archive>::Archived:
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
-    let ports = consumer_ports(service_name)?;
-    let header = RpcHeader::request(method, 1);
+    let ports = consumer_ports(channel)?;
+    let header = RpcHeader::request(method, service_id, 1);
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
 
@@ -513,9 +547,9 @@ where
 // Provider side: request dispatch and response publication
 // ---------------------------------------------------------------------------
 
-/// Opens the pub/sub service dedicated to `service_name`.
-fn open_service(node: &IoxNode, service_name: &str, suffix: &str) -> Result<IoxPubSub, RpcError> {
-    let topic = format!("{service_name}{suffix}");
+/// Opens the pub/sub service of one direction of `channel`.
+fn open_service(node: &IoxNode, channel: &str, suffix: &str) -> Result<IoxPubSub, RpcError> {
+    let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
     let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
         .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
@@ -523,8 +557,11 @@ fn open_service(node: &IoxNode, service_name: &str, suffix: &str) -> Result<IoxP
         .publish_subscribe::<[u8]>()
         .user_header::<RpcHeader>()
         .payload_alignment(alignment)
-        .max_publishers(1)
-        .max_subscribers(8)
+        // A channel is shared by several processes: every consumer publishes its
+        // requests and every provider publishes its responses on it.
+        .max_publishers(MAX_PUBLISHERS)
+        .max_subscribers(MAX_SUBSCRIBERS)
+        .max_nodes(MAX_NODES)
         .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
         // Without it the receiver silently overwrites its oldest pending sample
         // when its buffer is full (iceoryx2's "safe overflow"), which loses a
@@ -536,13 +573,9 @@ fn open_service(node: &IoxNode, service_name: &str, suffix: &str) -> Result<IoxP
         .map_err(|e| transport_error("open service", e))
 }
 
-/// Opens the event service used as a wake-up signal for `service_name`.
-fn open_event_service(
-    node: &IoxNode,
-    service_name: &str,
-    suffix: &str,
-) -> Result<IoxEvent, RpcError> {
-    let topic = format!("{service_name}{suffix}");
+/// Opens the event service used as a wake-up signal for `channel`.
+fn open_event_service(node: &IoxNode, channel: &str, suffix: &str) -> Result<IoxEvent, RpcError> {
+    let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
     node.service_builder(&name)
         .event()
@@ -550,52 +583,53 @@ fn open_event_service(
         .map_err(|e| transport_error("open event service", e))
 }
 
-/// Spawns the provider side of one service: a thread subscribing to the request
-/// channel, dispatching each request, and publishing the responses on the
-/// response channel (each carrying the request's correlation id).
-pub fn spawn_native_service<F>(
-    service_name: &str,
-    dispatcher: F,
+/// Spawns the provider side of one channel: a thread subscribing to the request
+/// channel, routing every request to the dispatcher registered under its
+/// `service_id`, and publishing the responses on the response channel (each
+/// carrying the request's correlation id).
+///
+/// `services` is the `(service_id, dispatcher)` table of the services sharing
+/// the channel; a request whose id is unknown is logged and dropped.
+pub fn spawn_native_service(
+    channel: &str,
+    services: Vec<(u32, ServiceDispatcher)>,
     stop: CancellationToken,
-) -> JoinHandle<()>
-where
-    F: Fn(&str, &[u8]) -> ResponseIter + Send + Sync + 'static,
-{
-    let service_name = service_name.to_owned();
+) -> JoinHandle<()> {
+    let table: HashMap<u32, ServiceDispatcher> = services.into_iter().collect();
+    let channel = channel.to_owned();
     std::thread::spawn(move || {
         let node = match shared_node() {
             Ok(node) => node,
             Err(e) => {
-                log::error!("[transport] node creation failed for '{service_name}': {e:?}");
+                log::error!("[transport] node creation failed for '{channel}': {e:?}");
                 return;
             }
         };
-        let request_service = match open_service(&node, &service_name, REQUEST_SUFFIX) {
+        let request_service = match open_service(&node, &channel, REQUEST_SUFFIX) {
             Ok(service) => service,
             Err(e) => {
-                log::error!("[transport] open request service '{service_name}' failed: {e:?}");
+                log::error!("[transport] open request channel '{channel}' failed: {e:?}");
                 return;
             }
         };
-        let response_service = match open_service(&node, &service_name, RESPONSE_SUFFIX) {
+        let response_service = match open_service(&node, &channel, RESPONSE_SUFFIX) {
             Ok(service) => service,
             Err(e) => {
-                log::error!("[transport] open response service '{service_name}' failed: {e:?}");
+                log::error!("[transport] open response channel '{channel}' failed: {e:?}");
                 return;
             }
         };
-        let request_notify = match open_event_service(&node, &service_name, REQUEST_NOTIFY_SUFFIX) {
+        let request_notify = match open_event_service(&node, &channel, REQUEST_NOTIFY_SUFFIX) {
             Ok(service) => service,
             Err(e) => {
-                log::error!("[transport] open request event '{service_name}' failed: {e:?}");
+                log::error!("[transport] open request event '{channel}' failed: {e:?}");
                 return;
             }
         };
-        let response_notify = match open_event_service(&node, &service_name, RESPONSE_NOTIFY_SUFFIX)
-        {
+        let response_notify = match open_event_service(&node, &channel, RESPONSE_NOTIFY_SUFFIX) {
             Ok(service) => service,
             Err(e) => {
-                log::error!("[transport] open response event '{service_name}' failed: {e:?}");
+                log::error!("[transport] open response event '{channel}' failed: {e:?}");
                 return;
             }
         };
@@ -646,7 +680,10 @@ where
             return;
         };
 
-        log::info!("[transport] service '{service_name}' ready");
+        log::info!(
+            "[transport] channel '{channel}' ready ({} service(s))",
+            table.len()
+        );
         let mut idle_spins: u32 = 0;
         let mut signal_ticks: u32 = 0;
         while !stop.is_cancelled() {
@@ -668,21 +705,32 @@ where
 
                     if request_header.event_kind() != EventKind::Request {
                         log::warn!(
-                            "[transport] '{service_name}': unexpected {:?} sample",
+                            "[transport] '{channel}': unexpected {:?} sample",
                             request_header.event_kind()
                         );
                         continue;
                     }
                     if request_header.protocol_version != PROTOCOL_VERSION {
                         log::warn!(
-                            "[transport] '{service_name}': protocol {} != {PROTOCOL_VERSION}",
+                            "[transport] '{channel}': protocol {} != {PROTOCOL_VERSION}",
                             request_header.protocol_version
                         );
                     }
 
+                    // A channel hosts several services: the id in the header
+                    // selects the dispatcher to run.
+                    let Some(dispatcher) = table.get(&request_header.service_id) else {
+                        log::warn!(
+                            "[transport] channel '{channel}': unknown service_id {:#010x} for method '{}' (service not registered, or id collision)",
+                            request_header.service_id,
+                            request_header.method()
+                        );
+                        continue;
+                    };
+
                     let respond =
                         RESPONSE_WAITER_BLOCKED.load(std::sync::atomic::Ordering::Relaxed);
-                    for response in dispatcher(request_header.method(), payload) {
+                    for response in dispatcher.dispatch(request_header.method(), payload) {
                         if publish_response(&publisher, &request_header, &response).is_err() {
                             break;
                         }
@@ -711,8 +759,115 @@ where
                 }
             }
         }
-        log::info!("[transport] service '{service_name}' stopped");
+        log::info!("[transport] channel '{channel}' stopped");
     })
+}
+
+// ---------------------------------------------------------------------------
+// Channel registration — deferred start
+// ---------------------------------------------------------------------------
+
+/// One service waiting for its channel to be started.
+struct RegisteredChannelService {
+    id: u32,
+    name: &'static str,
+    dispatcher: ServiceDispatcher,
+}
+
+/// A channel the process provides, filled while its services initialize.
+struct PendingChannel {
+    services: Vec<RegisteredChannelService>,
+    stop: CancellationToken,
+}
+
+fn channel_registry() -> &'static std::sync::Mutex<HashMap<String, PendingChannel>> {
+    static REGISTRY: OnceLock<std::sync::Mutex<HashMap<String, PendingChannel>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// `true` once [`start_registered_channels`] ran: later registrations start
+/// their channel immediately instead of joining the registry.
+static CHANNELS_SEALED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns the name already registered under `id`, if any.
+fn conflicting_name(entries: &[RegisteredChannelService], id: u32) -> Option<&'static str> {
+    entries.iter().find(|svc| svc.id == id).map(|svc| svc.name)
+}
+
+/// Registers one service on the channel it belongs to.
+///
+/// Called by a generated provider from its `on_init`. The channel thread is
+/// **not** started here: it starts in [`start_registered_channels`], once every
+/// provider of the process has registered. That ordering is what keeps the
+/// guarantee [`publish_until_delivered`] relies on — "a subscriber exists"
+/// means "the provider is ready" — since a request can never be received before
+/// its dispatcher is installed.
+///
+/// # Errors
+/// A second service registered on the same channel under the same `service_id`
+/// (a 32-bit FNV-1a collision) fails the bootstrap instead of silently routing
+/// requests to the wrong dispatcher.
+pub fn register_native_service(
+    channel: &str,
+    service_id: u32,
+    service_name: &'static str,
+    dispatcher: ServiceDispatcher,
+) -> Result<(), RpcError> {
+    if CHANNELS_SEALED.load(std::sync::atomic::Ordering::Acquire) {
+        // A provider created after the seal (a lazily initialized service) can
+        // no longer join its channel: it starts its own thread.
+        spawn_native_service(
+            channel,
+            vec![(service_id, dispatcher)],
+            crate::global_cancel_token().clone(),
+        );
+        return Ok(());
+    }
+
+    let mut registry = crate::sync::lock(channel_registry());
+    let pending = registry
+        .entry(channel.to_owned())
+        .or_insert_with(|| PendingChannel {
+            services: Vec::new(),
+            stop: crate::global_cancel_token().clone(),
+        });
+
+    if let Some(previous) = conflicting_name(&pending.services, service_id) {
+        return Err(RpcError::TransportError(format!(
+            "service_id collision on channel '{channel}': '{service_name}' and \
+             '{previous}' both map to {service_id:#010x}"
+        )));
+    }
+
+    pending.services.push(RegisteredChannelService {
+        id: service_id,
+        name: service_name,
+        dispatcher,
+    });
+    log::debug!("[transport] '{service_name}' registered on channel '{channel}'");
+    Ok(())
+}
+
+/// Starts one thread per registered channel.
+///
+/// Called once, after every provider `on_init`, by
+/// [`ServiceLocator::initialize_all`](crate::locator::ServiceLocator::initialize_all).
+pub fn start_registered_channels() {
+    if CHANNELS_SEALED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+
+    let channels: Vec<(String, PendingChannel)> =
+        crate::sync::lock(channel_registry()).drain().collect();
+
+    for (channel, pending) in channels {
+        let services = pending
+            .services
+            .into_iter()
+            .map(|svc| (svc.id, svc.dispatcher))
+            .collect();
+        spawn_native_service(&channel, services, pending.stop);
+    }
 }
 
 /// Publishes `header ++ payload` on `publisher`, retrying until at least one
@@ -728,6 +883,7 @@ fn publish_until_delivered(
     timeout: Duration,
 ) -> Result<(), RpcError> {
     let deadline = std::time::Instant::now() + timeout;
+    let mut attempts: u32 = 0;
     loop {
         let len = payload.len().max(1);
         let sample = publisher
@@ -746,7 +902,15 @@ fn publish_until_delivered(
                 "no subscriber connected (is the provider running?)".to_string(),
             ));
         }
-        std::thread::sleep(PUBLISH_RETRY_SLEEP);
+        if attempts < PUBLISH_SPIN_ATTEMPTS {
+            // A full channel is the normal case of a burst: the receiver frees a
+            // slot in microseconds, while sleeping costs at least the 1 ms
+            // system timer on Windows.
+            attempts += 1;
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(PUBLISH_RETRY_SLEEP);
+        }
     }
 }
 
@@ -798,5 +962,41 @@ mod tests {
         assert_eq!(responses, vec![b"hi".to_vec()]);
 
         assert_eq!(dispatcher.dispatch("unknown", b"hi").count(), 0);
+    }
+
+    #[test]
+    fn a_duplicate_service_id_is_reported_with_the_previous_name() {
+        let entries = vec![
+            RegisteredChannelService {
+                id: 7,
+                name: "GetPerson",
+                dispatcher: ServiceDispatcher::new(),
+            },
+            RegisteredChannelService {
+                id: 9,
+                name: "SetPerson",
+                dispatcher: ServiceDispatcher::new(),
+            },
+        ];
+
+        assert_eq!(conflicting_name(&entries, 9), Some("SetPerson"));
+        assert_eq!(conflicting_name(&entries, 11), None);
+    }
+
+    #[test]
+    fn a_channel_table_routes_by_service_id() {
+        let mut first = ServiceDispatcher::new();
+        first.method("echo", |payload| {
+            Box::new(std::iter::once(payload.to_vec()))
+        });
+        let mut second = ServiceDispatcher::new();
+        second.method("ping", |_payload| Box::new(std::iter::empty()));
+
+        let table: HashMap<u32, ServiceDispatcher> =
+            vec![(7, first), (9, second)].into_iter().collect();
+
+        assert_eq!(table.get(&7).unwrap().dispatch("echo", b"x").count(), 1);
+        assert_eq!(table.get(&9).unwrap().dispatch("echo", b"x").count(), 0);
+        assert!(!table.contains_key(&11));
     }
 }

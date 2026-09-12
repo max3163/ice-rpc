@@ -243,16 +243,33 @@ pub trait DatabaseService: Send + Sync + 'static {
 
 ## 4. Transport — publish/subscribe with correlation ids
 
-### 4.1. One service pair per logical service
+### 4.1. One channel per group of services
 
-Each logical service `{service}` maps to four iceoryx2 services:
+A **channel** is the unit of transport: one request channel, one response channel
+and one dispatch thread. Every service of the same group
+(`#[service("GetPerson", group = "db")]`) shares them; `group` defaults to the
+service name, i.e. one channel per service — the historical layout.
+
+Each channel maps to four iceoryx2 services:
 
 | iceoryx2 service | Direction | Contents |
 |---|---|---|
-| `{service}_req` | consumer → provider | `RpcHeader` in `user_header` + `rkyv(args)` |
-| `{service}_resp` | provider → consumer | `RpcHeader` in `user_header` + `rkyv(WireEvent<T, E>)` |
-| `{service}_req_notify` | event | wake-up signal for the provider |
-| `{service}_resp_notify` | event | wake-up signal for the consumer |
+| `{channel}_req` | consumer → provider | `RpcHeader` in `user_header` + `rkyv(args)` |
+| `{channel}_resp` | provider → consumer | `RpcHeader` in `user_header` + `rkyv(WireEvent<T, E>)` |
+| `{channel}_req_notify` | event | wake-up signal for the provider |
+| `{channel}_resp_notify` | event | wake-up signal for the consumer |
+
+Grouping is what makes the transport cost independent of the number of services:
+
+| | 50 services, `G = N` | 50 services, `G = 7` | `G = 1` |
+|---|---|---|---|
+| iceoryx2 services | 200 | 28 | 4 |
+| Data segments | 100 | 14 | 2 |
+| Dispatch threads (per process) | 50 | 7 | 1 |
+
+A channel is also a **dispatch bottleneck**: every service of a group is served by
+that single thread. A service needing more than ~50k req/s belongs alone in its
+group (measured ceiling: ~350k req/s per channel *and* thread).
 
 **Why not iceoryx2's `request_response`?** It allocates one channel (and one data
 segment) per request in flight, which caps the throughput far below what the
@@ -269,6 +286,7 @@ place by the bus, so it costs no serialization and no allocation.
 | Field | Type | Contents |
 |---|---|---|
 | `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
+| `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
 | `method_name` | `StaticString<64>` | target method (carried by requests) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
@@ -278,28 +296,41 @@ place by the bus, so it costs no serialization and no allocation.
 structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:20)
 and is converted with `as_u8()` / `from_u8()`.
 
+`service_id` is a `const fn` of the name
+([`service_id_of`](ice-rpc/src/types/header.rs:129)), so the provider and the
+consumer derive the **same** value with no coordination and no discovery; a
+collision between two services of a channel is detected when the channel is
+registered. The layout stays bounded (≤ 128 bytes, pinned by a unit test).
+
 ### 4.3. Provider
 
-One thread per service:
+One thread per channel:
 
 1. it spins briefly, then blocks on a `WaitSet` attached to its `_req_notify`
    `Listener` (only a `Listener` is attachable, not a `Subscriber`);
-2. it drains `{service}_req`, reads the `RpcHeader` from `sample.user_header()`
+2. it drains `{channel}_req`, reads the `RpcHeader` from `sample.user_header()`
    and takes the rkyv payload from `&sample[..]`;
-3. it runs the `ServiceDispatcher` handler, which streams the service
+3. it picks the dispatcher registered under `header.service_id` — an unknown id
+   is logged and dropped, never mis-routed;
+4. it runs the `ServiceDispatcher` handler, which streams the service
    `Observable` as rkyv `WireEvent` samples;
-4. it publishes each sample on `{service}_resp`, copying the request's
+5. it publishes each sample on `{channel}_resp`, copying the request's
    correlation id into the response header, and notifies the consumer.
+
+A provider does not start its channel itself: it **registers** its dispatcher
+during `on_init`, and the channel threads start at the end of
+`ServiceLocator::initialize_all`. That ordering is what keeps the guarantee the
+consumer relies on — *a subscriber exists* means *the provider is ready*.
 
 ### 4.4. Consumer
 
-One cached publisher and one dispatch thread per service:
+One cached publisher and one dispatch thread per **channel**:
 
-- `native_call(service, method, payload)` builds an `RpcHeader::request`, keeps
-  its `correlation_id`, registers a typed handler under it, publishes the
-  request and notifies the provider;
-- the dispatch thread drains `{service}_resp` and routes each sample to the
-  handler registered for its id;
+- `native_call(channel, service_id, method, payload)` builds an
+  `RpcHeader::request`, keeps its `correlation_id`, registers a typed handler
+  under it, publishes the request and notifies the provider;
+- the dispatch thread drains `{channel}_resp` and routes each sample to the
+  handler registered for its id — several services of the channel share it;
 - a terminal `WireEvent` (`Complete` / `Error`) ends the stream: there is no
   per-call connection to close, so the terminal event is part of the stream.
 
@@ -307,10 +338,12 @@ One cached publisher and one dispatch thread per service:
 
 | Setting | Value | Why |
 |---|---|---|
-| `subscriber_max_buffer_size` | 16 384 | absorb a burst without backpressure |
-| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport.rs:645) retries: the overflow becomes backpressure instead of data loss |
-| `initial_max_slice_len` | 256 | `buffer × slice` memory; larger payloads grow the segment |
-| `max_loaned_samples` | 16 384 | iceoryx2 defaults to 8, which fails with `ExceedsMaxLoans` under load |
+| `subscriber_max_buffer_size` | 1 024 | one term of the memory budget of a channel (see `max_loaned_samples`) |
+| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport.rs:751) retries: the overflow becomes backpressure instead of data loss |
+| `initial_max_slice_len` | 256 | `slice` memory per sample; larger payloads grow the segment |
+| `max_loaned_samples` | 1 024 | sizes the data segment of a publisher (`max_loaned_samples × ~400 B`): ~400 KB, against ~6.5 MB at the iceoryx2 default of 8 raised to 16 384 — untenable with dozens of services |
+| `max_publishers` / `max_subscribers` | 16 | a channel is shared: every consuming process publishes on it, every provider subscribes to it |
+| `max_nodes` | 32 | processes that can open the same channel at once |
 | WaitSet deadline | 1 ms | bounds the cost of a missed notification |
 | idle spin | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet` |
 
@@ -324,8 +357,8 @@ iceoryx2 node to its process.
 
 ## 5. Payload encoding
 
-The routing metadata (correlation id, method, event kind, versions) travels in
-the zero-copy `user_header`, so the payload holds the rkyv bytes alone:
+The routing metadata (correlation id, service id, method, event kind, versions)
+travels in the zero-copy `user_header`, so the payload holds the rkyv bytes alone:
 `rkyv(args)` for a request, `rkyv(WireEvent<T, E>)` for a response.
 
 The sample is requested with `payload_alignment(Alignment::new(16))`, the
@@ -337,7 +370,8 @@ a misaligned slice fails at runtime for any type with an alignment greater than
 
 The name-length limits (`SERVICE_NAME_LEN`, `METHOD_NAME_LEN`, both 64) are shared
 with `ice-rpc-macros`, which rejects longer names at compile time. `METHOD_NAME_LEN`
-is also the capacity of the header's `StaticString`.
+is also the capacity of the header's `StaticString`, and `SERVICE_NAME_LEN` the
+limit of the `group` parameter of `#[service]`.
 
 ### 5.1. Stale iceoryx2 services
 

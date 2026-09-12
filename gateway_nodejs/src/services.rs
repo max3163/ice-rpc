@@ -1,27 +1,23 @@
 //! Registration of the Node.js services (Providers).
 //!
 //! Only the services that this Node.js process **implements** (Provider mode)
-//! are registered here. The consumers are created automatically on demand
-//! by [`ice_rpc::ServiceLocator::get`] from their type.
+//! are registered here. The consumers are created automatically on demand by
+//! [`ice_rpc::ServiceLocator::get`] from their type.
 //!
 //! # Initialization flow
 //!
 //! 1. JS: `gateway.registerService("ContextService")` → [`register_service`]
-//!    → `ContextServiceProxy::provide_nodejs()` → `ServiceLocator::register()`
-//! 2. JS: `gateway.init(callback)` → creates the iceoryx2 Node, starts the
-//!    discovery and the dispatch loop.
-//! 3. [`start_initialize_all`] in the background:
-//!    - `ServiceLifecycle::init()` on each Provider proxy
-//!    - Registers the IPC `RequestHandler`
-//!    - Announces `NodeReady` on the bus
+//!    → `ContextServiceProxy::provide_nodejs()` → `ServiceLocator::register()`.
+//! 2. JS: `gateway.init(callback)` → `Runtime::init_runtime()` + the bridge.
+//! 3. [`start_initialize_all`] in the background: `ServiceLifecycle::init()` on
+//!    each Provider proxy.
 //!
 //! # Adding a new service
 //!
 //! 1. Add `#[service("MyService")]` in the crate that defines the service.
 //! 2. Add its proxy to the inventory macro in the same crate
 //!    (`common::with_nodejs_providers!`). Nothing to change here: this module
-//!    consumes that inventory, so the Node.js surface cannot drift from the
-//!    declarations.
+//!    consumes that inventory.
 
 /// Dispatch arm for a single provider proxy.
 ///

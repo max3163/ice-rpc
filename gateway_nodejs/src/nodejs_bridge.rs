@@ -159,10 +159,7 @@ impl NodeJsBridge {
         }
     }
 
-    /// Cleans up the expired calls (timeout).
-    ///
-    /// Kept for future use: a periodic call (timer/spawn)
-    /// will free the memory of the expired correlations.
+    /// Cleans up the calls whose deadline has expired.
     #[allow(dead_code)]
     pub fn cleanup_expired(&self) {
         let now = std::time::Instant::now();

@@ -4,6 +4,10 @@
 //! per `(direction, process)` — the consumer's publisher for `_req`, the
 //! provider's publisher for `_resp`. A hole in the observed sequence therefore
 //! proves that samples were lost between two observations.
+//!
+//! The publisher is keyed on iceoryx2's **native** `publisher_id`, not on the
+//! emitter PID: the id is unique per publisher port and survives a PID reuse, so
+//! a process restart can never alias onto the sequence of its predecessor.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -15,7 +19,7 @@ use ice_rpc::monitor::Direction;
 struct Publisher {
     channel: String,
     direction: Direction,
-    emitter_pid: u32,
+    publisher_id: u128,
 }
 
 /// Tracks the last observed sequence of every publisher.
@@ -35,13 +39,13 @@ impl LossTracker {
         &mut self,
         channel: &str,
         direction: Direction,
-        emitter_pid: u32,
+        publisher_id: u128,
         seq: u64,
     ) -> u64 {
         let key = Publisher {
             channel: channel.to_owned(),
             direction,
-            emitter_pid,
+            publisher_id,
         };
         match self.last.entry(key) {
             Entry::Occupied(mut entry) => {
@@ -90,11 +94,20 @@ mod tests {
         let mut tracker = LossTracker::default();
         tracker.observe("c", Direction::Request, 1, 0);
         tracker.observe("c", Direction::Request, 2, 5);
-        // A different process, direction or channel must not be compared.
+        // A different publisher, direction or channel must not be compared.
         assert_eq!(tracker.observe("c", Direction::Request, 1, 1), 0);
         assert_eq!(tracker.observe("c", Direction::Response, 1, 3), 0);
         assert_eq!(tracker.observe("d", Direction::Request, 1, 3), 0);
         assert_eq!(tracker.tracked(), 4);
+    }
+
+    #[test]
+    fn a_restart_under_a_new_publisher_id_starts_fresh() {
+        let mut tracker = LossTracker::default();
+        tracker.observe("c", Direction::Response, 7, 42);
+        // Same process, same PID, but a new publisher port: no bogus gap.
+        assert_eq!(tracker.observe("c", Direction::Response, 8, 0), 0);
+        assert_eq!(tracker.tracked(), 2);
     }
 
     #[test]

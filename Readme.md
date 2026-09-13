@@ -295,11 +295,17 @@ place by the bus, so it costs no serialization and no allocation.
 | `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
 | `seq` | `u64` | per-publisher, per-channel monotonic sample counter |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
-| `emitter_pid` | `u32` | PID of the emitting process; scopes `seq` to one publisher |
 | `method_name` | `StaticString<64>` | target method (carried by requests) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
 | `service_version` | `u16` | service API version, echoed on the responses |
+
+The header carries **no emitter identity**: iceoryx2's native sample header
+already exposes the source `node_id` (hence the PID) and the unique
+`publisher_id`, which the transport re-exports as
+[`Emitter`](ice-rpc/src/transport/monitor.rs:62). Duplicating it in the wire
+header would only risk a divergence, and the native `publisher_id` is a more
+robust key than a PID for scoping `seq` — it survives a PID reuse.
 
 `event_kind` is stored as a `u8` because `ZeroCopySend` is only derivable on
 structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:20)
@@ -313,13 +319,13 @@ consumer derive the **same** value with no coordination and no discovery; a
 collision between two services of a channel is detected when the channel is
 registered.
 
-The three monitoring fields make the header **self-describing for an
-out-of-band observer** (`ice-rpc-monitor`): it subscribes to the same services,
-reads the header without touching the rkyv payload, and derives an exact latency
-(`response.timestamp_ns - request.timestamp_ns`) plus loss (`seq` gaps). The
-layout is pinned to exactly 128 bytes by a unit test: iceoryx2 validates the
-`user_header` size when a service is opened, so every process on a machine must
-be rebuilt together after a layout change.
+The monitoring fields make the header **self-describing for an out-of-band
+observer** (`ice-rpc-monitor`): it subscribes to the same services, reads the
+header without touching the rkyv payload, and derives an exact latency
+(`response.timestamp_ns - request.timestamp_ns`) plus loss (`seq` holes, scoped
+by the native `publisher_id`). The layout is pinned to exactly 128 bytes by a
+unit test: iceoryx2 validates the `user_header` size when a service is opened,
+so every process on a machine must be rebuilt together after a layout change.
 
 ### 4.3. Provider
 
@@ -1229,6 +1235,18 @@ feature makes `#[service]` generate a `{Service}Decoder` per service, which the
 observer registers (e.g. `common::decoders()`) to render each message with the
 `Display` implementation of the service types. See
 [`ice-rpc-monitor`](ice-rpc-monitor/Readme.md#decoding-the-messages).
+
+Beyond the bus traffic, the observer also inventories the **health of the
+network**: nodes by liveness state, iceoryx2 services and their participants,
+per-channel publishers/subscribers and capacity, optional per-process resources
+(`process-metrics` feature) and a measured shared-memory footprint. The scan is
+throttled (`--health-interval-ms`, `0` disables) and never reports a live node as
+dead. See [`ice-rpc-monitor`](ice-rpc-monitor/Readme.md#health-of-the-network).
+
+With `--live` (or `cargo make monitoring-live`) the console is redrawn in place —
+like `top`, no scrolling — using the alternate screen buffer, with the most
+recent decoded messages shown inside the frame. The mode disables itself when
+stdout is not a terminal.
 
 ```bash
 # Stats on every discovered channel, Prometheus endpoint on :9898.

@@ -5,14 +5,24 @@
 //! acquisition loop, so tracing can never make the observer fall behind. The
 //! writer is line-buffered, so a consumer can `tail -f` the stream live.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+
+/// Number of records kept by [`TraceSink::memory`].
+pub const RECENT_KEEP: usize = 10;
+
+/// Shared, bounded buffer of the most recent rendered records.
+///
+/// A live console view reads it to display the last messages inside its frame,
+/// instead of letting the stream scroll.
+pub type RecentBuffer = Arc<Mutex<VecDeque<String>>>;
 
 use serde_json::{json, Map, Value};
 
@@ -141,20 +151,48 @@ impl TraceSink {
         Self::new(Box::new(std::io::stdout()), capacity, format)
     }
 
+    /// Collects the traces into a bounded in-memory ring buffer.
+    ///
+    /// Returns the sink plus the shared buffer, which a live console view reads
+    /// to display the last messages inside its frame.
+    pub fn memory(capacity: usize, format: TraceFormat) -> (Self, RecentBuffer) {
+        let buffer: RecentBuffer = Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_KEEP)));
+        let writer_buffer = buffer.clone();
+        let sink = Self::spawn(capacity, format, move |line| {
+            if let Ok(mut guard) = writer_buffer.lock() {
+                if guard.len() >= RECENT_KEEP {
+                    guard.pop_front();
+                }
+                guard.push_back(line);
+            }
+        });
+        (sink, buffer)
+    }
+
     fn new(writer: Box<dyn Write + Send>, capacity: usize, format: TraceFormat) -> Self {
+        // Line-buffered: every record becomes visible as soon as it is written,
+        // which is what makes the stream tail-able.
+        let mut writer = LineWriter::new(writer);
+        Self::spawn(capacity, format, move |line| {
+            // A sink failure must not stall the producer: keep draining.
+            if writer.write_all(line.as_bytes()).is_ok() {
+                let _ = writer.write_all(b"\n");
+            }
+        })
+    }
+
+    /// Spawns the writer thread applying `on_line` to every rendered record.
+    fn spawn(
+        capacity: usize,
+        format: TraceFormat,
+        mut on_line: impl FnMut(String) + Send + 'static,
+    ) -> Self {
         let (sender, receiver) = sync_channel::<String>(capacity);
         let dropped = Arc::new(AtomicU64::new(0));
         let handle = std::thread::spawn(move || {
-            // Line-buffered: every record becomes visible as soon as it is
-            // written, which is what makes the stream tail-able.
-            let mut writer = LineWriter::new(writer);
             while let Ok(line) = receiver.recv() {
-                // A sink failure must not stall the producer: keep draining.
-                if writer.write_all(line.as_bytes()).is_ok() {
-                    let _ = writer.write_all(b"\n");
-                }
+                on_line(line);
             }
-            let _ = writer.flush();
         });
         Self {
             sender: Some(sender),
@@ -268,5 +306,37 @@ mod tests {
         let stats = record();
         assert!(stats.render(TraceFormat::Json).starts_with('{'));
         assert!(stats.render(TraceFormat::Human).starts_with("[msg]"));
+    }
+
+    #[test]
+    fn the_memory_sink_keeps_only_the_last_records() {
+        let (sink, recent) = TraceSink::memory(64, TraceFormat::Human);
+        for index in 0..(RECENT_KEEP + 3) {
+            let channel = format!("c{index}");
+            let record = TraceRecord {
+                trace_id: "id",
+                channel: &channel,
+                service_id: 1,
+                method: "m",
+                event_kind: "complete",
+                emitter_pid: 1,
+                request_bytes: 0,
+                response_bytes: 0,
+                latency_us: 0,
+                request_text: None,
+                response_text: None,
+            };
+            sink.emit(&record);
+        }
+        // Dropping the sink joins the writer thread: every record was consumed.
+        drop(sink);
+
+        let guard = recent.lock().expect("buffer");
+        assert_eq!(guard.len(), RECENT_KEEP);
+        assert!(
+            guard.back().expect("non empty").contains("channel=c12"),
+            "the last record must be kept: {:?}",
+            guard.back()
+        );
     }
 }

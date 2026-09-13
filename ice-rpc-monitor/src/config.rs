@@ -56,6 +56,19 @@ pub struct Config {
     ///
     /// Only used in detail mode; an empty registry leaves the payloads opaque.
     pub decoders: Arc<Decoders>,
+    /// Interval of the generic health inventory (nodes, services, shm).
+    ///
+    /// `Node::list` / `Service::list` are expensive, so the scan is throttled.
+    /// Zero disables the inventory entirely.
+    pub health_interval: Duration,
+    /// Whether the health inventory also measures the on-disk shared-memory
+    /// footprint (a filesystem walk).
+    pub health_shm: bool,
+    /// Whether to draw a `top`-like live view (redrawn in place, no scrolling).
+    ///
+    /// Ignored when stdout is not a terminal. In detail mode the messages are
+    /// then kept in a bounded in-memory buffer and shown inside the frame.
+    pub console_live: bool,
     /// Poll interval of the node-liveness check.
     pub liveness_interval: Duration,
 }
@@ -75,6 +88,9 @@ impl Default for Config {
             trace_file: None,
             trace_format: TraceFormat::Json,
             decoders: Arc::new(Decoders::new()),
+            health_interval: Duration::from_secs(2),
+            health_shm: false,
+            console_live: false,
             liveness_interval: Duration::from_secs(1),
         }
     }
@@ -153,6 +169,17 @@ impl Config {
                         }
                     };
                 }
+                "--health-interval-ms" => {
+                    let ms = parse_u64(value(&mut i)?)?;
+                    // 0 disables the inventory; the collector treats it as `None`.
+                    config.health_interval = if ms == 0 {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(ms)
+                    };
+                }
+                "--health-shm" => config.health_shm = true,
+                "--live" => config.console_live = true,
                 "--help" | "-h" => return Err(HELP.to_owned()),
                 other => return Err(format!("unknown argument '{other}'\n{HELP}")),
             }
@@ -190,6 +217,9 @@ OPTIONS:
     --trace-sample-rate <n>        Emit 1 trace every n calls (0 = off)
     --trace-file <path>            Trace sink (default: stdout)
     --trace-format <json|human>    Trace record format (default json)
+    --health-interval-ms <ms>      Node/service inventory interval (default 2000, 0 = off)
+    --health-shm                   Also measure the shared-memory footprint on disk
+    --live                         Redraw the stats in place, like `top` (needs a terminal)
     -h, --help                     Show this help";
 
 #[cfg(test)]

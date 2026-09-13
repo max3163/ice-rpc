@@ -1,8 +1,10 @@
 //! Read-only observation surface used by the `ice-rpc-monitor` observer.
 //!
 //! Lets an external process attach to the channels an ice-rpc process exposes
-//! without touching the hot path: only the zero-copy `RpcHeader` (emitter pid,
-//! sequence, timestamp) and the payload length are read, never the rkyv payload.
+//! without touching the hot path: only the zero-copy `RpcHeader` (sequence,
+//! timestamp) and the payload length are read, never the rkyv payload. The
+//! identity of the emitter (PID, node id, publisher id) is read from the
+//! **native** iceoryx2 sample [`Emitter`], so the wire header carries none.
 //!
 //! The observer is linked against the **same service definitions** as the
 //! providers and consumers, so it can also decode the payloads. Each `#[service]`
@@ -14,7 +16,230 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-pub use crate::transport::{decode_aligned, discover_channels, Direction, DirectionView};
+use iceoryx2::node::{NodeState as IoxNodeState, NodeView};
+use iceoryx2::prelude::*;
+use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
+use iceoryx2::service::ServiceDetails;
+
+use crate::types::RpcError;
+
+pub use crate::transport::{decode_aligned, discover_channels, Direction, DirectionView, Emitter};
+
+/// Concrete iceoryx2 flavour used by the transport and the observers.
+type Iox = iceoryx2::service::ipc_threadsafe::Service;
+
+// ── Node inventory ──────────────────────────────────────────────────
+
+/// Health state of an iceoryx2 node, as reported by the native monitoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeHealth {
+    /// The owning process is alive.
+    Alive,
+    /// The process died without cleaning up: the node is a crash candidate.
+    Dead,
+    /// The process lacks the permissions to tell.
+    Inaccessible,
+    /// Inconsistent node resources.
+    Undefined,
+}
+
+impl NodeHealth {
+    /// Stable label used by the metrics.
+    pub const fn label(self) -> &'static str {
+        match self {
+            NodeHealth::Alive => "alive",
+            NodeHealth::Dead => "dead",
+            NodeHealth::Inaccessible => "inaccessible",
+            NodeHealth::Undefined => "undefined",
+        }
+    }
+}
+
+/// One iceoryx2 node registered on the machine.
+#[derive(Debug, Clone)]
+pub struct NodeInfo {
+    /// Process id owning the node.
+    pub pid: u32,
+    /// Native liveness state.
+    pub health: NodeHealth,
+    /// Executable name, when the process has the permissions to read it.
+    pub executable: Option<String>,
+    /// Node name (`None` when the details are inaccessible, empty when unnamed).
+    pub name: Option<String>,
+}
+
+/// Lists every iceoryx2 node of the machine.
+///
+/// Returns `None` when the scan itself fails, so callers never mistake a failed
+/// scan for "no node at all".
+pub fn list_nodes() -> Option<Vec<NodeInfo>> {
+    let config = crate::config::build_iceoryx2_config();
+    let mut nodes = Vec::new();
+
+    let result = Node::<Iox>::list(&config, |state| {
+        let pid = crate::types::raw_pid_to_u32(state.node_id().pid().value());
+        let (health, details) = match &state {
+            IoxNodeState::Alive(view) => (NodeHealth::Alive, view.details()),
+            IoxNodeState::Dead(view) => (NodeHealth::Dead, view.details()),
+            IoxNodeState::Inaccessible(_) => (NodeHealth::Inaccessible, &None),
+            IoxNodeState::Undefined(_) => (NodeHealth::Undefined, &None),
+        };
+        let (executable, name) = match details {
+            Some(details) => (
+                Some(String::from_utf8_lossy(details.executable().as_bytes()).into_owned()),
+                Some(String::from_utf8_lossy(details.name().as_bytes()).into_owned()),
+            ),
+            None => (None, None),
+        };
+        nodes.push(NodeInfo {
+            pid,
+            health,
+            executable,
+            name,
+        });
+        CallbackProgression::Continue
+    });
+
+    match result {
+        Ok(()) => Some(nodes),
+        Err(e) => {
+            log::debug!("[monitor] Node::list failed: {e:?}");
+            None
+        }
+    }
+}
+
+// ── Service inventory ───────────────────────────────────────────────
+
+/// Role of an iceoryx2 service inside an ice-rpc channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceRole {
+    /// `{channel}_req`: consumer to provider requests.
+    Request,
+    /// `{channel}_resp`: provider to consumer responses.
+    Response,
+    /// `{channel}_req_notify`: wake-up signal of the request direction.
+    RequestNotify,
+    /// `{channel}_resp_notify`: wake-up signal of the response direction.
+    ResponseNotify,
+    /// Any other iceoryx2 service of the machine.
+    Other,
+}
+
+impl ServiceRole {
+    /// Stable label used by the metrics.
+    pub const fn label(self) -> &'static str {
+        match self {
+            ServiceRole::Request => "req",
+            ServiceRole::Response => "resp",
+            ServiceRole::RequestNotify => "req_notify",
+            ServiceRole::ResponseNotify => "resp_notify",
+            ServiceRole::Other => "other",
+        }
+    }
+}
+
+/// One iceoryx2 service registered on the machine.
+#[derive(Debug, Clone)]
+pub struct ServiceInfo {
+    /// iceoryx2 service name (e.g. `DatabaseService_req`).
+    pub name: String,
+    /// Messaging pattern, as a stable label.
+    pub pattern: &'static str,
+    /// ice-rpc role deduced from the name.
+    pub role: ServiceRole,
+    /// Number of nodes currently registered on the service.
+    pub participants: usize,
+}
+
+/// Deduces the ice-rpc role of a service from its name.
+///
+/// The notification services end with their direction suffix + `_notify`, so
+/// they must be tested before the plain direction suffixes.
+fn role_of(name: &str) -> ServiceRole {
+    if name.ends_with("_req_notify") {
+        ServiceRole::RequestNotify
+    } else if name.ends_with("_resp_notify") {
+        ServiceRole::ResponseNotify
+    } else if name.ends_with("_req") {
+        ServiceRole::Request
+    } else if name.ends_with("_resp") {
+        ServiceRole::Response
+    } else {
+        ServiceRole::Other
+    }
+}
+
+/// Lists every iceoryx2 service of the machine.
+///
+/// # Errors
+/// Returns a [`RpcError`] when the service listing itself fails.
+pub fn list_services() -> Result<Vec<ServiceInfo>, RpcError> {
+    let config = crate::config::build_iceoryx2_config();
+    let mut services = Vec::new();
+
+    <Iox as Service>::list(&config, |details: ServiceDetails<Iox>| {
+        let name = details.static_details.name().as_str().to_owned();
+        let pattern = match details.static_details.messaging_pattern() {
+            MessagingPattern::PublishSubscribe(_) => "PublishSubscribe",
+            MessagingPattern::Event(_) => "Event",
+            MessagingPattern::RequestResponse(_) => "RequestResponse",
+            MessagingPattern::Blackboard(_) => "Blackboard",
+            _ => "Other",
+        };
+        let participants = details
+            .dynamic_details
+            .as_ref()
+            .map(|details| details.nodes.len())
+            .unwrap_or(0);
+        let role = role_of(&name);
+        services.push(ServiceInfo {
+            name,
+            pattern,
+            role,
+            participants,
+        });
+        CallbackProgression::Continue
+    })
+    .map_err(|e| RpcError::TransportError(format!("service inventory: {e:?}")))?;
+
+    Ok(services)
+}
+
+// ── Shared-memory layout ────────────────────────────────────────────
+
+/// Filesystem layout iceoryx2 uses for its segments and configuration files.
+///
+/// The observer needs it to *measure* the shared-memory footprint on disk: the
+/// segments are named concepts (`prefix + name + data_segment_suffix`) created
+/// under [`Iceoryx2Layout::root_path`] (and, on Linux, possibly `/dev/shm`).
+#[derive(Debug, Clone)]
+pub struct Iceoryx2Layout {
+    /// Root directory of the iceoryx2 resources.
+    pub root_path: String,
+    /// Directory holding the service files.
+    pub service_dir: String,
+    /// Directory holding the node files.
+    pub node_dir: String,
+    /// Prefix of every created file (default `iox2_`).
+    pub prefix: String,
+    /// Suffix of the port data segments (default `.data`).
+    pub data_segment_suffix: String,
+}
+
+/// Returns the filesystem layout currently used by iceoryx2.
+pub fn iceoryx2_layout() -> Iceoryx2Layout {
+    let config = crate::config::build_iceoryx2_config();
+    let global = &config.global;
+    Iceoryx2Layout {
+        root_path: String::from_utf8_lossy(global.root_path().as_bytes()).into_owned(),
+        service_dir: String::from_utf8_lossy(global.service_dir().as_bytes()).into_owned(),
+        node_dir: String::from_utf8_lossy(global.node_dir().as_bytes()).into_owned(),
+        prefix: String::from_utf8_lossy(global.prefix.as_bytes()).into_owned(),
+        data_segment_suffix: String::from_utf8_lossy(global.service.data_segment_suffix.as_bytes())
+            .into_owned(),
+    }
+}
 
 /// Decodes a rkyv **request** payload into its [`Display`] form.
 ///

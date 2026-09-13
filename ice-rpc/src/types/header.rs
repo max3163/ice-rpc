@@ -103,13 +103,15 @@ pub struct RpcHeader {
     ///
     /// Several services can share one channel (their *group*); this id —
     /// [`service_id_of`] of the service name — selects the provider dispatcher.
-    pub service_id: u32,
-    /// Process id of the emitter.
     ///
-    /// Scopes [`seq`](Self::seq) to one publisher: a channel can host several
-    /// publishers (one per process), so a sequence gap is only meaningful for a
-    /// given `(channel, direction, emitter_pid)`.
-    pub emitter_pid: u32,
+    /// The **emitter** identity is deliberately absent: the native iceoryx2
+    /// sample header already carries the source `node_id` (hence the PID) and the
+    /// `publisher_id`, so duplicating it here would only risk a divergence. An
+    /// observer reads it from [`Sample::header()`], and the `publisher_id` is what
+    /// scopes [`seq`](Self::seq).
+    ///
+    /// [`Sample::header()`]: iceoryx2::sample::Sample::header
+    pub service_id: u32,
     /// Method invoked by the request (left empty on a response).
     pub method_name: StaticString<METHOD_NAME_LEN>,
     /// Kind of the sample (request / next / complete / error), as a wire value.
@@ -134,7 +136,6 @@ impl RpcHeader {
             event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
-            emitter_pid: std::process::id(),
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
             timestamp_ns: now_ns(),
@@ -161,7 +162,6 @@ impl RpcHeader {
             event_kind: event_kind.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
-            emitter_pid: std::process::id(),
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
             timestamp_ns: now_ns(),
@@ -289,13 +289,12 @@ mod tests {
     }
 
     #[test]
-    fn request_stamps_the_emitter_and_a_timestamp() {
+    fn request_stamps_a_timestamp() {
         let id = service_id_of("Ping");
         let before = now_ns();
         let header = RpcHeader::request("ping", id, 1);
         let after = now_ns();
 
-        assert_eq!(header.emitter_pid, std::process::id());
         assert!(header.timestamp_ns >= before);
         assert!(header.timestamp_ns <= after);
         // `seq` is owned by the publisher, not by the constructor.
@@ -309,7 +308,6 @@ mod tests {
         let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
 
         assert_eq!(response.correlation_id, request.correlation_id);
-        assert_eq!(response.emitter_pid, std::process::id());
         // The response carries its own emission time, distinct from the request's.
         assert!(response.timestamp_ns >= request.timestamp_ns);
         assert_eq!(response.with_seq(3).seq, 3);

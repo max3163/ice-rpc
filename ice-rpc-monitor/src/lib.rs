@@ -21,6 +21,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 
 pub mod config;
+pub mod console;
+pub mod health;
 pub mod metrics;
 pub mod prometheus;
 pub mod traces;

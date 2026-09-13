@@ -416,3 +416,63 @@ fn an_observer_started_before_the_provider_attaches_once_it_appears() {
         "the observer never attached after the provider appeared"
     );
 }
+
+/// The observer must publish the generic network inventory: nodes, services and
+/// the per-channel capacity, without ever reporting a live node as dead.
+#[test]
+fn the_observer_publishes_the_network_inventory() {
+    ice_rpc::gen::setup_iceoryx2_global_config();
+
+    let channel = format!("MonitorHealth{}", std::process::id());
+    let (_service_id, stop, server) = start_provider(&channel);
+
+    let metrics = Arc::new(Metrics::new());
+    let config = Config {
+        channels: vec![channel.clone()],
+        prometheus_addr: None,
+        health_interval: Duration::from_millis(100),
+        ..Config::default()
+    };
+    let monitor = Monitor::new(config, metrics.clone()).expect("monitor builds");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let monitor_cancel = cancel.clone();
+    let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
+
+    let pid = std::process::id();
+    let mut text = String::new();
+    let mut found = false;
+    for _ in 0..60 {
+        text = metrics.render_prometheus();
+        if text.contains(&format!("ice_rpc_services{{service=\"{channel}_req\""))
+            && text.contains("ice_rpc_health_scans_total ")
+            && text.contains(&format!(
+                "ice_rpc_channel{{channel=\"{channel}\",direction=\"req\"}} 1"
+            ))
+        {
+            found = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    cancel.store(true, Ordering::Relaxed);
+    let _ = observer.join();
+    stop.cancel();
+    let _ = server.join();
+
+    assert!(found, "the inventory was never published:\n{text}");
+    // Our own process hosts the provider: its node is alive, never dead.
+    assert!(
+        text.contains(&format!("ice_rpc_node_info{{pid=\"{pid}\",state=\"alive\"")),
+        "our own node was not reported alive:\n{text}"
+    );
+    assert_eq!(
+        metrics
+            .render_prometheus()
+            .lines()
+            .find(|line| line.starts_with("ice_rpc_health_errors_total "))
+            .and_then(|line| line.rsplit(' ').next()),
+        Some("0"),
+        "the inventory scan failed:\n{text}"
+    );
+}

@@ -10,6 +10,8 @@ use std::sync::Mutex;
 
 use ice_rpc::monitor::Direction;
 
+use crate::health::{ChannelHealth, HealthSnapshot};
+
 /// Latency histogram bounds, in seconds.
 const LATENCY_BOUNDS: &[f64] = &[
     0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
@@ -63,6 +65,28 @@ fn kind_label(kind: &'static str) -> &'static str {
     kind
 }
 
+/// Health of one observed channel direction.
+#[derive(Debug, Default, Clone, Copy)]
+struct ChannelSample {
+    attached: i64,
+    publishers: i64,
+    subscribers: i64,
+    max_publishers: i64,
+    max_subscribers: i64,
+    subscriber_buffer: i64,
+}
+
+/// Resources of one observed process.
+#[derive(Debug, Clone)]
+struct ProcessSample {
+    name: String,
+    cpu_percent: f64,
+    cpu_percent_total: f64,
+    rss_bytes: i64,
+    virtual_bytes: i64,
+    run_time_secs: i64,
+}
+
 #[derive(Default)]
 struct Inner {
     requests: BTreeMap<(String, u32, String), u64>,
@@ -76,6 +100,22 @@ struct Inner {
     clock_skew: u64,
     nodes_alive: i64,
     node_crashes: u64,
+    // ── Health inventory, replaced wholesale on every scan ──
+    node_states: BTreeMap<&'static str, i64>,
+    node_info: BTreeMap<(u32, &'static str, String), i64>,
+    services: BTreeMap<(String, &'static str, &'static str), i64>,
+    service_participants: BTreeMap<String, i64>,
+    channels: BTreeMap<(String, &'static str), ChannelSample>,
+    processes: BTreeMap<u32, ProcessSample>,
+    shm_enabled: bool,
+    shm_bytes: i64,
+    shm_segments: i64,
+    shm_files: i64,
+    health_scans: u64,
+    health_errors: u64,
+    observer_dropped: u64,
+    discovery_errors: u64,
+    host_cpu_count: i64,
 }
 
 /// Thread-safe metric registry.
@@ -157,6 +197,11 @@ impl Metrics {
     }
 
     /// Adds missed samples detected through a `seq` hole.
+    ///
+    /// The hole itself is scoped by the native `publisher_id` (see
+    /// [`LossTracker`](crate::loss::LossTracker)); `emitter_pid` is only the
+    /// human-readable label of that publisher, one PID owning at most one
+    /// publisher per direction.
     pub fn on_sample_gap(
         &self,
         channel: &str,
@@ -193,6 +238,83 @@ impl Metrics {
     pub fn add_node_crash(&self, count: u64) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.node_crashes += count;
+        }
+    }
+
+    /// Replaces the whole health inventory with a fresh scan.
+    ///
+    /// The inventory is *replaced*, never accumulated, so a service or a node
+    /// that disappears stops being exported on the very next scan.
+    pub fn set_health(&self, snapshot: &HealthSnapshot, channels: &[ChannelHealth]) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+
+        inner.node_states.clear();
+        inner.node_info.clear();
+        for node in &snapshot.nodes {
+            let state = node.health.label();
+            *inner.node_states.entry(state).or_default() += 1;
+            let executable = node.executable.clone().unwrap_or_else(|| "?".to_owned());
+            inner.node_info.insert((node.pid, state, executable), 1);
+        }
+
+        inner.services.clear();
+        inner.service_participants.clear();
+        for service in &snapshot.services {
+            inner.services.insert(
+                (service.name.clone(), service.pattern, service.role.label()),
+                1,
+            );
+            inner
+                .service_participants
+                .insert(service.name.clone(), service.participants as i64);
+        }
+
+        inner.channels.clear();
+        for channel in channels {
+            inner.channels.insert(
+                (channel.channel.clone(), channel.direction),
+                ChannelSample {
+                    attached: i64::from(channel.attached),
+                    publishers: channel.publishers as i64,
+                    subscribers: channel.subscribers as i64,
+                    max_publishers: channel.max_publishers as i64,
+                    max_subscribers: channel.max_subscribers as i64,
+                    subscriber_buffer: channel.subscriber_buffer as i64,
+                },
+            );
+        }
+
+        inner.processes.clear();
+        for process in &snapshot.processes {
+            inner.processes.insert(
+                process.pid,
+                ProcessSample {
+                    name: process.name.clone(),
+                    cpu_percent: process.cpu_percent as f64,
+                    cpu_percent_total: process.cpu_percent_total as f64,
+                    rss_bytes: process.rss_bytes as i64,
+                    virtual_bytes: process.virtual_bytes as i64,
+                    run_time_secs: process.run_time_secs as i64,
+                },
+            );
+        }
+
+        inner.shm_enabled = snapshot.shm.is_some();
+        inner.shm_bytes = snapshot.shm.map(|shm| shm.bytes as i64).unwrap_or(0);
+        inner.shm_segments = snapshot.shm.map(|shm| shm.segments as i64).unwrap_or(0);
+        inner.shm_files = snapshot.shm.map(|shm| shm.files as i64).unwrap_or(0);
+        inner.health_scans = snapshot.scans;
+        inner.health_errors = snapshot.errors;
+        inner.host_cpu_count = snapshot.cpu_count as i64;
+    }
+
+    /// Publishes the observer's own health counters.
+    pub fn set_observer(&self, dropped_traces: u64, discovery_errors: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.observer_dropped = dropped_traces;
+            inner.discovery_errors = discovery_errors;
         }
     }
 
@@ -260,9 +382,10 @@ impl Metrics {
         );
 
         // Per-service breakdown; bounded by the static set of compiled services.
+        // Kept short: the console frame must stay on one screen (see `console`).
         if !inner.requests.is_empty() {
             let _ = writeln!(out, "{rule}");
-            const MAX_LINES: usize = 25;
+            const MAX_LINES: usize = 8;
             for (index, ((channel, service, method), count)) in inner.requests.iter().enumerate() {
                 if index >= MAX_LINES {
                     let _ = writeln!(out, "   ... and {} more", inner.requests.len() - index);
@@ -278,6 +401,56 @@ impl Metrics {
                 let _ = writeln!(
                     out,
                     " {channel} service={service} method={method}: requests={count} {latency_text}"
+                );
+            }
+        }
+
+        // Network and resource health; empty until the first inventory scan.
+        if !inner.node_states.is_empty() || !inner.services.is_empty() {
+            let _ = writeln!(out, "{rule}");
+            let alive = inner.node_states.get("alive").copied().unwrap_or(0);
+            let dead = inner.node_states.get("dead").copied().unwrap_or(0);
+            let total: i64 = inner.node_states.values().copied().sum();
+            let _ = writeln!(
+                out,
+                " network : nodes={total} (alive {alive}, dead {dead})  services={}  channels={}",
+                inner.services.len(),
+                inner.channels.len()
+            );
+            if inner.shm_enabled {
+                if inner.shm_segments == 0 {
+                    // Metadata files exist, but no `.data` segment: the segments
+                    // are not file-backed on this platform (e.g. Windows).
+                    let _ = writeln!(out, " shm     : n/a (segments are not file-backed here)");
+                } else {
+                    let _ = writeln!(
+                        out,
+                        " shm     : {} segment(s), {}",
+                        inner.shm_segments,
+                        fmt_bytes(inner.shm_bytes as f64)
+                    );
+                }
+            }
+            // One line per emitting process (iceoryx2 node), bounded so a busy
+            // machine cannot push the frame past the terminal height.
+            const MAX_NODES: usize = 5;
+            for (index, (pid, sample)) in inner.processes.iter().enumerate() {
+                if index >= MAX_NODES {
+                    let _ = writeln!(
+                        out,
+                        " node    : ... and {} more",
+                        inner.processes.len() - index
+                    );
+                    break;
+                }
+                let _ = writeln!(
+                    out,
+                    " node    : pid={pid} {}  cpu {:.1}% core / {:.1}% host  rss {}  up {}s",
+                    sample.name,
+                    sample.cpu_percent,
+                    sample.cpu_percent_total,
+                    fmt_bytes(sample.rss_bytes as f64),
+                    sample.run_time_secs
                 );
             }
         }
@@ -345,7 +518,9 @@ impl Metrics {
             );
         }
 
-        out.push_str("# HELP ice_rpc_sample_gaps_total Samples missed, from seq holes\n");
+        out.push_str(
+            "# HELP ice_rpc_sample_gaps_total Samples missed, from native publisher_id seq holes\n",
+        );
         out.push_str("# TYPE ice_rpc_sample_gaps_total counter\n");
         for ((channel, direction, pid), value) in &inner.gaps {
             let _ = writeln!(
@@ -385,6 +560,202 @@ impl Metrics {
         out.push_str("# HELP ice_rpc_node_crashes_total Emitting processes that disappeared\n");
         out.push_str("# TYPE ice_rpc_node_crashes_total counter\n");
         let _ = writeln!(out, "ice_rpc_node_crashes_total {}", inner.node_crashes);
+
+        out.push_str("# HELP ice_rpc_nodes Nodes by native liveness state\n");
+        out.push_str("# TYPE ice_rpc_nodes gauge\n");
+        for (state, value) in &inner.node_states {
+            let _ = writeln!(out, "ice_rpc_nodes{{state=\"{state}\"}} {value}");
+        }
+
+        out.push_str("# HELP ice_rpc_node_info One series per node, value is always 1\n");
+        out.push_str("# TYPE ice_rpc_node_info gauge\n");
+        for ((pid, state, executable), value) in &inner.node_info {
+            let _ = writeln!(
+                out,
+                "ice_rpc_node_info{{pid=\"{pid}\",state=\"{state}\",executable=\"{executable}\"}} {value}"
+            );
+        }
+
+        out.push_str("# HELP ice_rpc_services One series per iceoryx2 service\n");
+        out.push_str("# TYPE ice_rpc_services gauge\n");
+        for ((service, pattern, role), value) in &inner.services {
+            let _ = writeln!(
+                out,
+                "ice_rpc_services{{service=\"{service}\",pattern=\"{pattern}\",role=\"{role}\"}} {value}"
+            );
+        }
+
+        out.push_str("# HELP ice_rpc_service_participants Nodes registered on a service\n");
+        out.push_str("# TYPE ice_rpc_service_participants gauge\n");
+        for (service, value) in &inner.service_participants {
+            let _ = writeln!(
+                out,
+                "ice_rpc_service_participants{{service=\"{service}\"}} {value}"
+            );
+        }
+
+        out.push_str("# HELP ice_rpc_channel Whether the observer is attached to a direction\n");
+        out.push_str("# TYPE ice_rpc_channel gauge\n");
+        for ((channel, direction), sample) in &inner.channels {
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel{{channel=\"{channel}\",direction=\"{direction}\"}} {}",
+                sample.attached
+            );
+        }
+
+        out.push_str(
+            "# HELP ice_rpc_channel_publishers Active publishers of a channel direction\n",
+        );
+        out.push_str("# TYPE ice_rpc_channel_publishers gauge\n");
+        for ((channel, direction), sample) in &inner.channels {
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel_publishers{{channel=\"{channel}\",direction=\"{direction}\"}} {}",
+                sample.publishers
+            );
+        }
+
+        out.push_str("# HELP ice_rpc_channel_subscribers Active subscribers of a channel direction, observer excluded\n");
+        out.push_str("# TYPE ice_rpc_channel_subscribers gauge\n");
+        for ((channel, direction), sample) in &inner.channels {
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel_subscribers{{channel=\"{channel}\",direction=\"{direction}\"}} {}",
+                sample.subscribers
+            );
+        }
+
+        out.push_str("# HELP ice_rpc_channel_capacity Declared capacity of a channel direction\n");
+        out.push_str("# TYPE ice_rpc_channel_capacity gauge\n");
+        for ((channel, direction), sample) in &inner.channels {
+            let labels = format!("channel=\"{channel}\",direction=\"{direction}\"");
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel_capacity{{{labels},kind=\"max_publishers\"}} {}",
+                sample.max_publishers
+            );
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel_capacity{{{labels},kind=\"max_subscribers\"}} {}",
+                sample.max_subscribers
+            );
+            let _ = writeln!(
+                out,
+                "ice_rpc_channel_capacity{{{labels},kind=\"subscriber_buffer_samples\"}} {}",
+                sample.subscriber_buffer
+            );
+        }
+
+        if !inner.processes.is_empty() {
+            out.push_str("# HELP ice_rpc_process_cpu_percent CPU usage of an observed process, as a percentage of ONE core (can exceed 100)\n");
+            out.push_str("# TYPE ice_rpc_process_cpu_percent gauge\n");
+            for (pid, sample) in &inner.processes {
+                let _ = writeln!(
+                    out,
+                    "ice_rpc_process_cpu_percent{{pid=\"{pid}\",name=\"{}\"}} {}",
+                    sample.name, sample.cpu_percent
+                );
+            }
+
+            out.push_str("# HELP ice_rpc_process_cpu_percent_total CPU usage of an observed process, normalised to 0..100 over all cores\n");
+            out.push_str("# TYPE ice_rpc_process_cpu_percent_total gauge\n");
+            for (pid, sample) in &inner.processes {
+                let _ = writeln!(
+                    out,
+                    "ice_rpc_process_cpu_percent_total{{pid=\"{pid}\",name=\"{}\"}} {}",
+                    sample.name, sample.cpu_percent_total
+                );
+            }
+
+            out.push_str(
+                "# HELP ice_rpc_process_rss_bytes Resident memory of an observed process\n",
+            );
+            out.push_str("# TYPE ice_rpc_process_rss_bytes gauge\n");
+            for (pid, sample) in &inner.processes {
+                let _ = writeln!(
+                    out,
+                    "ice_rpc_process_rss_bytes{{pid=\"{pid}\",name=\"{}\"}} {}",
+                    sample.name, sample.rss_bytes
+                );
+            }
+
+            out.push_str(
+                "# HELP ice_rpc_process_virtual_bytes Virtual memory of an observed process\n",
+            );
+            out.push_str("# TYPE ice_rpc_process_virtual_bytes gauge\n");
+            for (pid, sample) in &inner.processes {
+                let _ = writeln!(
+                    out,
+                    "ice_rpc_process_virtual_bytes{{pid=\"{pid}\",name=\"{}\"}} {}",
+                    sample.name, sample.virtual_bytes
+                );
+            }
+
+            out.push_str("# HELP ice_rpc_process_uptime_seconds Uptime of an observed process\n");
+            out.push_str("# TYPE ice_rpc_process_uptime_seconds gauge\n");
+            for (pid, sample) in &inner.processes {
+                let _ = writeln!(
+                    out,
+                    "ice_rpc_process_uptime_seconds{{pid=\"{pid}\",name=\"{}\"}} {}",
+                    sample.name, sample.run_time_secs
+                );
+            }
+        }
+
+        out.push_str(
+            "# HELP ice_rpc_shm_scan_enabled Whether the shared-memory footprint scan is enabled\n",
+        );
+        out.push_str("# TYPE ice_rpc_shm_scan_enabled gauge\n");
+        let _ = writeln!(
+            out,
+            "ice_rpc_shm_scan_enabled {}",
+            i64::from(inner.shm_enabled)
+        );
+
+        out.push_str(
+            "# HELP ice_rpc_shm_bytes Measured size of the iceoryx2 shared-memory segments\n",
+        );
+        out.push_str("# TYPE ice_rpc_shm_bytes gauge\n");
+        let _ = writeln!(out, "ice_rpc_shm_bytes {}", inner.shm_bytes);
+
+        out.push_str("# HELP ice_rpc_shm_segments Measured number of iceoryx2 segment files\n");
+        out.push_str("# TYPE ice_rpc_shm_segments gauge\n");
+        let _ = writeln!(out, "ice_rpc_shm_segments {}", inner.shm_segments);
+
+        out.push_str("# HELP ice_rpc_shm_files iceoryx2 files seen by the footprint walk\n");
+        out.push_str("# TYPE ice_rpc_shm_files gauge\n");
+        let _ = writeln!(out, "ice_rpc_shm_files {}", inner.shm_files);
+
+        out.push_str("# HELP ice_rpc_host_cpu_count Number of logical CPUs of the host\n");
+        out.push_str("# TYPE ice_rpc_host_cpu_count gauge\n");
+        let _ = writeln!(out, "ice_rpc_host_cpu_count {}", inner.host_cpu_count);
+
+        out.push_str("# HELP ice_rpc_health_scans_total Inventory scans performed\n");
+        out.push_str("# TYPE ice_rpc_health_scans_total counter\n");
+        let _ = writeln!(out, "ice_rpc_health_scans_total {}", inner.health_scans);
+
+        out.push_str("# HELP ice_rpc_health_errors_total Failed partial inventory scans\n");
+        out.push_str("# TYPE ice_rpc_health_errors_total counter\n");
+        let _ = writeln!(out, "ice_rpc_health_errors_total {}", inner.health_errors);
+
+        out.push_str(
+            "# HELP ice_rpc_observer_dropped_traces_total Trace records dropped by a saturated sink\n",
+        );
+        out.push_str("# TYPE ice_rpc_observer_dropped_traces_total counter\n");
+        let _ = writeln!(
+            out,
+            "ice_rpc_observer_dropped_traces_total {}",
+            inner.observer_dropped
+        );
+
+        out.push_str("# HELP ice_rpc_discovery_errors_total Failed channel discovery attempts\n");
+        out.push_str("# TYPE ice_rpc_discovery_errors_total counter\n");
+        let _ = writeln!(
+            out,
+            "ice_rpc_discovery_errors_total {}",
+            inner.discovery_errors
+        );
 
         out
     }
@@ -573,5 +944,64 @@ mod tests {
         let text = Metrics::new().render_console();
         assert!(text.contains("requests        : 0"));
         assert!(text.contains("latency (exact) : none"));
+    }
+
+    #[test]
+    fn the_health_inventory_is_exported() {
+        use ice_rpc::monitor::{NodeHealth, NodeInfo, ServiceInfo, ServiceRole};
+
+        let metrics = Metrics::new();
+        let snapshot = HealthSnapshot {
+            nodes: vec![NodeInfo {
+                pid: 42,
+                health: NodeHealth::Alive,
+                executable: Some("provider-app".to_owned()),
+                name: Some(String::new()),
+            }],
+            services: vec![ServiceInfo {
+                name: "DatabaseService_req".to_owned(),
+                pattern: "PublishSubscribe",
+                role: ServiceRole::Request,
+                participants: 2,
+            }],
+            scans: 1,
+            errors: 0,
+            ..HealthSnapshot::default()
+        };
+        let channels = vec![ChannelHealth {
+            channel: "DatabaseService".to_owned(),
+            direction: "req",
+            attached: true,
+            publishers: 1,
+            subscribers: 1,
+            max_publishers: 16,
+            max_subscribers: 16,
+            subscriber_buffer: 8,
+        }];
+        metrics.set_health(&snapshot, &channels);
+
+        let text = metrics.render_prometheus();
+        assert!(text.contains("ice_rpc_nodes{state=\"alive\"} 1"), "{text}");
+        assert!(text.contains(
+            "ice_rpc_node_info{pid=\"42\",state=\"alive\",executable=\"provider-app\"} 1"
+        ));
+        assert!(text.contains(
+            "ice_rpc_services{service=\"DatabaseService_req\",pattern=\"PublishSubscribe\",role=\"req\"} 1"
+        ));
+        assert!(text.contains("ice_rpc_service_participants{service=\"DatabaseService_req\"} 2"));
+        assert!(text.contains(
+            "ice_rpc_channel_capacity{channel=\"DatabaseService\",direction=\"req\",kind=\"max_publishers\"} 16"
+        ));
+        assert!(text.contains(
+            "ice_rpc_channel_capacity{channel=\"DatabaseService\",direction=\"req\",kind=\"subscriber_buffer_samples\"} 8"
+        ));
+        assert!(text.contains("ice_rpc_shm_scan_enabled 0"));
+        assert!(text.contains("ice_rpc_health_scans_total 1"));
+
+        let console = metrics.render_console();
+        assert!(
+            console.contains("network : nodes=1 (alive 1, dead 0)  services=1  channels=1"),
+            "{console}"
+        );
     }
 }

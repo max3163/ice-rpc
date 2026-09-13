@@ -41,6 +41,7 @@ use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_serv
 use ice_rpc::{CancellationToken, Event, Observable};
 
 use ice_rpc_monitor::config::{Config, Mode};
+use ice_rpc_monitor::console::{self, LiveConsole};
 use ice_rpc_monitor::metrics::Metrics;
 use ice_rpc_monitor::traces::TraceFormat;
 use ice_rpc_monitor::Monitor;
@@ -61,6 +62,9 @@ EXAMPLE OPTIONS:
     --demo                         Start and call an in-process DatabaseService so
                                    the example is self-contained (default: observe
                                    the existing channels only)
+    --live                         Redraw the stats in place, like `top`, and show
+                                   the last messages inside the frame (needs a
+                                   terminal; ignored when piped)
     --interval-ms <ms>             Stats refresh interval (default 1000)
     -h, --help                     Show this help and the observer options";
 
@@ -68,6 +72,7 @@ EXAMPLE OPTIONS:
 struct Options {
     detail: bool,
     demo: bool,
+    live: bool,
     interval: Duration,
     config: Config,
 }
@@ -81,6 +86,7 @@ impl Options {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut detail = false;
         let mut demo = false;
+        let mut live = false;
         let mut interval = Duration::from_millis(1000);
         let mut forwarded: Vec<String> = Vec::new();
 
@@ -89,6 +95,7 @@ impl Options {
             match args[i].as_str() {
                 "--detail" => detail = true,
                 "--demo" => demo = true,
+                "--live" => live = true,
                 "--interval-ms" => {
                     i += 1;
                     let raw = args.get(i).ok_or("missing value for --interval-ms")?;
@@ -110,6 +117,7 @@ impl Options {
         // decoder so the payloads are rendered in clear text.
         config.decoders = Arc::new(common_decoders());
 
+        config.console_live = live;
         if detail {
             // "Full" mode: read the payload of every sample, decode it, and emit
             // one readable trace per completed call.
@@ -122,6 +130,7 @@ impl Options {
         Ok(Self {
             detail,
             demo,
+            live,
             interval,
             config,
         })
@@ -306,6 +315,7 @@ fn main() {
         options.config.channels.join(", ")
     };
     let detail = options.detail;
+    let live = options.live;
     let interval = options.interval;
     let demo_channel = demo.as_ref().map(|demo| demo.channel.as_str());
     let prometheus_addr = options.config.prometheus_addr;
@@ -326,6 +336,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let recent = monitor.recent_messages();
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || {
         if let Err(e) = monitor.run(&monitor_cancel) {
@@ -333,22 +344,28 @@ fn main() {
         }
     });
 
-    print_banner(
-        detail,
-        interval,
-        &channels_text,
-        demo_channel,
-        prometheus_addr,
-    );
+    // `top`-like view: only when requested *and* a terminal is attached. Without
+    // a TTY the same frames are simply appended, so a redirected run stays
+    // readable and pipeable.
+    let mut console = LiveConsole::new(live);
+    if !console.is_active() {
+        print_banner(
+            detail,
+            interval,
+            &channels_text,
+            demo_channel,
+            prometheus_addr,
+        );
+    }
 
     while !cancel.load(Ordering::Relaxed) {
         sleep_interruptible(interval, &cancel);
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        print!("{}", metrics.render_console());
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        console.draw(&console::frame(&metrics, recent.as_ref()));
     }
+    console.leave();
 
     let _ = observer.join();
     if let Some(demo) = demo {
@@ -356,5 +373,5 @@ fn main() {
     }
 
     println!("\n--- final ---");
-    print!("{}", metrics.render_console());
+    print!("{}", console::frame(&metrics, recent.as_ref()));
 }

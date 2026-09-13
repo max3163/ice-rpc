@@ -15,7 +15,7 @@ use super::{
     shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
     IoxSubscriber, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT,
     PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
-    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, WAITSET_DEADLINE,
+    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES,
 };
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
@@ -142,7 +142,10 @@ fn spawn_response_dispatcher(
         else {
             return;
         };
-        let Ok(guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
+        // A plain notification attachment: the wake-up deadline is passed to
+        // `wait_and_process_once_with_timeout`, so attaching it as a deadline
+        // would make the guard fire on every expiry and defeat the idle path.
+        let Ok(guard) = waitset.attach_notification(&listener) else {
             return;
         };
 
@@ -177,7 +180,7 @@ fn spawn_response_dispatcher(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        let notified = wait_for_wakeup(&waitset, &guard);
+                        let notified = wait_for_wakeup(&waitset, &guard, &listener);
                         // Only a notification means there is something to poll
                         // for; a bare deadline expiry keeps the thread blocked.
                         idle_spins = if notified { 0 } else { IDLE_SPINS };

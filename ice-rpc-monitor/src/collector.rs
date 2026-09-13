@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ice_rpc::gen::{fmt_correlation_id, is_pid_alive, EventKind, RpcHeader, CORRELATION_ID_LEN};
-use ice_rpc::monitor::{discover_channels, Direction, DirectionView};
+use ice_rpc::monitor::{discover_channels, Direction, DirectionView, Emitter};
 
 use crate::config::Config;
 use crate::correlate::{Correlate, PendingCall, Resolution};
+use crate::health::{ChannelHealth, Scanner};
 use crate::loss::LossTracker;
 use crate::metrics::Metrics;
-use crate::traces::{TraceRecord, TraceSink};
+use crate::traces::{RecentBuffer, TraceRecord, TraceSink};
 
 /// Samples drained from one view per iteration, bounding the loop latency.
 const DRAIN_BUDGET: usize = 4096;
@@ -72,7 +73,9 @@ fn undecoded(payload_len: usize) -> String {
 /// after a non-terminal one would leave the call in flight forever.
 struct DeferredResponses {
     channel: String,
-    samples: Vec<(RpcHeader, Sample)>,
+    /// Each sample keeps the identity of the process that emitted it, so the
+    /// trace can still name its emitter once the call is finally resolved.
+    samples: Vec<(RpcHeader, Emitter, Sample)>,
     since: Instant,
 }
 
@@ -96,9 +99,17 @@ pub struct Monitor {
     /// Responses waiting for their request to be observed.
     deferred: HashMap<[u8; CORRELATION_ID_LEN], DeferredResponses>,
     trace: Option<TraceSink>,
+    /// Last rendered messages, when the live console view keeps them in memory.
+    recent: Option<RecentBuffer>,
     traced: u64,
     /// Emitter pids seen so far, with their last known liveness.
     pids: HashMap<u32, bool>,
+    /// Throttled inventory of the nodes, services and processes.
+    health: Option<Scanner>,
+    /// Channels the observer knows about, attached or not.
+    known_channels: Vec<String>,
+    /// Failed channel-discovery attempts.
+    discovery_errors: u64,
     last_discover: Instant,
     last_sweep: Instant,
     last_liveness: Instant,
@@ -111,19 +122,37 @@ impl Monitor {
     /// # Errors
     /// Returns a message when the trace file cannot be created.
     pub fn new(config: Config, metrics: Arc<Metrics>) -> Result<Self, String> {
-        let trace = if config.trace_sample_rate == 0 {
-            None
+        // The live view cannot let the messages scroll, so it keeps them in a
+        // bounded in-memory buffer instead of streaming them to stdout. An
+        // explicit `--trace-file` still wins (the messages go to the file).
+        let (trace, recent) = if config.trace_sample_rate == 0 {
+            (None, None)
+        } else if config.console_live && config.trace_file.is_none() {
+            let (sink, buffer) = TraceSink::memory(TRACE_QUEUE, config.trace_format);
+            (Some(sink), Some(buffer))
         } else {
             match &config.trace_file {
-                Some(path) => Some(
-                    TraceSink::file(path, TRACE_QUEUE, config.trace_format)
-                        .map_err(|e| format!("cannot open trace file '{}': {e}", path.display()))?,
+                Some(path) => (
+                    Some(
+                        TraceSink::file(path, TRACE_QUEUE, config.trace_format).map_err(|e| {
+                            format!("cannot open trace file '{}': {e}", path.display())
+                        })?,
+                    ),
+                    None,
                 ),
-                None => Some(TraceSink::stdout(TRACE_QUEUE, config.trace_format)),
+                None => (
+                    Some(TraceSink::stdout(TRACE_QUEUE, config.trace_format)),
+                    None,
+                ),
             }
         };
 
         let correlate = Correlate::new(config.max_inflight, config.call_ttl);
+        let health = if config.health_interval.is_zero() {
+            None
+        } else {
+            Some(Scanner::new(config.health_interval, config.health_shm))
+        };
         let now = Instant::now();
         Ok(Self {
             config,
@@ -133,8 +162,12 @@ impl Monitor {
             views: Vec::new(),
             deferred: HashMap::new(),
             trace,
+            recent,
             traced: 0,
             pids: HashMap::new(),
+            health,
+            known_channels: Vec::new(),
+            discovery_errors: 0,
             last_discover: now,
             last_sweep: now,
             last_liveness: now,
@@ -145,6 +178,11 @@ impl Monitor {
     /// Number of traces dropped by a saturated sink.
     pub fn dropped_traces(&self) -> u64 {
         self.trace.as_ref().map(TraceSink::dropped).unwrap_or(0)
+    }
+
+    /// The recent messages buffer, when the live view keeps them in memory.
+    pub fn recent_messages(&self) -> Option<RecentBuffer> {
+        self.recent.clone()
     }
 
     /// Runs the acquisition loop until `cancel` is set.
@@ -164,6 +202,7 @@ impl Monitor {
                 self.last_discover = Instant::now();
                 self.refresh_channels();
             }
+            self.refresh_health();
 
             let received = self.drain_all();
             // A response drained in this pass may have overtaken its request.
@@ -199,6 +238,7 @@ impl Monitor {
             match discover_channels() {
                 Ok(channels) => channels,
                 Err(e) => {
+                    self.discovery_errors += 1;
                     log::warn!("[monitor] service discovery failed: {e}");
                     return;
                 }
@@ -207,10 +247,66 @@ impl Monitor {
             self.config.channels.clone()
         };
 
+        self.known_channels.clone_from(&targets);
         for channel in targets {
             self.open_if_missing(&channel, Direction::Request);
             self.open_if_missing(&channel, Direction::Response);
         }
+    }
+
+    /// Scans the inventory when due and publishes it to the metrics.
+    fn refresh_health(&mut self) {
+        let due = self
+            .health
+            .as_mut()
+            .map(Scanner::refresh_if_due)
+            .unwrap_or(false);
+
+        if due {
+            let channels = self.channel_health();
+            if let Some(snapshot) = self.health.as_ref().map(Scanner::snapshot) {
+                self.metrics.set_health(snapshot, &channels);
+            }
+        }
+        // The observer's own counters are published on every pass.
+        self.metrics
+            .set_observer(self.dropped_traces(), self.discovery_errors);
+    }
+
+    /// Builds the per-channel health block from the known channels and views.
+    fn channel_health(&self) -> Vec<ChannelHealth> {
+        let mut out = Vec::new();
+        for channel in &self.known_channels {
+            for (direction, label) in [(Direction::Request, "req"), (Direction::Response, "resp")] {
+                let view = self
+                    .views
+                    .iter()
+                    .find(|v| v.channel == *channel && v.direction == direction);
+                out.push(match view {
+                    Some(view) => ChannelHealth {
+                        channel: channel.clone(),
+                        direction: label,
+                        attached: true,
+                        publishers: view.view.publisher_count(),
+                        subscribers: view.view.subscriber_count(),
+                        max_publishers: view.view.max_publishers(),
+                        max_subscribers: view.view.max_subscribers(),
+                        subscriber_buffer: view.view.subscriber_max_buffer_size(),
+                    },
+                    None => ChannelHealth {
+                        channel: channel.clone(),
+                        direction: label,
+                        attached: false,
+                        publishers: 0,
+                        subscribers: 0,
+                        max_publishers: 0,
+                        max_subscribers: 0,
+                        subscriber_buffer: 0,
+                    },
+                });
+            }
+        }
+        out
     }
 
     /// Attaches to one direction of a channel, unless already attached.
@@ -252,7 +348,9 @@ impl Monitor {
             for _ in 0..DRAIN_BUDGET {
                 let drained = if detail {
                     match self.views[index].view.try_receive_payload() {
-                        Ok(Some((header, payload))) => Some((header, Sample::Full { payload })),
+                        Ok(Some((header, emitter, payload))) => {
+                            Some((header, emitter, Sample::Full { payload }))
+                        }
                         Ok(None) => None,
                         Err(e) => {
                             log::warn!("[monitor] receive error on '{channel}': {e}");
@@ -261,8 +359,8 @@ impl Monitor {
                     }
                 } else {
                     match self.views[index].view.try_receive() {
-                        Ok(Some((header, payload_len))) => {
-                            Some((header, Sample::Meta { payload_len }))
+                        Ok(Some((header, emitter, payload_len))) => {
+                            Some((header, emitter, Sample::Meta { payload_len }))
                         }
                         Ok(None) => None,
                         Err(e) => {
@@ -273,9 +371,9 @@ impl Monitor {
                 };
 
                 match drained {
-                    Some((header, sample)) => {
+                    Some((header, emitter, sample)) => {
                         received = true;
-                        self.process(&channel, direction, header, sample);
+                        self.process(&channel, direction, header, emitter, sample);
                     }
                     None => break,
                 }
@@ -285,26 +383,36 @@ impl Monitor {
     }
 
     /// Aggregates one observed sample.
-    fn process(&mut self, channel: &str, direction: Direction, header: RpcHeader, sample: Sample) {
+    fn process(
+        &mut self,
+        channel: &str,
+        direction: Direction,
+        header: RpcHeader,
+        emitter: Emitter,
+        sample: Sample,
+    ) {
         log::trace!(
-            "[monitor] sample direction={direction:?} seq={} kind={:?} len={}",
+            "[monitor] sample direction={direction:?} seq={} kind={:?} len={} emitter_pid={}",
             header.seq,
             header.event_kind(),
-            sample.payload_len()
+            sample.payload_len(),
+            emitter.pid
         );
-        // Loss detection must see every sample, whatever its kind.
+        // Loss detection must see every sample, whatever its kind. The `seq` is
+        // monotonic per *publisher port*, so the native `publisher_id` is what
+        // scopes it; the PID is only a readable label for the metrics.
         let missed = self
             .loss
-            .observe(channel, direction, header.emitter_pid, header.seq);
+            .observe(channel, direction, emitter.publisher_id, header.seq);
         self.metrics
-            .on_sample_gap(channel, direction, header.emitter_pid, missed);
+            .on_sample_gap(channel, direction, emitter.pid, missed);
         self.metrics
             .on_payload(channel, direction, sample.payload_len());
-        self.pids.entry(header.emitter_pid).or_insert(true);
+        self.pids.entry(emitter.pid).or_insert(true);
 
         match direction {
             Direction::Request => self.on_request(channel, &header, &sample),
-            Direction::Response => self.on_response(channel, &header, &sample),
+            Direction::Response => self.on_response(channel, &header, emitter, &sample),
         }
     }
 
@@ -349,7 +457,13 @@ impl Monitor {
     }
 
     /// Handles one response sample, closing the call on a terminal kind.
-    fn on_response(&mut self, channel: &str, header: &RpcHeader, sample: &Sample) {
+    fn on_response(
+        &mut self,
+        channel: &str,
+        header: &RpcHeader,
+        emitter: Emitter,
+        sample: &Sample,
+    ) {
         let kind = header.event_kind();
         self.metrics
             .on_response(channel, header.service_id, kind_name(kind));
@@ -357,11 +471,11 @@ impl Monitor {
 
         match self.correlate.on_response(&header.correlation_id, terminal) {
             Resolution::Matched(call) => {
-                self.complete_response(channel, header, sample, call, kind, terminal)
+                self.complete_response(channel, header, emitter, sample, call, kind)
             }
             // A passive observer drains the two directions independently: the
             // request may not have been observed yet. Hold the response briefly.
-            Resolution::Unknown => self.defer_response(channel, header, sample),
+            Resolution::Unknown => self.defer_response(channel, header, emitter, sample),
         }
     }
 
@@ -370,11 +484,14 @@ impl Monitor {
         &mut self,
         channel: &str,
         header: &RpcHeader,
+        emitter: Emitter,
         sample: &Sample,
         call: PendingCall,
         kind: EventKind,
-        terminal: bool,
     ) {
+        // Derived rather than passed: one less argument to thread through the
+        // deferred-replay path, and a single source of truth.
+        let terminal = kind.is_terminal();
         if !call.first_response_seen {
             if header.timestamp_ns >= call.request_ts_ns {
                 let seconds = (header.timestamp_ns - call.request_ts_ns) as f64 / 1e9;
@@ -387,12 +504,18 @@ impl Monitor {
         }
         if terminal {
             self.metrics.on_inflight(&call.channel, call.service_id, -1);
-            self.emit_trace(channel, header, sample, &call, kind_name(kind));
+            self.emit_trace(channel, header, emitter, sample, &call, kind_name(kind));
         }
     }
 
     /// Holds a response whose request has not been observed yet.
-    fn defer_response(&mut self, channel: &str, header: &RpcHeader, sample: &Sample) {
+    fn defer_response(
+        &mut self,
+        channel: &str,
+        header: &RpcHeader,
+        emitter: Emitter,
+        sample: &Sample,
+    ) {
         if self.deferred.len() >= MAX_DEFERRED {
             if let Some(oldest) = self
                 .deferred
@@ -433,7 +556,7 @@ impl Monitor {
                 since: Instant::now(),
             })
             .samples
-            .push((*header, sample.clone()));
+            .push((*header, emitter, sample.clone()));
     }
 
     /// Pairs the deferred responses whose request has just been observed, and
@@ -456,11 +579,11 @@ impl Monitor {
             };
             // Replay the whole stream in observation order: the first sample
             // carries the latency, the terminal one closes the call.
-            for (header, sample) in &entry.samples {
+            for (header, emitter, sample) in &entry.samples {
                 let kind = header.event_kind();
                 let terminal = kind.is_terminal();
                 if let Resolution::Matched(call) = self.correlate.on_response(&cid, terminal) {
-                    self.complete_response(&entry.channel, header, sample, call, kind, terminal);
+                    self.complete_response(&entry.channel, header, *emitter, sample, call, kind);
                 }
             }
         }
@@ -487,6 +610,7 @@ impl Monitor {
         &mut self,
         channel: &str,
         header: &RpcHeader,
+        emitter: Emitter,
         sample: &Sample,
         call: &PendingCall,
         kind: &'static str,
@@ -518,7 +642,7 @@ impl Monitor {
             service_id: header.service_id,
             method: &call.method,
             event_kind: kind,
-            emitter_pid: header.emitter_pid,
+            emitter_pid: emitter.pid,
             request_bytes: call.request_bytes,
             response_bytes: sample.payload_len(),
             latency_us,
@@ -600,6 +724,11 @@ mod tests {
         let mut monitor = Monitor::new(Config::default(), metrics.clone()).expect("built");
         const CHANNEL: &str = "TestChannel";
         let cid = [0xABu8; CORRELATION_ID_LEN];
+        let emitter = Emitter {
+            pid: 4_242,
+            node_id: 1,
+            publisher_id: 9,
+        };
 
         // The three response samples are drained first: the request is not yet
         // tracked, so every one of them is deferred.
@@ -611,7 +740,12 @@ mod tests {
         };
         for kind in [EventKind::Next, EventKind::Next, EventKind::Complete] {
             response.event_kind = kind.as_u8();
-            monitor.defer_response(CHANNEL, &response, &Sample::Meta { payload_len: 4 });
+            monitor.defer_response(
+                CHANNEL,
+                &response,
+                emitter,
+                &Sample::Meta { payload_len: 4 },
+            );
         }
         assert_eq!(monitor.deferred.len(), 1);
         assert_eq!(monitor.deferred.get(&cid).map(|e| e.samples.len()), Some(3));

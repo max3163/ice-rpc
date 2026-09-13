@@ -23,7 +23,7 @@ mod waitset;
 
 pub use bridge::{observable_to_responses, ResponseIter, ServiceDispatcher};
 pub use client::native_call;
-pub use monitor::{discover_channels, Direction, DirectionView};
+pub use monitor::{discover_channels, Direction, DirectionView, Emitter};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
 /// Suffixes of the iceoryx2 services backing one channel.

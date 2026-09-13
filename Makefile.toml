@@ -387,6 +387,41 @@ command = "cargo"
 args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--", "--demo", "--detail", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
+[tasks.monitoring-health]
+description = "Console observer with the network health inventory, process metrics and shm scan"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--features", "process-metrics", "--", "--detail", "--health-shm", "--health-interval-ms", "1000", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-live]
+description = "Console observer as a top-like live view (alternate screen, in-frame messages)"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--features", "process-metrics", "--", "--live", "--detail", "--health-shm", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-live-release]
+description = "Same as monitoring-live, compiled in release (much lower CPU)"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--features", "process-metrics", "--release", "--", "--live", "--detail", "--health-shm", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-demo-detail-release]
+description = "Self-contained demo with decoded messages, compiled in release"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--release", "--", "--demo", "--detail", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-metrics-release]
+description = "Observer binary (Prometheus endpoint) compiled in release"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--release", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
 # --- Prometheus endpoint -----------------------------------------------------
 
 [tasks.monitoring-metrics]

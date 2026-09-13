@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use iceoryx2::prelude::*;
+use iceoryx2::service::header::publish_subscribe::Header as SampleHeader;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::{Service, ServiceDetails};
 
@@ -49,6 +50,34 @@ impl Direction {
         match self {
             Direction::Request => REQUEST_NOTIFY_SUFFIX,
             Direction::Response => RESPONSE_NOTIFY_SUFFIX,
+        }
+    }
+}
+
+/// Identity of the process that emitted an observed sample.
+///
+/// Read from the **native** iceoryx2 sample header, so it cannot diverge from
+/// the bus: the wire header carries no emitter field of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Emitter {
+    /// PID of the emitting process (`node_id().pid()`).
+    pub pid: u32,
+    /// Unique iceoryx2 node id: stable, and survives a PID reuse.
+    pub node_id: u128,
+    /// Unique publisher port id.
+    ///
+    /// One publisher exists per `(channel, direction, process)`, so this is the
+    /// right key to scope the per-publisher `seq` and detect a hole.
+    pub publisher_id: u128,
+}
+
+impl Emitter {
+    /// Builds the identity from the native sample header.
+    fn from_native(header: &SampleHeader) -> Self {
+        Self {
+            pid: crate::types::raw_pid_to_u32(header.node_id().pid().value()),
+            node_id: header.node_id().value(),
+            publisher_id: header.publisher_id().value(),
         }
     }
 }
@@ -95,16 +124,20 @@ impl DirectionView {
         })
     }
 
-    /// Non-blocking read of the next sample: `(header, payload length)`.
+    /// Non-blocking read of the next sample: `(header, emitter, payload length)`.
     ///
     /// The payload itself is deliberately not returned: a monitor never needs to
     /// decode the rkyv body, which keeps it ignorant of the service types.
     ///
     /// # Errors
     /// Returns a [`RpcError`] when the underlying port reports a failure.
-    pub fn try_receive(&self) -> Result<Option<(RpcHeader, usize)>, RpcError> {
+    pub fn try_receive(&self) -> Result<Option<(RpcHeader, Emitter, usize)>, RpcError> {
         match self.subscriber.receive() {
-            Ok(Some(sample)) => Ok(Some((*sample.user_header(), sample.len()))),
+            Ok(Some(sample)) => Ok(Some((
+                *sample.user_header(),
+                Emitter::from_native(sample.header()),
+                sample.len(),
+            ))),
             Ok(None) => Ok(None),
             Err(e) => Err(transport_error("monitor receive", e)),
         }
@@ -118,12 +151,13 @@ impl DirectionView {
     ///
     /// # Errors
     /// Returns a [`RpcError`] when the underlying port reports a failure.
-    pub fn try_receive_payload(&self) -> Result<Option<(RpcHeader, Vec<u8>)>, RpcError> {
+    pub fn try_receive_payload(&self) -> Result<Option<(RpcHeader, Emitter, Vec<u8>)>, RpcError> {
         match self.subscriber.receive() {
             Ok(Some(sample)) => {
                 let header = *sample.user_header();
+                let emitter = Emitter::from_native(sample.header());
                 let payload = sample.to_vec();
-                Ok(Some((header, payload)))
+                Ok(Some((header, emitter, payload)))
             }
             Ok(None) => Ok(None),
             Err(e) => Err(transport_error("monitor receive", e)),
@@ -148,6 +182,59 @@ impl DirectionView {
     /// Number of samples the observer can buffer before the publisher skips it.
     pub fn buffer_size(&self) -> usize {
         self.subscriber.buffer_size()
+    }
+
+    /// Name of the underlying iceoryx2 service.
+    pub fn service_name(&self) -> String {
+        self._pub_sub.name().as_str().to_owned()
+    }
+
+    /// Number of active publishers on this service.
+    pub fn publisher_count(&self) -> usize {
+        self._pub_sub.dynamic_config().number_of_publishers()
+    }
+
+    /// Number of active subscribers, **excluding** this observer's own subscriber.
+    pub fn subscriber_count(&self) -> usize {
+        self._pub_sub
+            .dynamic_config()
+            .number_of_subscribers()
+            .saturating_sub(1)
+    }
+
+    /// Maximum number of publishers the service was created with.
+    pub fn max_publishers(&self) -> usize {
+        self._pub_sub.static_config().max_publishers()
+    }
+
+    /// Maximum number of subscribers the service was created with.
+    pub fn max_subscribers(&self) -> usize {
+        self._pub_sub.static_config().max_subscribers()
+    }
+
+    /// Largest buffer a subscriber of this service may request.
+    pub fn subscriber_max_buffer_size(&self) -> usize {
+        self._pub_sub.static_config().subscriber_max_buffer_size()
+    }
+
+    /// Publisher history size.
+    pub fn history_size(&self) -> usize {
+        self._pub_sub.static_config().history_size()
+    }
+
+    /// Whether a saturated publisher overwrites old samples instead of refusing
+    /// to publish (the transport disables it).
+    pub fn has_safe_overflow(&self) -> bool {
+        self._pub_sub.static_config().has_safe_overflow()
+    }
+
+    /// Size in bytes of one payload, as declared by the service definition.
+    pub fn payload_size(&self) -> usize {
+        self._pub_sub
+            .static_config()
+            .message_type_details()
+            .payload
+            .size()
     }
 }
 

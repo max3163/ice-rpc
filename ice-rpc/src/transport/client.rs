@@ -1,7 +1,7 @@
 //! Consumer side: request publication and response routing.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -52,6 +52,13 @@ struct ConsumerPorts {
     request_notifier: IoxNotifier,
     /// Timestamp of the last provider wake-up.
     last_request_notify: AtomicU64,
+    /// Per-channel monotonic publication counter, stamped into
+    /// [`RpcHeader::seq`](crate::types::RpcHeader::seq).
+    ///
+    /// Scoped to this channel on purpose: the correlation-id counter is
+    /// process-wide, so reusing it would inject gaps whenever another channel
+    /// publishes in between, defeating loss detection.
+    seq: AtomicU64,
 }
 
 fn consumer_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<ConsumerPorts>>> {
@@ -113,6 +120,7 @@ fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         _response_service: response_service,
         _request_notify: request_notify,
         last_request_notify: AtomicU64::new(0),
+        seq: AtomicU64::new(0),
         publisher,
         request_notifier,
     });
@@ -207,7 +215,8 @@ where
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
     let ports = consumer_ports(channel)?;
-    let header = RpcHeader::request(method, service_id, 1);
+    let header = RpcHeader::request(method, service_id, 1)
+        .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
 

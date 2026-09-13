@@ -147,6 +147,9 @@ pub fn spawn_native_service(
         let mut idle_spins: u32 = 0;
         let mut signal_ticks: u32 = 0;
         let mut last_notify_us: u64 = 0;
+        // One publisher per channel, drained by this single thread: a plain
+        // counter is enough and stays monotonic for `RpcHeader::seq`.
+        let mut response_seq: u64 = 0;
         while !stop.is_cancelled() {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
@@ -191,8 +194,12 @@ pub fn spawn_native_service(
                     // Publish the responses, then wake the consumer's response
                     // thread once per coalescing window.
                     let mut wake = false;
-                    for response in dispatcher.dispatch(request_header.method(), payload) {
-                        if publish_response(&publisher, &request_header, &response).is_err() {
+                    for (kind, response) in dispatcher.dispatch(request_header.method(), payload) {
+                        let seq = response_seq;
+                        response_seq = response_seq.wrapping_add(1);
+                        if publish_response(&publisher, &request_header, &response, kind, seq)
+                            .is_err()
+                        {
                             break;
                         }
                         wake = true;
@@ -223,14 +230,16 @@ pub fn spawn_native_service(
     })
 }
 
-/// Publishes one response sample, carrying the request's correlation id in its
-/// zero-copy header.
+/// Publishes one response sample, carrying the request's correlation id, the
+/// sample's real [`EventKind`] and the publisher's `seq` in its zero-copy header.
 fn publish_response(
     publisher: &IoxPublisher,
     request: &RpcHeader,
     response: &[u8],
+    kind: EventKind,
+    seq: u64,
 ) -> Result<(), RpcError> {
-    let header = RpcHeader::response_from(request, EventKind::Next, request.service_version);
+    let header = RpcHeader::response_from(request, kind, request.service_version).with_seq(seq);
     publish_until_delivered(publisher, header, response, CONSUMER_WAIT_TIMEOUT)
 }
 
@@ -358,7 +367,7 @@ mod tests {
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new();
         first.method("echo", |payload| {
-            Box::new(std::iter::once(payload.to_vec()))
+            Box::new(std::iter::once((EventKind::Next, payload.to_vec())))
         });
         let mut second = ServiceDispatcher::new();
         second.method("ping", |_payload| Box::new(std::iter::empty()));

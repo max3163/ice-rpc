@@ -292,7 +292,10 @@ place by the bus, so it costs no serialization and no allocation.
 | Field | Type | Contents |
 |---|---|---|
 | `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
+| `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
+| `seq` | `u64` | per-publisher, per-channel monotonic sample counter |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
+| `emitter_pid` | `u32` | PID of the emitting process; scopes `seq` to one publisher |
 | `method_name` | `StaticString<64>` | target method (carried by requests) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
@@ -300,13 +303,23 @@ place by the bus, so it costs no serialization and no allocation.
 
 `event_kind` is stored as a `u8` because `ZeroCopySend` is only derivable on
 structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:20)
-and is converted with `as_u8()` / `from_u8()`.
+and is converted with `as_u8()` / `from_u8()`. A response carries the **real**
+kind of its sample (derived from the `WireEvent` before serialization), so an
+observer counts completion and errors without decoding the payload.
 
 `service_id` is a `const fn` of the name
 ([`service_id_of`](ice-rpc/src/types/header.rs:129)), so the provider and the
 consumer derive the **same** value with no coordination and no discovery; a
 collision between two services of a channel is detected when the channel is
-registered. The layout stays bounded (≤ 128 bytes, pinned by a unit test).
+registered.
+
+The three monitoring fields make the header **self-describing for an
+out-of-band observer** (`ice-rpc-monitor`): it subscribes to the same services,
+reads the header without touching the rkyv payload, and derives an exact latency
+(`response.timestamp_ns - request.timestamp_ns`) plus loss (`seq` gaps). The
+layout is pinned to exactly 128 bytes by a unit test: iceoryx2 validates the
+`user_header` size when a service is opened, so every process on a machine must
+be rebuilt together after a layout change.
 
 ### 4.3. Provider
 

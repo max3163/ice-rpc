@@ -1,0 +1,25 @@
+[package]
+name = "ice-rpc-monitor"
+version.workspace = true
+rust-version.workspace = true
+edition = "2021"
+description = "Out-of-band observer for ice-rpc: Prometheus metrics and correlation-id traces"
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Reuses `RpcHeader` and the transport service definition as the single source of
+# truth for the wire contract.
+ice-rpc = { path = "../ice-rpc" }
+log = { workspace = true }
+serde_json = { workspace = true }
+# Clean termination detection (`SignalHandler::termination_requested`).
+iceoryx2-bb-posix = "0.9.3"
+env_logger = "0.11"
+
+[[bin]]
+name = "ice-rpc-monitor"
+path = "src/main.rs"

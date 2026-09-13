@@ -1030,6 +1030,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ice-rpc-monitor"
+version = "0.2.2"
+dependencies = [
+ "env_logger",
+ "ice-rpc",
+ "iceoryx2-bb-posix",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "iceoryx2"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

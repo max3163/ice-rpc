@@ -20,6 +20,17 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 - `DatabaseServiceProxy` — smart proxy supporting `Provider`, `Consumer` and `ProviderNodeJs` modes;
 - `DatabaseServiceMode` — the mode enum;
 - `ServiceLifecycle`, `ServiceNamed` and `ServiceInit` implementations.
+- With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`
+  and `DatabaseServiceDecoder` (see below).
+
+## Features
+
+| Feature | Default | Effect |
+|---|---|---|
+| `monitoring` | off | Also generate `impl Display for {Trait}Request` and the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`]. This is the only part that forces `Display` on every method argument and return type, so a plain provider/consumer must not carry it. `ice-rpc` re-exports it as the `monitoring` feature. |
+
+An out-of-band observer built with this feature registers the generated decoders
+to render the observed messages in clear text instead of raw bytes.
 
 ## Usage
 

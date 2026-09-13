@@ -33,6 +33,12 @@ pub struct PersonneQuery {
     pub prenom: String,
 }
 
+impl std::fmt::Display for PersonneQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.prenom, self.nom)
+    }
+}
+
 /// Full information about a person.
 #[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
 pub struct PersonneInfo {
@@ -46,6 +52,16 @@ pub struct PersonneInfo {
     pub ville: String,
     /// Current occupation.
     pub profession: String,
+}
+
+impl std::fmt::Display for PersonneInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {}, {} years old, {}, {}",
+            self.prenom, self.nom, self.age, self.ville, self.profession
+        )
+    }
 }
 
 /// Business query service over a database.

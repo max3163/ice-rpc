@@ -196,6 +196,95 @@ impl Metrics {
         }
     }
 
+    /// Renders a compact, human-readable summary of the registry.
+    ///
+    /// Meant for a console observer: global counters, exact-latency quantiles
+    /// read from the fixed-bucket histograms (so they are **upper bounds**),
+    /// payload averages, the in-flight gauge and the loss/orphan counters,
+    /// followed by a per-service breakdown.
+    pub fn render_console(&self) -> String {
+        let Ok(inner) = self.inner.lock() else {
+            return String::new();
+        };
+        let rule = "-".repeat(64);
+        let mut out = String::with_capacity(2048);
+        let _ = writeln!(out, "===== ice-rpc-monitor (console stats) =====");
+
+        let requests: u64 = inner.requests.values().sum();
+        let responses: u64 = inner.responses.values().sum();
+
+        let mut kinds: BTreeMap<&'static str, u64> = BTreeMap::new();
+        for ((_, _, kind), value) in &inner.responses {
+            *kinds.entry(*kind).or_default() += value;
+        }
+        let kind_text = if kinds.is_empty() {
+            "none".to_owned()
+        } else {
+            kinds
+                .iter()
+                .map(|(kind, value)| format!("{kind}={value}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        let latency = merge(inner.latency.values(), LATENCY_BOUNDS);
+        let req_payload = merge_direction(&inner.payload, Direction::Request, PAYLOAD_BOUNDS);
+        let resp_payload = merge_direction(&inner.payload, Direction::Response, PAYLOAD_BOUNDS);
+
+        let _ = writeln!(out, " requests        : {requests}");
+        let _ = writeln!(out, " responses       : {responses}  [{kind_text}]");
+        let _ = writeln!(
+            out,
+            " latency (exact) : {}",
+            describe_latency(&latency, LATENCY_BOUNDS)
+        );
+        let _ = writeln!(
+            out,
+            " payload         : req avg={}  resp avg={}",
+            byte_avg(&req_payload),
+            byte_avg(&resp_payload)
+        );
+        let in_flight: i64 = inner.inflight.values().copied().sum();
+        let gaps: u64 = inner.gaps.values().copied().sum();
+        let unmatched: u64 = inner.unmatched.values().copied().sum();
+        let orphan: u64 = inner.orphan.values().copied().sum();
+        let _ = writeln!(out, " in-flight       : {in_flight}");
+        let _ = writeln!(out, " sample gaps     : {gaps}");
+        let _ = writeln!(out, " unmatched req.  : {unmatched}");
+        let _ = writeln!(out, " orphan responses: {orphan}");
+        let _ = writeln!(out, " clock skew      : {}", inner.clock_skew);
+        let _ = writeln!(
+            out,
+            " nodes           : alive={} crashes={}",
+            inner.nodes_alive, inner.node_crashes
+        );
+
+        // Per-service breakdown; bounded by the static set of compiled services.
+        if !inner.requests.is_empty() {
+            let _ = writeln!(out, "{rule}");
+            const MAX_LINES: usize = 25;
+            for (index, ((channel, service, method), count)) in inner.requests.iter().enumerate() {
+                if index >= MAX_LINES {
+                    let _ = writeln!(out, "   ... and {} more", inner.requests.len() - index);
+                    break;
+                }
+                let series = inner
+                    .latency
+                    .get(&(channel.clone(), *service, method.clone()));
+                let latency_text = match series {
+                    Some(histogram) => describe_latency(histogram, LATENCY_BOUNDS),
+                    None => "no response yet".to_owned(),
+                };
+                let _ = writeln!(
+                    out,
+                    " {channel} service={service} method={method}: requests={count} {latency_text}"
+                );
+            }
+        }
+        let _ = writeln!(out, "===========================================");
+        out
+    }
+
     /// Renders the registry in the Prometheus text exposition format.
     pub fn render_prometheus(&self) -> String {
         let Ok(inner) = self.inner.lock() else {
@@ -301,6 +390,100 @@ impl Metrics {
     }
 }
 
+/// Sums several histograms into one, sharing the same bounds.
+fn merge<'a>(histograms: impl Iterator<Item = &'a Histogram>, bounds: &[f64]) -> Histogram {
+    let mut merged = Histogram::empty(bounds);
+    for histogram in histograms {
+        for (slot, value) in merged.buckets.iter_mut().zip(&histogram.buckets) {
+            *slot += value;
+        }
+        merged.sum += histogram.sum;
+        merged.count += histogram.count;
+    }
+    merged
+}
+
+/// Merges the payload histograms of one direction across every channel.
+fn merge_direction(
+    payload: &BTreeMap<(String, &'static str), Histogram>,
+    direction: Direction,
+    bounds: &[f64],
+) -> Histogram {
+    merge(
+        payload
+            .iter()
+            .filter(|((_, label), _)| *label == direction_label(direction))
+            .map(|(_, histogram)| histogram),
+        bounds,
+    )
+}
+
+/// Upper bound of the `q` quantile, read from a cumulative histogram.
+fn quantile(histogram: &Histogram, bounds: &[f64], q: f64) -> Option<f64> {
+    if histogram.count == 0 {
+        return None;
+    }
+    let target = ((q * histogram.count as f64).ceil() as u64).max(1);
+    for (slot, bound) in histogram.buckets.iter().zip(bounds) {
+        if *slot >= target {
+            return Some(*bound);
+        }
+    }
+    Some(f64::INFINITY)
+}
+
+/// Human-readable latency summary of one histogram.
+fn describe_latency(histogram: &Histogram, bounds: &[f64]) -> String {
+    if histogram.count == 0 {
+        return "none".to_owned();
+    }
+    let average = histogram.sum / histogram.count as f64;
+    let p50 = quantile(histogram, bounds, 0.50).unwrap_or(f64::INFINITY);
+    let p90 = quantile(histogram, bounds, 0.90).unwrap_or(f64::INFINITY);
+    let p99 = quantile(histogram, bounds, 0.99).unwrap_or(f64::INFINITY);
+    format!(
+        "calls={} avg={} p50={} p90={} p99={}",
+        histogram.count,
+        fmt_seconds(average),
+        fmt_seconds(p50),
+        fmt_seconds(p90),
+        fmt_seconds(p99)
+    )
+}
+
+/// Formats a duration in seconds with a readable unit.
+fn fmt_seconds(seconds: f64) -> String {
+    if !seconds.is_finite() {
+        return ">10s".to_owned();
+    }
+    if seconds < 1e-3 {
+        format!("{:.0}us", seconds * 1e6)
+    } else if seconds < 1.0 {
+        format!("{:.2}ms", seconds * 1e3)
+    } else {
+        format!("{:.2}s", seconds)
+    }
+}
+
+/// Average payload size of one histogram, or `n/a` when it saw nothing.
+fn byte_avg(histogram: &Histogram) -> String {
+    if histogram.count == 0 {
+        return "n/a".to_owned();
+    }
+    fmt_bytes(histogram.sum / histogram.count as f64)
+}
+
+/// Formats a byte count with a readable unit.
+fn fmt_bytes(bytes: f64) -> String {
+    if bytes < 1024.0 {
+        format!("{bytes:.0}B")
+    } else if bytes < 1024.0 * 1024.0 {
+        format!("{:.1}KiB", bytes / 1024.0)
+    } else {
+        format!("{:.1}MiB", bytes / (1024.0 * 1024.0))
+    }
+}
+
 /// Renders one histogram in the Prometheus format.
 fn render_histogram(
     out: &mut String,
@@ -365,5 +548,30 @@ mod tests {
         metrics.on_inflight("c", 1, -1);
         let text = metrics.render_prometheus();
         assert!(text.contains("ice_rpc_inflight{channel=\"c\",service=\"1\"} 1"));
+    }
+
+    #[test]
+    fn console_summary_reports_counters_and_latency() {
+        let metrics = Metrics::new();
+        metrics.on_request("DatabaseService", 42, "get_user_age");
+        metrics.on_response("DatabaseService", 42, "complete");
+        metrics.on_latency("DatabaseService", 42, "get_user_age", 0.001);
+
+        let text = metrics.render_console();
+        assert!(
+            text.contains("requests        : 1"),
+            "missing requests:\n{text}"
+        );
+        assert!(text.contains("responses       : 1"));
+        assert!(text.contains("complete=1"), "missing kind:\n{text}");
+        assert!(text.contains("p50=1.00ms"), "missing latency:\n{text}");
+        assert!(text.contains("DatabaseService service=42 method=get_user_age"));
+    }
+
+    #[test]
+    fn console_summary_on_an_empty_registry_is_safe() {
+        let text = Metrics::new().render_console();
+        assert!(text.contains("requests        : 0"));
+        assert!(text.contains("latency (exact) : none"));
     }
 }

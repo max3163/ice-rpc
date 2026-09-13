@@ -170,14 +170,7 @@ pub use rx::{from, of, throw_error, Subject, Subscription};
 pub use locator::ServiceLocator;
 
 // ── Public API: out-of-band monitoring ──────────────────────────────
-/// Read-only observation surface used by the `ice-rpc-monitor` observer.
-///
-/// Lets an external process attach to the channels an ice-rpc process exposes
-/// without touching the hot path: only the zero-copy `RpcHeader` (emitter pid,
-/// sequence, timestamp) and the payload length are read, never the rkyv payload.
-pub mod monitor {
-    pub use crate::transport::{discover_channels, Direction, DirectionView};
-}
+pub mod monitor;
 
 use std::sync::OnceLock;
 

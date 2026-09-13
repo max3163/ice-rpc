@@ -21,3 +21,4 @@ target/
 # iceoryx2 config file generated at runtime by setup_iceoryx2_global_config()
 config/iceoryx2.toml
 ice-rpc/config/iceoryx2.toml
+ice-rpc-monitor/config/iceoryx2.toml

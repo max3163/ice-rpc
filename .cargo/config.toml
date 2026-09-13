@@ -12,6 +12,10 @@
 #   cargo provider-http       # provider-app with the HTTP gateway, debug
 #   cargo bench-app           # benchmark-app, release
 #   cargo probe               # C7 native-liveness probe, debug
+#   cargo monitoring          # out-of-band observer, stats only
+#   cargo monitoring-detail   # observer, decoded request/response per call
+#   cargo monitoring-demo     # observer, self-contained demo (--demo --detail)
+#   cargo monitoring-serve    # observer binary, Prometheus endpoint on :9898
 #
 # `-release` variants build with optimisations.
 [alias]
@@ -30,3 +34,10 @@ bench-app = "run -p ice-rpc --release --example benchmark-app --features tokio"
 
 probe = "run -p ice-rpc --example node_liveness_probe"
 probe-release = "run -p ice-rpc --release --example node_liveness_probe"
+
+# Out-of-band observer (`ice-rpc-monitor`). Extra flags go after `--`, e.g.
+#   cargo monitoring-detail -- --channel DatabaseService
+monitoring = "run -p ice-rpc-monitor --example console-monitor"
+monitoring-detail = "run -p ice-rpc-monitor --example console-monitor -- --detail"
+monitoring-demo = "run -p ice-rpc-monitor --example console-monitor -- --demo --detail"
+monitoring-serve = "run -p ice-rpc-monitor"

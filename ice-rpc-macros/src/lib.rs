@@ -17,6 +17,8 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse::ParseStream, parse_macro_input, ItemTrait, LitInt, LitStr, TraitItem};
 
+#[cfg(feature = "monitoring")]
+use crate::codegen::decoder::{gen_decoder, DecoderGenInput, DecoderMethod};
 use crate::codegen::{
     client::{
         gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
@@ -305,6 +307,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut nodejs_native_methods = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
+    #[cfg(feature = "monitoring")]
+    let mut decoder_methods: Vec<DecoderMethod> = Vec::new();
     for item in &input_trait.items {
         if let TraitItem::Fn(method) = item {
             let fn_name = &method.sig.ident;
@@ -389,6 +393,16 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 arg_names: arg_names.iter().map(|id| (*id).clone()).collect(),
                 arg_types: arg_types.iter().map(|ty| (**ty).clone()).collect(),
             });
+
+            // Collects the data for the generated decoder (`Display` + decoder).
+            #[cfg(feature = "monitoring")]
+            decoder_methods.push(DecoderMethod {
+                method_name: fn_name_str.clone(),
+                var_name: var_name.clone(),
+                arg_names: arg_names.iter().map(|id| (*id).clone()).collect(),
+                ok_type: (*ok_type).clone(),
+                err_type: (*err_type).clone(),
+            });
         }
     }
 
@@ -452,6 +466,24 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let http_callable_impl = gen_http_callable_impl(&http_input);
 
+    // Human-readable decoding of the service payloads, opt-in via the
+    // `monitoring` feature: it is the only part that forces `Display` on every
+    // argument and return type, so a plain provider/consumer must not carry it.
+    #[cfg(feature = "monitoring")]
+    let decoder_output = {
+        let decoder_name = format_ident!("{}Decoder", trait_name);
+        let decoder_input = DecoderGenInput {
+            visibility,
+            req_enum_name: &req_enum_name,
+            decoder_name: &decoder_name,
+            logical_name_lit: logical_name_lit.as_str(),
+            methods: &decoder_methods,
+        };
+        gen_decoder(&decoder_input)
+    };
+    #[cfg(not(feature = "monitoring"))]
+    let decoder_output = quote! {};
+
     // Unique symbol to detect name collisions: two services with the same
     // logical name make the linker fail with "duplicate symbol".
     let collision_symbol = syn::Ident::new(
@@ -477,6 +509,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         #nodejs_serialize
 
         #http_callable_impl
+
+        #decoder_output
 
         #[doc(hidden)]
         #[no_mangle]

@@ -110,6 +110,26 @@ impl DirectionView {
         }
     }
 
+    /// Like [`try_receive`](Self::try_receive), but also copies the payload.
+    ///
+    /// Reading the payload defeats the zero-copy property and costs a copy per
+    /// sample, so it is meant for the *detail* mode only, at moderate
+    /// throughput.
+    ///
+    /// # Errors
+    /// Returns a [`RpcError`] when the underlying port reports a failure.
+    pub fn try_receive_payload(&self) -> Result<Option<(RpcHeader, Vec<u8>)>, RpcError> {
+        match self.subscriber.receive() {
+            Ok(Some(sample)) => {
+                let header = *sample.user_header();
+                let payload = sample.to_vec();
+                Ok(Some((header, payload)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(transport_error("monitor receive", e)),
+        }
+    }
+
     /// Blocks until the wake-up notifier fires or `timeout` elapses.
     ///
     /// Returns `true` when a notification was observed, `false` on a bare

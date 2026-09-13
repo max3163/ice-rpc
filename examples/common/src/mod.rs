@@ -71,6 +71,53 @@ macro_rules! with_nodejs_providers {
     };
 }
 
+/// Inventory of the decoders this crate exposes to an **observer**.
+///
+/// Each `#[service]` generates a `{Service}Decoder`; an observer linked against
+/// this crate registers them all at once:
+///
+/// ```rust,ignore
+/// let mut config = ice_rpc_monitor::config::Config::default();
+/// config.decoders = std::sync::Arc::new(common::decoders());
+/// ```
+///
+/// `with_service_decoders!(my_macro, extra_args…)` expands to
+/// `my_macro!(extra_args…, Decoder1, Decoder2, …)`, mirroring
+/// [`with_nodejs_providers!`].
+///
+/// Only available with the `monitoring` feature: without it, the generators do
+/// not emit any decoder (see the `monitoring` feature of `ice-rpc`).
+#[cfg(feature = "monitoring")]
+#[macro_export]
+macro_rules! with_service_decoders {
+    ($callback:ident $(, $arg:expr)* $(,)?) => {
+        $callback!(
+            $($arg,)*
+            $crate::ConfigServiceDecoder,
+            $crate::ContextServiceDecoder,
+            $crate::DatabaseServiceDecoder,
+            $crate::HttpServiceDecoder,
+            $crate::NotificationServiceDecoder,
+        )
+    };
+}
+
+/// Builds a decoder registry covering **every** service of this crate.
+///
+/// Pass it to `ice-rpc-monitor` so the observed messages are rendered with each
+/// service type's [`Display`](std::fmt::Display) implementation.
+#[cfg(feature = "monitoring")]
+pub fn decoders() -> ice_rpc::monitor::Decoders {
+    macro_rules! build {
+        ($($decoder:ty),* $(,)?) => {{
+            let mut decoders = ice_rpc::monitor::Decoders::new();
+            $(<$decoder>::register(&mut decoders);)*
+            decoders
+        }};
+    }
+    crate::with_service_decoders!(build)
+}
+
 #[cfg(test)]
 mod nodejs_provider_inventory {
     /// The sources holding the `#[service]` declarations of this crate.
@@ -154,5 +201,89 @@ mod nodejs_provider_inventory {
             };
         }
         assert!(crate::with_nodejs_providers!(count) >= SOURCES.len());
+    }
+}
+
+#[cfg(all(test, feature = "monitoring"))]
+mod decoder_inventory {
+    /// Every service must expose a decoder, i.e. the two inventories list the
+    /// same number of services. A new service added to one list only fails here.
+    #[test]
+    fn every_service_has_a_decoder() {
+        macro_rules! count {
+            ($($item:ty),* $(,)?) => {
+                [$(stringify!($item)),*].len()
+            };
+        }
+        let decoders = crate::with_service_decoders!(count);
+        let providers = crate::with_nodejs_providers!(count);
+        assert_eq!(decoders, providers);
+    }
+
+    /// The registry returned by [`crate::decoders`] actually holds them.
+    #[test]
+    fn the_registry_covers_every_service() {
+        let decoders = crate::decoders();
+        assert!(!decoders.is_empty());
+        assert_eq!(decoders.len(), {
+            macro_rules! count {
+                ($($item:ty),* $(,)?) => {
+                    [$(stringify!($item)),*].len()
+                };
+            }
+            crate::with_service_decoders!(count)
+        });
+    }
+
+    /// The generated decoders render the real wire encoding through `Display`.
+    #[test]
+    fn decoders_render_the_common_types() {
+        use ice_rpc::gen::{rkyv, service_id_of, WireEvent};
+
+        fn encode<T>(value: &T) -> Vec<u8>
+        where
+            T: for<'a> rkyv::Serialize<
+                rkyv::rancor::Strategy<
+                    rkyv::ser::Serializer<
+                        rkyv::util::AlignedVec,
+                        rkyv::ser::allocator::ArenaHandle<'a>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                    rkyv::rancor::Error,
+                >,
+            >,
+        {
+            rkyv::to_bytes::<rkyv::rancor::Error>(value)
+                .expect("encode")
+                .to_vec()
+        }
+
+        let decoders = crate::decoders();
+        let database = service_id_of("DatabaseService");
+        let request = encode(&crate::DatabaseServiceRequest::GetUserAge {
+            name: "Alice".into(),
+        });
+        assert_eq!(
+            decoders
+                .request(database, "get_user_age", &request)
+                .as_deref(),
+            Some("get_user_age(name=Alice)")
+        );
+
+        let response = encode(&WireEvent::<i32, crate::DatabaseError>::Next(30));
+        assert_eq!(
+            decoders
+                .response(database, "get_user_age", &response)
+                .as_deref(),
+            Some("30")
+        );
+
+        // A unit success type (`Observable<(), String>`) has its own decoder.
+        let notification = service_id_of("NotificationService");
+        let unit = encode(&WireEvent::<(), String>::Complete);
+        assert_eq!(
+            decoders.response(notification, "ping", &unit).as_deref(),
+            Some("complete")
+        );
     }
 }

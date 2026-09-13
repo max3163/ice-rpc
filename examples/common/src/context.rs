@@ -15,6 +15,12 @@ pub struct ContextEntry {
     pub value: String,
 }
 
+impl std::fmt::Display for ContextEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} = {}", self.key, self.value)
+    }
+}
+
 /// Error returned by the [`ContextService`] operations.
 #[derive(Debug, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
 pub enum ContextError {

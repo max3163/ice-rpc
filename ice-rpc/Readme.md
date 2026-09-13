@@ -12,6 +12,10 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs`.
 - **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
+- **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also
+  generates a `{Service}Decoder` (and `Display` on the request enum) so an
+  external observer renders the observed payloads in clear text. Off by default,
+  as it requires `Display` on every method argument and return type.
 
 ## Installation
 

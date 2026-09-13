@@ -1206,3 +1206,49 @@ Do **not** publish `gateway_nodejs`, `examples/common` or `ice-rpc-macros-tests`
 git push origin main
 git push origin vX.Y.Z
 ```
+
+---
+
+## 13. Out-of-band monitoring
+
+[`ice-rpc-monitor`](ice-rpc-monitor/Readme.md) is a standalone workspace binary
+that observes the traffic **without touching the hot path**: it attaches in
+read-only mode to the iceoryx2 services a process already exposes
+(`{channel}_req`, `{channel}_resp` and their `_notify` event services) and reads
+the zero-copy `RpcHeader` only.
+
+Two capture modes, because reading the payload is not free:
+
+| Mode | Reads/decodes the payload | Use case |
+|---|---|---|
+| `stats` (default) | never | high throughput: counts, error kinds, exact latency, loss |
+| `detail` | yes (decoded) | debugging at moderate throughput: the message content |
+
+Decoding is opt-in: building the service definitions with the `monitoring`
+feature makes `#[service]` generate a `{Service}Decoder` per service, which the
+observer registers (e.g. `common::decoders()`) to render each message with the
+`Display` implementation of the service types. See
+[`ice-rpc-monitor`](ice-rpc-monitor/Readme.md#decoding-the-messages).
+
+```bash
+# Stats on every discovered channel, Prometheus endpoint on :9898.
+cargo run -p ice-rpc-monitor
+
+# Full capture (`--detail`) on one channel only, NDJSON trace stream to a file.
+cargo run -p ice-rpc-monitor -- \
+    --detail-channel DatabaseService --trace-sample-rate 1 --trace-file traces.ndjson
+
+# Console example: live stats, plus the messages with --detail (--demo is standalone).
+cargo run -p ice-rpc-monitor --example console-monitor -- --demo --detail
+```
+
+It is a **separate process**, so its cost never runs on the observed processes.
+`iceoryx2` natively supports several subscribers per service, and because the
+transport disables safe overflow
+([§4.5](#45-tuning)), a saturated observer is skipped by the publisher instead of
+blocking it; the loss is measured from `seq` holes rather than guessed.
+
+The exact latency comes from the header timestamps
+(`response.timestamp_ns - request.timestamp_ns`), and the real response kind
+(`complete` / `error`) is stamped by the provider, so completion and error rates
+are countable without decoding rkyv.

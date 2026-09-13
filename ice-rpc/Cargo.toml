@@ -29,6 +29,10 @@ default = []
 # adapter is selected by the `http-tokio` feature:
 # - `http` (alone)         → trillium-smol (async-global-executor, no tokio)
 # - `http` + `http-tokio`  → trillium-tokio (requires the `tokio` feature)
+# Generates, from `#[service]`, the `{Service}Decoder` and the `Display` impl an
+# out-of-band observer uses to render the payloads. Off by default: a plain
+# provider/consumer must not be forced to implement `Display` everywhere.
+monitoring = ["ice-rpc-macros/monitoring"]
 http = ["dep:trillium", "dep:trillium-smol"]
 tokio = ["dep:tokio"]
 smol = ["dep:trillium-smol"]

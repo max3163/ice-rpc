@@ -1033,10 +1033,12 @@ dependencies = [
 name = "ice-rpc-monitor"
 version = "0.2.2"
 dependencies = [
+ "common",
  "env_logger",
  "ice-rpc",
  "iceoryx2-bb-posix",
  "log",
+ "pollster",
  "serde_json",
 ]
 

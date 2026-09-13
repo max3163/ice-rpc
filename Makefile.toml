@@ -9,6 +9,7 @@
 #   cargo make examples-build-release   # Build all Rust examples (release)
 #   cargo make provider                 # Run the Rust provider example (debug)
 #   cargo make consumer                 # Run the Rust consumer example (debug)
+#   cargo make monitoring-demo-detail   # Console observer, self-contained + decoded messages
 #   cargo make provider-release         # Same, compiled in release
 #   cargo make provider-context-nodejs  # Run the Node.js provider example
 #
@@ -328,6 +329,91 @@ workspace = false
 command = "cargo"
 args = ["run", "-p", "ice-rpc", "--example", "node_liveness_probe", "--release", "${@}"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+# =============================================================================
+# MONITORING (ice-rpc-monitor)
+#
+# The out-of-band observer attaches to the channels a provider/consumer already
+# exposes. Always run it from the workspace root so it shares the generated
+# `config/iceoryx2.toml` with the observed processes.
+#
+#   cargo make monitoring            # console stats of every discovered channel
+#   cargo make monitoring-detail     # + decoded request/response of every call
+#   cargo make monitoring-demo       # self-contained: host + call DatabaseService
+#   cargo make monitoring-demo-detail
+#   cargo make monitoring-metrics    # observer binary, Prometheus endpoint on :9898
+#   cargo make monitoring-test       # unit + end-to-end tests of the observer
+#
+# Extra arguments are forwarded after `--`:
+#   cargo make monitoring-detail -- --channel DatabaseService --interval-ms 500
+# =============================================================================
+
+# --- Console observer --------------------------------------------------------
+
+[tasks.monitoring]
+description = "Run the console observer, stats only: [-- args]"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-detail]
+description = "Run the console observer in full mode (stats + decoded messages): [-- args]"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--", "--detail", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-release]
+description = "Run the console observer in full mode, release build: [-- args]"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--release", "--", "--detail", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+# --- Self-contained demos ----------------------------------------------------
+
+[tasks.monitoring-demo]
+description = "Self-contained demo: host and call DatabaseService, stats only"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--", "--demo", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-demo-detail]
+description = "Self-contained demo with decoded messages (recommended entry point)"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--example", "console-monitor", "--", "--demo", "--detail", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+# --- Prometheus endpoint -----------------------------------------------------
+
+[tasks.monitoring-metrics]
+description = "Run the observer binary and serve Prometheus on /metrics: [-- args]"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.monitoring-metrics-off]
+description = "Run the observer binary with the Prometheus endpoint disabled"
+workspace = false
+command = "cargo"
+args = ["run", "-p", "ice-rpc-monitor", "--", "--prometheus", "off", "${@}"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+# --- Observer checks ---------------------------------------------------------
+
+[tasks.monitoring-test]
+description = "Run the observer tests (unit + end-to-end)"
+command = "cargo"
+args = ["test", "-p", "ice-rpc-monitor"]
+
+[tasks.monitoring-clippy]
+description = "Lint the observer crate and its example"
+command = "cargo"
+args = ["clippy", "-p", "ice-rpc-monitor", "--all-targets"]
 
 # =============================================================================
 # NODE.JS EXAMPLES (gateway_nodejs)

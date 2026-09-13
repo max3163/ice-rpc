@@ -23,6 +23,8 @@ pub struct PendingCall {
     pub request_ts_ns: u64,
     /// Request payload length in bytes.
     pub request_bytes: usize,
+    /// Human-readable request payload, decoded in detail mode only.
+    pub request_text: Option<String>,
     /// Whether a first response has already been observed.
     pub first_response_seen: bool,
     started: Instant,
@@ -36,6 +38,7 @@ impl PendingCall {
         method: String,
         request_ts_ns: u64,
         request_bytes: usize,
+        request_text: Option<String>,
     ) -> Self {
         Self {
             channel,
@@ -43,6 +46,7 @@ impl PendingCall {
             method,
             request_ts_ns,
             request_bytes,
+            request_text,
             first_response_seen: false,
             started: Instant::now(),
         }
@@ -84,6 +88,11 @@ impl Correlate {
     /// Number of calls currently tracked.
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Returns `true` when a call is tracked for `cid`.
+    pub fn contains(&self, cid: &[u8; CORRELATION_ID_LEN]) -> bool {
+        self.entries.contains_key(cid)
     }
 
     /// Registers a new call; returns the calls evicted to stay under capacity.
@@ -145,7 +154,7 @@ mod tests {
     use super::*;
 
     fn call() -> PendingCall {
-        PendingCall::new("c".into(), 1, "m".into(), 0, 0)
+        PendingCall::new("c".into(), 1, "m".into(), 0, 0, None)
     }
 
     #[test]

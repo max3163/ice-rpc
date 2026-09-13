@@ -2,10 +2,30 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+
+use ice_rpc::monitor::Decoders;
+
+use crate::traces::TraceFormat;
 
 /// Default address the Prometheus endpoint listens on.
 const DEFAULT_PROMETHEUS: &str = "127.0.0.1:9898";
+
+/// Level of detail captured by the observer.
+///
+/// The two modes exist because reading the payload is not free: capturing the
+/// message content costs a copy per sample, which is only acceptable when the
+/// traffic is moderate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Metadata only: the payload is **never** read. Built for high throughput,
+    /// it still yields counts, throughput, error kinds and exact latencies.
+    Stats,
+    /// Also captures the raw payload bytes (hex-encoded) of every sample. Meant
+    /// for debugging at moderate throughput.
+    Detail,
+}
 
 /// Runtime configuration of the observer.
 #[derive(Debug, Clone)]
@@ -14,6 +34,10 @@ pub struct Config {
     pub prometheus_addr: Option<SocketAddr>,
     /// Channels to observe. Empty means "discover every channel automatically".
     pub channels: Vec<String>,
+    /// Global capture mode.
+    pub mode: Mode,
+    /// Channels forced to [`Mode::Detail`] even when the global mode is `Stats`.
+    pub detail_channels: Vec<String>,
     /// How often the channel list is refreshed when discovery is enabled.
     pub discover_interval: Duration,
     /// How often correlation entries older than [`Config::call_ttl`] are swept.
@@ -26,6 +50,12 @@ pub struct Config {
     pub trace_sample_rate: u64,
     /// Trace sink: a file, or `None` for stdout.
     pub trace_file: Option<PathBuf>,
+    /// Format of the emitted trace records (NDJSON or human-readable lines).
+    pub trace_format: TraceFormat,
+    /// Decoders that turn observed payloads into human-readable text.
+    ///
+    /// Only used in detail mode; an empty registry leaves the payloads opaque.
+    pub decoders: Arc<Decoders>,
     /// Poll interval of the node-liveness check.
     pub liveness_interval: Duration,
 }
@@ -35,18 +65,27 @@ impl Default for Config {
         Self {
             prometheus_addr: DEFAULT_PROMETHEUS.parse().ok(),
             channels: Vec::new(),
+            mode: Mode::Stats,
+            detail_channels: Vec::new(),
             discover_interval: Duration::from_secs(2),
             sweep_interval: Duration::from_secs(5),
             call_ttl: Duration::from_secs(60),
             max_inflight: 100_000,
             trace_sample_rate: 0,
             trace_file: None,
+            trace_format: TraceFormat::Json,
+            decoders: Arc::new(Decoders::new()),
             liveness_interval: Duration::from_secs(1),
         }
     }
 }
 
 impl Config {
+    /// Returns `true` when `channel` must be observed in detail mode.
+    pub fn detail_for(&self, channel: &str) -> bool {
+        self.mode == Mode::Detail || self.detail_channels.iter().any(|name| name == channel)
+    }
+
     /// Parses `--key value` arguments, falling back to the defaults.
     ///
     /// # Errors
@@ -76,6 +115,20 @@ impl Config {
                     };
                 }
                 "--channel" => config.channels.push(value(&mut i)?.to_owned()),
+                // Shorthand for the full capture mode: keeps the common case short.
+                "--detail" => config.mode = Mode::Detail,
+                "--mode" => {
+                    config.mode = match value(&mut i)? {
+                        "stats" => Mode::Stats,
+                        "detail" => Mode::Detail,
+                        other => {
+                            return Err(format!(
+                                "invalid --mode '{other}' (expected 'stats' or 'detail')"
+                            ))
+                        }
+                    };
+                }
+                "--detail-channel" => config.detail_channels.push(value(&mut i)?.to_owned()),
                 "--discover-interval-ms" => {
                     config.discover_interval = Duration::from_millis(parse_u64(value(&mut i)?)?);
                 }
@@ -89,6 +142,17 @@ impl Config {
                     config.trace_sample_rate = parse_u64(value(&mut i)?)?;
                 }
                 "--trace-file" => config.trace_file = Some(PathBuf::from(value(&mut i)?)),
+                "--trace-format" => {
+                    config.trace_format = match value(&mut i)? {
+                        "json" => TraceFormat::Json,
+                        "human" => TraceFormat::Human,
+                        other => {
+                            return Err(format!(
+                                "invalid --trace-format '{other}' (expected 'json' or 'human')"
+                            ))
+                        }
+                    };
+                }
                 "--help" | "-h" => return Err(HELP.to_owned()),
                 other => return Err(format!("unknown argument '{other}'\n{HELP}")),
             }
@@ -114,11 +178,18 @@ USAGE:
 OPTIONS:
     --prometheus <addr|off>        Prometheus endpoint (default 127.0.0.1:9898)
     --channel <name>               Observe only this channel (repeatable)
+    --detail                       Shorthand for `--mode detail` (full capture)
+    --mode <stats|detail>          Capture mode (default stats)
+                                   stats  = metadata only, never reads the payload
+                                   detail = also captures the payload (hex), costs a
+                                            copy per sample: use it at lower throughput
+    --detail-channel <name>        Force detail mode on this channel only (repeatable)
     --discover-interval-ms <ms>    Channel discovery interval (default 2000)
     --call-ttl-ms <ms>             Pending-call timeout (default 60000)
     --max-inflight <n>             Max tracked in-flight calls (default 100000)
     --trace-sample-rate <n>        Emit 1 trace every n calls (0 = off)
     --trace-file <path>            Trace sink (default: stdout)
+    --trace-format <json|human>    Trace record format (default json)
     -h, --help                     Show this help";
 
 #[cfg(test)]
@@ -133,6 +204,7 @@ mod tests {
             Some("127.0.0.1:9898".parse().unwrap())
         );
         assert!(config.channels.is_empty());
+        assert_eq!(config.mode, Mode::Stats);
         assert_eq!(config.trace_sample_rate, 0);
     }
 
@@ -155,8 +227,44 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_missing_value() {
-        let args = vec!["--channel".to_owned()];
-        assert!(Config::from_args(&args).is_err());
+    fn detail_mode_applies_globally_or_per_channel() {
+        let global = Config::from_args(&["--mode".to_owned(), "detail".to_owned()]).unwrap();
+        assert!(global.detail_for("Anything"));
+
+        let per_channel: Vec<String> = ["--detail-channel", "DatabaseService"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let config = Config::from_args(&per_channel).unwrap();
+        assert_eq!(config.mode, Mode::Stats);
+        assert!(config.detail_for("DatabaseService"));
+        assert!(!config.detail_for("ConfigService"));
+    }
+
+    #[test]
+    fn rejects_a_missing_value_and_an_unknown_mode() {
+        assert!(Config::from_args(&["--channel".to_owned()]).is_err());
+        assert!(Config::from_args(&["--mode".to_owned(), "verbose".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn detail_flag_is_a_shorthand_for_the_detail_mode() {
+        let config = Config::from_args(&["--detail".to_owned()]).expect("valid args");
+        assert_eq!(config.mode, Mode::Detail);
+        assert!(config.detail_for("Anything"));
+        // Default stays stats-only.
+        assert_eq!(Config::default().mode, Mode::Stats);
+        assert_eq!(Config::default().trace_format, TraceFormat::Json);
+    }
+
+    #[test]
+    fn trace_format_accepts_human() {
+        let args: Vec<String> = ["--trace-format", "human"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let config = Config::from_args(&args).expect("valid args");
+        assert_eq!(config.trace_format, TraceFormat::Human);
+        assert!(Config::from_args(&["--trace-format".to_owned(), "xml".to_owned()]).is_err());
     }
 }

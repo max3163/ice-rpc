@@ -20,6 +20,12 @@ serde_json = { workspace = true }
 iceoryx2-bb-posix = "0.9.3"
 env_logger = "0.11"
 
+[dev-dependencies]
+pollster = "1.0"
+# The console example is linked against the shared service contract and decodes
+# the observed payloads with the generated `{Service}Decoder`s.
+common = { path = "../examples/common", features = ["monitoring"] }
+
 [[bin]]
 name = "ice-rpc-monitor"
 path = "src/main.rs"

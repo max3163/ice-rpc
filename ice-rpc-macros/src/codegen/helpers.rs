@@ -49,6 +49,15 @@ pub(crate) fn g_variant_name(s: &str) -> String {
     result
 }
 
+/// Returns `true` for the unit type `()`.
+///
+/// The generated decoder formats the success value with `Display`, which `()`
+/// does not implement; the unit case therefore takes a dedicated code path.
+#[cfg(feature = "monitoring")]
+pub(crate) fn is_unit_type(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
+}
+
 /// Extracts the `(OkType, ErrType)` types from the return type of an RPC method.
 ///
 /// Supports the forms:

@@ -24,16 +24,23 @@ use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
 use crate::CancellationToken;
 
 /// Opens the pub/sub service of one direction of `channel`.
-pub(super) fn open_service(
+///
+/// `create` selects `open_or_create` (transport side) or a strict `open`
+/// (read-only monitor side, which must never create the service). The service
+/// definition is shared by both, so an observer is guaranteed to attach to the
+/// very service the transport created.
+pub(super) fn open_service_with(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
+    create: bool,
 ) -> Result<IoxPubSub, RpcError> {
     let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
     let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
         .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
-    node.service_builder(&name)
+    let builder = node
+        .service_builder(&name)
         .publish_subscribe::<[u8]>()
         .user_header::<RpcHeader>()
         .payload_alignment(alignment)
@@ -43,23 +50,60 @@ pub(super) fn open_service(
         .max_nodes(MAX_NODES)
         .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
         // Must stay false: enabled, the receiver overwrites its oldest sample.
-        .enable_safe_overflow(false)
-        .open_or_create()
-        .map_err(|e| transport_error("open service", e))
+        .enable_safe_overflow(false);
+
+    if create {
+        builder
+            .open_or_create()
+            .map_err(|e| transport_error("open service", e))
+    } else {
+        builder
+            .open()
+            .map_err(|e| transport_error("open service (read-only)", e))
+    }
+}
+
+/// Opens the pub/sub service of one direction of `channel`, creating it if needed.
+pub(super) fn open_service(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+) -> Result<IoxPubSub, RpcError> {
+    open_service_with(node, channel, suffix, true)
 }
 
 /// Opens the event service used as a wake-up signal for `channel`.
+///
+/// `create` selects `open_or_create` (transport side) or a strict `open`
+/// (read-only monitor side).
+pub(super) fn open_event_service_with(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+    create: bool,
+) -> Result<IoxEvent, RpcError> {
+    let topic = format!("{channel}{suffix}");
+    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
+    let builder = node.service_builder(&name).event();
+
+    if create {
+        builder
+            .open_or_create()
+            .map_err(|e| transport_error("open event service", e))
+    } else {
+        builder
+            .open()
+            .map_err(|e| transport_error("open event service (read-only)", e))
+    }
+}
+
+/// Opens the event service used as a wake-up signal for `channel`, creating it if needed.
 pub(super) fn open_event_service(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
 ) -> Result<IoxEvent, RpcError> {
-    let topic = format!("{channel}{suffix}");
-    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
-    node.service_builder(&name)
-        .event()
-        .open_or_create()
-        .map_err(|e| transport_error("open event service", e))
+    open_event_service_with(node, channel, suffix, true)
 }
 
 /// Spawns the provider side of one channel: a thread that routes every request to

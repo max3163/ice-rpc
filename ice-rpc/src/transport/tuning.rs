@@ -68,6 +68,21 @@ pub(super) const PUBLISH_SPIN_ATTEMPTS: u32 = 4_096;
 /// the cost of a missed notification.
 pub(super) const WAITSET_DEADLINE: Duration = Duration::from_millis(1);
 
+/// Attempts made to open the ports of a channel before giving up on it.
+///
+/// iceoryx2 answers `SystemInFlux` when another process is creating or removing
+/// that exact service at this instant — a race the next attempt wins. Without a
+/// retry, one such blip left the channel dead for the rest of the process
+/// lifetime, although the error is classified as retryable.
+pub(super) const OPEN_RETRY_ATTEMPTS: u32 = 20;
+
+/// Delay between two attempts at opening the ports of a channel.
+///
+/// 20 × 50 ms is a one-second budget: wider than a process teardown, and the
+/// price is paid only by a channel that recovers. A non-retryable failure (a
+/// service left by another build) returns immediately instead of waiting.
+pub(super) const OPEN_RETRY_SLEEP: Duration = Duration::from_millis(50);
+
 /// Processed samples between two termination checks on the busy path.
 ///
 /// `SignalHandler::termination_requested()` takes a process-wide mutex.

@@ -16,6 +16,14 @@ use crate::global::Locked;
 /// releasing the iceoryx2 resources.
 pub(crate) struct ShutdownRegistry {
     handles: Mutex<Vec<crate::rt::BlockingHandle>>,
+    /// Dispatch loops, which own the iceoryx2 ports.
+    ///
+    /// Distinct from `handles` because they are OS threads, not runtime tasks:
+    /// joining one blocks, whereas awaiting a [`crate::rt::BlockingHandle`] yields.
+    /// They must be joined all the same — dropping their ports is what unlinks the
+    /// shared-memory files, so a process that exits without waiting leaves its
+    /// services (and their `*.shm_state` markers) behind on a *clean* shutdown.
+    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl ShutdownRegistry {
@@ -23,6 +31,7 @@ impl ShutdownRegistry {
     pub fn new() -> Self {
         Self {
             handles: Mutex::new(Vec::new()),
+            threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -31,18 +40,32 @@ impl ShutdownRegistry {
         crate::sync::lock(&self.handles).push(handle);
     }
 
-    /// Waits for all registered threads to finish (async), then clears the registry.
+    /// Registers the handle of a dispatch thread owning iceoryx2 ports.
+    pub fn register_thread(&self, handle: std::thread::JoinHandle<()>) {
+        crate::sync::lock(&self.threads).push(handle);
+    }
+
+    /// Waits for all registered threads to finish, then clears the registry.
+    ///
+    /// The joins are **bounded**: a dispatch loop polls its stop token at most
+    /// every `WAITSET_DEADLINE` (1 ms), so a cancelled loop returns within a
+    /// millisecond. Blocking here is deliberate — this is the shutdown path, and
+    /// the alternative is a process that exits before its ports are dropped.
     ///
     /// # Returns
     /// Number of threads awaited.
     pub async fn join_all(&self) -> usize {
-        // The guard is dropped before the handles are awaited.
+        // The guards are dropped before anything is awaited or joined.
         let handles = {
             let mut guard = crate::sync::lock(&self.handles);
             std::mem::take(&mut *guard)
         };
+        let threads = {
+            let mut guard = crate::sync::lock(&self.threads);
+            std::mem::take(&mut *guard)
+        };
 
-        let count = handles.len();
+        let count = handles.len() + threads.len();
         if count > 0 {
             log::info!(
                 "[ShutdownRegistry] Waiting for {} IPC thread(s) to finish...",
@@ -50,6 +73,9 @@ impl ShutdownRegistry {
             );
             for handle in handles {
                 handle.await;
+            }
+            for thread in threads {
+                let _ = thread.join();
             }
             log::info!("[ShutdownRegistry] All IPC threads terminated.");
         }

@@ -13,8 +13,9 @@ use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, REQUEST_NOTIFY_SUFFIX,
-    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, OPEN_RETRY_ATTEMPTS,
+    OPEN_RETRY_SLEEP, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
+    RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
@@ -93,6 +94,9 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
 ///
 /// `services` is the `(service_id, dispatcher)` table of the services sharing the
 /// channel; a request whose id is unknown is logged and dropped.
+///
+/// The ports are opened with a bounded retry on the failures that are transient:
+/// a channel is not worth losing to a race with another process.
 pub fn spawn_native_service(
     channel: &str,
     services: Vec<(u32, ServiceDispatcher)>,
@@ -100,13 +104,19 @@ pub fn spawn_native_service(
 ) -> JoinHandle<()> {
     let table: HashMap<u32, ServiceDispatcher> = services.into_iter().collect();
     let channel = channel.to_owned();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         // Any port that cannot be opened makes the whole channel useless: log it
-        // and stop the thread.
-        let ports = match open_channel_ports(&channel) {
+        // and stop the thread. A transient failure is retried first — a channel
+        // must not be lost to a race, see `open_with_retries`.
+        let ports = match open_with_retries(&channel, &stop) {
             Ok(ports) => ports,
             Err(e) => {
-                log::error!("[transport] '{channel}': {e}");
+                if stop.is_cancelled() {
+                    // Shutdown asked for while opening: not a failure to report.
+                    log::debug!("[transport] '{channel}': open abandoned on shutdown: {e}");
+                } else {
+                    log::error!("[transport] '{channel}': {e}");
+                }
                 return;
             }
         };
@@ -131,7 +141,60 @@ pub fn spawn_native_service(
             |header, payload| handle_request(&channel, &table, &mut sink, header, payload),
         );
         log::info!("[transport] channel '{channel}' stopped");
+    });
+
+    handle
+}
+
+/// Opens the ports of one channel, retrying the failures that are worth retrying.
+fn open_with_retries(channel: &str, stop: &CancellationToken) -> Result<ChannelPorts, RpcError> {
+    retry_open(channel, OPEN_RETRY_ATTEMPTS, stop, || {
+        open_channel_ports(channel)
     })
+}
+
+/// Attempts `attempt_open` until it succeeds, fails for good, the budget runs
+/// out, or shutdown is requested.
+///
+/// iceoryx2 answers `SystemInFlux` when another process is creating or removing
+/// that very service at this instant — a genuine race, which the next attempt
+/// wins. Every such failure is already classified retryable on both sides, so
+/// this loop is what makes that classification true: before it, a single blip
+/// left a whole channel dead for the rest of the process lifetime.
+///
+/// Two asymmetries, and both matter:
+///
+/// - a **non**-retryable failure — a service left behind by another build —
+///   returns at once, because no attempt can fix it and the operator already has
+///   the remedy in the message;
+/// - a cancelled `stop` also returns at once, so the worst case of a Ctrl+C
+///   during the budget is the sleep in progress (50 ms), not the whole second.
+///
+/// The budget itself never delays anything the caller waits for: the open happens
+/// on the channel's own thread, not in the registration path or in a call.
+fn retry_open<T>(
+    channel: &str,
+    attempts: u32,
+    stop: &CancellationToken,
+    mut attempt_open: impl FnMut() -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    let mut attempt = 0;
+    loop {
+        match attempt_open() {
+            Ok(opened) => return Ok(opened),
+            Err(e) if !e.is_retryable() || attempt >= attempts || stop.is_cancelled() => {
+                return Err(e)
+            }
+            Err(e) => {
+                attempt += 1;
+                log::warn!(
+                    "[transport] '{channel}': {e} — attempt {attempt}/{attempts}, retrying in {:?}",
+                    OPEN_RETRY_SLEEP
+                );
+                std::thread::sleep(OPEN_RETRY_SLEEP);
+            }
+        }
+    }
 }
 
 /// Publishes the responses of one channel and wakes the consumers up.
@@ -311,11 +374,12 @@ pub fn register_native_service(
     if CHANNELS_SEALED.load(Ordering::Acquire) {
         // A provider created after the seal (a lazily initialized service)
         // cannot join its channel: it starts its own thread.
-        spawn_native_service(
+        let handle = spawn_native_service(
             channel,
             vec![(service_id, dispatcher)],
             crate::global_cancel_token().clone(),
         );
+        crate::locator::ServiceLocator::global().register_shutdown_thread(handle);
         return Ok(());
     }
 
@@ -366,7 +430,11 @@ pub fn start_registered_channels() {
             .into_iter()
             .map(|svc| (svc.id, svc.dispatcher))
             .collect();
-        spawn_native_service(&channel, services, pending.stop);
+        // The handle is registered, never discarded: the thread owns the channel's
+        // ports, so the clean shutdown must wait for it to return — otherwise
+        // nothing unlinks the services it created.
+        let handle = spawn_native_service(&channel, services, pending.stop);
+        crate::locator::ServiceLocator::global().register_shutdown_thread(handle);
     }
 }
 
@@ -392,6 +460,73 @@ mod tests {
 
         assert_eq!(conflicting_name(&entries, 9), Some("SetPerson"));
         assert_eq!(conflicting_name(&entries, 11), None);
+    }
+
+    /// A token nobody cancelled: the retries run their course.
+    fn running() -> CancellationToken {
+        CancellationToken::new()
+    }
+
+    /// The race `SystemInFlux` describes is transient: it must be retried, and
+    /// the loop must return what the successful attempt produced.
+    #[test]
+    fn a_retryable_open_failure_is_retried_until_it_succeeds() {
+        let mut attempts = 0;
+        let opened = retry_open("chan", 5, &running(), || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(RpcError::TransportError("SystemInFlux".to_string()))
+            } else {
+                Ok(attempts)
+            }
+        });
+
+        assert_eq!(opened.unwrap(), 3);
+        assert_eq!(attempts, 3, "two failures then one success");
+    }
+
+    /// A service left behind by another build cannot be fixed by retrying: the
+    /// caller must get the error — and the remedy it carries — immediately.
+    #[test]
+    fn a_stale_open_failure_is_not_retried() {
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 5, &running(), || {
+            attempts += 1;
+            Err(RpcError::ProtocolMismatch("stale service".to_string()))
+        });
+
+        assert!(opened.is_err());
+        assert_eq!(attempts, 1, "not one wasted attempt on a stale service");
+    }
+
+    /// The budget is a budget: it is spent, then the error comes out.
+    #[test]
+    fn the_retry_budget_is_finite() {
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 2, &running(), || {
+            attempts += 1;
+            Err(RpcError::TransportError("SystemInFlux".to_string()))
+        });
+
+        assert!(matches!(opened, Err(RpcError::TransportError(_))));
+        assert_eq!(attempts, 3, "the first attempt plus the two retries");
+    }
+
+    /// A shutdown request ends the wait at once: the worst case of a Ctrl+C is
+    /// the sleep in progress, not the whole budget.
+    #[test]
+    fn a_cancelled_shutdown_stops_the_retries() {
+        let stop = CancellationToken::new();
+        stop.cancel();
+
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 5, &stop, || {
+            attempts += 1;
+            Err(RpcError::TransportError("SystemInFlux".to_string()))
+        });
+
+        assert!(opened.is_err());
+        assert_eq!(attempts, 1, "a cancelled token stops before any retry");
     }
 
     #[test]

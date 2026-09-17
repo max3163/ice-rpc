@@ -14,6 +14,9 @@ pub struct ProxyGenInput<'a> {
     pub init_default_name: &'a Ident,
     pub logical_name_lit: &'a str,
     pub node_methods: &'a [TokenStream],
+    /// Whether the `ProviderNodeJs` mode and its constructor belong to the
+    /// expansion (the `nodejs` feature).
+    pub nodejs: bool,
 }
 
 /// Generates the `{Trait}Proxy` (smart node) with its Provider, Consumer
@@ -28,7 +31,39 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         init_default_name,
         logical_name_lit,
         node_methods,
+        nodejs,
     } = input;
+
+    // The Node.js mode is a whole variant and constructor, not a flag: without
+    // the feature the proxy must not advertise a mode it cannot serve.
+    let nodejs_variant = if *nodejs {
+        quote! { ProviderNodeJs, }
+    } else {
+        quote! {}
+    };
+
+    // The variant and the constructor are unused in a crate that does not link
+    // the bridge, and the proxy is `pub`: nothing else silences them.
+    let nodejs_allow = if *nodejs {
+        quote! { #[allow(dead_code)] }
+    } else {
+        quote! {}
+    };
+
+    let provide_nodejs = if *nodejs {
+        quote! {
+            /// Builds the proxy of the `ProviderNodeJs` mode: the Node.js host
+            /// implements the methods, and each call is bridged to it over IPC.
+            #visibility fn provide_nodejs() -> std::sync::Arc<Self> {
+                std::sync::Arc::new(Self {
+                    deps: vec![],
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderNodeJs),
+                })
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     quote! {
         struct #init_default_name(std::sync::Arc<dyn #trait_name>);
@@ -36,8 +71,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
-        // The `ProviderNodeJs` variant is only built by the Node.js gateway.
-        #[allow(dead_code)]
+        #nodejs_allow
         #visibility enum #mode_name {
             Provider {
                 local_impl:     std::sync::Arc<dyn #trait_name>,
@@ -45,7 +79,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 server_started: bool,
             },
             Consumer { ipc_client: std::sync::Arc<#client_name> },
-            ProviderNodeJs,
+            #nodejs_variant
         }
 
         #visibility struct #proxy_name {
@@ -53,8 +87,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             deps: Vec<&'static str>,
         }
 
-        // `provide_nodejs` is emitted unconditionally but used only by the bridge.
-        #[allow(dead_code)]
+        #nodejs_allow
         impl #proxy_name {
             /// Logical name of the service, injected by the `#[service]` macro.
             pub const SERVICE_NAME: &'static str = #logical_name_lit;
@@ -100,12 +133,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 })
             }
 
-            #visibility fn provide_nodejs() -> std::sync::Arc<Self> {
-                std::sync::Arc::new(Self {
-                    deps: vec![],
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderNodeJs),
-                })
-            }
+            #provide_nodejs
         }
 
         #[async_trait::async_trait]
@@ -125,14 +153,28 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
 ///
 /// In Provider mode, calls the local implementation (in-process).
 /// In Consumer mode, calls the IPC client.
-/// In ProviderNodeJs mode, returns an error (calls go through IPC).
+/// In ProviderNodeJs mode — only when `nodejs` is set — returns an error: the
+/// calls go through IPC to the channel the bridge registered.
 pub fn gen_proxy_method(
     fn_name: &Ident,
     arg_names: &[&Ident],
     arg_types: &[&syn::Type],
     output_type: &syn::Type,
     mode_name: &Ident,
+    nodejs: bool,
 ) -> TokenStream {
+    let nodejs_arm = if nodejs {
+        quote! {
+            #mode_name::ProviderNodeJs => {
+                ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
+                    "ProviderNodeJs: direct calls are not supported — use IPC".into()
+                ))
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         async fn #fn_name(&self, #(#arg_names: #arg_types),*) -> #output_type {
             let mode = self.mode.read().await;
@@ -143,11 +185,7 @@ pub fn gen_proxy_method(
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#fn_name(#(#arg_names),*).await
                 }
-                #mode_name::ProviderNodeJs => {
-                    ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
-                        "ProviderNodeJs: direct calls are not supported — use IPC".into()
-                    ))
-                }
+                #nodejs_arm
             }
         }
     }

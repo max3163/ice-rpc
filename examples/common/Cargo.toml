@@ -14,7 +14,9 @@ workspace = true
 path = "src/mod.rs"
 
 [features]
-napi = []
+# The Node.js gateway consumes these services through the converters `#[service]`
+# generates, so asking for `napi` is what asks for that code.
+napi = ["ice-rpc/nodejs"]
 http = ["ice-rpc/http"]
 # Exposes `decoders()`/`with_service_decoders!`: the generated `{Service}Decoder`s
 # an out-of-band observer registers to render payloads in clear text.

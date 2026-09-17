@@ -47,26 +47,92 @@ which is also where the remedy text is written once.
 
 ## The procedure
 
+## A clean shutdown releases what the process created
+
+The dispatch thread of a channel owns its iceoryx2 ports, and dropping those
+ports is what unlinks the services — and, with them, their `*.shm_state` markers.
+`shutdown_and_release` therefore **joins** those threads (through the shutdown
+registry) before the process leaves `main`. Without that join, Ctrl+C leaves the
+whole channel on the bus: the process exits, the system kills the threads, and no
+destructor ever runs.
+
+Same idea for the cache of consumed channels, which lives in a `static` — Rust
+never drops a `static`, so it is released explicitly at shutdown.
+
+## A provider reaps the dead nodes at startup
+
+iceoryx2 can clean up after dead nodes itself, in three places, all enabled by
+default. ice-rpc turns two of them off on purpose — a *reader* (the observer, a
+one-shot client) must not delete a provider's resources on its way in or out —
+and asks for the cleanup explicitly once, when a provider starts:
+
+```
+[ice-rpc] reaped 1 dead node(s) left by previous runs
+```
+
+That single call is what makes a machine self-healing in production, where nobody
+runs a purge script: each restart absorbs the state left by the run that was
+killed. Measured on a kill/restart loop, the leftover count stabilizes at one
+run's worth (~20 `*.shm_state` markers) instead of growing by one run per kill.
+
+The manual procedure below remains the answer when the state cannot be explained
+by a dead process: a service whose *recorded configuration* differs from the
+requested one — another build — is not a dead node, so no cleanup removes it.
+
+## The procedure
+
 1. **Stop every process of the previous build.** A purge while one is still
    running only recreates the state that is being removed. On Windows, check the
    process list; the liveness probe
    (`cargo make probe -- list`, [`node_liveness_probe.rs`](../ice-rpc/examples/node_liveness_probe.rs))
    lists the iceoryx2 nodes that are still alive with their PID and executable.
-2. **Remove the iceoryx2 root path:**
+2. **Remove the iceoryx2 state.** There are two locations, and only removing
+   both is a complete purge:
 
-   | OS | Path |
-   |---|---|
-   | Windows | `%APPDATA%\ice-rpc\iceoryx2` |
-   | Linux and macOS | `$XDG_DATA_HOME/ice-rpc/iceoryx2`, or `~/.local/share/ice-rpc/iceoryx2` |
+   | What | OS | Path |
+   |---|---|---|
+   | Root path: configuration, service registry, segments | Windows | `%APPDATA%\ice-rpc\iceoryx2` |
+   | | Linux and macOS | `$XDG_DATA_HOME/ice-rpc/iceoryx2`, or `~/.local/share/ice-rpc/iceoryx2` |
+   | Shared-memory markers (`iox2_*.shm_state`) | Windows | `C:\Temp` |
+   | | Linux and macOS | `/tmp` |
 
-   [`scripts/purge-iceoryx2-root.sh`](../scripts/purge-iceoryx2-root.sh) resolves it
-   per OS, shows what it holds, and removes it only with `--yes`:
+   [`scripts/purge-iceoryx2-root.sh`](../scripts/purge-iceoryx2-root.sh) resolves
+   both per OS, shows what they hold, and removes them only with `--yes`. It
+   deletes the root path entirely and, in the marker directory, only the
+   `iox2_*` entries — never the directory itself, which is a shared temporary
+   directory on Unix:
 
    ```bash
-   scripts/purge-iceoryx2-root.sh          # dry run: path, file count, size
-   scripts/purge-iceoryx2-root.sh --yes    # remove it
+   scripts/purge-iceoryx2-root.sh          # dry run: paths, file counts, sizes
+   scripts/purge-iceoryx2-root.sh --yes    # remove them
    ```
 3. **Rebuild everything** and restart the provider first, then the consumers.
+
+## The other half of the state: the shared-memory markers
+
+Windows has no `shm_open`, so `iceoryx2-pal-posix` emulates it with
+memory-mapped files and keeps one small `<segment>.shm_state` marker per segment.
+That marker lives in a directory of its own, taken from the PAL constant
+`TEMP_DIRECTORY` — literally `C:\Temp` on Windows, `/tmp` on Unix — and **not**
+under the root path. It is what `shm_unlink` deletes when a process releases its
+last reference, which is why a process that is *killed* rather than exiting
+leaves it behind: the segment is gone, its marker stays.
+
+Three consequences worth knowing:
+
+- a purge that only removes the root path leaves those markers behind, so the
+  state of a machine that has seen many killed runs is never fully reset;
+- each file is 8 bytes, but they accumulate one per segment per run, and nothing
+  ages them out;
+- every segment operation enumerates that directory, which is where the
+  `< Win32 API error > ... FindNextFileA ... [ 18 ]` lines on Windows come from.
+  Error 18 is *no more files*: that is the end of the scan, printed through a
+  wrapper that cannot render the message. Their frequency tracks what the
+  directory holds, and they are harmless.
+
+Since the directory is shared with everything else on the machine, never delete
+it wholesale: only the `iox2_*` entries belong to iceoryx2, and only when nothing
+is running.
 
 ## Two adjacent cases
 

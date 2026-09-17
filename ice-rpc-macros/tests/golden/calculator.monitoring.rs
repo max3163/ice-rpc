@@ -89,7 +89,6 @@ struct __CalculatorServiceInitDefault(std::sync::Arc<dyn Calculator>);
 #[async_trait::async_trait]
 impl ice_rpc::ServiceInit for __CalculatorServiceInitDefault {}
 #[allow(missing_docs)]
-#[allow(dead_code)]
 pub enum CalculatorMode {
     Provider {
         local_impl: std::sync::Arc<dyn Calculator>,
@@ -97,7 +96,6 @@ pub enum CalculatorMode {
         server_started: bool,
     },
     Consumer { ipc_client: std::sync::Arc<CalculatorClient> },
-    ProviderNodeJs,
 }
 #[allow(missing_docs)]
 pub struct CalculatorProxy {
@@ -105,7 +103,6 @@ pub struct CalculatorProxy {
     deps: Vec<&'static str>,
 }
 #[allow(missing_docs)]
-#[allow(dead_code)]
 impl CalculatorProxy {
     /// Logical name of the service, injected by the `#[service]` macro.
     pub const SERVICE_NAME: &'static str = "calculator";
@@ -149,12 +146,6 @@ impl CalculatorProxy {
             }),
         })
     }
-    pub fn provide_nodejs() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            deps: vec![],
-            mode: ice_rpc::gen::async_lock::RwLock::new(CalculatorMode::ProviderNodeJs),
-        })
-    }
 }
 #[allow(missing_docs)]
 #[async_trait::async_trait]
@@ -164,14 +155,6 @@ impl Calculator for CalculatorProxy {
         match &*mode {
             CalculatorMode::Provider { local_impl, .. } => local_impl.add(a, b).await,
             CalculatorMode::Consumer { ipc_client } => ipc_client.add(a, b).await,
-            CalculatorMode::ProviderNodeJs => {
-                ice_rpc::Observable::from_technical_error(
-                    ice_rpc::RpcError::Internal(
-                        "ProviderNodeJs: direct calls are not supported — use IPC"
-                            .into(),
-                    ),
-                )
-            }
         }
     }
 }
@@ -187,67 +170,6 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
     async fn init(&self) -> bool {
         let mut mode = self.mode.write().await;
         match &mut *mode {
-            CalculatorMode::ProviderNodeJs => {
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
-                {
-                    dispatcher
-                        .method(
-                            "add",
-                            move |
-                                payload: &[u8],
-                                emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                            {
-                                let Some(args) = CalculatorProxy::deserialize_request_to_value(
-                                    "add",
-                                    payload,
-                                ) else {
-                                    ::log::error!(
-                                        "[{}::{}] Failed to deserialize the request", <
-                                        CalculatorProxy > ::SERVICE_NAME, "add"
-                                    );
-                                    return;
-                                };
-                                let value = match ice_rpc::nodejs_dispatch::call(
-                                    [0u8; 16],
-                                    <CalculatorProxy>::SERVICE_NAME,
-                                    "add",
-                                    args,
-                                ) {
-                                    Ok(value) => value,
-                                    Err(e) => {
-                                        ::log::error!(
-                                            "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
-                                            ::SERVICE_NAME, "add", e
-                                        );
-                                        return;
-                                    }
-                                };
-                                if let Some((kind, sample)) = CalculatorProxy::serialize_response_from_value(
-                                    "add",
-                                    value,
-                                ) {
-                                    emitter.emit(kind, &sample);
-                                }
-                            },
-                        );
-                }
-                if let Err(e) = ice_rpc::gen::register_native_service(
-                    "calculator",
-                    ice_rpc::gen::service_id_of("calculator"),
-                    "calculator",
-                    dispatcher,
-                ) {
-                    ::log::error!(
-                        "[{}] channel registration failed: {e:?}", "calculator"
-                    );
-                    return false;
-                }
-                ::log::info!(
-                    "[{}] NodeJS provider registered on channel '{}'.", "calculator",
-                    "calculator"
-                );
-                true
-            }
             CalculatorMode::Provider { local_impl, init_hook, server_started } => {
                 if !*server_started {
                     if !init_hook.on_init().await {
@@ -294,175 +216,6 @@ impl ice_rpc::ServiceInit for CalculatorProxy {
     }
     fn dependencies(&self) -> Vec<&'static str> {
         self.deps.clone()
-    }
-}
-#[allow(missing_docs)]
-#[allow(dead_code)]
-impl CalculatorProxy {
-    pub fn deserialize_request_to_value(
-        method: &str,
-        bytes: &[u8],
-    ) -> Option<ice_rpc::gen::serde_json::Value> {
-        match method {
-            "add" => {
-                let req: CalculatorRequest = ice_rpc::gen::decode_aligned::<
-                    CalculatorRequest,
-                >(bytes)
-                    .ok()?;
-                match req {
-                    CalculatorRequest::Add { a, b } => {
-                        Some(
-                            ice_rpc::gen::serde_json::json!(
-                                { "a" : ice_rpc::gen::serde_json::to_value(a).ok() ?, "b" :
-                                ice_rpc::gen::serde_json::to_value(b).ok() ? }
-                            ),
-                        )
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-}
-#[allow(missing_docs)]
-#[allow(dead_code)]
-impl CalculatorProxy {
-    pub fn serialize_response_from_value(
-        method: &str,
-        value: ice_rpc::gen::serde_json::Value,
-    ) -> Option<(ice_rpc::gen::EventKind, Vec<u8>)> {
-        match method {
-            "add" => {
-                let event_type = value
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("next");
-                let event = match event_type {
-                    "next" => {
-                        let data: i32 = match value.get("data") {
-                            Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                }
-                            }
-                            None => return None,
-                        };
-                        ice_rpc::gen::WireEvent::Next(data)
-                    }
-                    "complete" => {
-                        match value.get("data") {
-                            Some(d) => {
-                                let data: i32 = match ice_rpc::gen::serde_json::from_value(
-                                    d.clone(),
-                                ) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                };
-                                ice_rpc::gen::WireEvent::CompleteWith(data)
-                            }
-                            None => ice_rpc::gen::WireEvent::Complete,
-                        }
-                    }
-                    "error" => {
-                        let err: String = match value.get("data") {
-                            Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                }
-                            }
-                            None => return None,
-                        };
-                        ice_rpc::gen::WireEvent::Error(err)
-                    }
-                    _ => return None,
-                };
-                let kind = event.kind();
-                ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
-                    .ok()
-                    .map(|aligned| (kind, aligned.to_vec()))
-            }
-            _ => None,
-        }
-    }
-}
-#[allow(missing_docs)]
-#[async_trait::async_trait]
-impl ice_rpc::gen::HttpCallable for CalculatorProxy {
-    fn service_name(&self) -> &'static str {
-        "calculator"
-    }
-    async fn http_invoke(
-        &self,
-        method: &str,
-        params: ice_rpc::gen::serde_json::Value,
-    ) -> Result<ice_rpc::gen::serde_json::Value, String> {
-        match method {
-            "add" => {
-                let a: i32 = {
-                    let field_name = "a";
-                    let val = params
-                        .get(field_name)
-                        .cloned()
-                        .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
-                    match ice_rpc::gen::serde_json::from_value(val) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return Err(
-                                format!(
-                                    "Invalid parameter '{}' for '{}': {}", field_name, "add", e
-                                ),
-                            );
-                        }
-                    }
-                };
-                let b: i32 = {
-                    let field_name = "b";
-                    let val = params
-                        .get(field_name)
-                        .cloned()
-                        .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
-                    match ice_rpc::gen::serde_json::from_value(val) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return Err(
-                                format!(
-                                    "Invalid parameter '{}' for '{}': {}", field_name, "add", e
-                                ),
-                            );
-                        }
-                    }
-                };
-                let mut rx = self.add(a, b).await;
-                match rx.recv().await {
-                    Ok(ice_rpc::Event::Next(value)) => {
-                        let data = ice_rpc::gen::serde_json::to_value(&value)
-                            .map_err(|e| {
-                                format!("Failed to serialize the response: {}", e)
-                            })?;
-                        Ok(
-                            ice_rpc::gen::serde_json::json!(
-                                { "status" : "ok", "data" : data }
-                            ),
-                        )
-                    }
-                    Ok(ice_rpc::Event::Complete) => {
-                        Ok(ice_rpc::gen::serde_json::json!({ "status" : "ok" }))
-                    }
-                    Ok(ice_rpc::Event::Error(e)) => {
-                        Ok(
-                            ice_rpc::gen::serde_json::json!(
-                                { "status" : "error", "error" : e.to_string() }
-                            ),
-                        )
-                    }
-                    Err(_) => Err("No response received from the service".to_string()),
-                }
-            }
-            _ => Err(format!("Unknown method '{}' for service 'calculator'", method)),
-        }
     }
 }
 #[allow(missing_docs)]

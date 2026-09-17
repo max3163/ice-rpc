@@ -17,49 +17,91 @@
 //! unbalanced braces or a malformed item fails here rather than only at the
 //! first use of the macro.
 //!
+//! # Three pinned feature sets, checked in every build
+//!
+//! The expansion depends on which optional blocks a build asks for. That set is
+//! passed to [`expand_service_with`](crate::expand_service_with) as a value
+//! instead of being read from `cfg!` inside the generators, which is what makes
+//! this test deterministic: it expands the same trait with the **same three
+//! sets** — none, the observer decoder alone, and everything — whatever features
+//! the build running it happens to have.
+//!
+//! Reading `cfg!` here instead would have meant one golden per combination of
+//! features (eight), of which a given build can only ever check one, and it
+//! would have compared a *different* file depending on which other crate in the
+//! workspace enabled which feature. The three sets cover every optional block
+//! at least once, since the blocks are independent.
+//!
 //! # Regenerating
 //!
 //! ```text
 //! ICE_RPC_BLESS=1 cargo test -p ice-rpc-macros
-//! ICE_RPC_BLESS=1 cargo test -p ice-rpc-macros --all-features
 //! ```
 //!
-//! On a mismatch the current output is written next to the golden as
-//! `<name>.actual.rs` so that a `diff` shows what moved; it is removed again on
-//! the next successful run.
-//!
-//! # Two sets of goldens, one per feature state
-//!
-//! The `monitoring` feature adds the `{Trait}Decoder` and the generated `Display`
-//! implementation to the same expansion, so an expansion cannot have a single
-//! golden: `<base>.rs` is the default build, `<base>.monitoring.rs` the build with
-//! the feature on. Both are committed and both are compared, each in its own
-//! configuration — a change to the decoder codegen therefore cannot slip through
-//! by being tested only where the feature is off, which is exactly what a single
-//! golden would have allowed.
+//! One command: the three sets are committed together. On a mismatch the current
+//! output is written next to the golden as `<name>.actual.rs` so that a `diff`
+//! shows what moved; it is removed again on the next successful run.
 
 use std::path::{Path, PathBuf};
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
+use crate::features::Features;
+
+/// The smallest expansion: no optional block at all.
+const NONE: Features = Features {
+    monitoring: false,
+    nodejs: false,
+    http: false,
+};
+
+/// The observer decoder alone, which is what the `monitoring` feature asks for.
+const MONITORING: Features = Features {
+    monitoring: true,
+    nodejs: false,
+    http: false,
+};
+
+/// Every optional block.
+const ALL: Features = Features {
+    monitoring: true,
+    nodejs: true,
+    http: true,
+};
+
+/// The feature sets the expansion is pinned in, and the label naming each one.
+const PINNED: [(Features, &str); 3] = [(NONE, "none"), (MONITORING, "monitoring"), (ALL, "all")];
+
+/// A nominal service, used by several tests.
+const CALCULATOR: fn() -> TokenStream = || {
+    quote! {
+        #[async_trait::async_trait]
+        pub trait Calculator: Send + Sync + 'static {
+            async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
+        }
+    }
+};
+
 /// Where the checked-in expansions live.
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
 
-/// The golden file of a service, in the configuration being tested.
-fn golden_file(base: &str) -> String {
-    if cfg!(feature = "monitoring") {
-        format!("{base}.monitoring.rs")
-    } else {
-        format!("{base}.rs")
+/// The golden file of one pinned set.
+///
+/// The name spells the set out (`none` has no suffix); the `Display` of [`ALL`]
+/// would otherwise give `<base>.monitoring.nodejs.http.rs`.
+fn golden_file(base: &str, label: &str) -> String {
+    match label {
+        "none" => format!("{base}.rs"),
+        other => format!("{base}.{other}.rs"),
     }
 }
 
 /// Expands a `#[service]` declaration and returns its pretty-printed form.
-fn render(attr: TokenStream, item: TokenStream) -> String {
-    let expanded = crate::expand_service(attr, item);
+fn render(features: Features, attr: TokenStream, item: TokenStream) -> String {
+    let expanded = crate::expand_service_with(attr, item, features);
     let file = syn::parse2::<syn::File>(expanded)
         .expect("the #[service] expansion must parse as a whole file");
     prettyplease::unparse(&file)
@@ -67,9 +109,15 @@ fn render(attr: TokenStream, item: TokenStream) -> String {
 
 /// Compares one expansion with its golden file (or rewrites it under
 /// `ICE_RPC_BLESS`).
-fn assert_golden(base: &str, attr: TokenStream, item: TokenStream) {
-    let rendered = render(attr, item);
-    let path = golden_dir().join(golden_file(base));
+fn assert_golden(
+    label: &str,
+    features: Features,
+    base: &str,
+    attr: TokenStream,
+    item: TokenStream,
+) {
+    let rendered = render(features, attr, item);
+    let path = golden_dir().join(golden_file(base, label));
     let actual_path = path.with_extension("actual.rs");
 
     if std::env::var_os("ICE_RPC_BLESS").is_some() {
@@ -112,17 +160,10 @@ fn assert_golden(base: &str, attr: TokenStream, item: TokenStream) {
 /// It pins the default naming (`Calculator` → `calculator`), the request enum,
 /// and the shape of every generated wrapper.
 #[test]
-fn a_nominal_service_expands_to_its_golden_file() {
-    assert_golden(
-        "calculator",
-        quote! {},
-        quote! {
-            #[async_trait::async_trait]
-            pub trait Calculator: Send + Sync + 'static {
-                async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
-            }
-        },
-    );
+fn a_nominal_service_is_pinned_in_every_feature_set() {
+    for (features, label) in PINNED {
+        assert_golden(label, features, "calculator", quote! {}, CALCULATOR());
+    }
 }
 
 /// Every parameter of the attribute, and the three argument shapes the
@@ -132,16 +173,65 @@ fn a_nominal_service_expands_to_its_golden_file() {
 /// A unit-returning method and a fallible one are both present, so the golden
 /// also fixes the `Ok`/`Err` extraction on both sides.
 #[test]
-fn a_service_with_a_name_a_version_and_a_group_expands_to_its_golden_file() {
-    assert_golden(
-        "database",
-        quote! { "Database", version = 2, group = "db" },
-        quote! {
-            #[async_trait::async_trait]
-            pub trait DatabaseApi: Send + Sync + 'static {
-                async fn get(&self, key: String) -> Observable<String, String>;
-                async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
+fn a_service_with_a_name_a_version_and_a_group_is_pinned_in_every_feature_set() {
+    let item = quote! {
+        #[async_trait::async_trait]
+        pub trait DatabaseApi: Send + Sync + 'static {
+            async fn get(&self, key: String) -> Observable<String, String>;
+            async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
+        }
+    };
+    for (features, label) in PINNED {
+        assert_golden(
+            label,
+            features,
+            "database",
+            quote! { "Database", version = 2, group = "db" },
+            item.clone(),
+        );
+    }
+}
+
+/// Each optional block follows its own flag, in **all** eight combinations.
+///
+/// This is the contract the goldens cannot express — they show three sets, this
+/// one checks the other five — and it costs a few milliseconds instead of five
+/// more files.
+#[test]
+fn every_optional_block_follows_its_own_flag() {
+    for monitoring in [false, true] {
+        for nodejs in [false, true] {
+            for http in [false, true] {
+                let features = Features {
+                    monitoring,
+                    nodejs,
+                    http,
+                };
+                let rendered = render(features, quote! {}, CALCULATOR());
+
+                assert_eq!(
+                    rendered.contains("CalculatorDecoder"),
+                    monitoring,
+                    "the observer decoder must follow `monitoring`, in {features}"
+                );
+                assert_eq!(
+                    rendered.contains("deserialize_request_to_value"),
+                    nodejs,
+                    "the Node.js converters must follow `nodejs`, in {features}"
+                );
+                assert_eq!(
+                    rendered.contains("HttpCallable for CalculatorProxy"),
+                    http,
+                    "the HttpCallable implementation must follow `http`, in {features}"
+                );
+                // The Node.js mode is a whole variant and constructor, not only a
+                // pair of converters.
+                assert_eq!(
+                    rendered.contains("fn provide_nodejs"),
+                    nodejs,
+                    "`provide_nodejs` must follow `nodejs`, in {features}"
+                );
             }
-        },
-    );
+        }
+    }
 }

@@ -7,6 +7,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 mod codegen;
 mod entry;
+mod features;
 mod model;
 
 /// Golden comparison of the whole `#[service]` expansion.
@@ -22,15 +23,15 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Ident, ItemTrait, Type};
 
+use crate::features::Features;
 use crate::model::{ServiceAttr, ServiceModel};
 
-#[cfg(feature = "monitoring")]
-use crate::codegen::decoder::{gen_decoder, DecoderGenInput, DecoderMethod};
 use crate::codegen::{
     client::{
         gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
         ClientMethodGenInput,
     },
+    decoder::{gen_decoder, DecoderGenInput, DecoderMethod},
     http::{gen_http_callable_impl, HttpGenInput, HttpMethodData},
     lifecycle::{gen_lifecycle, LifecycleGenInput},
     nodejs::{
@@ -73,12 +74,16 @@ fn nodejs_methods(model: &ServiceModel) -> Vec<NodeJsMethod> {
 /// - The `{Trait}Request` enum (rkyv-serializable)
 /// - The `{Trait}Client` struct (IPC consumer)
 /// - The `{Trait}Server` struct (IPC provider)
-/// - The `{Trait}Proxy` struct (Provider/Consumer/ProviderNodeJs smart node)
+/// - The `{Trait}Proxy` struct (Provider/Consumer smart node, plus the
+///   `ProviderNodeJs` mode when the `nodejs` feature is on)
 /// - The `ServiceLifecycle`, `ServiceInit`, `ServiceNamed` implementations
-/// - The Node.js converters (rkyv ↔ serde_json::Value) — always generated, used by the `ProviderNodeJs` mode
+/// - The optional blocks its features ask for: the observer decoder
+///   (`monitoring`), the Node.js converters and `ProviderNodeJs` mode
+///   (`nodejs`), and the `HttpCallable` implementation (`http`). They follow the
+///   Cargo features of this crate, read in one place (`Features::from_cfg`).
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_service(attr.into(), item.into()).into()
+    expand_service_with(attr.into(), item.into(), Features::from_cfg()).into()
 }
 
 /// The body of [`service`], on `proc_macro2` tokens so that it stays testable.
@@ -87,9 +92,14 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// everything below the wrapper is written on the `proc_macro2` type: it is what
 /// lets the golden test in `tests/golden` expand a trait and read the result.
 /// `entry::expand_main` uses the same indirection.
-fn expand_service(
+///
+/// `features` is the only thing that decides what is generated: no generator
+/// reads a Cargo feature, so the same call with the same set produces the same
+/// expansion in every build.
+fn expand_service_with(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
+    features: Features,
 ) -> proc_macro2::TokenStream {
     let service_attr = match syn::parse2::<ServiceAttr>(attr) {
         Ok(service_attr) => service_attr,
@@ -129,7 +139,6 @@ fn expand_service(
     let mut nodejs_native_methods = Vec::new();
     let mut node_methods = Vec::new();
     let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
-    #[cfg(feature = "monitoring")]
     let mut decoder_methods: Vec<DecoderMethod> = Vec::new();
 
     // One pass over the model. The discriminant is the position in the trait, so
@@ -165,7 +174,9 @@ fn expand_service(
             req_enum_name,
         ));
 
-        nodejs_native_methods.push(gen_nodejs_native_method(proxy_name, fn_name));
+        if features.nodejs {
+            nodejs_native_methods.push(gen_nodejs_native_method(proxy_name, fn_name));
+        }
 
         node_methods.push(gen_proxy_method(
             fn_name,
@@ -173,24 +184,28 @@ fn expand_service(
             &arg_types,
             &method.output_type,
             mode_name,
+            features.nodejs,
         ));
 
         // Collects the data for the HttpCallable implementation.
-        http_methods_data.push(HttpMethodData {
-            fn_name: fn_name.clone(),
-            arg_names: method.arg_names.clone(),
-            arg_types: method.arg_types.clone(),
-        });
+        if features.http {
+            http_methods_data.push(HttpMethodData {
+                fn_name: fn_name.clone(),
+                arg_names: method.arg_names.clone(),
+                arg_types: method.arg_types.clone(),
+            });
+        }
 
         // Collects the data for the generated decoder (`Display` + decoder).
-        #[cfg(feature = "monitoring")]
-        decoder_methods.push(DecoderMethod {
-            method_name: method.fn_name.to_string(),
-            var_name: var_name.clone(),
-            arg_names: method.arg_names.clone(),
-            ok_type: method.ok_type.clone(),
-            err_type: method.err_type.clone(),
-        });
+        if features.monitoring {
+            decoder_methods.push(DecoderMethod {
+                method_name: method.fn_name.to_string(),
+                var_name: var_name.clone(),
+                arg_names: method.arg_names.clone(),
+                ok_type: method.ok_type.clone(),
+                err_type: method.err_type.clone(),
+            });
+        }
     }
 
     let client_input = ClientGenInput {
@@ -218,6 +233,7 @@ fn expand_service(
         init_default_name,
         logical_name_lit: &logical_name_lit,
         node_methods: &node_methods,
+        nodejs: features.nodejs,
     };
     let proxy_output = gen_proxy(&proxy_input);
 
@@ -228,10 +244,14 @@ fn expand_service(
         mode_name,
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
+        nodejs: features.nodejs,
         nodejs_native_methods: &nodejs_native_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
+    // The three optional blocks. Their inputs are built in every configuration —
+    // that is what consumes the vectors filled above — and only the generator
+    // call is skipped, so nothing here can drift into "declared but unused".
     let nodejs_methods: Vec<NodeJsMethod> = nodejs_methods(&model);
     let nodejs_input = NodeJsGenInput {
         visibility,
@@ -239,22 +259,33 @@ fn expand_service(
         req_enum_name,
         methods: nodejs_methods,
     };
-    let nodejs_deserialize = gen_nodejs_deserialize_fn(&nodejs_input);
-    let nodejs_serialize = gen_nodejs_serialize_fn(&nodejs_input);
+    let (nodejs_deserialize, nodejs_serialize) = if features.nodejs {
+        (
+            gen_nodejs_deserialize_fn(&nodejs_input),
+            gen_nodejs_serialize_fn(&nodejs_input),
+        )
+    } else {
+        (quote! {}, quote! {})
+    };
 
-    // Generates the HttpCallable implementation for the proxy.
+    // The `HttpCallable` implementation the HTTP gateway dispatches to. It is
+    // also the block that keeps `serde_json`'s conversion machinery in the
+    // binary, so a deployment that never speaks HTTP should not carry it.
     let http_input = HttpGenInput {
         proxy_name: proxy_name.to_owned(),
         logical_name: logical_name_lit.to_string(),
         http_methods: http_methods_data,
     };
-    let http_callable_impl = gen_http_callable_impl(&http_input);
+    let http_callable_impl = if features.http {
+        gen_http_callable_impl(&http_input)
+    } else {
+        quote! {}
+    };
 
     // Human-readable decoding of the service payloads, opt-in via the
     // `monitoring` feature: it is the only part that forces `Display` on every
     // argument and return type, so a plain provider/consumer must not carry it.
-    #[cfg(feature = "monitoring")]
-    let decoder_output = {
+    let decoder_output = if features.monitoring {
         let decoder_name = Ident::new(&format!("{trait_name}Decoder"), trait_name.span());
         let decoder_input = DecoderGenInput {
             visibility,
@@ -264,9 +295,9 @@ fn expand_service(
             methods: &decoder_methods,
         };
         gen_decoder(&decoder_input)
+    } else {
+        quote! {}
     };
-    #[cfg(not(feature = "monitoring"))]
-    let decoder_output = quote! {};
 
     // Unique symbol to detect name collisions: two services with the same
     // logical name make the linker fail with "duplicate symbol".

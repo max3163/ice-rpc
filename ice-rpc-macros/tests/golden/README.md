@@ -3,39 +3,56 @@
 One file per `#[service]` declaration, holding the **pretty-printed** expansion of
 the macro. They are compared by `src/golden_tests.rs`.
 
-There are two sets, one per feature state, because the `monitoring` feature adds
-the `{Trait}Decoder` and the generated `Display` implementation to the same
-expansion:
+## Three pinned feature sets
 
-| File | Compared by |
-|---|---|
-| `<base>.rs` | `cargo test -p ice-rpc-macros` (default features) |
-| `<base>.monitoring.rs` | `cargo test -p ice-rpc-macros --all-features` |
+The optional blocks of the expansion follow values, not `cfg!`: the set is passed
+to `expand_service_with` (see `src/features.rs`). The test therefore expands the
+same trait with the same three sets **in every build**, whatever features that
+build happens to enable:
 
-Both are committed and both are compared in their own configuration, so neither
-build can drift unnoticed.
+| Set | File | What it contains |
+|---|---|---|
+| none | `<base>.rs` | the client, server, proxy, lifecycle — nothing optional |
+| `monitoring` | `<base>.monitoring.rs` | the above, plus the `{Trait}Decoder` and the generated `Display` |
+| everything | `<base>.all.rs` | the above, plus the Node.js converters and the `HttpCallable` implementation |
 
-They exist for one reason: when a call misbehaves, the code to read is the
-generated one, and the generator is spread over eight modules. A `to_string()`
-comparison would be a single line of several thousand characters — nothing a
-diff can show. So each expansion is parsed back and rendered by `prettyplease`
-before being compared, which makes a generator change reviewable.
+The three sets cover each optional block at least once, and the blocks are
+independent. The eight combinations are checked separately, by assertion, in
+`every_optional_block_follows_its_own_flag` — a golden per combination would be
+eight files, of which a build can only ever check the one it has.
 
-Regenerate them after an intended change — the two commands, one per set:
+Reading `cfg!` in the test instead would have made it compare a *different*
+reference depending on which other crate of the workspace enabled which feature,
+since Cargo unifies features per build.
+
+## Regenerating
+
+After an intended change, one command regenerates all six files:
 
 ```bash
 ICE_RPC_BLESS=1 cargo test -p ice-rpc-macros
-ICE_RPC_BLESS=1 cargo test -p ice-rpc-macros --all-features
 ```
 
 On a mismatch the test also writes the current output next to the golden as
 `<name>.actual.rs` (git-ignored), so `diff` is enough to see what moved; nothing
 is rewritten unless `ICE_RPC_BLESS` is set.
 
+A `.actual.rs` file must never be committed — delete it once the diff is read.
+Several `.actual.rs` files in a row mean the test is being bypassed instead of
+fixed.
+
+## What the size difference measures
+
+The minimal set is what a plain Rust service pays for. The delta with `.all.rs` is
+the code a deployment that never speaks Node.js or HTTP no longer compiles:
+
+| Reference | `calculator` | `database` |
+|---|---|---|
+| `<base>.rs` | 224 lines | 277 lines |
+| `<base>.monitoring.rs` | 286 | 348 |
+| `<base>.all.rs` | 535 | 748 |
+
 These files are **not** rustfmt output and must not be reformatted by hand:
 `cargo fmt` ignores them (they are data, not targets), and running `rustfmt` over
 the directory would replace the reference with a slightly different formatting and
 break every test.
-
-A `.actual.rs` file must never be committed — delete it once the diff is read.
-Ten `.actual.rs` files in a row mean the test is being bypassed instead of fixed.

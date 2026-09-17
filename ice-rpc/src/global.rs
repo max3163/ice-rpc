@@ -15,9 +15,9 @@
 //! | iceoryx2 bootstrap (`Once`) | `lib.rs`, [`Global`] | — | first `init()` | every `init()` | never |
 //! | Signal-handling flag | `lib.rs`, `AtomicBool` | — | `init` / `init_without_ctrl_c` | `waitset_signal_handling_mode` | not applicable |
 //! | Shared iceoryx2 node | `transport::shared_node`, [`Global`] | — | first port creation | every port creation, observers | never |
-//! | In-flight response handlers | `transport::client`, [`Registry`] | correlation id | `native_call`, before publishing | response dispatch thread | on the terminal event of the call |
-//! | Consumer ports per channel | `transport::client`, [`Registry`] | channel name | `consumer_ports` | `native_call` | never (one set per channel) |
-//! | Pending channels | `transport::server`, [`Registry`] | channel name | `register_native_service` | `start_registered_channels` | drained at the end of initialization |
+//! | In-flight response handlers | `transport::client`, map owned by the channel ports | correlation id | `native_call`, before publishing | response dispatch thread | on the terminal event of the call, or when the call is dropped |
+//! | Consumer ports per channel | `transport::client`, [`Locked`] | channel name | `consumer_ports` | `native_call` | never (one set per channel) |
+//! | Pending channels | `transport::server`, [`Locked`] | channel name | `register_native_service` | `start_registered_channels` | drained at the end of initialization |
 //! | Channels sealed flag | `transport::server`, `AtomicBool` | — | `start_registered_channels` | `register_native_service` | not applicable |
 //! | Watched PIDs (liveness) | `node_liveness`, [`Registry`] | pid | `register_node_liveness_watcher` | the shared poller | `unregister_…` or on confirmed death |
 //! | Liveness poll interval | `node_liveness`, [`Global`] | — | first read of the env var | every poller tick | never |
@@ -27,10 +27,10 @@
 //! | Node.js dispatch pointer | `nodejs_dispatch`, [`Global`] | — | gateway startup | ProviderNodeJs dispatch | never |
 //! | Notification clock origin | `transport::notify`, [`Global`] | — | first notification | every coalescing check | never |
 //!
-//! Three raw styles remain on purpose, because they carry no locking policy:
-//! `AtomicBool`/`AtomicU64` for flags and counters, [`Global`] for values that
-//! are never mutated after creation, and [`Locked`] only where a collection is
-//! really shared between threads.
+//! Two raw styles remain on purpose, because they carry no locking policy:
+//! `AtomicBool`/`AtomicU64` for flags and counters, and [`Global`] for values
+//! that are never mutated after creation. Everything shared and mutated goes
+//! through [`Locked`], which owns the single entry point to the mutex.
 //!
 //! # Poisoning
 //!
@@ -39,8 +39,6 @@
 //! updated through short critical sections, so the original panic is what
 //! matters, not a second one raised while unwrapping.
 
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::sync::{Mutex, OnceLock};
 
 use crate::sync::lock;
@@ -103,58 +101,6 @@ impl<T: Default> Default for Locked<T> {
     }
 }
 
-/// A process-wide map, the shared counterpart of [`Locked`] for keyed values.
-///
-/// Each method takes the lock for the shortest time possible; the longer
-/// critical sections (creating a channel's ports, for instance) go through
-/// [`Registry::with`].
-pub struct Registry<K, V>(Locked<HashMap<K, V>>);
-
-impl<K: Eq + Hash, V> Registry<K, V> {
-    /// Creates an empty registry.
-    pub const fn new() -> Self {
-        Self(Locked::new())
-    }
-
-    /// Inserts `value` under `key`, returning the value it replaced.
-    pub fn insert(&self, key: K, value: V) -> Option<V> {
-        self.0.with(|map| map.insert(key, value))
-    }
-
-    /// Returns a copy of the value stored under `key`.
-    pub fn get_cloned(&self, key: &K) -> Option<V>
-    where
-        V: Clone,
-    {
-        self.0.with(|map| map.get(key).cloned())
-    }
-
-    /// Removes and returns the value stored under `key`.
-    pub fn remove(&self, key: &K) -> Option<V> {
-        self.0.with(|map| map.remove(key))
-    }
-
-    /// Empties the registry and returns its entries.
-    ///
-    /// The entries are collected *inside* the critical section and returned, so
-    /// the caller walks them without holding the lock.
-    pub fn drain(&self) -> Vec<(K, V)> {
-        self.0.with(|map| map.drain().collect())
-    }
-
-    /// Runs `f` on the map under the lock, for the critical sections that must
-    /// stay atomic (a lookup followed by an insert, for instance).
-    pub fn with<R>(&self, f: impl FnOnce(&mut HashMap<K, V>) -> R) -> R {
-        self.0.with(f)
-    }
-}
-
-impl<K: Eq + Hash, V> Default for Registry<K, V> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,49 +119,28 @@ mod tests {
     }
 
     #[test]
-    fn registry_insert_remove_and_drain() {
-        let registry: Registry<&'static str, u32> = Registry::new();
-
-        registry.insert("a", 1);
-        registry.insert("b", 2);
-        assert_eq!(registry.with(|map| map.len()), 2);
-        assert_eq!(registry.get_cloned(&"a"), Some(1));
-
-        assert_eq!(registry.remove(&"a"), Some(1));
-        assert_eq!(registry.get_cloned(&"a"), None);
-
-        let mut keys: Vec<&str> = registry.with(|map| map.keys().copied().collect());
-        keys.sort_unstable();
-        assert_eq!(keys, vec!["b"]);
-
-        assert_eq!(registry.drain(), vec![("b", 2)]);
-        assert!(registry.with(|map| map.is_empty()));
+    fn locked_creates_its_value_on_first_use() {
+        static LIST: Locked<Vec<u32>> = Locked::new();
+        LIST.with(|values| values.push(1));
+        LIST.with(|values| values.push(2));
+        assert_eq!(LIST.with(|values| values.clone()), vec![1, 2]);
     }
 
     #[test]
-    fn registry_recovers_from_a_poisoned_lock() {
-        let registry: Registry<u32, u32> = Registry::new();
-        registry.insert(1, 1);
+    fn locked_recovers_from_a_poisoned_lock() {
+        static MAP: Locked<std::collections::HashMap<u32, u32>> = Locked::new();
 
         // Poison the lock from a panicking critical section.
         let _ = std::panic::catch_unwind(|| {
-            registry.with(|map| {
+            MAP.with(|map| {
                 map.insert(2, 2);
                 panic!("poison the lock");
             });
         });
 
         // The value written before the panic is still there and still usable.
-        assert_eq!(registry.get_cloned(&2), Some(2));
-        registry.insert(3, 3);
-        assert_eq!(registry.with(|map| map.len()), 3);
-    }
-
-    #[test]
-    fn locked_creates_its_value_on_first_use() {
-        static LIST: Locked<Vec<u32>> = Locked::new();
-        LIST.with(|values| values.push(1));
-        LIST.with(|values| values.push(2));
-        assert_eq!(LIST.with(|values| values.clone()), vec![1, 2]);
+        assert_eq!(MAP.with(|map| map.get(&2).copied()), Some(2));
+        MAP.with(|map| map.insert(3, 3));
+        assert_eq!(MAP.with(|map| map.len()), 2);
     }
 }

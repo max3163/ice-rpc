@@ -1,7 +1,8 @@
 //! Consumer side: request publication and response routing.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::*;
@@ -15,7 +16,8 @@ use super::{
     PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
     RESPONSE_SUFFIX,
 };
-use crate::global::Registry;
+use crate::global::Locked;
+use crate::sync::lock;
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
     RpcHeader, WireEvent, CORRELATION_ID_LEN,
@@ -24,30 +26,37 @@ use crate::types::{
 /// Typed handler invoked with the rkyv response payload of one in-flight call.
 type ResponseHandler = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
-/// Handlers of the calls in flight, keyed by correlation id.
-fn response_handlers() -> &'static Registry<[u8; CORRELATION_ID_LEN], ResponseHandler> {
-    static HANDLERS: Registry<[u8; CORRELATION_ID_LEN], ResponseHandler> = Registry::new();
-    &HANDLERS
+/// Handlers of the calls in flight on one channel, keyed by correlation id.
+type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
+
+/// Removes the handler of one call, releasing its entry.
+///
+/// Idempotent, because both the terminal event of the call and the drop of its
+/// response stream call it.
+fn release_handler(ports: &ConsumerPorts, cid: &[u8; CORRELATION_ID_LEN]) {
+    lock(&ports.handlers).remove(cid);
 }
 
-/// Registers the handler of one in-flight call.
-fn register_response_handler(cid: [u8; CORRELATION_ID_LEN], handler: ResponseHandler) {
-    response_handlers().insert(cid, handler);
-}
-
-/// Removes the handler of one in-flight call.
-fn unregister_response_handler(cid: &[u8; CORRELATION_ID_LEN]) {
-    response_handlers().remove(cid);
-}
-
-/// Publishes port, wake-up notifier and response event service of a consumed
-/// service, all kept alive for the process lifetime.
+/// Every port, handler table and counter of one consumed channel, kept alive for
+/// the process lifetime.
+///
+/// Per channel rather than per service: the services of a channel share the same
+/// request channel, routed by correlation id. The handler table is private to
+/// the channel, so routing a response never contends with the other channels.
 struct ConsumerPorts {
-    _request_service: IoxPubSub,
+    /// Request service, read for its subscriber count before every publication.
+    request_service: IoxPubSub,
     _response_service: IoxPubSub,
     _request_notify: IoxEvent,
+    _response_notify: IoxEvent,
+    /// Receives the responses of every call of the channel.
+    subscriber: IoxSubscriber,
+    /// Wakes the subscriber up when a response is published.
+    listener: IoxListener,
     publisher: IoxPublisher,
     request_notifier: IoxNotifier,
+    /// Handlers of the calls in flight, keyed by correlation id.
+    handlers: Mutex<HandlerMap>,
     /// Coalescing window of the provider wake-ups.
     last_request_notify: Coalescer,
     /// Per-channel monotonic publication counter, stamped into
@@ -60,8 +69,8 @@ struct ConsumerPorts {
 }
 
 /// Ports of the channels this process consumes, keyed by channel name.
-fn consumer_cache() -> &'static Registry<String, Arc<ConsumerPorts>> {
-    static CACHE: Registry<String, Arc<ConsumerPorts>> = Registry::new();
+fn consumer_cache() -> &'static Locked<HashMap<String, Arc<ConsumerPorts>>> {
+    static CACHE: Locked<HashMap<String, Arc<ConsumerPorts>>> = Locked::new();
     &CACHE
 }
 
@@ -133,40 +142,42 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         .create()
         .map_err(|e| transport_error("response listener", e))?;
 
-    // The listener must outlive the dispatch thread that blocks on it.
-    spawn_response_dispatcher(channel.to_owned(), subscriber, listener, response_notify);
-
     let ports = Arc::new(ConsumerPorts {
-        _request_service: request_service,
+        request_service,
         _response_service: response_service,
         _request_notify: request_notify,
-        last_request_notify: Coalescer::new(),
-        seq: AtomicU64::new(0),
+        _response_notify: response_notify,
+        subscriber,
+        listener,
         publisher,
         request_notifier,
+        handlers: Mutex::new(HashMap::new()),
+        last_request_notify: Coalescer::new(),
+        seq: AtomicU64::new(0),
     });
+
+    // The dispatch thread owns a clone of the ports: its subscriber and listener
+    // must outlive the loop that blocks on them.
+    spawn_response_dispatcher(channel.to_owned(), Arc::clone(&ports));
+
     Ok(ports)
 }
 
 /// Blocks on the response event and routes every sample to its handler.
-fn spawn_response_dispatcher(
-    channel: String,
-    subscriber: IoxSubscriber,
-    listener: IoxListener,
-    _response_notify: IoxEvent,
-) {
+fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
     let handle = crate::rt::spawn_blocking(move || {
         let cancel = crate::global_cancel_token().clone();
         super::pump::run_receive_loop(
             &channel,
             "response",
-            &subscriber,
-            &listener,
+            &ports.subscriber,
+            &ports.listener,
             || cancel.is_cancelled(),
             |header, payload| {
-                // The handler is cloned out of the registry so the lock is
-                // released before the handler runs.
-                if let Some(handler) = response_handlers().get_cloned(&header.correlation_id) {
+                // The handler is cloned out of the table so the lock is released
+                // before the handler runs.
+                let handler = lock(&ports.handlers).get(&header.correlation_id).cloned();
+                if let Some(handler) = handler {
                     handler(payload);
                 }
             },
@@ -201,6 +212,7 @@ where
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
 
+    let handler_ports = Arc::clone(&ports);
     let handler: ResponseHandler =
         Arc::new(
             move |bytes: &[u8]| match super::decode_aligned::<WireEvent<T, E>>(bytes) {
@@ -208,30 +220,34 @@ where
                     let (event, follow_up) = normalize_wire_event(wire);
                     let terminal = event.is_terminal();
                     if tx.try_send_event(event).is_err() {
-                        unregister_response_handler(&cid);
+                        release_handler(&handler_ports, &cid);
                         return;
                     }
                     if let Some(next) = follow_up {
                         let _ = tx.try_send_event(next);
                     }
                     if terminal {
-                        unregister_response_handler(&cid);
+                        release_handler(&handler_ports, &cid);
                     }
                 }
                 Err(e) => {
                     let _ = tx.try_send_event(Event::Error(ObservableError::Technical(
                         transport_error("decode response", e),
                     )));
-                    unregister_response_handler(&cid);
+                    release_handler(&handler_ports, &cid);
                 }
             },
         );
-    register_response_handler(cid, handler);
+    lock(&ports.handlers).insert(cid, handler);
 
-    if let Err(e) =
-        publish_until_delivered(&ports.publisher, header, payload, provider_wait_timeout())
-    {
-        unregister_response_handler(&cid);
+    if let Err(e) = publish_until_delivered(
+        &ports.publisher,
+        &ports.request_service,
+        header,
+        payload,
+        provider_wait_timeout(),
+    ) {
+        release_handler(&ports, &cid);
         return Err(e);
     }
     if ports.last_request_notify.should_notify() {
@@ -240,53 +256,104 @@ where
             .notify_with_custom_event_id(EventId::new(0));
     }
 
-    Ok(rx)
+    // The call owns its handler: dropping the response stream releases it, so an
+    // abandoned call (`timeout`, `take_until`, a dropped stream) cannot leave an
+    // entry behind for the rest of the process lifetime.
+    let cleanup_ports = Arc::clone(&ports);
+    Ok(rx.with_cleanup(move || release_handler(&cleanup_ports, &cid)))
 }
 
 /// Publishes `header ++ payload` on `publisher`, retrying until at least one
 /// subscriber receives it or `timeout` elapses.
+///
+/// `service` is the pub/sub service `publisher` belongs to, used only to read
+/// its **subscriber count**. With no subscriber connected — typically a call
+/// made before the provider process is up — nothing is loaned and the payload is
+/// never copied: writing a sample nobody can receive would copy the whole
+/// payload again on every attempt, for up to `timeout` (30 s by default). The
+/// wait is spent on the subscriber count instead, and the payload is copied
+/// once, when a receiver exists.
 pub(super) fn publish_until_delivered(
     publisher: &IoxPublisher,
+    service: &IoxPubSub,
     header: RpcHeader,
     payload: &[u8],
     timeout: Duration,
 ) -> Result<(), RpcError> {
     let deadline = Instant::now() + timeout;
     let mut attempts: u32 = 0;
+
     loop {
-        if crate::global_cancel_token().is_cancelled()
-            || crate::registry_cancel_token().is_cancelled()
-        {
+        if shutdown_requested() {
             return Err(RpcError::Cancelled);
         }
-        let len = payload.len().max(1);
-        let sample = publisher
-            .loan_slice_uninit(len)
-            .map_err(|e| transport_error("loan sample", e))?;
-        let mut sample = sample.write_from_fn(|i| payload.get(i).copied().unwrap_or(0));
-        *sample.user_header_mut() = header;
-        let delivered = sample
-            .send()
-            .map_err(|e| transport_error("send sample", e))?;
-        if delivered > 0 {
+
+        if service.dynamic_config().number_of_subscribers() == 0 {
+            if Instant::now() >= deadline {
+                return Err(RpcError::TransportError(
+                    "no subscriber connected (is the provider running?)".to_string(),
+                ));
+            }
+            backoff(&mut attempts)?;
+            continue;
+        }
+
+        if try_publish(publisher, header, payload)? {
             return Ok(());
         }
+
+        // A subscriber is connected but did not take the sample: its buffer is
+        // full, which is backpressure rather than a missing peer.
         if Instant::now() >= deadline {
             return Err(RpcError::TransportError(
-                "no subscriber connected (is the provider running?)".to_string(),
+                "delivery refused: the subscriber buffer stayed full".to_string(),
             ));
         }
-        if attempts < PUBLISH_SPIN_ATTEMPTS {
-            attempts += 1;
-            std::thread::yield_now();
-        } else {
-            // This call path owns no `WaitSet`: sample the OS termination flag so
-            // Ctrl+C is honoured even when this wait is the only running code.
-            if SignalHandler::termination_requested() {
-                crate::request_shutdown();
-                return Err(RpcError::Cancelled);
-            }
-            std::thread::sleep(PUBLISH_RETRY_SLEEP);
-        }
+        backoff(&mut attempts)?;
     }
+}
+
+/// Whether the process was asked to stop.
+fn shutdown_requested() -> bool {
+    crate::global_cancel_token().is_cancelled() || crate::registry_cancel_token().is_cancelled()
+}
+
+/// Waits between two delivery attempts: a burst of yields, then short sleeps.
+///
+/// This call path owns no `WaitSet`, so the OS termination flag is sampled here:
+/// it is what makes Ctrl+C honourable when this wait is the only running code.
+fn backoff(attempts: &mut u32) -> Result<(), RpcError> {
+    if *attempts < PUBLISH_SPIN_ATTEMPTS {
+        *attempts += 1;
+        std::thread::yield_now();
+        return Ok(());
+    }
+
+    if SignalHandler::termination_requested() {
+        crate::request_shutdown();
+        return Err(RpcError::Cancelled);
+    }
+    std::thread::sleep(PUBLISH_RETRY_SLEEP);
+    Ok(())
+}
+
+/// Loans one sample, writes `header ++ payload` into it and sends it.
+///
+/// Returns `true` when at least one subscriber received the sample.
+fn try_publish(
+    publisher: &IoxPublisher,
+    header: RpcHeader,
+    payload: &[u8],
+) -> Result<bool, RpcError> {
+    // A zero-length payload still needs a sample, hence the `max(1)`.
+    let len = payload.len().max(1);
+    let sample = publisher
+        .loan_slice_uninit(len)
+        .map_err(|e| transport_error("loan sample", e))?;
+    let mut sample = sample.write_from_fn(|i| payload.get(i).copied().unwrap_or(0));
+    *sample.user_header_mut() = header;
+    let delivered = sample
+        .send()
+        .map_err(|e| transport_error("send sample", e))?;
+    Ok(delivered > 0)
 }

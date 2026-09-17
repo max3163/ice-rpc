@@ -16,7 +16,7 @@ use super::{
     MAX_PUBLISHERS, MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, REQUEST_NOTIFY_SUFFIX,
     REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SUBSCRIBER_BUFFER,
 };
-use crate::global::Registry;
+use crate::global::Locked;
 use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
 use crate::CancellationToken;
 
@@ -184,7 +184,12 @@ pub fn spawn_native_service(
             table.len()
         );
 
-        let mut sink = ResponseSink::new(&channel, &ports.publisher, &ports.response_notifier);
+        let mut sink = ResponseSink::new(
+            &channel,
+            &ports.publisher,
+            &ports._response_service,
+            &ports.response_notifier,
+        );
         super::pump::run_receive_loop(
             &channel,
             "request",
@@ -205,6 +210,8 @@ pub fn spawn_native_service(
 struct ResponseSink<'a> {
     channel: &'a str,
     publisher: &'a IoxPublisher,
+    /// Response service, read for its subscriber count before every publication.
+    service: &'a IoxPubSub,
     notifier: &'a IoxNotifier,
     /// Header of the request being answered, copied by [`ResponseSink::begin`].
     request: Option<RpcHeader>,
@@ -220,10 +227,16 @@ struct ResponseSink<'a> {
 }
 
 impl<'a> ResponseSink<'a> {
-    fn new(channel: &'a str, publisher: &'a IoxPublisher, notifier: &'a IoxNotifier) -> Self {
+    fn new(
+        channel: &'a str,
+        publisher: &'a IoxPublisher,
+        service: &'a IoxPubSub,
+        notifier: &'a IoxNotifier,
+    ) -> Self {
         Self {
             channel,
             publisher,
+            service,
             notifier,
             request: None,
             coalescer: Coalescer::new(),
@@ -259,7 +272,13 @@ impl ResponseEmitter for ResponseSink<'_> {
             RpcHeader::response_from(&request, kind, request.service_version).with_seq(self.seq);
         self.seq = self.seq.wrapping_add(1);
 
-        match publish_until_delivered(self.publisher, header, payload, CONSUMER_WAIT_TIMEOUT) {
+        match publish_until_delivered(
+            self.publisher,
+            self.service,
+            header,
+            payload,
+            CONSUMER_WAIT_TIMEOUT,
+        ) {
             Ok(()) => {
                 self.published = true;
                 true
@@ -333,8 +352,8 @@ struct PendingChannel {
 }
 
 /// Channels this process provides, keyed by channel name.
-fn channel_registry() -> &'static Registry<String, PendingChannel> {
-    static REGISTRY: Registry<String, PendingChannel> = Registry::new();
+fn channel_registry() -> &'static Locked<HashMap<String, PendingChannel>> {
+    static REGISTRY: Locked<HashMap<String, PendingChannel>> = Locked::new();
     &REGISTRY
 }
 
@@ -406,7 +425,8 @@ pub fn start_registered_channels() {
         return;
     }
 
-    let channels: Vec<(String, PendingChannel)> = channel_registry().drain();
+    let channels: Vec<(String, PendingChannel)> =
+        channel_registry().with(|registry| registry.drain().collect());
 
     for (channel, pending) in channels {
         let services = pending

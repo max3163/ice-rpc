@@ -10,6 +10,13 @@ use std::task::{Context, Poll};
 use super::error::RpcError;
 use super::wire::{normalize_wire_event, Event, ObservableError, Sender, WireEvent};
 
+/// Action run when the transport stream of a call is dropped.
+///
+/// The transport registers the removal of its response handler here: an
+/// abandoned call (`timeout`, `take_until`, a dropped stream) must not leave the
+/// handler registered for the rest of the process lifetime.
+type Cleanup = Box<dyn FnOnce() + Send>;
+
 pin_project_lite::pin_project! {
     /// Internal storage backing an [`Observable`].
     ///
@@ -23,6 +30,8 @@ pin_project_lite::pin_project! {
             rx: async_channel::Receiver<WireEvent<T, E>>,
             // Buffered `Complete` left over after expanding a `CompleteWith`.
             pending: Option<Event<T, E>>,
+            // Released with the stream, see `Observable::with_cleanup`.
+            _cleanup: Option<Cleanup>,
         },
         Inline {
             // Single-consumer queue: read through `&mut self` (see `recv`).
@@ -58,6 +67,19 @@ pin_project_lite::pin_project! {
         // delivered, so that a later channel close is reported as a normal end
         // (`None` from `next`) instead of an abrupt one.
         terminated: bool,
+    }
+
+    // Explicit rather than left to the drop of the field: the cleanup is the
+    // release point of a call, so it must not depend on how the projection
+    // macro destroys the pinned enum.
+    impl<T, E> PinnedDrop for Observable<T, E> {
+        fn drop(this: Pin<&mut Self>) {
+            if let StreamInnerProj::Transport { _cleanup, .. } = this.project().inner.project() {
+                if let Some(action) = _cleanup.take() {
+                    action();
+                }
+            }
+        }
     }
 }
 
@@ -115,6 +137,24 @@ impl<T, E> Observable<T, E> {
         }
     }
 
+    /// Attaches an action run when this observable is dropped.
+    ///
+    /// The transport uses it to release the response handler of a call. The
+    /// action fires exactly when the **last** owner of the stream is dropped:
+    /// every operator moves its source into its own wrapper, so a pipeline keeps
+    /// the original observable alive and the cleanup runs with the pipeline, not
+    /// with the intermediate steps.
+    ///
+    /// Ignored for an observable with no transport source, which has nothing to
+    /// release.
+    #[doc(hidden)]
+    pub fn with_cleanup(mut self, cleanup: impl FnOnce() + Send + 'static) -> Self {
+        if let StreamInner::Transport { _cleanup, .. } = &mut self.inner {
+            *_cleanup = Some(Box::new(cleanup));
+        }
+        self
+    }
+
     /// Receives the next user-facing event — the full [`Event`] vocabulary.
     ///
     /// A transport `CompleteWith(v)` is replayed as `Next(v)` then `Complete`.
@@ -125,7 +165,7 @@ impl<T, E> Observable<T, E> {
     /// interior mutability.
     pub async fn recv(&mut self) -> Result<Event<T, E>, async_channel::RecvError> {
         let event = match &mut self.inner {
-            StreamInner::Transport { rx, pending } => {
+            StreamInner::Transport { rx, pending, .. } => {
                 if let Some(event) = pending.take() {
                     Ok(event)
                 } else {
@@ -326,7 +366,7 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
         let polled = match this.inner.project() {
-            StreamInnerProj::Transport { rx, pending } => {
+            StreamInnerProj::Transport { rx, pending, .. } => {
                 // A previous `CompleteWith` left a trailing `Complete` behind.
                 if let Some(event) = pending.take() {
                     Poll::Ready(Some(event))
@@ -378,7 +418,11 @@ pub fn channel<T, E>(capacity: usize) -> (Sender<T, E>, Observable<T, E>) {
     (
         Sender { inner: tx },
         Observable {
-            inner: StreamInner::Transport { rx, pending: None },
+            inner: StreamInner::Transport {
+                rx,
+                pending: None,
+                _cleanup: None,
+            },
             terminated: false,
         },
     )
@@ -394,8 +438,61 @@ pub fn unbounded_channel<T, E>() -> (Sender<T, E>, Observable<T, E>) {
     (
         Sender { inner: tx },
         Observable {
-            inner: StreamInner::Transport { rx, pending: None },
+            inner: StreamInner::Transport {
+                rx,
+                pending: None,
+                _cleanup: None,
+            },
             terminated: false,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// A cleanup attached to a transport observable runs when it is dropped.
+    #[test]
+    fn dropping_a_transport_observable_runs_its_cleanup() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let (_tx, rx) = unbounded_channel::<i32, String>();
+
+        let flag = Arc::clone(&ran);
+        let observable = rx.with_cleanup(move || flag.store(true, Ordering::Relaxed));
+        match &observable.inner {
+            StreamInner::Transport { _cleanup, .. } => {
+                assert!(_cleanup.is_some(), "with_cleanup must attach the action");
+            }
+            _ => panic!("expected a transport observable"),
+        }
+        assert!(!ran.load(Ordering::Relaxed), "the cleanup runs on drop");
+
+        drop(observable);
+        assert!(ran.load(Ordering::Relaxed));
+    }
+
+    /// An operator moves its source into its own wrapper, so the cleanup must
+    /// survive the whole pipeline: it fires with the pipeline, not with the
+    /// intermediate observable that built it.
+    #[test]
+    fn a_pipeline_keeps_the_cleanup_until_it_is_dropped() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let (_tx, rx) = unbounded_channel::<i32, String>();
+
+        let flag = Arc::clone(&ran);
+        let pipeline = rx
+            .with_cleanup(move || flag.store(true, Ordering::Relaxed))
+            .map(|value| value * 2)
+            .filter(|value| *value > 0);
+        assert!(
+            !ran.load(Ordering::Relaxed),
+            "the source is still owned by the pipeline"
+        );
+
+        drop(pipeline);
+        assert!(ran.load(Ordering::Relaxed));
+    }
 }

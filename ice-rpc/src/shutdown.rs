@@ -6,7 +6,9 @@
 //! dropping the iceoryx2 node.
 
 use std::any::Any;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+
+use crate::global::Locked;
 
 /// Registry of blocking IPC thread handles.
 ///
@@ -26,9 +28,7 @@ impl ShutdownRegistry {
 
     /// Registers the handle of a blocking IPC thread.
     pub fn register(&self, handle: crate::rt::BlockingHandle) {
-        if let Ok(mut handles) = self.handles.lock() {
-            handles.push(handle);
-        }
+        crate::sync::lock(&self.handles).push(handle);
     }
 
     /// Waits for all registered threads to finish (async), then clears the registry.
@@ -36,11 +36,9 @@ impl ShutdownRegistry {
     /// # Returns
     /// Number of threads awaited.
     pub async fn join_all(&self) -> usize {
+        // The guard is dropped before the handles are awaited.
         let handles = {
-            let mut guard = match self.handles.lock() {
-                Ok(g) => g,
-                Err(_) => return 0,
-            };
+            let mut guard = crate::sync::lock(&self.handles);
             std::mem::take(&mut *guard)
         };
 
@@ -63,33 +61,21 @@ impl ShutdownRegistry {
 // Process-lifetime IPC resources
 // ---------------------------------------------------------------------------
 
-static IPC_CLEANUP_RESOURCES: OnceLock<Mutex<Vec<Box<dyn Any + Send>>>> = OnceLock::new();
+static IPC_CLEANUP_RESOURCES: Locked<Vec<Box<dyn Any + Send>>> = Locked::new();
 
 /// Registers an iceoryx2 resource (port, writer, notifier, ...) that must be
 /// dropped during shutdown, so that iceoryx2 cleans up its backing files.
 pub fn register_ipc_cleanup(resource: Box<dyn Any + Send>) {
-    if let Ok(mut resources) = IPC_CLEANUP_RESOURCES
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-    {
-        resources.push(resource);
-    }
+    IPC_CLEANUP_RESOURCES.with(|resources| resources.push(resource));
 }
 
 /// Drops all resources registered via [`register_ipc_cleanup`].
 pub fn clear_ipc_cleanup() {
-    let Some(resources) = IPC_CLEANUP_RESOURCES.get() else {
-        return;
-    };
-
-    let count = match resources.lock() {
-        Ok(mut guard) => {
-            let count = guard.len();
-            guard.clear();
-            count
-        }
-        Err(_) => return,
-    };
+    let count = IPC_CLEANUP_RESOURCES.with(|resources| {
+        let count = resources.len();
+        resources.clear();
+        count
+    });
 
     if count > 0 {
         log::info!("[ice-rpc] dropped {count} registered IPC resource(s).");

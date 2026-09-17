@@ -6,10 +6,11 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_lock::RwLock;
 
+use crate::global::Global;
 use crate::service_traits::{ServiceConsumer, ServiceInit, ServiceLifecycle, ServiceNamed};
 
 /// Groups the facets of a registered service.
@@ -36,7 +37,7 @@ pub struct ServiceLocator {
 impl ServiceLocator {
     /// Returns the unique global instance of the [`ServiceLocator`] (singleton).
     pub fn global() -> &'static Self {
-        static INSTANCE: OnceLock<ServiceLocator> = OnceLock::new();
+        static INSTANCE: Global<ServiceLocator> = Global::new();
         INSTANCE.get_or_init(|| Self {
             entries: RwLock::new(HashMap::new()),
             lazy_cache: RwLock::new(HashMap::new()),

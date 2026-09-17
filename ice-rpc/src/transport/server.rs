@@ -3,36 +3,42 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
 use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
-use iceoryx2_bb_posix::signal::SignalHandler;
 
 use super::bridge::ServiceDispatcher;
 use super::client::publish_until_delivered;
-use super::notify::should_notify_local;
-use super::waitset::wait_for_wakeup;
+use super::notify::Coalescer;
 use super::{
-    shared_node, transport_error, Iox, IoxEvent, IoxNode, IoxPubSub, IoxPublisher,
-    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_NODES, MAX_PUBLISHERS,
-    MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
-    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, SUBSCRIBER_BUFFER,
+    shared_node, transport_error, IoxEvent, IoxListener, IoxNode, IoxNotifier, IoxPubSub,
+    IoxPublisher, IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_NODES,
+    MAX_PUBLISHERS, MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, REQUEST_NOTIFY_SUFFIX,
+    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SUBSCRIBER_BUFFER,
 };
+use crate::global::Registry;
 use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
 use crate::CancellationToken;
 
+/// Whether opening a service may create it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpenMode {
+    /// Transport side: create the service when no peer owns it yet.
+    CreateOrOpen,
+    /// Observer side: attach to an existing service, never create one.
+    ReadOnly,
+}
+
 /// Opens the pub/sub service of one direction of `channel`.
 ///
-/// `create` selects `open_or_create` (transport side) or a strict `open`
-/// (read-only monitor side, which must never create the service). The service
-/// definition is shared by both, so an observer is guaranteed to attach to the
-/// very service the transport created.
-pub(super) fn open_service_with(
+/// The definition is shared by the transport and the observer, so an
+/// out-of-band observer is guaranteed to attach to the very service the
+/// transport created.
+pub(super) fn open_service(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
-    create: bool,
+    mode: OpenMode,
 ) -> Result<IoxPubSub, RpcError> {
     let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
@@ -51,58 +57,103 @@ pub(super) fn open_service_with(
         // Must stay false: enabled, the receiver overwrites its oldest sample.
         .enable_safe_overflow(false);
 
-    if create {
-        builder
+    match mode {
+        OpenMode::CreateOrOpen => builder
             .open_or_create()
-            .map_err(|e| transport_error("open service", e))
-    } else {
-        builder
+            .map_err(|e| transport_error("open service", e)),
+        OpenMode::ReadOnly => builder
             .open()
-            .map_err(|e| transport_error("open service (read-only)", e))
+            .map_err(|e| transport_error("open service (read-only)", e)),
     }
 }
 
-/// Opens the pub/sub service of one direction of `channel`, creating it if needed.
-pub(super) fn open_service(
-    node: &IoxNode,
-    channel: &str,
-    suffix: &str,
-) -> Result<IoxPubSub, RpcError> {
-    open_service_with(node, channel, suffix, true)
-}
-
 /// Opens the event service used as a wake-up signal for `channel`.
-///
-/// `create` selects `open_or_create` (transport side) or a strict `open`
-/// (read-only monitor side).
-pub(super) fn open_event_service_with(
+pub(super) fn open_event_service(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
-    create: bool,
+    mode: OpenMode,
 ) -> Result<IoxEvent, RpcError> {
     let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
     let builder = node.service_builder(&name).event();
 
-    if create {
-        builder
+    match mode {
+        OpenMode::CreateOrOpen => builder
             .open_or_create()
-            .map_err(|e| transport_error("open event service", e))
-    } else {
-        builder
+            .map_err(|e| transport_error("open event service", e)),
+        OpenMode::ReadOnly => builder
             .open()
-            .map_err(|e| transport_error("open event service (read-only)", e))
+            .map_err(|e| transport_error("open event service (read-only)", e)),
     }
 }
 
-/// Opens the event service used as a wake-up signal for `channel`, creating it if needed.
-pub(super) fn open_event_service(
-    node: &IoxNode,
-    channel: &str,
-    suffix: &str,
-) -> Result<IoxEvent, RpcError> {
-    open_event_service_with(node, channel, suffix, true)
+/// The ports of one channel, provider side.
+///
+/// The service and event handles are kept even when no code reads them: dropping
+/// one would close the iceoryx2 service the ports are attached to.
+pub(super) struct ChannelPorts {
+    _request_service: IoxPubSub,
+    _response_service: IoxPubSub,
+    _request_notify: IoxEvent,
+    _response_notify: IoxEvent,
+    /// Receives the requests of every service of the channel.
+    pub(super) subscriber: IoxSubscriber,
+    /// Wakes the subscriber up when a request is published.
+    pub(super) listener: IoxListener,
+    /// Publishes the responses of every service of the channel.
+    pub(super) publisher: IoxPublisher,
+    /// Wakes the consumers' dispatch threads up.
+    pub(super) response_notifier: IoxNotifier,
+}
+
+/// Opens every port of one channel, provider side.
+pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError> {
+    let node = shared_node()?;
+    let request_service = open_service(&node, channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)?;
+    let response_service = open_service(&node, channel, RESPONSE_SUFFIX, OpenMode::CreateOrOpen)?;
+    let request_notify = open_event_service(
+        &node,
+        channel,
+        REQUEST_NOTIFY_SUFFIX,
+        OpenMode::CreateOrOpen,
+    )?;
+    let response_notify = open_event_service(
+        &node,
+        channel,
+        RESPONSE_NOTIFY_SUFFIX,
+        OpenMode::CreateOrOpen,
+    )?;
+
+    let subscriber = request_service
+        .subscriber_builder()
+        .create()
+        .map_err(|e| transport_error("request subscriber", e))?;
+    let listener = request_notify
+        .listener_builder()
+        .create()
+        .map_err(|e| transport_error("request listener", e))?;
+    let publisher = response_service
+        .publisher_builder()
+        .initial_max_slice_len(MAX_SLICE_LEN)
+        .max_loaned_samples(MAX_LOANED_SAMPLES)
+        .create()
+        .map_err(|e| transport_error("response publisher", e))?;
+    let response_notifier = response_notify
+        .notifier_builder()
+        .create()
+        .map_err(|e| transport_error("response notifier", e))?;
+
+    Ok(ChannelPorts {
+        _request_service: request_service,
+        _response_service: response_service,
+        _request_notify: request_notify,
+        _response_notify: response_notify,
+        subscriber,
+        listener,
+        publisher,
+        response_notifier,
+    })
 }
 
 /// Spawns the provider side of one channel: a thread that routes every request to
@@ -120,173 +171,122 @@ pub fn spawn_native_service(
     std::thread::spawn(move || {
         // Any port that cannot be opened makes the whole channel useless: log it
         // and stop the thread.
-        macro_rules! or_stop {
-            ($what:literal, $result:expr) => {
-                match $result {
-                    Ok(port) => port,
-                    Err(e) => {
-                        log::error!("[transport] {} on '{channel}': {e:?}", $what);
-                        return;
-                    }
-                }
-            };
-        }
-
-        let node = or_stop!("node creation", shared_node());
-        let request_service = or_stop!(
-            "request channel",
-            open_service(&node, &channel, REQUEST_SUFFIX)
-        );
-        let response_service = or_stop!(
-            "response channel",
-            open_service(&node, &channel, RESPONSE_SUFFIX)
-        );
-        let request_notify = or_stop!(
-            "request event",
-            open_event_service(&node, &channel, REQUEST_NOTIFY_SUFFIX)
-        );
-        let response_notify = or_stop!(
-            "response event",
-            open_event_service(&node, &channel, RESPONSE_NOTIFY_SUFFIX)
-        );
-
-        let subscriber = or_stop!(
-            "request subscriber",
-            request_service.subscriber_builder().create()
-        );
-        let listener = or_stop!(
-            "request listener",
-            request_notify.listener_builder().create()
-        );
-        let publisher = or_stop!(
-            "response publisher",
-            response_service
-                .publisher_builder()
-                .initial_max_slice_len(MAX_SLICE_LEN)
-                .max_loaned_samples(MAX_LOANED_SAMPLES)
-                .create()
-        );
-        let response_notifier = or_stop!(
-            "response notifier",
-            response_notify.notifier_builder().create()
-        );
-
-        let Ok(waitset) = WaitSetBuilder::new()
-            .signal_handling_mode(crate::waitset_signal_handling_mode())
-            .create::<Iox>()
-        else {
-            log::error!("[transport] waitset creation failed");
-            return;
-        };
-        // A plain notification attachment: the wake-up deadline is passed to
-        // `wait_and_process_once_with_timeout`, so attaching it as a deadline
-        // would make the guard fire on every expiry and defeat the idle path.
-        let Ok(guard) = waitset.attach_notification(&listener) else {
-            log::error!("[transport] waitset attach failed");
-            return;
+        let ports = match open_channel_ports(&channel) {
+            Ok(ports) => ports,
+            Err(e) => {
+                log::error!("[transport] '{channel}': {e}");
+                return;
+            }
         };
 
         log::info!(
             "[transport] channel '{channel}' ready ({} service(s))",
             table.len()
         );
-        let mut idle_spins: u32 = 0;
-        let mut signal_ticks: u32 = 0;
-        let mut last_notify_us: u64 = 0;
-        // One publisher per channel, drained by this single thread: a plain
-        // counter is enough and stays monotonic for `RpcHeader::seq`.
-        let mut response_seq: u64 = 0;
-        while !stop.is_cancelled() {
-            match subscriber.receive() {
-                Ok(Some(sample)) => {
-                    idle_spins = 0;
-                    // A saturated service never reaches the blocking path below,
-                    // where iceoryx2 reports the termination request.
-                    signal_ticks = signal_ticks.wrapping_add(1);
-                    if signal_ticks & (SIGNAL_CHECK_SAMPLES - 1) == 0
-                        && SignalHandler::termination_requested()
-                    {
-                        crate::request_shutdown();
-                        break;
-                    }
-                    let request_header = *sample.user_header();
-                    let payload: &[u8] = &sample;
 
-                    if request_header.event_kind() != EventKind::Request {
-                        log::warn!(
-                            "[transport] '{channel}': unexpected {:?} sample",
-                            request_header.event_kind()
-                        );
-                        continue;
-                    }
-                    if request_header.protocol_version != PROTOCOL_VERSION {
-                        log::warn!(
-                            "[transport] '{channel}': protocol {} != {PROTOCOL_VERSION}",
-                            request_header.protocol_version
-                        );
-                    }
-
-                    // A channel hosts several services: the header id selects
-                    // the dispatcher to run.
-                    let Some(dispatcher) = table.get(&request_header.service_id) else {
-                        log::warn!(
-                            "[transport] channel '{channel}': unknown service_id {:#010x} for method '{}' (service not registered, or id collision)",
-                            request_header.service_id,
-                            request_header.method()
-                        );
-                        continue;
-                    };
-
-                    // Publish the responses, then wake the consumer's response
-                    // thread once per coalescing window.
-                    let mut wake = false;
-                    for (kind, response) in dispatcher.dispatch(request_header.method(), payload) {
-                        let seq = response_seq;
-                        response_seq = response_seq.wrapping_add(1);
-                        if publish_response(&publisher, &request_header, &response, kind, seq)
-                            .is_err()
-                        {
-                            break;
-                        }
-                        wake = true;
-                    }
-                    if wake && should_notify_local(&mut last_notify_us) {
-                        let _ = response_notifier.notify_with_custom_event_id(EventId::new(0));
-                    }
-                }
-                Ok(None) => {
-                    if idle_spins < IDLE_SPINS {
-                        idle_spins += 1;
-                        std::thread::yield_now();
-                    } else {
-                        let notified = wait_for_wakeup(&waitset, &guard, &listener);
-                        // Only a notification means there is something to poll
-                        // for; a bare deadline expiry keeps the thread blocked.
-                        idle_spins = if notified { 0 } else { IDLE_SPINS };
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[transport] request receive error: {e:?}");
-                    idle_spins = 0;
-                    std::thread::yield_now();
-                }
-            }
-        }
+        let mut sink = ResponseSink::new(&ports.publisher, &ports.response_notifier);
+        super::pump::run_receive_loop(
+            &channel,
+            "request",
+            &ports.subscriber,
+            &ports.listener,
+            || stop.is_cancelled(),
+            |header, payload| handle_request(&channel, &table, &mut sink, header, payload),
+        );
         log::info!("[transport] channel '{channel}' stopped");
     })
 }
 
-/// Publishes one response sample, carrying the request's correlation id, the
-/// sample's real [`EventKind`] and the publisher's `seq` in its zero-copy header.
-fn publish_response(
-    publisher: &IoxPublisher,
-    request: &RpcHeader,
-    response: &[u8],
-    kind: EventKind,
+/// Publishes the responses of one channel and wakes the consumers up.
+struct ResponseSink<'a> {
+    publisher: &'a IoxPublisher,
+    notifier: &'a IoxNotifier,
+    /// Coalescing window of the consumer wake-ups.
+    coalescer: Coalescer,
+    /// Per-channel monotonic sample counter, stamped into `RpcHeader::seq`.
+    ///
+    /// One publisher per channel, drained by this single thread: a plain counter
+    /// is enough and stays monotonic.
     seq: u64,
-) -> Result<(), RpcError> {
-    let header = RpcHeader::response_from(request, kind, request.service_version).with_seq(seq);
-    publish_until_delivered(publisher, header, response, CONSUMER_WAIT_TIMEOUT)
+}
+
+impl<'a> ResponseSink<'a> {
+    fn new(publisher: &'a IoxPublisher, notifier: &'a IoxNotifier) -> Self {
+        Self {
+            publisher,
+            notifier,
+            coalescer: Coalescer::new(),
+            seq: 0,
+        }
+    }
+
+    /// Publishes one response sample, carrying the request's correlation id, the
+    /// sample's real [`EventKind`] and this publisher's `seq`.
+    fn publish(
+        &mut self,
+        request: &RpcHeader,
+        response: &[u8],
+        kind: EventKind,
+    ) -> Result<(), RpcError> {
+        let header =
+            RpcHeader::response_from(request, kind, request.service_version).with_seq(self.seq);
+        self.seq = self.seq.wrapping_add(1);
+        publish_until_delivered(self.publisher, header, response, CONSUMER_WAIT_TIMEOUT)
+    }
+
+    /// Wakes the consumers' response threads up, at most once per window.
+    fn wake(&mut self) {
+        if self.coalescer.should_notify() {
+            let _ = self.notifier.notify_with_custom_event_id(EventId::new(0));
+        }
+    }
+}
+
+/// Routes one request to the dispatcher of its service and publishes the
+/// responses.
+fn handle_request(
+    channel: &str,
+    table: &HashMap<u32, ServiceDispatcher>,
+    sink: &mut ResponseSink<'_>,
+    header: &RpcHeader,
+    payload: &[u8],
+) {
+    if header.event_kind() != EventKind::Request {
+        log::warn!(
+            "[transport] '{channel}': unexpected {:?} sample",
+            header.event_kind()
+        );
+        return;
+    }
+    if header.protocol_version != PROTOCOL_VERSION {
+        log::warn!(
+            "[transport] '{channel}': protocol {} != {PROTOCOL_VERSION}",
+            header.protocol_version
+        );
+    }
+
+    // A channel hosts several services: the header id selects the dispatcher.
+    let Some(dispatcher) = table.get(&header.service_id) else {
+        log::warn!(
+            "[transport] channel '{channel}': unknown service_id {:#010x} for method '{}' (service not registered, or id collision)",
+            header.service_id,
+            header.method()
+        );
+        return;
+    };
+
+    // Publish the responses, then wake the consumer's response thread once per
+    // coalescing window.
+    let mut published = false;
+    for (kind, response) in dispatcher.dispatch(header.method(), payload) {
+        if sink.publish(header, &response, kind).is_err() {
+            break;
+        }
+        published = true;
+    }
+    if published {
+        sink.wake();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,9 +306,10 @@ struct PendingChannel {
     stop: CancellationToken,
 }
 
-fn channel_registry() -> &'static std::sync::Mutex<HashMap<String, PendingChannel>> {
-    static REGISTRY: OnceLock<std::sync::Mutex<HashMap<String, PendingChannel>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+/// Channels this process provides, keyed by channel name.
+fn channel_registry() -> &'static Registry<String, PendingChannel> {
+    static REGISTRY: Registry<String, PendingChannel> = Registry::new();
+    &REGISTRY
 }
 
 /// `true` once [`start_registered_channels`] ran: later registrations start their
@@ -341,26 +342,32 @@ pub fn register_native_service(
         return Ok(());
     }
 
-    let mut registry = crate::sync::lock(channel_registry());
-    let pending = registry
-        .entry(channel.to_owned())
-        .or_insert_with(|| PendingChannel {
-            services: Vec::new(),
-            stop: crate::global_cancel_token().clone(),
+    // The registration is atomic: two services of one channel must never race
+    // into a duplicate `service_id`.
+    let registered = channel_registry().with(|registry| {
+        let pending = registry
+            .entry(channel.to_owned())
+            .or_insert_with(|| PendingChannel {
+                services: Vec::new(),
+                stop: crate::global_cancel_token().clone(),
+            });
+
+        if let Some(previous) = conflicting_name(&pending.services, service_id) {
+            return Err(format!(
+                "service_id collision on channel '{channel}': '{service_name}' and \
+                 '{previous}' both map to {service_id:#010x}"
+            ));
+        }
+
+        pending.services.push(RegisteredChannelService {
+            id: service_id,
+            name: service_name,
+            dispatcher,
         });
-
-    if let Some(previous) = conflicting_name(&pending.services, service_id) {
-        return Err(RpcError::TransportError(format!(
-            "service_id collision on channel '{channel}': '{service_name}' and \
-             '{previous}' both map to {service_id:#010x}"
-        )));
-    }
-
-    pending.services.push(RegisteredChannelService {
-        id: service_id,
-        name: service_name,
-        dispatcher,
+        Ok(())
     });
+    registered.map_err(RpcError::TransportError)?;
+
     log::debug!("[transport] '{service_name}' registered on channel '{channel}'");
     Ok(())
 }
@@ -373,8 +380,7 @@ pub fn start_registered_channels() {
         return;
     }
 
-    let channels: Vec<(String, PendingChannel)> =
-        crate::sync::lock(channel_registry()).drain().collect();
+    let channels: Vec<(String, PendingChannel)> = channel_registry().drain();
 
     for (channel, pending) in channels {
         let services = pending

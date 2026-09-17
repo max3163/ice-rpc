@@ -6,13 +6,13 @@
 //! tick. Only an explicit `Dead` state counts as a crash; a clean shutdown makes
 //! the node disappear instead.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use iceoryx2::prelude::*;
 
+use crate::global::{Global, Locked};
 use crate::types::{raw_pid_to_u32, NodeId};
 
 /// Polling interval of the liveness poller (ms).
@@ -33,7 +33,7 @@ const SLEEP_SLICE_MS: u64 = 100;
 /// Read **once** per process: the polling loop calls this on every tick, and
 /// `std::env::var` takes the process-wide environment lock.
 fn poll_interval_ms() -> u64 {
-    static INTERVAL: OnceLock<u64> = OnceLock::new();
+    static INTERVAL: Global<u64> = Global::new();
     *INTERVAL.get_or_init(|| {
         std::env::var("ICE_RPC_LIVENESS_POLL_MS")
             .ok()
@@ -110,13 +110,15 @@ pub fn is_pid_alive(pid: u32) -> bool {
 // Watcher registry and unique poller
 // ---------------------------------------------------------------------------
 
-fn watched_registry() -> &'static Mutex<HashMap<u32, ()>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<u32, ()>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// PIDs currently watched, one entry per remote node.
+fn watched_nodes() -> &'static Locked<HashSet<u32>> {
+    static WATCHED: Locked<HashSet<u32>> = Locked::new();
+    &WATCHED
 }
 
-fn poller_started() -> &'static OnceLock<()> {
-    static STARTED: OnceLock<()> = OnceLock::new();
+/// Set once the unique poller has been spawned.
+fn poller_started() -> &'static Global<()> {
+    static STARTED: Global<()> = Global::new();
     &STARTED
 }
 
@@ -128,13 +130,13 @@ pub fn register_node_liveness_watcher(node_id: NodeId) {
     if node_id == NodeId::current() {
         return;
     }
-    crate::sync::lock(watched_registry()).insert(node_id.0, ());
+    watched_nodes().with(|watched| watched.insert(node_id.0));
     ensure_poller();
 }
 
 /// Removes a remote node from crash detection.
 pub fn unregister_node_liveness_watcher(node_id: NodeId) {
-    crate::sync::lock(watched_registry()).remove(&node_id.0);
+    watched_nodes().with(|watched| watched.remove(&node_id.0));
 }
 
 /// Returns `true` when `node_id` is currently registered (tests).
@@ -142,7 +144,7 @@ pub fn unregister_node_liveness_watcher(node_id: NodeId) {
 /// Per-node rather than a global count: the tests run in parallel.
 #[cfg(test)]
 pub fn is_watched(node_id: NodeId) -> bool {
-    crate::sync::lock(watched_registry()).contains_key(&node_id.0)
+    watched_nodes().with(|watched| watched.contains(&node_id.0))
 }
 
 fn ensure_poller() {
@@ -161,10 +163,7 @@ fn poller_loop() {
             break;
         }
 
-        let watched: Vec<u32> = crate::sync::lock(watched_registry())
-            .keys()
-            .copied()
-            .collect();
+        let watched: Vec<u32> = watched_nodes().with(|nodes| nodes.iter().copied().collect());
 
         if !watched.is_empty() {
             if let Some(alive) = alive_pids() {
@@ -179,7 +178,7 @@ fn poller_loop() {
                     }
 
                     log::warn!("[node_liveness] CRASH DETECTED for Node {}", pid);
-                    crate::sync::lock(watched_registry()).remove(&pid);
+                    watched_nodes().with(|nodes| nodes.remove(&pid));
                 }
             }
         }

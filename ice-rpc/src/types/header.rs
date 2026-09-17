@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iceoryx2::prelude::ZeroCopySend;
 use iceoryx2_bb_container::string::StaticString;
 
+use crate::labels::impl_labels;
 use crate::types::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION};
 
 /// Correlation id prefixing every request/response pair.
@@ -77,6 +78,15 @@ impl EventKind {
         }
     }
 }
+
+// The labels an observer reads back from a sample (`kind="complete"`), declared
+// next to the kind they describe.
+impl_labels!(EventKind {
+    EventKind::Request => "request",
+    EventKind::Next => "next",
+    EventKind::Complete => "complete",
+    EventKind::Error => "error",
+});
 
 /// Zero-copy RPC header attached to every request and response sample.
 #[repr(C)]

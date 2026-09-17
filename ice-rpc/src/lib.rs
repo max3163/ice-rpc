@@ -130,6 +130,7 @@ pub use ice_rpc_macros::{main, service};
 
 mod config;
 mod global;
+mod labels;
 mod locator;
 mod node_liveness;
 pub mod rt;

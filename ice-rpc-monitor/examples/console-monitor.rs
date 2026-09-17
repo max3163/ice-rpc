@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{decoders as common_decoders, DatabaseError, DatabaseServiceRequest};
-use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, EventKind, ServiceDispatcher};
+use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
@@ -157,10 +157,10 @@ impl Demo {
         let service_id = service_id_of(DEMO_SERVICE);
 
         let mut dispatcher = ServiceDispatcher::new();
-        dispatcher.method("get_user_age", |payload| {
+        dispatcher.method("get_user_age", |payload, emitter| {
             let name = match decode_aligned::<DatabaseServiceRequest>(payload) {
                 Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
-                _ => return Box::new(std::iter::empty::<(EventKind, Vec<u8>)>()),
+                _ => return,
             };
             let age: i32 = match name.as_str() {
                 "Alice" => 30,
@@ -168,10 +168,10 @@ impl Demo {
                 "Charlie" => 25,
                 _ => 99,
             };
-            observable_to_responses(Observable::<i32, DatabaseError>::from_events([
-                Event::Next(age),
-                Event::Complete,
-            ]))
+            observable_to_responses(
+                Observable::<i32, DatabaseError>::from_events([Event::Next(age), Event::Complete]),
+                emitter,
+            );
         });
 
         let server_stop = CancellationToken::new();

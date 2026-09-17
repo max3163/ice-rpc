@@ -49,13 +49,13 @@ fn traffic_settled(metrics: &Metrics, channel: &str, service_id: u32, expected: 
 fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHandle<()>) {
     let service_id = service_id_of(channel);
     let mut dispatcher = ServiceDispatcher::new();
-    dispatcher.method("echo", |_payload| {
+    dispatcher.method("echo", |_payload, emitter| {
         let observable = Observable::<i32, String>::from_events([
             Event::Next(1),
             Event::Next(2),
             Event::Complete,
         ]);
-        observable_to_responses(observable)
+        observable_to_responses(observable, emitter);
     });
     let stop = CancellationToken::new();
     let server = spawn_native_service(channel, vec![(service_id, dispatcher)], stop.clone());

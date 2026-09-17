@@ -66,8 +66,10 @@ pub struct Emitter {
     pub node_id: u128,
     /// Unique publisher port id.
     ///
-    /// One publisher exists per `(channel, direction, process)`, so this is the
-    /// right key to scope the per-publisher `seq` and detect a hole.
+    /// A port publishes on exactly one `(channel, direction)` pair, and the id is
+    /// unique per port, so it is the right scope for the per-publisher `seq`: an
+    /// observer tracking `seq` per id counts the samples **it** missed without
+    /// aliasing two publishers of one channel (two consumers) nor a restarted one.
     pub publisher_id: u128,
 }
 

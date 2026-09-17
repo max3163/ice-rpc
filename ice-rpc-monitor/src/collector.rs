@@ -398,14 +398,12 @@ impl Monitor {
             sample.payload_len(),
             emitter.pid
         );
-        // Loss detection must see every sample, whatever its kind. The `seq` is
-        // monotonic per *publisher port*, so the native `publisher_id` is what
-        // scopes it; the PID is only a readable label for the metrics.
-        let missed = self
-            .loss
-            .observe(channel, direction, emitter.publisher_id, header.seq);
-        self.metrics
-            .on_sample_gap(channel, direction, emitter.pid, missed);
+        // Loss detection must see every sample, whatever its kind: the `seq` is
+        // monotonic per publisher port, which the native `publisher_id` scopes.
+        // What is counted is the observer's **own** loss: a lagging observer is
+        // skipped by the publisher instead of slowing the application down.
+        let missed = self.loss.observe(emitter.publisher_id, header.seq);
+        self.metrics.on_sample_gap(missed);
         self.metrics
             .on_payload(channel, direction, sample.payload_len());
         self.pids.entry(emitter.pid).or_insert(true);

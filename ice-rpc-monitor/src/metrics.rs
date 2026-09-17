@@ -96,7 +96,10 @@ struct Inner {
     inflight: BTreeMap<(String, u32), i64>,
     unmatched: BTreeMap<String, u64>,
     orphan: BTreeMap<String, u64>,
-    gaps: BTreeMap<(String, &'static str, u32), u64>,
+    /// Samples the observer itself missed (see [`LossTracker`]).
+    ///
+    /// [`LossTracker`]: crate::loss::LossTracker
+    sample_gaps: u64,
     clock_skew: u64,
     nodes_alive: i64,
     node_crashes: u64,
@@ -196,27 +199,18 @@ impl Metrics {
         }
     }
 
-    /// Adds missed samples detected through a `seq` hole.
+    /// Adds samples the observer **itself** missed, detected through a `seq` hole.
     ///
-    /// The hole itself is scoped by the native `publisher_id` (see
-    /// [`LossTracker`](crate::loss::LossTracker)); `emitter_pid` is only the
-    /// human-readable label of that publisher, one PID owning at most one
-    /// publisher per direction.
-    pub fn on_sample_gap(
-        &self,
-        channel: &str,
-        direction: Direction,
-        emitter_pid: u32,
-        missed: u64,
-    ) {
+    /// One counter, deliberately not one per channel: the observer is the only
+    /// subscriber the publisher may skip, so what it measures is the completeness
+    /// of its own view — the first thing to check before trusting a count or a
+    /// latency histogram (see [`LossTracker`](crate::loss::LossTracker)).
+    pub fn on_sample_gap(&self, missed: u64) {
         if missed == 0 {
             return;
         }
         if let Ok(mut inner) = self.inner.lock() {
-            *inner
-                .gaps
-                .entry((channel.to_owned(), direction_label(direction), emitter_pid))
-                .or_default() += missed;
+            inner.sample_gaps += missed;
         }
     }
 
@@ -367,11 +361,11 @@ impl Metrics {
             byte_avg(&resp_payload)
         );
         let in_flight: i64 = inner.inflight.values().copied().sum();
-        let gaps: u64 = inner.gaps.values().copied().sum();
+        let gaps = inner.sample_gaps;
         let unmatched: u64 = inner.unmatched.values().copied().sum();
         let orphan: u64 = inner.orphan.values().copied().sum();
         let _ = writeln!(out, " in-flight       : {in_flight}");
-        let _ = writeln!(out, " sample gaps     : {gaps}");
+        let _ = writeln!(out, " observer gaps   : {gaps}");
         let _ = writeln!(out, " unmatched req.  : {unmatched}");
         let _ = writeln!(out, " orphan responses: {orphan}");
         let _ = writeln!(out, " clock skew      : {}", inner.clock_skew);
@@ -515,17 +509,6 @@ impl Metrics {
             let _ = writeln!(
                 out,
                 "ice_rpc_inflight{{channel=\"{channel}\",service=\"{service}\"}} {value}"
-            );
-        }
-
-        out.push_str(
-            "# HELP ice_rpc_sample_gaps_total Samples missed, from native publisher_id seq holes\n",
-        );
-        out.push_str("# TYPE ice_rpc_sample_gaps_total counter\n");
-        for ((channel, direction, pid), value) in &inner.gaps {
-            let _ = writeln!(
-                out,
-                "ice_rpc_sample_gaps_total{{channel=\"{channel}\",direction=\"{direction}\",emitter=\"{pid}\"}} {value}"
             );
         }
 
@@ -749,6 +732,12 @@ impl Metrics {
             inner.observer_dropped
         );
 
+        out.push_str(
+            "# HELP ice_rpc_observer_gaps_total Samples the observer itself missed, from seq holes\n",
+        );
+        out.push_str("# TYPE ice_rpc_observer_gaps_total counter\n");
+        let _ = writeln!(out, "ice_rpc_observer_gaps_total {}", inner.sample_gaps);
+
         out.push_str("# HELP ice_rpc_discovery_errors_total Failed channel discovery attempts\n");
         out.push_str("# TYPE ice_rpc_discovery_errors_total counter\n");
         let _ = writeln!(
@@ -885,7 +874,7 @@ mod tests {
         metrics.on_request("DatabaseService", 42, "get_user_age");
         metrics.on_request("DatabaseService", 42, "get_user_age");
         metrics.on_response("DatabaseService", 42, "complete");
-        metrics.on_sample_gap("DatabaseService", Direction::Response, 1234, 3);
+        metrics.on_sample_gap(3);
 
         let text = metrics.render_prometheus();
         assert!(text.contains(
@@ -894,9 +883,7 @@ mod tests {
         assert!(text.contains(
             "ice_rpc_responses_total{channel=\"DatabaseService\",service=\"42\",kind=\"complete\"} 1"
         ));
-        assert!(text.contains(
-            "ice_rpc_sample_gaps_total{channel=\"DatabaseService\",direction=\"resp\",emitter=\"1234\"} 3"
-        ));
+        assert!(text.contains("ice_rpc_observer_gaps_total 3"));
     }
 
     #[test]

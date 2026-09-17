@@ -142,10 +142,10 @@ fn the_observer_reconstructs_the_traffic_from_the_headers() {
         )),
         "in-flight gauge did not return to zero:\n{text}"
     );
-    // No sample was dropped by the observer.
+    // The observer itself dropped no sample: the counter is present, at zero.
     assert!(
-        !text.contains(&format!("ice_rpc_sample_gaps_total{{channel=\"{channel}\"")),
-        "unexpected sample loss:\n{text}"
+        text.contains("ice_rpc_observer_gaps_total 0"),
+        "unexpected observer sample loss:\n{text}"
     );
 }
 

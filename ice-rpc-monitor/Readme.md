@@ -13,7 +13,7 @@ Reading the payload is not free, so the observer has two modes:
 
 | Mode | Reads/decodes the payload | Cost | Use case |
 |---|---|---|---|
-| `stats` (default) | **never** | zero copy per sample | high throughput: counts, throughput, error kinds, exact latency, loss |
+| `stats` (default) | **never** | zero copy per sample | high throughput: counts, throughput, error kinds, exact latency, observer loss |
 | `detail` | yes, decoded | one copy + one decode per sample | debugging at moderate throughput: the message content |
 
 `--detail` is the shorthand for `--mode detail` (full capture) and applies
@@ -79,7 +79,7 @@ Bus metrics:
 - `ice_rpc_requests_total`, `ice_rpc_responses_total` (`kind=next|complete|error`)
 - `ice_rpc_latency_seconds` — **exact** `response.timestamp_ns - request.timestamp_ns`
 - `ice_rpc_payload_bytes`, `ice_rpc_inflight`
-- `ice_rpc_sample_gaps_total` — samples missed, measured from `seq` holes
+- `ice_rpc_observer_gaps_total` — samples the observer **itself** missed, measured from `seq` holes
 - `ice_rpc_unmatched_requests_total`, `ice_rpc_orphan_responses_total`
 - `ice_rpc_clock_skew_total`, `ice_rpc_nodes_alive`, `ice_rpc_node_crashes_total`
 
@@ -241,8 +241,9 @@ produces readable, greppable output.
 `iceoryx2` natively supports several subscribers per pub/sub service. Because the
 transport disables safe overflow and stops publishing as soon as one subscriber
 received the sample, a saturated observer is simply **skipped** by the publisher
-instead of blocking it. The loss is not silent: the `seq` field of the header
-makes it countable.
+instead of blocking it. The observer's own loss is not silent: the `seq` field of
+the header makes it countable, and `ice_rpc_observer_gaps_total` is the counter to
+check before trusting any other number.
 
 ## Limits
 

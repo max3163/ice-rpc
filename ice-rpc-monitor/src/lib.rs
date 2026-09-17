@@ -5,7 +5,8 @@
 //! `_notify` event services), reads the zero-copy `RpcHeader` and derives:
 //!
 //! - **Prometheus metrics**: request/response counts, payload-size and latency
-//!   histograms, in-flight gauge, sample-loss and orphan counters, node liveness;
+//!   histograms, in-flight gauge, the observer's own sample-loss and orphan
+//!   counters, node liveness;
 //! - **a trace stream** correlated by `correlation_id`, emitted as NDJSON.
 //!
 //! In the default **stats** mode the rkyv payload is never read, so the observer

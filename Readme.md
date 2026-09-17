@@ -293,7 +293,7 @@ place by the bus, so it costs no serialization and no allocation.
 |---|---|---|
 | `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
 | `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
-| `seq` | `u64` | per-publisher, per-channel monotonic sample counter |
+| `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
 | `method_name` | `StaticString<64>` | target method (carried by requests) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
@@ -322,9 +322,10 @@ registered.
 The monitoring fields make the header **self-describing for an out-of-band
 observer** (`ice-rpc-monitor`): it subscribes to the same services, reads the
 header without touching the rkyv payload, and derives an exact latency
-(`response.timestamp_ns - request.timestamp_ns`) plus loss (`seq` holes, scoped
-by the native `publisher_id`). The layout is pinned to exactly 128 bytes by a
-unit test: iceoryx2 validates the `user_header` size when a service is opened,
+(`response.timestamp_ns - request.timestamp_ns`) plus its **own** sample loss
+(`seq` holes, scoped by the native `publisher_id`). The layout is pinned to
+exactly 128 bytes by a unit test: iceoryx2 validates the `user_header` size when
+a service is opened,
 so every process on a machine must be rebuilt together after a layout change.
 
 ### 4.3. Provider
@@ -1227,7 +1228,7 @@ Two capture modes, because reading the payload is not free:
 
 | Mode | Reads/decodes the payload | Use case |
 |---|---|---|
-| `stats` (default) | never | high throughput: counts, error kinds, exact latency, loss |
+| `stats` (default) | never | high throughput: counts, error kinds, exact latency, observer loss |
 | `detail` | yes (decoded) | debugging at moderate throughput: the message content |
 
 Decoding is opt-in: building the service definitions with the `monitoring`

@@ -4,7 +4,7 @@
 //! in `ProviderNodeJs` mode. The actual dispatch function is injected
 //! by `gateway_nodejs` during runtime initialization.
 
-use std::sync::OnceLock;
+use crate::global::Global;
 
 /// Signature of the dispatch callback to Node.js.
 ///
@@ -24,14 +24,14 @@ pub type DispatchFn = fn(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String>;
 
-static DISPATCH: OnceLock<DispatchFn> = OnceLock::new();
+static DISPATCH: Global<DispatchFn> = Global::new();
 
 /// Registers the Node.js dispatch function.
 ///
 /// Called exactly once by `gateway_nodejs` during runtime initialization.
 /// Subsequent calls are silently ignored.
 pub fn set_dispatch(f: DispatchFn) {
-    let _ = DISPATCH.set(f);
+    DISPATCH.get_or_init(|| f);
 }
 
 /// Calls the Node.js bridge through the registered dispatch function.

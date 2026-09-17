@@ -1,22 +1,21 @@
 //! Consumer side: request publication and response routing.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::signal::SignalHandler;
 
-use super::notify::should_notify;
-use super::server::{open_event_service, open_service};
-use super::waitset::wait_for_wakeup;
+use super::notify::Coalescer;
+use super::server::{open_event_service, open_service, OpenMode};
 use super::{
-    shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT,
-    PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
-    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES,
+    shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
+    IoxSubscriber, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP,
+    PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
+    RESPONSE_SUFFIX,
 };
+use crate::global::Registry;
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
     RpcHeader, WireEvent, CORRELATION_ID_LEN,
@@ -25,21 +24,20 @@ use crate::types::{
 /// Typed handler invoked with the rkyv response payload of one in-flight call.
 type ResponseHandler = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
-type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
-
-fn response_handlers() -> &'static std::sync::Mutex<HandlerMap> {
-    static HANDLERS: OnceLock<std::sync::Mutex<HandlerMap>> = OnceLock::new();
-    HANDLERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+/// Handlers of the calls in flight, keyed by correlation id.
+fn response_handlers() -> &'static Registry<[u8; CORRELATION_ID_LEN], ResponseHandler> {
+    static HANDLERS: Registry<[u8; CORRELATION_ID_LEN], ResponseHandler> = Registry::new();
+    &HANDLERS
 }
 
 /// Registers the handler of one in-flight call.
 fn register_response_handler(cid: [u8; CORRELATION_ID_LEN], handler: ResponseHandler) {
-    crate::sync::lock(response_handlers()).insert(cid, handler);
+    response_handlers().insert(cid, handler);
 }
 
 /// Removes the handler of one in-flight call.
 fn unregister_response_handler(cid: &[u8; CORRELATION_ID_LEN]) {
-    crate::sync::lock(response_handlers()).remove(cid);
+    response_handlers().remove(cid);
 }
 
 /// Publishes port, wake-up notifier and response event service of a consumed
@@ -50,8 +48,8 @@ struct ConsumerPorts {
     _request_notify: IoxEvent,
     publisher: IoxPublisher,
     request_notifier: IoxNotifier,
-    /// Timestamp of the last provider wake-up.
-    last_request_notify: AtomicU64,
+    /// Coalescing window of the provider wake-ups.
+    last_request_notify: Coalescer,
     /// Per-channel monotonic publication counter, stamped into
     /// [`RpcHeader::seq`](crate::types::RpcHeader::seq).
     ///
@@ -61,9 +59,10 @@ struct ConsumerPorts {
     seq: AtomicU64,
 }
 
-fn consumer_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<ConsumerPorts>>> {
-    static CACHE: OnceLock<std::sync::Mutex<HashMap<String, Arc<ConsumerPorts>>>> = OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+/// Ports of the channels this process consumes, keyed by channel name.
+fn consumer_cache() -> &'static Registry<String, Arc<ConsumerPorts>> {
+    static CACHE: Registry<String, Arc<ConsumerPorts>> = Registry::new();
+    &CACHE
 }
 
 /// Resolves [`PROVIDER_WAIT_DEFAULT`], allowing an environment override.
@@ -82,16 +81,38 @@ fn provider_wait_timeout() -> Duration {
 /// on the same request channel, routed by correlation id. The cache lock is held
 /// across the creation so a single set of ports is created under a race.
 fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
-    let mut cache = crate::sync::lock(consumer_cache());
-    if let Some(ports) = cache.get(channel) {
-        return Ok(ports.clone());
-    }
+    // The lock is held across the creation on purpose: a race between two
+    // threads must not open the same channel twice.
+    consumer_cache().with(|cache| {
+        if let Some(ports) = cache.get(channel) {
+            return Ok(ports.clone());
+        }
+        let ports = open_consumer_ports(channel)?;
+        cache.insert(channel.to_owned(), ports.clone());
+        Ok(ports)
+    })
+}
 
+/// Opens the ports of `channel` and starts its response dispatch thread.
+///
+/// Split from [`consumer_ports`] so the cache stays locked over the whole
+/// creation while this function remains a straight-line setup.
+fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
     let node = shared_node()?;
-    let request_service = open_service(&node, channel, REQUEST_SUFFIX)?;
-    let response_service = open_service(&node, channel, RESPONSE_SUFFIX)?;
-    let request_notify = open_event_service(&node, channel, REQUEST_NOTIFY_SUFFIX)?;
-    let response_notify = open_event_service(&node, channel, RESPONSE_NOTIFY_SUFFIX)?;
+    let request_service = open_service(&node, channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)?;
+    let response_service = open_service(&node, channel, RESPONSE_SUFFIX, OpenMode::CreateOrOpen)?;
+    let request_notify = open_event_service(
+        &node,
+        channel,
+        REQUEST_NOTIFY_SUFFIX,
+        OpenMode::CreateOrOpen,
+    )?;
+    let response_notify = open_event_service(
+        &node,
+        channel,
+        RESPONSE_NOTIFY_SUFFIX,
+        OpenMode::CreateOrOpen,
+    )?;
 
     let publisher = request_service
         .publisher_builder()
@@ -119,12 +140,11 @@ fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         _request_service: request_service,
         _response_service: response_service,
         _request_notify: request_notify,
-        last_request_notify: AtomicU64::new(0),
+        last_request_notify: Coalescer::new(),
         seq: AtomicU64::new(0),
         publisher,
         request_notifier,
     });
-    cache.insert(channel.to_owned(), ports.clone());
     Ok(ports)
 }
 
@@ -136,63 +156,21 @@ fn spawn_response_dispatcher(
     _response_notify: IoxEvent,
 ) {
     let handle = crate::rt::spawn_blocking(move || {
-        let Ok(waitset) = WaitSetBuilder::new()
-            .signal_handling_mode(crate::waitset_signal_handling_mode())
-            .create::<Iox>()
-        else {
-            return;
-        };
-        // A plain notification attachment: the wake-up deadline is passed to
-        // `wait_and_process_once_with_timeout`, so attaching it as a deadline
-        // would make the guard fire on every expiry and defeat the idle path.
-        let Ok(guard) = waitset.attach_notification(&listener) else {
-            return;
-        };
-
         let cancel = crate::global_cancel_token().clone();
-        let mut idle_spins: u32 = 0;
-        let mut signal_ticks: u32 = 0;
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            match subscriber.receive() {
-                Ok(Some(sample)) => {
-                    idle_spins = 0;
-                    // A saturated channel never reaches the blocking path below,
-                    // where iceoryx2 reports the termination request.
-                    signal_ticks = signal_ticks.wrapping_add(1);
-                    if signal_ticks & (SIGNAL_CHECK_SAMPLES - 1) == 0
-                        && SignalHandler::termination_requested()
-                    {
-                        crate::request_shutdown();
-                        break;
-                    }
-                    let cid = sample.user_header().correlation_id;
-                    let payload: &[u8] = &sample;
-                    let handler = crate::sync::lock(response_handlers()).get(&cid).cloned();
-                    if let Some(handler) = handler {
-                        handler(payload);
-                    }
+        super::pump::run_receive_loop(
+            &channel,
+            "response",
+            &subscriber,
+            &listener,
+            || cancel.is_cancelled(),
+            |header, payload| {
+                // The handler is cloned out of the registry so the lock is
+                // released before the handler runs.
+                if let Some(handler) = response_handlers().get_cloned(&header.correlation_id) {
+                    handler(payload);
                 }
-                Ok(None) => {
-                    if idle_spins < IDLE_SPINS {
-                        idle_spins += 1;
-                        std::thread::yield_now();
-                    } else {
-                        let notified = wait_for_wakeup(&waitset, &guard, &listener);
-                        // Only a notification means there is something to poll
-                        // for; a bare deadline expiry keeps the thread blocked.
-                        idle_spins = if notified { 0 } else { IDLE_SPINS };
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[transport] response receive error: {e:?}");
-                    idle_spins = 0;
-                    std::thread::yield_now();
-                }
-            }
-        }
+            },
+        );
         log::debug!("[transport] response dispatcher for '{channel}' stopped");
     });
     crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
@@ -256,7 +234,7 @@ where
         unregister_response_handler(&cid);
         return Err(e);
     }
-    if should_notify(&ports.last_request_notify) {
+    if ports.last_request_notify.should_notify() {
         let _ = ports
             .request_notifier
             .notify_with_custom_event_id(EventId::new(0));

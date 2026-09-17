@@ -20,7 +20,7 @@ use iceoryx2::service::header::publish_subscribe::Header as SampleHeader;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::{Service, ServiceDetails};
 
-use super::server::{open_event_service_with, open_service_with};
+use super::server::{open_event_service, open_service, OpenMode};
 use super::{
     shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber,
     REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
@@ -106,8 +106,18 @@ impl DirectionView {
     /// Returns a [`RpcError`] when the service is missing or cannot be opened.
     pub fn open(channel: &str, direction: Direction) -> Result<Self, RpcError> {
         let node = shared_node()?;
-        let pub_sub = open_service_with(&node, channel, direction.pub_sub_suffix(), false)?;
-        let event = open_event_service_with(&node, channel, direction.notify_suffix(), false)?;
+        let pub_sub = open_service(
+            &node,
+            channel,
+            direction.pub_sub_suffix(),
+            OpenMode::ReadOnly,
+        )?;
+        let event = open_event_service(
+            &node,
+            channel,
+            direction.notify_suffix(),
+            OpenMode::ReadOnly,
+        )?;
 
         let subscriber = pub_sub
             .subscriber_builder()

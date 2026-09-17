@@ -6,19 +6,21 @@
 //! bytes as payload. A subscribe port cannot be attached to a `WaitSet`, so each
 //! side also owns an event service used as a wake-up signal.
 
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::Arc;
 
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc_threadsafe;
 
+use crate::global::Global;
 use crate::types::{RpcError, RpcHeader};
 
 mod bridge;
 mod client;
 mod monitor;
 mod notify;
+mod pump;
 mod server;
+mod tuning;
 mod waitset;
 
 pub use bridge::{observable_to_responses, ResponseIter, ServiceDispatcher};
@@ -26,64 +28,14 @@ pub use client::native_call;
 pub use monitor::{discover_channels, Direction, DirectionView, Emitter};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
-/// Suffixes of the iceoryx2 services backing one channel.
-const REQUEST_SUFFIX: &str = "_req";
-const RESPONSE_SUFFIX: &str = "_resp";
-const REQUEST_NOTIFY_SUFFIX: &str = "_req_notify";
-const RESPONSE_NOTIFY_SUFFIX: &str = "_resp_notify";
-
-/// Samples a subscriber can buffer before backpressure is reported.
-const SUBSCRIBER_BUFFER: usize = 1024;
-
-/// Publishers accepted on one channel: one per process that sends on it.
-const MAX_PUBLISHERS: usize = 16;
-
-/// Subscribers accepted on one channel: one per process and per channel.
-const MAX_SUBSCRIBERS: usize = 16;
-
-/// Processes that can open the same channel at once.
-const MAX_NODES: usize = 32;
-
-/// Samples a publisher can keep loaned at once; sizes the publisher's data
-/// segment.
-const MAX_LOANED_SAMPLES: usize = 1024;
-
-/// Initial slice length of a sample; large payloads grow the segment on demand.
-const MAX_SLICE_LEN: usize = 256;
-
-/// Payload alignment requested from iceoryx2.
-const PAYLOAD_ALIGNMENT: usize = 16;
-
-/// How long a call waits for the provider to be connected before failing.
-///
-/// Overridable with `ICE_RPC_PROVIDER_WAIT_MS`.
-const PROVIDER_WAIT_DEFAULT: Duration = Duration::from_secs(30);
-
-/// How long a response waits for the consumer to be connected.
-const CONSUMER_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Sleep between two delivery attempts, once the spin budget is exhausted.
-const PUBLISH_RETRY_SLEEP: Duration = Duration::from_millis(1);
-
-/// Consecutive delivery attempts spent yielding before the retry loop sleeps.
-///
-/// A full channel is the normal case of a burst; a sleep costs the system timer.
-const PUBLISH_SPIN_ATTEMPTS: u32 = 4_096;
-
-/// Upper bound on how long a dispatch thread blocks before it drains again.
-///
-/// The wait itself is event-driven; this deadline is the safety net that bounds
-/// the cost of a missed notification.
-const WAITSET_DEADLINE: Duration = Duration::from_millis(1);
-
-/// Processed samples between two termination checks on the busy path.
-///
-/// `SignalHandler::termination_requested()` takes a process-wide mutex.
-const SIGNAL_CHECK_SAMPLES: u32 = 256;
-
-/// Consecutive empty polls spent spinning before a thread blocks on its
-/// `WaitSet`.
-const IDLE_SPINS: u32 = 2_000;
+// The transport reads its tunables through these names, so `tuning.rs` stays the
+// only place where a value is defined and documented.
+use tuning::{
+    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_NODES, MAX_PUBLISHERS,
+    MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP,
+    PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
+    RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, SUBSCRIBER_BUFFER, WAITSET_DEADLINE,
+};
 
 /// Concrete iceoryx2 service flavour used by the transport.
 type Iox = ipc_threadsafe::Service;
@@ -103,7 +55,7 @@ pub(super) fn transport_error(context: &str, err: impl std::fmt::Debug) -> RpcEr
 
 /// Returns the **process-wide** iceoryx2 node, created on first use.
 pub(super) fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
-    static NODE: OnceLock<Result<Arc<IoxNode>, String>> = OnceLock::new();
+    static NODE: Global<Result<Arc<IoxNode>, String>> = Global::new();
     NODE.get_or_init(|| {
         NodeBuilder::new()
             .create::<Iox>()

@@ -9,7 +9,8 @@
 //! contract** as the providers and consumers (`common`, here): each `#[service]`
 //! generates a `{Service}Decoder`, `common::decoders()` registers them all, and
 //! the monitor renders every payload with the `Display` implementation of the
-//! service types.
+//! service types, falling back to their `Debug` implementation when they have
+//! none.
 //!
 //! ```text
 //! # 1. Standalone demonstration: an in-process DatabaseService provider is

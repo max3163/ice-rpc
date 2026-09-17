@@ -21,13 +21,15 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 - `DatabaseServiceMode` — the mode enum;
 - `ServiceLifecycle`, `ServiceNamed` and `ServiceInit` implementations.
 - With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`
-  and `DatabaseServiceDecoder` (see below).
+  and `DatabaseServiceDecoder` (see below); every argument and response value is
+  rendered with its own `Display` implementation when it has one, with its
+  `Debug` implementation otherwise.
 
 ## Features
 
 | Feature | Default | Effect |
 |---|---|---|
-| `monitoring` | off | Also generate `impl Display for {Trait}Request` and the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`]. This is the only part that forces `Display` on every method argument and return type, so a plain provider/consumer must not carry it. `ice-rpc` re-exports it as the `monitoring` feature. |
+| `monitoring` | off | Also generate `impl Display for {Trait}Request` and the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`]. It is the only part that adds code a provider/consumer never calls, so a plain provider/consumer must not carry it. Method arguments and return types only have to be `Debug` — the requirement the generated request enum already imposes: `Display` is preferred when the type provides it, `Debug` is the fallback. `ice-rpc` re-exports it as the `monitoring` feature. |
 
 An out-of-band observer built with this feature registers the generated decoders
 to render the observed messages in clear text instead of raw bytes.

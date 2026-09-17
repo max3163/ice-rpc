@@ -1233,7 +1233,8 @@ Two capture modes, because reading the payload is not free:
 Decoding is opt-in: building the service definitions with the `monitoring`
 feature makes `#[service]` generate a `{Service}Decoder` per service, which the
 observer registers (e.g. `common::decoders()`) to render each message with the
-`Display` implementation of the service types. See
+`Display` implementation of the service types, or with their `Debug`
+implementation when they have none. See
 [`ice-rpc-monitor`](ice-rpc-monitor/Readme.md#decoding-the-messages).
 
 Beyond the bus traffic, the observer also inventories the **health of the

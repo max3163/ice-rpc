@@ -11,9 +11,16 @@ publish = false
 workspace = true
 
 [dependencies]
-ice-rpc = { path = "../ice-rpc" }
+# `monitoring` is requested here so the service decoders are always part of the
+# graph: the generated rendering is asserted by `tests/decoder_rendering.rs`, and
+# CI's workspace build enables the feature anyway through `ice-rpc-monitor`
+# (feature unification), so pinning it makes isolated runs match CI.
+ice-rpc = { path = "../ice-rpc", features = ["monitoring"] }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
 async-trait = { workspace = true }
+# The generated code serializes the request arguments to JSON (HTTP and Node.js
+# entry points), so a service type implements the `serde` traits too.
+serde = { workspace = true }
 rkyv = { workspace = true }
 bytecheck = "0.8"
 log = { workspace = true }

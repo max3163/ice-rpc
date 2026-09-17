@@ -310,7 +310,8 @@ mod tests {
             prefix: "iox2_".to_owned(),
             data_segment_suffix: ".data".to_owned(),
         };
-        let footprint = scan_shm(&layout);
+        let mut footprint = ShmFootprint::default();
+        walk(&dir, &layout, &mut footprint, 0);
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(footprint.segments, 2);

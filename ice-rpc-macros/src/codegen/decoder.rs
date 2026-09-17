@@ -2,9 +2,13 @@
 //!
 //! For each `#[service]` trait this generates:
 //!
-//! - `impl Display for {Trait}Request`, delegating to the
-//!   [`Display`](std::fmt::Display) implementation of every argument;
-//! - a `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`], which
+//! - `impl Display for {Trait}Request`, rendering every argument through
+//!   `ice_rpc::monitor::render_value!` — the argument's own
+//!   [`Display`](std::fmt::Display) when it has one, its
+//!   [`Debug`](std::fmt::Debug) otherwise — so a service type never has to
+//!   implement more than `Debug` (already required by the generated request
+//!   enum);
+//! - a `{Trait}Decoder` implementing `ice_rpc::monitor::ServiceDecoder`, which
 //!   decodes the request enum and the `WireEvent` response of each method.
 //!
 //! An observer linked against the service definitions registers these decoders
@@ -64,8 +68,8 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         let method_lit = LitStr::new(&method.method_name, var_name.span());
         let arg_names = &method.arg_names;
 
-        // `Display`: `method(arg1={arg1}, arg2={arg2})`, using the arguments'
-        // own `Display` implementations (inline format args).
+        // `Display`: `method(arg1=…, arg2=…)`, each argument rendered by
+        // `render_value!` — its `Display` form when it has one, else its `Debug`.
         let mut format = String::from(method.method_name.as_str());
         format.push('(');
         for (index, arg) in arg_names.iter().enumerate() {
@@ -73,14 +77,16 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
                 format.push_str(", ");
             }
             format.push_str(&arg.to_string());
-            format.push_str("={");
-            format.push_str(&arg.to_string());
-            format.push('}');
+            format.push_str("={}");
         }
         format.push(')');
         let format_lit = LitStr::new(&format, var_name.span());
         display_arms.push(quote! {
-            #req_enum_name::#var_name { #(#arg_names),* } => ::std::write!(f, #format_lit)
+            #req_enum_name::#var_name { #(#arg_names),* } => ::std::write!(
+                f,
+                #format_lit
+                #(, ice_rpc::monitor::render_value!(#arg_names))*
+            )
         });
 
         // Request: the whole enum decodes; `Display` renders the variant.
@@ -88,16 +94,26 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
             #method_lit => ice_rpc::monitor::decode_request::<#req_enum_name>(payload)
         });
 
-        // Response: `()` has no `Display`, so the unit case has its own decoder.
+        // Response: the value and the error are rendered by renderers expanded
+        // *here*, where their types are concrete — the decoder itself imposes no
+        // formatting bound on them. `()` carries nothing worth rendering, so the
+        // unit case only passes the error renderer.
         let ok_type = &method.ok_type;
         let err_type = &method.err_type;
         if is_unit_type(ok_type) {
             response_arms.push(quote! {
-                #method_lit => ice_rpc::monitor::decode_response_unit::<#err_type>(payload)
+                #method_lit => ice_rpc::monitor::decode_response_unit::<#err_type>(
+                    payload,
+                    |error| ice_rpc::monitor::render_value!(error),
+                )
             });
         } else {
             response_arms.push(quote! {
-                #method_lit => ice_rpc::monitor::decode_response::<#ok_type, #err_type>(payload)
+                #method_lit => ice_rpc::monitor::decode_response::<#ok_type, #err_type>(
+                    payload,
+                    |value| ice_rpc::monitor::render_value!(value),
+                    |error| ice_rpc::monitor::render_value!(error),
+                )
             });
         }
     }

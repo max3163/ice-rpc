@@ -12,7 +12,8 @@
 //! stays ignorant of the service types and does not touch the hot path. In
 //! **detail** mode the payloads are decoded through the [`Decoders`] registry —
 //! built from the shared service contract, e.g. `common::decoders()` — and
-//! rendered with each type's [`Display`](std::fmt::Display) implementation.
+//! rendered with each type's [`Display`](std::fmt::Display) implementation, or
+//! with its [`Debug`](std::fmt::Debug) implementation when it has none.
 //!
 //! Because the transport disables safe overflow, a saturated observer is skipped
 //! by the publisher instead of blocking it; the lost samples are counted through

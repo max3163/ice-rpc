@@ -105,7 +105,8 @@ macro_rules! with_service_decoders {
 /// Builds a decoder registry covering **every** service of this crate.
 ///
 /// Pass it to `ice-rpc-monitor` so the observed messages are rendered with each
-/// service type's [`Display`](std::fmt::Display) implementation.
+/// service type's [`Display`](std::fmt::Display) implementation — or with its
+/// [`Debug`](std::fmt::Debug) implementation when the type has none.
 #[cfg(feature = "monitoring")]
 pub fn decoders() -> ice_rpc::monitor::Decoders {
     macro_rules! build {

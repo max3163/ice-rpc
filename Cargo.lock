@@ -1032,6 +1032,7 @@ dependencies = [
  "ice-rpc-macros",
  "log",
  "rkyv",
+ "serde",
  "trybuild",
 ]
 

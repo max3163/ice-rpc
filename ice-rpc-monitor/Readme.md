@@ -43,6 +43,10 @@ feature of `ice-rpc` makes `#[service]` also generate, per service:
 - `impl Display for {Service}Request`;
 - a `{Service}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`].
 
+Each rendered value uses its own `Display` implementation when it has one, and
+falls back to its `Debug` implementation otherwise: `Debug` is the only
+formatting requirement a service type has to meet.
+
 A crate that declares services (here `common`) can then expose an inventory:
 
 ```rust
@@ -58,9 +62,8 @@ config.decoders = std::sync::Arc::new(common::decoders());
 ```
 
 Decoding is opt-in on purpose: without the `monitoring` feature a plain
-provider/consumer carries no decoder, and is not forced to implement `Display`
-on every argument and return type. Without a registered decoder for a service,
-its messages are shown as `<N bytes, no decoder>`.
+provider/consumer carries no decoder at all. Without a registered decoder for a
+service, its messages are shown as `<N bytes, no decoder>`.
 
 ## What it produces
 

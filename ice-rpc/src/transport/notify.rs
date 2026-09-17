@@ -63,7 +63,8 @@ impl Default for Coalescer {
 /// Monotonic microsecond clock shared by every coalescer.
 fn clock_us() -> u64 {
     static BASE: Global<Instant> = Global::new();
-    BASE.get_or_init(Instant::now).elapsed().as_micros() as u64
+    let base = *BASE.get_or_init(Instant::now);
+    Instant::now().saturating_duration_since(base).as_micros() as u64
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! Consumer side: request publication and response routing.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,9 +8,11 @@ use std::time::{Duration, Instant};
 
 use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::signal::SignalHandler;
+use rkyv::api::high::to_bytes_in;
+use rkyv::util::AlignedVec;
 
 use super::notify::Coalescer;
-use super::server::{open_event_service, open_service, OpenMode};
+use super::open::{open_event_service, open_service, OpenMode};
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
     IoxSubscriber, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP,
@@ -261,6 +264,84 @@ where
     // entry behind for the rest of the process lifetime.
     let cleanup_ports = Arc::clone(&ports);
     Ok(rx.with_cleanup(move || release_handler(&cleanup_ports, &cid)))
+}
+
+thread_local! {
+    /// Encoding buffer of the request path, one per thread.
+    ///
+    /// The generated client called `rkyv::to_bytes` per call, which allocates a
+    /// buffer every time: `benches/hot_path.rs` measures 61.5 ns against 23.0 ns
+    /// when the buffer is reused. Thread-local rather than shared, because a
+    /// locked scratch measured 20 to 45 times slower than a local one in
+    /// `benches/concurrency.rs` — the same reason the response path keeps its
+    /// buffer local to one stream.
+    static REQUEST_SCRATCH: RefCell<AlignedVec<16>> =
+        RefCell::new(AlignedVec::<16>::with_capacity(256));
+}
+
+/// Serializes `request` into the thread's buffer and publishes it as a call.
+///
+/// This is the whole body of a generated client method: encoding the request and
+/// starting the call are one step, so the error mapping — a serialization failure
+/// becomes [`RpcError::SerializationError`] — is written here once instead of
+/// being repeated in every method of every service.
+///
+/// The buffer travels through `to_bytes_in` and comes back, so the request path
+/// allocates once per **thread** and not once per call.
+pub fn serialize_and_call<T, E, V>(
+    channel: &str,
+    service_id: u32,
+    method: &str,
+    request: &V,
+) -> Result<Observable<T, E>, RpcError>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    WireEvent<T, E>: rkyv::Archive,
+    <WireEvent<T, E> as rkyv::Archive>::Archived: rkyv::Deserialize<
+        WireEvent<T, E>,
+        rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
+    >,
+    for<'a> <WireEvent<T, E> as rkyv::Archive>::Archived:
+        rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
+    for<'a> V: rkyv::Serialize<
+        rkyv::rancor::Strategy<
+            rkyv::ser::Serializer<
+                rkyv::util::AlignedVec,
+                rkyv::ser::allocator::ArenaHandle<'a>,
+                rkyv::ser::sharing::Share,
+            >,
+            rkyv::rancor::Error,
+        >,
+    >,
+{
+    REQUEST_SCRATCH.with(|cell| {
+        // A re-entrant call — a `Serialize` implementation that calls back into
+        // the framework — finds the buffer taken and allocates its own, rather
+        // than panicking on a borrowed cell.
+        let mut buffer = match cell.try_borrow_mut() {
+            Ok(mut guard) => std::mem::replace(&mut *guard, AlignedVec::<16>::with_capacity(0)),
+            Err(_) => AlignedVec::<16>::with_capacity(256),
+        };
+        buffer.clear();
+
+        let encoded: Result<AlignedVec<16>, rkyv::rancor::Error> = to_bytes_in(request, buffer);
+        let bytes = match encoded {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("[ice-rpc] request serialization failed: {e:?}");
+                return Err(RpcError::SerializationError);
+            }
+        };
+
+        let call = native_call::<T, E>(channel, service_id, method, &bytes);
+
+        // The allocation goes back to the thread whether the call started or not.
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            *guard = bytes;
+        }
+        call
+    })
 }
 
 /// Publishes `header ++ payload` on `publisher`, retrying until at least one

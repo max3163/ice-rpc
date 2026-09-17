@@ -9,6 +9,10 @@ mod codegen;
 mod entry;
 mod model;
 
+/// Golden comparison of the whole `#[service]` expansion.
+#[cfg(test)]
+mod golden_tests;
+
 // Private: the public versions live in `ice-rpc` (`types/consts.rs`). The values
 // MUST stay identical (64), the maximum name lengths the wire framing accepts.
 pub(crate) const SERVICE_NAME_LEN: usize = 64;
@@ -16,7 +20,7 @@ pub(crate) const METHOD_NAME_LEN: usize = 64;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Ident, ItemTrait, Type};
+use syn::{Ident, ItemTrait, Type};
 
 use crate::model::{ServiceAttr, ServiceModel};
 
@@ -62,7 +66,7 @@ fn nodejs_methods(model: &ServiceModel) -> Vec<NodeJsMethod> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version` and `group` (see [`ServiceAttr`]).
+/// `"LogicalName"`, `version` and `group`.
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
@@ -74,23 +78,36 @@ fn nodejs_methods(model: &ServiceModel) -> Vec<NodeJsMethod> {
 /// - The Node.js converters (rkyv ↔ serde_json::Value) — always generated, used by the `ProviderNodeJs` mode
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let service_attr = parse_macro_input!(attr as ServiceAttr);
-    let mut input_trait = parse_macro_input!(item as ItemTrait);
+    expand_service(attr.into(), item.into()).into()
+}
 
-    input_trait
-        .attrs
-        .push(syn::parse_quote! { #[async_trait::async_trait] });
+/// The body of [`service`], on `proc_macro2` tokens so that it stays testable.
+///
+/// A `proc_macro::TokenStream` cannot be built outside an actual expansion, so
+/// everything below the wrapper is written on the `proc_macro2` type: it is what
+/// lets the golden test in `tests/golden` expand a trait and read the result.
+/// `entry::expand_main` uses the same indirection.
+fn expand_service(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let service_attr = match syn::parse2::<ServiceAttr>(attr) {
+        Ok(service_attr) => service_attr,
+        Err(e) => return e.to_compile_error(),
+    };
+    let mut input_trait = match syn::parse2::<ItemTrait>(item) {
+        Ok(input_trait) => input_trait,
+        Err(e) => return e.to_compile_error(),
+    };
 
-    input_trait.supertraits.push(syn::parse_quote! { Send });
-    input_trait.supertraits.push(syn::parse_quote! { Sync });
-    input_trait.supertraits.push(syn::parse_quote! { 'static });
+    inject_trait_requirements(&mut input_trait);
 
     // Names, versions, generated type names and the per-method data are read and
     // validated once, by the model. Every generator below works from it, so none
     // of them can accept a signature another one refused.
     let model = match ServiceModel::read(&service_attr, &input_trait) {
         Ok(model) => model,
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => return e.to_compile_error(),
     };
 
     let trait_name = &model.trait_name;
@@ -295,7 +312,46 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         #generated
     };
 
-    expanded.into()
+    expanded
+}
+
+/// Adds what the generated wrappers rely on, and only what is missing.
+///
+/// The documented order is `#[service]` above `#[async_trait::async_trait]`,
+/// with the supertraits spelled out, so the annotated trait already carries both
+/// by the time the macro runs. Adding them unconditionally produced
+/// `pub trait Calculator: Send + Sync + 'static + Send + Sync + 'static` and a
+/// doubled `#[async_trait::async_trait]` — equivalent to the compiler, but the
+/// generated code is what a user reads to understand a misbehaving call, so it
+/// has to look like something a human wrote. Both duplicates were found by the
+/// golden test, not by a failing build.
+fn inject_trait_requirements(input_trait: &mut ItemTrait) {
+    let already_annotated = input_trait.attrs.iter().any(|attr| {
+        attr.path()
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "async_trait")
+    });
+    if !already_annotated {
+        input_trait
+            .attrs
+            .push(syn::parse_quote! { #[async_trait::async_trait] });
+    }
+
+    // Compared as rendered tokens: the bound must be recognized whatever the
+    // user's spacing, and a path-qualified `std::marker::Send` simply counts as
+    // missing, which costs one redundant bound and nothing else.
+    let present: Vec<String> = input_trait
+        .supertraits
+        .iter()
+        .map(|bound| quote!(#bound).to_string())
+        .collect();
+
+    for required in [quote!(Send), quote!(Sync), quote!('static)] {
+        if !present.contains(&required.to_string()) {
+            input_trait.supertraits.push(syn::parse_quote!(#required));
+        }
+    }
 }
 
 /// Bootstraps ice-rpc around an `async fn main`.
@@ -382,5 +438,52 @@ mod entry_tests {
     fn main_rejects_a_synchronous_function() {
         let err = expand_main(quote! {}, quote! { fn main() {} }).unwrap_err();
         assert!(err.to_string().contains("async fn main"));
+    }
+}
+
+#[cfg(test)]
+mod trait_requirements_tests {
+    use super::inject_trait_requirements;
+    use syn::ItemTrait;
+
+    #[test]
+    fn a_bare_trait_gets_the_attribute_and_the_three_bounds() {
+        let mut item: ItemTrait = syn::parse_quote! { trait Bare {} };
+        inject_trait_requirements(&mut item);
+        assert_eq!(item.attrs.len(), 1);
+        assert_eq!(item.supertraits.len(), 3);
+    }
+
+    #[test]
+    fn a_trait_that_already_declares_them_keeps_one_copy() {
+        let mut item: ItemTrait = syn::parse_quote! {
+            #[async_trait::async_trait]
+            trait Declared: Send + Sync + 'static {}
+        };
+        inject_trait_requirements(&mut item);
+        // `syn` nodes have no `Debug` without the `extra-traits` feature, so the
+        // message shows the rendered tokens.
+        let rendered = quote::quote!(#item).to_string();
+        assert_eq!(
+            item.attrs.len(),
+            1,
+            "the attribute must not be duplicated: {rendered}"
+        );
+        assert_eq!(
+            item.supertraits.len(),
+            3,
+            "the bounds must not be duplicated: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_partially_declared_trait_is_completed_in_order() {
+        let mut item: ItemTrait = syn::parse_quote! { trait Partial: Send {} };
+        inject_trait_requirements(&mut item);
+        let rendered = quote::quote!(#item).to_string();
+        assert!(
+            rendered.contains("Send + Sync + 'static"),
+            "the missing bounds must be appended after the declared one: {rendered}"
+        );
     }
 }

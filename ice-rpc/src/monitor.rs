@@ -16,10 +16,10 @@
 //!
 //! # Two concerns, two modules
 //!
-//! - [`inventory`] answers *what is running*: the iceoryx2 nodes and their
+//! - `inventory` answers *what is running*: the iceoryx2 nodes and their
 //!   liveness, the services and their role in a channel, and the file layout
 //!   iceoryx2 uses for its segments;
-//! - [`decode`] answers *what was said*: the rendering of a payload and the
+//! - `decode` answers *what was said*: the rendering of a payload and the
 //!   registry of the decoders.
 //!
 //! The split is what keeps a statistics-only observer free of the rendering

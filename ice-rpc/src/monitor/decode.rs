@@ -79,7 +79,7 @@ macro_rules! render_value {
 ///
 /// `R` is the generated `{Trait}Request` enum, whose `Display` implementation —
 /// always emitted by `#[service]` — renders each argument through
-/// [`render_value!`]; an argument type therefore only has to be `Debug`.
+/// `render_value!`; an argument type therefore only has to be `Debug`.
 ///
 /// Returns `None` when the bytes are not a valid encoding of `R` — typically
 /// because the observer was not built with the service types.
@@ -104,7 +104,7 @@ where
 /// rendering is that of the carried value, or the terminal kind name.
 ///
 /// Decoding imposes **no** formatting bound on `T` and `E`: the caller passes
-/// the renderers, expanded where the types are concrete (see [`render_value!`]),
+/// the renderers, expanded where the types are concrete (see `render_value!`),
 /// so `Decoders` never forces `Display` — nor even `Debug` — on a service type.
 pub fn decode_response<T, E>(
     payload: &[u8],

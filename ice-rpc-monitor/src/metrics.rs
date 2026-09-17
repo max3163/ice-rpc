@@ -7,11 +7,12 @@
 //! # One state, two renderings
 //!
 //! This module owns the state and its lock: [`Metrics`] records, and nothing else
-//! does. The two ways of *showing* that state live apart — [`console`] for a human
-//! summary, [`prometheus`] for the text exposition format — and share their
-//! primitives through [`render`]. A rendering therefore cannot take the lock
-//! itself, and the recording path is not buried under several hundred lines of
-//! formatting.
+//! does. The two ways of *showing* that state live apart —
+//! [`Metrics::render_console`] for a human summary,
+//! [`Metrics::render_prometheus`] for the text exposition format — and share
+//! their primitives through the private `render` module. A rendering therefore
+//! cannot take the lock itself, and the recording path is not buried under
+//! several hundred lines of formatting.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -216,7 +217,7 @@ impl Metrics {
     /// One counter, deliberately not one per channel: the observer is the only
     /// subscriber the publisher may skip, so what it measures is the completeness
     /// of its own view — the first thing to check before trusting a count or a
-    /// latency histogram (see [`LossTracker`](crate::loss::LossTracker)).
+    /// latency histogram (the `LossTracker` of `loss.rs` is what calls this).
     pub fn on_sample_gap(&self, missed: u64) {
         if missed == 0 {
             return;

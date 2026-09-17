@@ -175,20 +175,26 @@ either a business error (`Business(E)`) or a technical one
 refines with the two variants.
 
 `RpcError` classifies technical failures so callers can choose a policy
-(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types/error.rs:54).
+(`retry` / `fallback` / `log` / `fatal`) via [`RpcError::is_retryable()`](src/types/error.rs:35).
+
+Every variant the enum declares, in declaration order:
 
 | Variant | Meaning | Retryable |
 |---|---|---|
-| `TransportError` | iceoryx2 I/O failure | yes |
-| `DiscoveryError` | discovery cycle failure | yes |
-| `ProviderUnavailable` | provider node unreachable — also fails in-flight calls on node death | yes |
-| `Timeout` | deadline exceeded | yes |
-| `ServiceNotFound` | service not registered on any node | no |
-| `Cancelled` | global shutdown (SIGINT/SIGTERM or programmatic) | no |
 | `SerializationError` | rkyv serialization/deserialization failure | no |
-| `PayloadTooLarge` | payload above the shared-memory limit | no |
-| `ProtocolMismatch` | incompatible protocol/service version | no |
-| `Internal` | unexpected internal error | no |
+| `TransportError` | iceoryx2 I/O failure (loan, send, receive, port creation) | yes |
+| `Timeout` | deadline exceeded | yes |
+| `Cancelled` | global shutdown (SIGINT/SIGTERM or programmatic) | no |
+| `Internal` | unexpected internal error / invariant violation | no |
+| `ProtocolMismatch` | the service already on the bus was created by another build, or by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no |
+
+Four names that appeared in an earlier version of this table — `DiscoveryError`,
+`ProviderUnavailable`, `ServiceNotFound`, `PayloadTooLarge` — have **no** variant.
+Addressing is static: a provider that is not running is not a distinct error, it
+surfaces as a `TransportError` reading `no subscriber connected` once the provider
+wait (`ICE_RPC_PROVIDER_WAIT_MS`, 30 s) elapses, and an oversized payload as an
+iceoryx2 failure. A `match` on `RpcError` is exhaustive, so the compiler settles the
+question rather than this table.
 
 ## Service initialization
 

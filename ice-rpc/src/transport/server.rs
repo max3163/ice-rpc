@@ -10,83 +10,15 @@ use iceoryx2::prelude::*;
 use super::bridge::{ResponseEmitter, ServiceDispatcher};
 use super::client::publish_until_delivered;
 use super::notify::Coalescer;
+use super::open::{open_event_service, open_service, OpenMode};
 use super::{
-    shared_node, transport_error, IoxEvent, IoxListener, IoxNode, IoxNotifier, IoxPubSub,
-    IoxPublisher, IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_NODES,
-    MAX_PUBLISHERS, MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, REQUEST_NOTIFY_SUFFIX,
-    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SUBSCRIBER_BUFFER,
+    shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
+    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, REQUEST_NOTIFY_SUFFIX,
+    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
 use crate::CancellationToken;
-
-/// Whether opening a service may create it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OpenMode {
-    /// Transport side: create the service when no peer owns it yet.
-    CreateOrOpen,
-    /// Observer side: attach to an existing service, never create one.
-    ReadOnly,
-}
-
-/// Opens the pub/sub service of one direction of `channel`.
-///
-/// The definition is shared by the transport and the observer, so an
-/// out-of-band observer is guaranteed to attach to the very service the
-/// transport created.
-pub(super) fn open_service(
-    node: &IoxNode,
-    channel: &str,
-    suffix: &str,
-    mode: OpenMode,
-) -> Result<IoxPubSub, RpcError> {
-    let topic = format!("{channel}{suffix}");
-    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
-    let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
-        .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
-    let builder = node
-        .service_builder(&name)
-        .publish_subscribe::<[u8]>()
-        .user_header::<RpcHeader>()
-        .payload_alignment(alignment)
-        // Every consumer publishes its requests and every provider its responses.
-        .max_publishers(MAX_PUBLISHERS)
-        .max_subscribers(MAX_SUBSCRIBERS)
-        .max_nodes(MAX_NODES)
-        .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
-        // Must stay false: enabled, the receiver overwrites its oldest sample.
-        .enable_safe_overflow(false);
-
-    match mode {
-        OpenMode::CreateOrOpen => builder
-            .open_or_create()
-            .map_err(|e| transport_error("open service", e)),
-        OpenMode::ReadOnly => builder
-            .open()
-            .map_err(|e| transport_error("open service (read-only)", e)),
-    }
-}
-
-/// Opens the event service used as a wake-up signal for `channel`.
-pub(super) fn open_event_service(
-    node: &IoxNode,
-    channel: &str,
-    suffix: &str,
-    mode: OpenMode,
-) -> Result<IoxEvent, RpcError> {
-    let topic = format!("{channel}{suffix}");
-    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
-    let builder = node.service_builder(&name).event();
-
-    match mode {
-        OpenMode::CreateOrOpen => builder
-            .open_or_create()
-            .map_err(|e| transport_error("open event service", e)),
-        OpenMode::ReadOnly => builder
-            .open()
-            .map_err(|e| transport_error("open event service (read-only)", e)),
-    }
-}
 
 /// The ports of one channel, provider side.
 ///

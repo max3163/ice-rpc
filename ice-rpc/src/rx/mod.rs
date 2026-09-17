@@ -22,7 +22,7 @@
 //!   source. [`Subject::new`] multicasts to the current subscribers,
 //!   [`Subject::replay`] also replays the last `n` values (and the terminal
 //!   state) to late subscribers.
-//! - [`Observable::subscribe`] / [`Observable::subscribe_all`] — push-based
+//! - `Observable::subscribe` / `Observable::subscribe_all` — push-based
 //!   consumption through RxJS-style callbacks. [`Subscription`] is the
 //!   cancellation handle.
 //! - [`from`], [`of`], [`throw_error`] — channel-free local constructors.

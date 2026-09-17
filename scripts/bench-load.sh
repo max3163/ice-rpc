@@ -56,11 +56,12 @@ sleep "$WAIT_READY"
 if ! kill -0 "$PROVIDER_PID" 2>/dev/null; then
   echo "[bench-load] ERROR: the provider died during startup (log: $OUT_DIR/provider.log)." >&2
   echo "[bench-load] hint: iceoryx2 refuses a service left behind by a build with a" >&2
-  echo "[bench-load]       different wire format, and a half-created service makes it" >&2
-  echo "[bench-load]       recurse until the stack overflows. Remove the root path:" >&2
-  echo "[bench-load]         Windows: %APPDATA%\\ice-rpc\\iceoryx2" >&2
-  echo "[bench-load]         Unix:    \$XDG_DATA_HOME/ice-rpc/iceoryx2 (or ~/.local/share/ice-rpc/iceoryx2)" >&2
-  echo "[bench-load]       ...after making sure no process still runs the previous build." >&2
+  echo "[bench-load]       different wire format, and a half-created one makes it recurse" >&2
+  echo "[bench-load]       until the stack overflows. The procedure is written once, in" >&2
+  echo "[bench-load]       docs/wire-compat.md; in short, once nothing runs the previous" >&2
+  echo "[bench-load]       build (cargo make probe):" >&2
+  echo "[bench-load]         scripts/purge-iceoryx2-root.sh        # shows what is there" >&2
+  echo "[bench-load]         scripts/purge-iceoryx2-root.sh --yes  # removes it" >&2
   exit 1
 fi
 echo "[bench-load] provider is alive (pid $PROVIDER_PID), log: $OUT_DIR/provider.log"

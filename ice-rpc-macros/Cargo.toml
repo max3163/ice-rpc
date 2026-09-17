@@ -15,6 +15,13 @@ readme = "Readme.md"
 [lints]
 workspace = true
 
+[features]
+# Opt-in: additionally generate the `{Service}Decoder` and the `impl Display for
+# {Service}Request` used by an out-of-band observer. It is off by default so that
+# plain providers and consumers carry no monitoring code — and, more importantly,
+# are not forced to implement `Display` on every method argument and return type.
+monitoring = []
+
 [lib]
 proc-macro = true
 

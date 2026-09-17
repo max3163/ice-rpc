@@ -144,11 +144,13 @@ fn is_type_vec_u8(ty: &Type) -> bool {
     false
 }
 
-/// Generates the `serialize_response_from_value(method, value) -> Option<Vec<u8>>`
+/// Generates the
+/// `serialize_response_from_value(method, value) -> Option<(EventKind, Vec<u8>)>`
 /// function.
 ///
 /// The JS returns an object `{ "type": "next"|"complete"|"error", "data": ... }`.
-/// We manually build a `WireEvent` then serialize it to rkyv.
+/// We manually build a `WireEvent`, derive its `EventKind` (stamped in the
+/// zero-copy header by the transport) and serialize it to rkyv.
 pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
     let NodeJsGenInput {
         visibility,
@@ -200,9 +202,10 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
                         }
                         _ => return None,
                     };
+                    let kind = event.kind();
                     ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
                         .ok()
-                        .map(|aligned| aligned.to_vec())
+                        .map(|aligned| (kind, aligned.to_vec()))
                 }
             }
         })
@@ -212,7 +215,7 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
         // Same rationale as `deserialize_request_to_value` above.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<Vec<u8>> {
+            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::gen::serde_json::Value) -> Option<(ice_rpc::gen::EventKind, Vec<u8>)> {
                 match method {
                     #(#match_arms)*
                     _ => None,
@@ -262,7 +265,7 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                     }
                 };
                 match #proxy_name::serialize_response_from_value(#method_name_str, value) {
-                    Some(bytes) => Box::new(std::iter::once(bytes)),
+                    Some(sample) => Box::new(std::iter::once(sample)),
                     None => Box::new(std::iter::empty()),
                 }
             });

@@ -169,6 +169,9 @@ pub use rx::{from, of, throw_error, Subject, Subscription};
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;
 
+// ── Public API: out-of-band monitoring ──────────────────────────────
+pub mod monitor;
+
 use std::sync::OnceLock;
 
 pub use crate::rt::CancellationToken;

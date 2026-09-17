@@ -1,7 +1,7 @@
 //! Consumer side: request publication and response routing.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use super::{
     shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
     IoxSubscriber, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT,
     PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
-    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, WAITSET_DEADLINE,
+    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES,
 };
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
@@ -52,6 +52,13 @@ struct ConsumerPorts {
     request_notifier: IoxNotifier,
     /// Timestamp of the last provider wake-up.
     last_request_notify: AtomicU64,
+    /// Per-channel monotonic publication counter, stamped into
+    /// [`RpcHeader::seq`](crate::types::RpcHeader::seq).
+    ///
+    /// Scoped to this channel on purpose: the correlation-id counter is
+    /// process-wide, so reusing it would inject gaps whenever another channel
+    /// publishes in between, defeating loss detection.
+    seq: AtomicU64,
 }
 
 fn consumer_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<ConsumerPorts>>> {
@@ -113,6 +120,7 @@ fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         _response_service: response_service,
         _request_notify: request_notify,
         last_request_notify: AtomicU64::new(0),
+        seq: AtomicU64::new(0),
         publisher,
         request_notifier,
     });
@@ -134,7 +142,10 @@ fn spawn_response_dispatcher(
         else {
             return;
         };
-        let Ok(guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
+        // A plain notification attachment: the wake-up deadline is passed to
+        // `wait_and_process_once_with_timeout`, so attaching it as a deadline
+        // would make the guard fire on every expiry and defeat the idle path.
+        let Ok(guard) = waitset.attach_notification(&listener) else {
             return;
         };
 
@@ -169,7 +180,7 @@ fn spawn_response_dispatcher(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        let notified = wait_for_wakeup(&waitset, &guard);
+                        let notified = wait_for_wakeup(&waitset, &guard, &listener);
                         // Only a notification means there is something to poll
                         // for; a bare deadline expiry keeps the thread blocked.
                         idle_spins = if notified { 0 } else { IDLE_SPINS };
@@ -207,7 +218,8 @@ where
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
     let ports = consumer_ports(channel)?;
-    let header = RpcHeader::request(method, service_id, 1);
+    let header = RpcHeader::request(method, service_id, 1)
+        .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
 

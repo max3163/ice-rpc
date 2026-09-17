@@ -6,6 +6,7 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::error::RpcError;
+use super::header::EventKind;
 
 /// The single error type of the whole streaming API.
 ///
@@ -121,6 +122,20 @@ impl<T, E> WireEvent<T, E> {
                 | WireEvent::Error(_)
                 | WireEvent::RpcError(_)
         )
+    }
+
+    /// Maps the wire variant to the [`EventKind`] stamped in the zero-copy header.
+    ///
+    /// This lets the provider label each response sample with its real kind, and
+    /// an out-of-band observer count completion and errors **without decoding**
+    /// the rkyv payload.
+    #[inline]
+    pub fn kind(&self) -> EventKind {
+        match self {
+            WireEvent::Next(_) => EventKind::Next,
+            WireEvent::Complete | WireEvent::CompleteWith(_) => EventKind::Complete,
+            WireEvent::Error(_) | WireEvent::RpcError(_) => EventKind::Error,
+        }
     }
 }
 

@@ -4,14 +4,18 @@
 //! iceoryx2 node and the global lock do not conflict with the unit tests.
 
 #![allow(clippy::unwrap_used)]
-use ice_rpc::gen::{rkyv, service_id_of, ServiceDispatcher, WireEvent};
+use ice_rpc::gen::{rkyv, service_id_of, EventKind, ServiceDispatcher, WireEvent};
 use ice_rpc::transport::{native_call, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
-fn encode_i32(event: WireEvent<i32, String>) -> Vec<u8> {
-    rkyv::to_bytes::<rkyv::rancor::Error>(&event)
+/// Encodes a wire event together with the [`EventKind`] the transport stamps in
+/// the zero-copy header.
+fn encode_i32(event: WireEvent<i32, String>) -> (EventKind, Vec<u8>) {
+    let kind = event.kind();
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event)
         .expect("encode event")
-        .to_vec()
+        .to_vec();
+    (kind, bytes)
 }
 
 /// A native request must carry N streamed responses, then complete when the
@@ -26,7 +30,7 @@ fn native_request_response_streams_then_completes() {
     dispatcher.method("echo", |_payload| {
         // A response stream must end with a terminal event: the transport has no
         // per-call connection to signal the end of the stream.
-        let mut samples: Vec<Vec<u8>> = (0..3i32)
+        let mut samples: Vec<(EventKind, Vec<u8>)> = (0..3i32)
             .map(|value| encode_i32(WireEvent::Next(value)))
             .collect();
         samples.push(encode_i32(WireEvent::Complete));

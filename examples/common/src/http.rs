@@ -19,6 +19,19 @@ pub struct HttpRequestParams {
     pub body: Vec<u8>,
 }
 
+impl std::fmt::Display for HttpRequestParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} ({} header(s), {} byte(s) body)",
+            self.method,
+            self.url,
+            self.headers.len(),
+            self.body.len()
+        )
+    }
+}
+
 /// HTTP response received after processing.
 #[derive(Debug, Archive, Deserialize, Serialize, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HttpResponseParams {
@@ -30,6 +43,19 @@ pub struct HttpResponseParams {
     pub headers: Vec<(String, String)>,
     /// Response body — may reach several MB.
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Display for HttpResponseParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} ({} header(s), {} byte(s) body)",
+            self.status_code,
+            self.status_text,
+            self.headers.len(),
+            self.body.len()
+        )
+    }
 }
 
 /// Error returned by the [`HttpService`] operations.

@@ -18,22 +18,28 @@ use super::{
     CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_NODES, MAX_PUBLISHERS,
     MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
     RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, SUBSCRIBER_BUFFER,
-    WAITSET_DEADLINE,
 };
 use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
 use crate::CancellationToken;
 
 /// Opens the pub/sub service of one direction of `channel`.
-pub(super) fn open_service(
+///
+/// `create` selects `open_or_create` (transport side) or a strict `open`
+/// (read-only monitor side, which must never create the service). The service
+/// definition is shared by both, so an observer is guaranteed to attach to the
+/// very service the transport created.
+pub(super) fn open_service_with(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
+    create: bool,
 ) -> Result<IoxPubSub, RpcError> {
     let topic = format!("{channel}{suffix}");
     let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
     let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
         .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
-    node.service_builder(&name)
+    let builder = node
+        .service_builder(&name)
         .publish_subscribe::<[u8]>()
         .user_header::<RpcHeader>()
         .payload_alignment(alignment)
@@ -43,23 +49,60 @@ pub(super) fn open_service(
         .max_nodes(MAX_NODES)
         .subscriber_max_buffer_size(SUBSCRIBER_BUFFER)
         // Must stay false: enabled, the receiver overwrites its oldest sample.
-        .enable_safe_overflow(false)
-        .open_or_create()
-        .map_err(|e| transport_error("open service", e))
+        .enable_safe_overflow(false);
+
+    if create {
+        builder
+            .open_or_create()
+            .map_err(|e| transport_error("open service", e))
+    } else {
+        builder
+            .open()
+            .map_err(|e| transport_error("open service (read-only)", e))
+    }
+}
+
+/// Opens the pub/sub service of one direction of `channel`, creating it if needed.
+pub(super) fn open_service(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+) -> Result<IoxPubSub, RpcError> {
+    open_service_with(node, channel, suffix, true)
 }
 
 /// Opens the event service used as a wake-up signal for `channel`.
+///
+/// `create` selects `open_or_create` (transport side) or a strict `open`
+/// (read-only monitor side).
+pub(super) fn open_event_service_with(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+    create: bool,
+) -> Result<IoxEvent, RpcError> {
+    let topic = format!("{channel}{suffix}");
+    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
+    let builder = node.service_builder(&name).event();
+
+    if create {
+        builder
+            .open_or_create()
+            .map_err(|e| transport_error("open event service", e))
+    } else {
+        builder
+            .open()
+            .map_err(|e| transport_error("open event service (read-only)", e))
+    }
+}
+
+/// Opens the event service used as a wake-up signal for `channel`, creating it if needed.
 pub(super) fn open_event_service(
     node: &IoxNode,
     channel: &str,
     suffix: &str,
 ) -> Result<IoxEvent, RpcError> {
-    let topic = format!("{channel}{suffix}");
-    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
-    node.service_builder(&name)
-        .event()
-        .open_or_create()
-        .map_err(|e| transport_error("open event service", e))
+    open_event_service_with(node, channel, suffix, true)
 }
 
 /// Spawns the provider side of one channel: a thread that routes every request to
@@ -135,7 +178,10 @@ pub fn spawn_native_service(
             log::error!("[transport] waitset creation failed");
             return;
         };
-        let Ok(guard) = waitset.attach_deadline(&listener, WAITSET_DEADLINE) else {
+        // A plain notification attachment: the wake-up deadline is passed to
+        // `wait_and_process_once_with_timeout`, so attaching it as a deadline
+        // would make the guard fire on every expiry and defeat the idle path.
+        let Ok(guard) = waitset.attach_notification(&listener) else {
             log::error!("[transport] waitset attach failed");
             return;
         };
@@ -147,6 +193,9 @@ pub fn spawn_native_service(
         let mut idle_spins: u32 = 0;
         let mut signal_ticks: u32 = 0;
         let mut last_notify_us: u64 = 0;
+        // One publisher per channel, drained by this single thread: a plain
+        // counter is enough and stays monotonic for `RpcHeader::seq`.
+        let mut response_seq: u64 = 0;
         while !stop.is_cancelled() {
             match subscriber.receive() {
                 Ok(Some(sample)) => {
@@ -191,8 +240,12 @@ pub fn spawn_native_service(
                     // Publish the responses, then wake the consumer's response
                     // thread once per coalescing window.
                     let mut wake = false;
-                    for response in dispatcher.dispatch(request_header.method(), payload) {
-                        if publish_response(&publisher, &request_header, &response).is_err() {
+                    for (kind, response) in dispatcher.dispatch(request_header.method(), payload) {
+                        let seq = response_seq;
+                        response_seq = response_seq.wrapping_add(1);
+                        if publish_response(&publisher, &request_header, &response, kind, seq)
+                            .is_err()
+                        {
                             break;
                         }
                         wake = true;
@@ -206,7 +259,7 @@ pub fn spawn_native_service(
                         idle_spins += 1;
                         std::thread::yield_now();
                     } else {
-                        let notified = wait_for_wakeup(&waitset, &guard);
+                        let notified = wait_for_wakeup(&waitset, &guard, &listener);
                         // Only a notification means there is something to poll
                         // for; a bare deadline expiry keeps the thread blocked.
                         idle_spins = if notified { 0 } else { IDLE_SPINS };
@@ -223,14 +276,16 @@ pub fn spawn_native_service(
     })
 }
 
-/// Publishes one response sample, carrying the request's correlation id in its
-/// zero-copy header.
+/// Publishes one response sample, carrying the request's correlation id, the
+/// sample's real [`EventKind`] and the publisher's `seq` in its zero-copy header.
 fn publish_response(
     publisher: &IoxPublisher,
     request: &RpcHeader,
     response: &[u8],
+    kind: EventKind,
+    seq: u64,
 ) -> Result<(), RpcError> {
-    let header = RpcHeader::response_from(request, EventKind::Next, request.service_version);
+    let header = RpcHeader::response_from(request, kind, request.service_version).with_seq(seq);
     publish_until_delivered(publisher, header, response, CONSUMER_WAIT_TIMEOUT)
 }
 
@@ -358,7 +413,7 @@ mod tests {
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new();
         first.method("echo", |payload| {
-            Box::new(std::iter::once(payload.to_vec()))
+            Box::new(std::iter::once((EventKind::Next, payload.to_vec())))
         });
         let mut second = ServiceDispatcher::new();
         second.method("ping", |_payload| Box::new(std::iter::empty()));

@@ -2,15 +2,21 @@
 
 use std::collections::HashMap;
 
-use crate::types::{Observable, WireEvent};
+use crate::types::{EventKind, Observable, WireEvent};
 
-/// Lazy iterator of rkyv-encoded [`WireEvent`] samples produced by a service.
-pub type ResponseIter = Box<dyn Iterator<Item = Vec<u8>> + Send>;
+/// Lazy iterator of `(kind, rkyv-encoded)` [`WireEvent`] samples produced by a
+/// service.
+///
+/// The kind travels alongside the bytes so the transport can stamp it in the
+/// zero-copy header, letting an out-of-band observer label each response without
+/// decoding the payload.
+pub type ResponseIter = Box<dyn Iterator<Item = (EventKind, Vec<u8>)> + Send>;
 
 /// Wraps an [`Observable`] into a lazy [`ResponseIter`] of encoded [`WireEvent`].
 ///
 /// Takes the events raw (`recv_wire`), preserving the `CompleteWith`
-/// single-sample optimization.
+/// single-sample optimization. The [`EventKind`] of each sample is derived from
+/// the wire variant before serialization.
 pub fn observable_to_responses<T, E>(mut observable: Observable<T, E>) -> ResponseIter
 where
     T: Send + 'static,
@@ -28,9 +34,12 @@ where
 {
     Box::new(std::iter::from_fn(move || {
         match crate::rt::block_on(observable.recv_wire()) {
-            Ok(wire) => rkyv::to_bytes::<rkyv::rancor::Error>(&wire)
-                .ok()
-                .map(|bytes| bytes.to_vec()),
+            Ok(wire) => {
+                let kind = wire.kind();
+                rkyv::to_bytes::<rkyv::rancor::Error>(&wire)
+                    .ok()
+                    .map(|bytes| (kind, bytes.to_vec()))
+            }
             Err(_) => None,
         }
     }))

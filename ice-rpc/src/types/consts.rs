@@ -17,8 +17,10 @@ pub const SERVICE_NAME_LEN: usize = 64;
 
 /// Version of the ice-rpc wire protocol carried in [`RpcHeader`].
 ///
-/// Bumped whenever the framing or the header layout changes. A peer with a
-/// different value is reported before its request is dispatched.
+/// A peer with a different value is reported before its request is dispatched.
+/// It is meant to be bumped whenever the framing or the header layout changes
+/// **after publication**: while the library is pre-release with no deployed
+/// client, the layout may still evolve with the value left at `1`.
 ///
 /// [`RpcHeader`]: crate::types::RpcHeader
 pub const PROTOCOL_VERSION: u16 = 1;

@@ -7,6 +7,8 @@
 //! The layout is `#[repr(C)]` and part of the wire contract shared by every
 //! process on the machine: it must not drift silently.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use iceoryx2::prelude::ZeroCopySend;
 use iceoryx2_bb_container::string::StaticString;
 
@@ -14,6 +16,24 @@ use crate::types::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION};
 
 /// Correlation id prefixing every request/response pair.
 pub const CORRELATION_ID_LEN: usize = 16;
+
+/// Returns the current wall-clock time as nanoseconds since the Unix epoch.
+///
+/// Every process on the same host shares this clock, so two timestamps taken by
+/// different processes are comparable. This is what lets an out-of-band observer
+/// compute an exact latency from the `timestamp_ns` fields of a request and of
+/// its response.
+///
+/// A clock adjustment (NTP step or slew) can make a difference between two
+/// readings negative: callers must subtract with saturation and count the
+/// occurrences separately.
+#[inline]
+pub fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
 
 /// Kind of the sample carried by a [`RpcHeader`].
 ///
@@ -64,10 +84,33 @@ impl EventKind {
 pub struct RpcHeader {
     /// Request↔response correlation id (16 bytes).
     pub correlation_id: [u8; CORRELATION_ID_LEN],
+    /// Emission timestamp, in nanoseconds since the Unix epoch.
+    ///
+    /// Stamped by the emitter (consumer for a request, provider for a response),
+    /// so an observer computes an exact latency with
+    /// `response.timestamp_ns - request.timestamp_ns`.
+    ///
+    /// Declared early so the two 8-byte monitoring fields pack tightly: the
+    /// struct must stay within the 128-byte wire budget.
+    pub timestamp_ns: u64,
+    /// Per-publisher, per-channel monotonic sample counter.
+    ///
+    /// A publisher is single-threaded for a given channel, so a gap in the
+    /// observed sequence proves that samples were lost. Set by the emitter at
+    /// publication time.
+    pub seq: u64,
     /// Identifier of the target service inside the channel it is published on.
     ///
     /// Several services can share one channel (their *group*); this id —
     /// [`service_id_of`] of the service name — selects the provider dispatcher.
+    ///
+    /// The **emitter** identity is deliberately absent: the native iceoryx2
+    /// sample header already carries the source `node_id` (hence the PID) and the
+    /// `publisher_id`, so duplicating it here would only risk a divergence. An
+    /// observer reads it from [`Sample::header()`], and the `publisher_id` is what
+    /// scopes [`seq`](Self::seq).
+    ///
+    /// [`Sample::header()`]: iceoryx2::sample::Sample::header
     pub service_id: u32,
     /// Method invoked by the request (left empty on a response).
     pub method_name: StaticString<METHOD_NAME_LEN>,
@@ -93,7 +136,20 @@ impl RpcHeader {
             event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
+            // Stamped by the caller with the per-channel sequence.
+            seq: 0,
+            timestamp_ns: now_ns(),
         }
+    }
+
+    /// Sets the per-publisher sample sequence (builder style).
+    ///
+    /// The counter is owned by the publisher (one per channel), not by this
+    /// header constructor, so the emitter stamps it just before publication.
+    #[inline]
+    pub fn with_seq(mut self, seq: u64) -> Self {
+        self.seq = seq;
+        self
     }
 
     /// Builds the response header of `request`.
@@ -106,6 +162,9 @@ impl RpcHeader {
             event_kind: event_kind.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
+            // Stamped by the caller with the per-channel sequence.
+            seq: 0,
+            timestamp_ns: now_ns(),
         }
     }
 
@@ -217,9 +276,41 @@ mod tests {
 
     #[test]
     fn the_header_layout_stays_bounded_and_aligned() {
-        // Part of the wire contract: small (copied per sample) and 8-byte aligned.
+        // Part of the wire contract: the header is copied per sample and its size
+        // is validated by iceoryx2 when a service is opened, so every process on
+        // the machine must agree on it. Pinning the exact size makes any layout
+        // drift a deliberate, reviewed change.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
-        assert!(std::mem::size_of::<RpcHeader>() <= 128);
+        assert_eq!(std::mem::size_of::<RpcHeader>(), 128);
+
+        assert_eq!(std::mem::offset_of!(RpcHeader, correlation_id), 0);
+        assert_eq!(std::mem::offset_of!(RpcHeader, timestamp_ns), 16);
+        assert_eq!(std::mem::offset_of!(RpcHeader, seq), 24);
+    }
+
+    #[test]
+    fn request_stamps_a_timestamp() {
+        let id = service_id_of("Ping");
+        let before = now_ns();
+        let header = RpcHeader::request("ping", id, 1);
+        let after = now_ns();
+
+        assert!(header.timestamp_ns >= before);
+        assert!(header.timestamp_ns <= after);
+        // `seq` is owned by the publisher, not by the constructor.
+        assert_eq!(header.seq, 0);
+        assert_eq!(header.with_seq(7).seq, 7);
+    }
+
+    #[test]
+    fn response_stamps_its_own_emission_time() {
+        let request = RpcHeader::request("ping", service_id_of("Ping"), 1);
+        let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
+
+        assert_eq!(response.correlation_id, request.correlation_id);
+        // The response carries its own emission time, distinct from the request's.
+        assert!(response.timestamp_ns >= request.timestamp_ns);
+        assert_eq!(response.with_seq(3).seq, 3);
     }
 
     #[test]

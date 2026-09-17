@@ -16,6 +16,9 @@ path = "src/mod.rs"
 [features]
 napi = []
 http = ["ice-rpc/http"]
+# Exposes `decoders()`/`with_service_decoders!`: the generated `{Service}Decoder`s
+# an out-of-band observer registers to render payloads in clear text.
+monitoring = ["ice-rpc/monitoring"]
 
 [dependencies]
 ice-rpc = { path = "../../ice-rpc" }

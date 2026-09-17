@@ -23,7 +23,7 @@ mod server;
 mod tuning;
 mod waitset;
 
-pub use bridge::{observable_to_responses, ResponseIter, ServiceDispatcher};
+pub use bridge::{observable_to_responses, CollectEmitter, ResponseEmitter, ServiceDispatcher};
 pub use client::native_call;
 pub use monitor::{discover_channels, Direction, DirectionView, Emitter};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};

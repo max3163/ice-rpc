@@ -48,7 +48,8 @@ pub use crate::start_http_server;
 // Entry points used by the generated client/server.
 pub use crate::transport::{
     decode_aligned, native_call, observable_to_responses, register_native_service,
-    spawn_native_service, start_registered_channels, ResponseIter, ServiceDispatcher,
+    spawn_native_service, start_registered_channels, CollectEmitter, ResponseEmitter,
+    ServiceDispatcher,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

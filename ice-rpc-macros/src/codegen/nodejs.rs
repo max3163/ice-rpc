@@ -236,39 +236,43 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
     let method_name_str = fn_name.to_string();
     quote! {
         {
-            dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
-                let Some(args) =
-                    #proxy_name::deserialize_request_to_value(#method_name_str, payload)
-                else {
-                    ::log::error!(
-                        "[{}::{}] Failed to deserialize the request",
-                        <#proxy_name>::SERVICE_NAME,
-                        #method_name_str
-                    );
-                    return Box::new(std::iter::empty());
-                };
-                let value = match ice_rpc::nodejs_dispatch::call(
-                    [0u8; 16],
-                    <#proxy_name>::SERVICE_NAME,
-                    #method_name_str,
-                    args,
-                ) {
-                    Ok(value) => value,
-                    Err(e) => {
+            dispatcher.method(
+                #method_name_str,
+                move |payload: &[u8], emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
+                    let Some(args) =
+                        #proxy_name::deserialize_request_to_value(#method_name_str, payload)
+                    else {
                         ::log::error!(
-                            "[{}::{}] NodeJS dispatch failed: {}",
+                            "[{}::{}] Failed to deserialize the request",
                             <#proxy_name>::SERVICE_NAME,
-                            #method_name_str,
-                            e
+                            #method_name_str
                         );
-                        return Box::new(std::iter::empty());
+                        return;
+                    };
+                    let value = match ice_rpc::nodejs_dispatch::call(
+                        [0u8; 16],
+                        <#proxy_name>::SERVICE_NAME,
+                        #method_name_str,
+                        args,
+                    ) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            ::log::error!(
+                                "[{}::{}] NodeJS dispatch failed: {}",
+                                <#proxy_name>::SERVICE_NAME,
+                                #method_name_str,
+                                e
+                            );
+                            return;
+                        }
+                    };
+                    if let Some((kind, sample)) =
+                        #proxy_name::serialize_response_from_value(#method_name_str, value)
+                    {
+                        emitter.emit(kind, &sample);
                     }
-                };
-                match #proxy_name::serialize_response_from_value(#method_name_str, value) {
-                    Some(sample) => Box::new(std::iter::once(sample)),
-                    None => Box::new(std::iter::empty()),
-                }
-            });
+                },
+            );
         }
     }
 }

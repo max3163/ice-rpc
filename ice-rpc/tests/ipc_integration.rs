@@ -27,14 +27,18 @@ fn native_request_response_streams_then_completes() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new();
-    dispatcher.method("echo", |_payload| {
+    dispatcher.method("echo", |_payload, emitter| {
         // A response stream must end with a terminal event: the transport has no
         // per-call connection to signal the end of the stream.
-        let mut samples: Vec<(EventKind, Vec<u8>)> = (0..3i32)
+        let samples: Vec<(EventKind, Vec<u8>)> = (0..3i32)
             .map(|value| encode_i32(WireEvent::Next(value)))
+            .chain([encode_i32(WireEvent::Complete)])
             .collect();
-        samples.push(encode_i32(WireEvent::Complete));
-        Box::new(samples.into_iter())
+        for (kind, payload) in samples {
+            if !emitter.emit(kind, &payload) {
+                break;
+            }
+        }
     });
     let server = spawn_native_service(&channel, vec![(service_id, dispatcher)], stop.clone());
 
@@ -74,13 +78,13 @@ fn native_request_response_streams_a_real_observable() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new();
-    dispatcher.method("watch", |_payload| {
+    dispatcher.method("watch", |_payload, emitter| {
         let observable = Observable::<i32, String>::from_events([
             Event::Next(10),
             Event::Next(20),
             Event::Complete,
         ]);
-        ice_rpc::transport::observable_to_responses(observable)
+        ice_rpc::transport::observable_to_responses(observable, emitter);
     });
     let server = spawn_native_service(&channel, vec![(service_id, dispatcher)], stop.clone());
 

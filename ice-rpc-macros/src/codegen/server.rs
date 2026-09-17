@@ -68,22 +68,27 @@ pub fn gen_native_method(
     quote! {
         {
             let service_impl = self.service_impl.clone();
-            dispatcher.method(#method_name_str, move |payload: &[u8]| -> ice_rpc::gen::ResponseIter {
-                // The framed payload is not necessarily aligned for rkyv, so the
-                // decode goes through an aligned copy.
-                match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
-                    Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
-                        // Clone per invocation: the closure is `Fn`, so it must
-                        // not move the captured `Arc` into the coroutine.
-                        let impl_ref = service_impl.clone();
-                        let stream = ice_rpc::rt::block_on(async move {
-                            impl_ref.#fn_name(#(#arg_names),*).await
-                        });
-                        ice_rpc::gen::observable_to_responses(stream)
+            dispatcher.method(
+                #method_name_str,
+                move |payload: &[u8], emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
+                    // The framed payload is not necessarily aligned for rkyv, so
+                    // the decode goes through an aligned copy.
+                    match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
+                        Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
+                            // Clone per invocation: the closure is `Fn`, so it must
+                            // not move the captured `Arc` into the coroutine.
+                            let impl_ref = service_impl.clone();
+                            let stream = ice_rpc::rt::block_on(async move {
+                                impl_ref.#fn_name(#(#arg_names),*).await
+                            });
+                            ice_rpc::gen::observable_to_responses(stream, emitter);
+                        }
+                        // A payload of another method, or one that does not decode:
+                        // no response is emitted, so the call times out.
+                        _ => {}
                     }
-                    _ => Box::new(std::iter::empty()),
-                }
-            });
+                },
+            );
         }
     }
 }

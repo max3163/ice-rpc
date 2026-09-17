@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
 
-use super::bridge::ServiceDispatcher;
+use super::bridge::{ResponseEmitter, ServiceDispatcher};
 use super::client::publish_until_delivered;
 use super::notify::Coalescer;
 use super::{
@@ -184,7 +184,7 @@ pub fn spawn_native_service(
             table.len()
         );
 
-        let mut sink = ResponseSink::new(&ports.publisher, &ports.response_notifier);
+        let mut sink = ResponseSink::new(&channel, &ports.publisher, &ports.response_notifier);
         super::pump::run_receive_loop(
             &channel,
             "request",
@@ -198,9 +198,16 @@ pub fn spawn_native_service(
 }
 
 /// Publishes the responses of one channel and wakes the consumers up.
+///
+/// This is the transport end of [`ResponseEmitter`]: the generated handlers push
+/// their samples into it, so a response goes from the serializer's scratch
+/// buffer to the shared-memory sample without an intermediate allocation.
 struct ResponseSink<'a> {
+    channel: &'a str,
     publisher: &'a IoxPublisher,
     notifier: &'a IoxNotifier,
+    /// Header of the request being answered, copied by [`ResponseSink::begin`].
+    request: Option<RpcHeader>,
     /// Coalescing window of the consumer wake-ups.
     coalescer: Coalescer,
     /// Per-channel monotonic sample counter, stamped into `RpcHeader::seq`.
@@ -208,36 +215,62 @@ struct ResponseSink<'a> {
     /// One publisher per channel, drained by this single thread: a plain counter
     /// is enough and stays monotonic.
     seq: u64,
+    /// Whether a response was published since the last [`ResponseSink::begin`].
+    published: bool,
 }
 
 impl<'a> ResponseSink<'a> {
-    fn new(publisher: &'a IoxPublisher, notifier: &'a IoxNotifier) -> Self {
+    fn new(channel: &'a str, publisher: &'a IoxPublisher, notifier: &'a IoxNotifier) -> Self {
         Self {
+            channel,
             publisher,
             notifier,
+            request: None,
             coalescer: Coalescer::new(),
             seq: 0,
+            published: false,
         }
     }
 
-    /// Publishes one response sample, carrying the request's correlation id, the
-    /// sample's real [`EventKind`] and this publisher's `seq`.
-    fn publish(
-        &mut self,
-        request: &RpcHeader,
-        response: &[u8],
-        kind: EventKind,
-    ) -> Result<(), RpcError> {
-        let header =
-            RpcHeader::response_from(request, kind, request.service_version).with_seq(self.seq);
-        self.seq = self.seq.wrapping_add(1);
-        publish_until_delivered(self.publisher, header, response, CONSUMER_WAIT_TIMEOUT)
+    /// Points the sink at the request whose responses are about to be emitted.
+    fn begin(&mut self, request: &RpcHeader) {
+        self.request = Some(*request);
     }
 
-    /// Wakes the consumers' response threads up, at most once per window.
-    fn wake(&mut self) {
-        if self.coalescer.should_notify() {
+    /// Wakes the consumers' response threads up, if anything was published.
+    fn finish(&mut self) {
+        if std::mem::take(&mut self.published) && self.coalescer.should_notify() {
             let _ = self.notifier.notify_with_custom_event_id(EventId::new(0));
+        }
+    }
+}
+
+impl ResponseEmitter for ResponseSink<'_> {
+    fn emit(&mut self, kind: EventKind, payload: &[u8]) -> bool {
+        let Some(request) = self.request else {
+            log::error!(
+                "[transport] '{}': response emitted outside of a request",
+                self.channel
+            );
+            return false;
+        };
+
+        let header =
+            RpcHeader::response_from(&request, kind, request.service_version).with_seq(self.seq);
+        self.seq = self.seq.wrapping_add(1);
+
+        match publish_until_delivered(self.publisher, header, payload, CONSUMER_WAIT_TIMEOUT) {
+            Ok(()) => {
+                self.published = true;
+                true
+            }
+            Err(e) => {
+                log::warn!(
+                    "[transport] '{}': response publication failed: {e}",
+                    self.channel
+                );
+                false
+            }
         }
     }
 }
@@ -275,18 +308,11 @@ fn handle_request(
         return;
     };
 
-    // Publish the responses, then wake the consumer's response thread once per
-    // coalescing window.
-    let mut published = false;
-    for (kind, response) in dispatcher.dispatch(header.method(), payload) {
-        if sink.publish(header, &response, kind).is_err() {
-            break;
-        }
-        published = true;
-    }
-    if published {
-        sink.wake();
-    }
+    // The handler pushes its responses into the sink; the consumers are woken
+    // once per coalescing window, and only if something was published.
+    sink.begin(header);
+    dispatcher.dispatch(header.method(), payload, sink);
+    sink.finish();
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +421,7 @@ pub fn start_registered_channels() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::CollectEmitter;
 
     #[test]
     fn a_duplicate_service_id_is_reported_with_the_previous_name() {
@@ -418,17 +445,23 @@ mod tests {
     #[test]
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new();
-        first.method("echo", |payload| {
-            Box::new(std::iter::once((EventKind::Next, payload.to_vec())))
+        first.method("echo", |payload, emitter| {
+            emitter.emit(EventKind::Next, payload);
         });
         let mut second = ServiceDispatcher::new();
-        second.method("ping", |_payload| Box::new(std::iter::empty()));
+        second.method("ping", |_payload, _emitter| {});
 
         let table: HashMap<u32, ServiceDispatcher> =
             vec![(7, first), (9, second)].into_iter().collect();
 
-        assert_eq!(table.get(&7).unwrap().dispatch("echo", b"x").count(), 1);
-        assert_eq!(table.get(&9).unwrap().dispatch("echo", b"x").count(), 0);
+        let mut emitter = CollectEmitter::new();
+        table.get(&7).unwrap().dispatch("echo", b"x", &mut emitter);
+        assert_eq!(emitter.take().len(), 1);
+
+        // The second dispatcher has no `echo` method: nothing is emitted.
+        table.get(&9).unwrap().dispatch("echo", b"x", &mut emitter);
+        assert!(emitter.take().is_empty());
+
         assert!(!table.contains_key(&11));
     }
 }

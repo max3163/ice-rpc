@@ -30,3 +30,10 @@ proc-macro2 = "1.0"
 log = { workspace = true }
 quote = "1.0"
 syn = { version = "3", features = ["full"] }
+
+[dev-dependencies]
+# The golden tests parse an expansion back and pretty-print it, so that the
+# generated code is readable in a diff instead of being one enormous line.
+# Version 0.3 is the one built on the same `syn` 3 as the generators: keeping
+# both on one `syn` avoids a second, incompatible `syn::File` type in the graph.
+prettyplease = "0.3"

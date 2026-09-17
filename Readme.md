@@ -365,7 +365,7 @@ One cached publisher and one dispatch thread per **channel**:
 | Setting | Value | Why |
 |---|---|---|
 | `subscriber_max_buffer_size` | 1 024 | one term of the memory budget of a channel (see `max_loaned_samples`) |
-| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport.rs:751) retries: the overflow becomes backpressure instead of data loss |
+| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport/client.rs:276) retries: the overflow becomes backpressure instead of data loss |
 | `initial_max_slice_len` | 256 | `slice` memory per sample; larger payloads grow the segment |
 | `max_loaned_samples` | 1 024 | sizes the data segment of a publisher (`max_loaned_samples × ~400 B`): ~400 KB, against ~6.5 MB at the iceoryx2 default of 8 raised to 16 384 — untenable with dozens of services |
 | `max_publishers` / `max_subscribers` | 16 | a channel is shared: every consuming process publishes on it, every provider subscribes to it |
@@ -390,9 +390,9 @@ travels in the zero-copy `user_header`, so the payload holds the rkyv bytes alon
 The sample is requested with `payload_alignment(Alignment::new(16))`, the
 alignment `rkyv::to_bytes` produces, so the payload is decodable in place. The
 decoder still copies it into a 16-byte-aligned buffer first
-([`decode_aligned`](ice-rpc/src/transport.rs:158)): calling `rkyv::from_bytes` on
-a misaligned slice fails at runtime for any type with an alignment greater than
-1, which is what silently produced empty response streams before.
+([`decode_aligned`](ice-rpc/src/transport/mod.rs:74)): calling `rkyv::from_bytes`
+on a misaligned slice fails at runtime for any type with an alignment greater
+than 1, which is what silently produced empty response streams before.
 
 The name-length limits (`SERVICE_NAME_LEN`, `METHOD_NAME_LEN`, both 64) are shared
 with `ice-rpc-macros`, which rejects longer names at compile time. `METHOD_NAME_LEN`
@@ -401,17 +401,24 @@ limit of the `group` parameter of `#[service]`.
 
 ### 5.1. Stale iceoryx2 services
 
-Changing the wire format (the header, the payload alignment, `enable_safe_overflow`)
-changes the service's static configuration, and iceoryx2 refuses to open a service
-whose recorded configuration differs from the requested one. A process killed
-while it holds a service can also leave a file without its shared memory, which
-iceoryx2 tries to remove in an **unbounded recursion** (of the builder's `Debug`
-output) and ends in `thread has overflowed its stack`.
+Changing the wire format (the header, the payload alignment, `enable_safe_overflow`,
+and the buffer sizes or port limits resolved from `tuning.rs`) changes the
+service's static configuration, and iceoryx2 refuses to open a service whose
+recorded configuration differs from the requested one. A process killed while it
+holds a service can also leave a file without its shared memory, which iceoryx2
+tries to remove in an **unbounded recursion** (of the builder's `Debug` output)
+and ends in `thread has overflowed its stack`.
 
-After such a change — or after a hard kill — remove the iceoryx2 root path, which
-is `%APPDATA%\ice-rpc\iceoryx2` on Windows and
-`$XDG_DATA_HOME/ice-rpc/iceoryx2` (or `~/.local/share/ice-rpc/iceoryx2`)
-elsewhere, and make sure no process still runs the previous build.
+Both failures are reported as [`RpcError::ProtocolMismatch`](ice-rpc/src/types/error.rs:8),
+which is deliberately **not retryable** and whose message names the iceoryx2
+variant and the remedy, so a failing startup log is enough to act.
+
+The procedure is documented once, in
+[`docs/wire-compat.md`](docs/wire-compat.md): stop every process of the previous
+build, remove the iceoryx2 root path —
+[`scripts/purge-iceoryx2-root.sh`](scripts/purge-iceoryx2-root.sh) resolves it per
+OS, shows what it holds and only removes it with `--yes` — then rebuild everything
+and restart the provider first.
 
 ---
 

@@ -40,11 +40,14 @@
 //! #[async_trait::async_trait]
 //! impl MyService for MyServiceImpl {
 //!     async fn hello(&self, name: String) -> Observable<String, MyError> {
-//!         let (tx, rx) = ice_rpc::channel::<String, MyError>(2);
-//!         ice_rpc::rt::spawn(async move {
-//!             let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
-//!         });
-//!         rx // no Result: a service returns the observable itself
+//!         // One value, then completion. A handler streaming several values uses
+//!         // the wire-level `ice_rpc::gen::channel(capacity)`, which returns a
+//!         // `(Sender, Observable)` pair whose `send_complete_with` closes the
+//!         // stream with its last value.
+//!         Observable::from_events([
+//!             ice_rpc::Event::Next(format!("Hello {} !", name)),
+//!             ice_rpc::Event::Complete,
+//!         ]) // no Result: a service returns the observable itself
 //!     }
 //! }
 //!

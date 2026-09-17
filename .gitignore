@@ -22,3 +22,9 @@ target/
 config/iceoryx2.toml
 ice-rpc/config/iceoryx2.toml
 ice-rpc-monitor/config/iceoryx2.toml
+
+# Current output of a failed golden-expansion comparison. It is written next to
+# the golden file so that `diff` shows what moved, and must never be committed:
+# the golden itself is the reference, and `ICE_RPC_BLESS=1 cargo test -p
+# ice-rpc-macros` is the only way to update it.
+ice-rpc-macros/tests/golden/*.actual.rs

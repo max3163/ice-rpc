@@ -53,9 +53,9 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
 
 /// Client method generation parameters.
 ///
-/// The generated body serializes the request (rkyv) then calls
-/// `ice_rpc::gen::native_call`, streaming the responses back as an
-/// [`Observable`](ice_rpc).
+/// The generated body is one call to `ice_rpc::gen::serialize_and_call`, which
+/// encodes the request into a reusable per-thread buffer and publishes it,
+/// streaming the responses back as an [`Observable`](ice_rpc).
 pub struct ClientMethodGenInput<'a> {
     pub visibility: &'a Visibility,
     pub fn_name: &'a Ident,
@@ -92,20 +92,13 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         {
             let req_val = #req_enum_name::#var_name { #(#arg_names),* };
 
-            let bytes = match ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&req_val) {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    return ice_rpc::Observable::from_technical_error(
-                        ice_rpc::RpcError::SerializationError,
-                    );
-                }
-            };
-
-            ice_rpc::gen::native_call::<#ok_type, #err_type>(
+            // Encoding and publishing are one call: the request buffer is the
+            // thread's, so a call no longer allocates one.
+            ice_rpc::gen::serialize_and_call::<#ok_type, #err_type, _>(
                 #group,
                 ice_rpc::gen::service_id_of(#logical_name),
                 #method_name_str,
-                &bytes,
+                &req_val,
             )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
         }

@@ -91,6 +91,12 @@ harness = false
 name = "pipeline"
 harness = false
 
+# Measures the per-call costs the end-to-end load benchmark is too coarse to
+# resolve: request buffer allocation, payload copy before decoding, clock read.
+[[bench]]
+name = "hot_path"
+harness = false
+
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here (see `plans/merge-rx.md`) so a single crate ships the library,
 # its reactive layer, its examples and its benches. They all need the Tokio

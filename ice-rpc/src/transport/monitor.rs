@@ -20,7 +20,7 @@ use iceoryx2::service::header::publish_subscribe::Header as SampleHeader;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::{Service, ServiceDetails};
 
-use super::server::{open_event_service, open_service, OpenMode};
+use super::open::{open_event_service, open_service, OpenMode};
 use super::{
     shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber,
     REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,

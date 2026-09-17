@@ -79,16 +79,6 @@ struct DeferredResponses {
     since: Instant,
 }
 
-/// Maps a header event kind to its label.
-fn kind_name(kind: EventKind) -> &'static str {
-    match kind {
-        EventKind::Request => "request",
-        EventKind::Next => "next",
-        EventKind::Complete => "complete",
-        EventKind::Error => "error",
-    }
-}
-
 /// The out-of-band observer.
 pub struct Monitor {
     config: Config,
@@ -464,7 +454,7 @@ impl Monitor {
     ) {
         let kind = header.event_kind();
         self.metrics
-            .on_response(channel, header.service_id, kind_name(kind));
+            .on_response(channel, header.service_id, kind.label());
         let terminal = kind.is_terminal();
 
         match self.correlate.on_response(&header.correlation_id, terminal) {
@@ -502,7 +492,7 @@ impl Monitor {
         }
         if terminal {
             self.metrics.on_inflight(&call.channel, call.service_id, -1);
-            self.emit_trace(channel, header, emitter, sample, &call, kind_name(kind));
+            self.emit_trace(channel, header, emitter, sample, &call, kind.label());
         }
     }
 
@@ -700,10 +690,12 @@ mod tests {
 
     #[test]
     fn every_event_kind_has_a_label() {
-        assert_eq!(kind_name(EventKind::Request), "request");
-        assert_eq!(kind_name(EventKind::Next), "next");
-        assert_eq!(kind_name(EventKind::Complete), "complete");
-        assert_eq!(kind_name(EventKind::Error), "error");
+        // The labels live on `EventKind` itself now, so this only checks that
+        // the observer's view of a sample stays the wire vocabulary.
+        assert_eq!(EventKind::Request.label(), "request");
+        assert_eq!(EventKind::Next.label(), "next");
+        assert_eq!(EventKind::Complete.label(), "complete");
+        assert_eq!(EventKind::Error.label(), "error");
     }
 
     #[test]

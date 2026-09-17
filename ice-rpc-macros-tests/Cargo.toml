@@ -15,7 +15,14 @@ workspace = true
 # graph: the generated rendering is asserted by `tests/decoder_rendering.rs`, and
 # CI's workspace build enables the feature anyway through `ice-rpc-monitor`
 # (feature unification), so pinning it makes isolated runs match CI.
-ice-rpc = { path = "../ice-rpc", features = ["monitoring"] }
+#
+# `nodejs` is requested for the same reason, plus one of its own: the converters
+# it generates are what the Node.js gateway calls, and until this test existed
+# nothing executed them — they were only type-checked. It has no dependency of
+# its own, unlike `http`, which would pull the whole HTTP stack into every
+# workspace test run; `HttpCallable` stays covered by CI's `--features http` job
+# and by the gateway.
+ice-rpc = { path = "../ice-rpc", features = ["monitoring", "nodejs"] }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
 async-trait = { workspace = true }
 # The generated code serializes the request arguments to JSON (HTTP and Node.js

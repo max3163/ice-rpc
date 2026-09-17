@@ -35,10 +35,19 @@ default = []
 # and falls back to its `Debug`, so a service type carries no formatting
 # requirement of its own.
 monitoring = ["ice-rpc-macros/monitoring"]
-http = ["dep:trillium", "dep:trillium-smol"]
+# The HTTP gateway: the server, and the `HttpCallable` implementation of every
+# proxy it exposes. That implementation is also the block which keeps
+# `serde_json`'s conversion code in a binary, so it follows the same switch as
+# the gateway: enabling one enables the other.
+http = ["dep:trillium", "dep:trillium-smol", "ice-rpc-macros/http"]
+# The Node.js gateway: the rkyv ↔ `serde_json::Value` converters and the
+# `ProviderNodeJs` mode. A Rust-only deployment never calls them.
+nodejs = ["ice-rpc-macros/nodejs"]
 tokio = ["dep:tokio"]
 smol = ["dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
+# Not part of `full`: the Node.js gateway is a separate deployment (it links
+# N-API), not another way of serving the same process.
 full = ["http", "tokio", "http-tokio"]
 
 [dependencies]

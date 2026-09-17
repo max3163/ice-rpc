@@ -27,13 +27,15 @@ jobs:
         run: cargo fmt --all -- --check
 
       # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
-      # `tokio,http` covers the optional runtime adapter and the HTTP gateway,
-      # which are not part of the default feature set.
+      # `tokio,http,nodejs` covers the optional runtime adapter, the HTTP gateway
+      # and the Node.js codegen. `nodejs` matters here precisely because the
+      # gateway is excluded: it is the only consumer of the generated converters,
+      # so without it that code would not be compiled anywhere in this job.
       - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http -- -D warnings
+        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs -- -D warnings
 
       # The default workspace run exercises the agnostic runtime facade.
       - name: Test (workspace, default facade)

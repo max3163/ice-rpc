@@ -10,8 +10,15 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
 - **Service discovery** with a registry per node and dependency-aware topological initialization.
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
-- **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs`.
+- **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs` — the last one
+  only when the `nodejs` feature is on.
 - **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
+  The feature also generates the `HttpCallable` implementation of every proxy, which is what
+  keeps `serde_json`'s conversion code out of a binary that never speaks HTTP.
+- **Optional Node.js gateway** (`nodejs` feature): `#[service]` also generates the
+  rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode the
+  `gateway_nodejs` bridge calls. Off by default: a Rust-only deployment does not
+  carry them, and they are about half of the generated code of a service.
 - **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also
   generates a `{Service}Decoder` (and `Display` on the request enum) so an
   external observer renders the observed payloads in clear text — with each

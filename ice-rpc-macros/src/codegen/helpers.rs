@@ -53,7 +53,10 @@ pub(crate) fn g_variant_name(s: &str) -> String {
 ///
 /// The generated decoder formats the success value with `Display`, which `()`
 /// does not implement; the unit case therefore takes a dedicated code path.
-#[cfg(feature = "monitoring")]
+///
+/// Not gated by `cfg`: only the decoder calls it, the decoder module is compiled
+/// in every build, and whether the decoder is *generated* is decided by
+/// [`crate::features::Features`] rather than by a Cargo feature.
 pub(crate) fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }

@@ -63,6 +63,16 @@ impl ServiceLocator {
         self.shutdown_registry.register(handle);
     }
 
+    /// Registers a dispatch thread owning iceoryx2 ports in the shutdown registry.
+    ///
+    /// The ports are dropped when the thread returns, and dropping them is what
+    /// unlinks the shared-memory files of the services it created. A process that
+    /// exits without waiting for these threads therefore leaves its services
+    /// behind — on a clean shutdown, not only after a kill.
+    pub fn register_shutdown_thread(&self, handle: std::thread::JoinHandle<()>) {
+        self.shutdown_registry.register_thread(handle);
+    }
+
     /// Waits for the registered blocking threads and releases the node.
     pub async fn release_node(&self) {
         self.shutdown_registry.join_all().await;

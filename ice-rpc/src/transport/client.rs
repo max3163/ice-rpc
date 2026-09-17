@@ -77,6 +77,20 @@ fn consumer_cache() -> &'static Locked<HashMap<String, Arc<ConsumerPorts>>> {
     &CACHE
 }
 
+/// Drops the cached ports of every consumed channel, returning how many.
+///
+/// The cache lives in a `static`, and Rust never drops a `static`: without this,
+/// a consumer that **created** a service — it opened it before any provider
+/// existed — would keep that service alive on the bus after its own exit. Called
+/// at shutdown, once the dispatch threads are joined.
+pub(super) fn release_consumer_ports() -> usize {
+    consumer_cache().with(|cache| {
+        let count = cache.len();
+        cache.clear();
+        count
+    })
+}
+
 /// Resolves [`PROVIDER_WAIT_DEFAULT`], allowing an environment override.
 fn provider_wait_timeout() -> Duration {
     std::env::var("ICE_RPC_PROVIDER_WAIT_MS")

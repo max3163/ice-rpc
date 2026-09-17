@@ -225,6 +225,15 @@ pub async fn shutdown_and_release() {
     global_cancel_token().cancel();
     registry_cancel_token().cancel();
     ServiceLocator::global().release_node().await;
+
+    // `release_node` joins the dispatch threads, and a thread owns its ports:
+    // joining it is what makes iceoryx2 unlink the services it created. What
+    // survives is the cache of consumed channels, which lives in a `static` —
+    // Rust never drops a `static`, so it is released here explicitly.
+    let released = crate::transport::release_process_ports();
+    if released > 0 {
+        log::info!("[ice-rpc] released {released} cached channel port(s)");
+    }
 }
 
 /// RAII guard for the automatic shutdown of an ice-rpc process.
@@ -473,6 +482,15 @@ pub async fn run_provider_inner(
     // the macro was bypassed (e.g. after `init_without_ctrl_c()`).
     ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // Reap what previous runs left behind, before creating anything: a provider
+    // that was killed is still on the bus, and nothing else removes it — see
+    // `transport::cleanup_dead_nodes`. This is what makes a machine self-healing
+    // in production, where nobody runs a purge script.
+    let reaped = crate::transport::cleanup_dead_nodes();
+    if reaped > 0 {
+        log::info!("[ice-rpc] reaped {reaped} dead node(s) left by previous runs");
+    }
 
     let loc = ServiceLocator::global();
     for svc in services {

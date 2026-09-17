@@ -78,10 +78,7 @@ pub(super) fn open_service(
             PublishSubscribeOpenOrCreateError::PublishSubscribeCreateError(inner) => {
                 pub_sub_create_error("create service", inner)
             }
-            PublishSubscribeOpenOrCreateError::SystemInFlux => transport_error(
-                "open service",
-                PublishSubscribeOpenOrCreateError::SystemInFlux,
-            ),
+            PublishSubscribeOpenOrCreateError::SystemInFlux => system_in_flux("open service"),
         }),
         OpenMode::ReadOnly => builder
             .open()
@@ -168,10 +165,29 @@ fn event_error(error: EventOpenOrCreateError) -> RpcError {
         EventOpenOrCreateError::EventCreateError(inner) => {
             event_create_error("create event", inner)
         }
-        EventOpenOrCreateError::SystemInFlux => {
-            transport_error("open event service", EventOpenOrCreateError::SystemInFlux)
-        }
+        EventOpenOrCreateError::SystemInFlux => system_in_flux("open event service"),
     }
+}
+
+/// Message for iceoryx2's `SystemInFlux`, which has two very different causes.
+///
+/// It stays a [`RpcError::TransportError`], hence retryable, because one of the
+/// causes is genuinely transient: another process is creating or removing that
+/// exact service at this instant, and the next attempt succeeds.
+///
+/// The other cause is not: a process that died while it held the service leaves
+/// an entry iceoryx2 can no longer reconcile — the same shape as
+/// `ServiceInCorruptedState` and `HangsInCreation`, which are already reported as
+/// a [`RpcError::ProtocolMismatch`] with the remedy. A bare `SystemInFlux` in a
+/// log leaves the reader to guess which of the two they have, and the case it
+/// hides is the one that never resolves itself, so the message names both and
+/// carries the remedy.
+fn system_in_flux(context: &str) -> RpcError {
+    RpcError::TransportError(format!(
+        "{context}: SystemInFlux. Either another process is creating or removing this service \
+         right now, in which case retrying works, or the state is left over from a process that \
+         died while it held it, in which case retrying cannot help and this persists: {REMEDY}"
+    ))
 }
 
 /// Reports an event-service creation failure, with the same split.
@@ -247,6 +263,26 @@ mod tests {
         let mapped = pub_sub_open_error("open service", PublishSubscribeOpenError::DoesNotExist);
         assert!(matches!(&mapped, RpcError::TransportError(_)), "{mapped:?}");
         assert!(mapped.is_retryable());
+    }
+
+    /// `SystemInFlux` covers both a concurrent create and left-over state: it
+    /// must stay retryable for the first, and say what to do about the second.
+    #[test]
+    fn system_in_flux_names_both_of_its_causes() {
+        let mapped = system_in_flux("open service");
+
+        assert!(matches!(&mapped, RpcError::TransportError(_)), "{mapped:?}");
+        assert!(
+            mapped.is_retryable(),
+            "a concurrent create is transient, so the retry policy must not change"
+        );
+
+        let text = mapped.to_string();
+        assert!(text.contains("retrying works"), "{text}");
+        assert!(
+            text.contains("root path"),
+            "the persistent case must carry the remedy: {text}"
+        );
     }
 
     /// The event services (the wake-up channels) are classified the same way.

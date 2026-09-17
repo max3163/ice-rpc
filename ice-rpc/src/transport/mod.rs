@@ -33,9 +33,10 @@ pub use server::{register_native_service, spawn_native_service, start_registered
 // only place where a value is defined and documented.
 use tuning::{
     CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_NODES, MAX_PUBLISHERS,
-    MAX_SLICE_LEN, MAX_SUBSCRIBERS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP,
-    PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
-    RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES, SUBSCRIBER_BUFFER, WAITSET_DEADLINE,
+    MAX_SLICE_LEN, MAX_SUBSCRIBERS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT,
+    PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX,
+    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES,
+    SUBSCRIBER_BUFFER, WAITSET_DEADLINE,
 };
 
 /// Concrete iceoryx2 service flavour used by the transport.
@@ -65,6 +66,35 @@ pub(super) fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
     })
     .clone()
     .map_err(|e| RpcError::TransportError(format!("node creation: {e}")))
+}
+
+/// Drops the per-channel port caches this process still holds.
+///
+/// Called by [`shutdown_and_release`](crate::shutdown_and_release) once the
+/// dispatch threads are joined. A dispatch thread owns its ports, so joining it
+/// releases them — but the cache of consumed channels lives in a `static`, and
+/// Rust never drops a `static`. Without this call, a consumer that created a
+/// service (it opened it before any provider existed) would leave that service on
+/// the bus after exiting.
+pub fn release_process_ports() -> usize {
+    client::release_consumer_ports()
+}
+
+/// Reaps the resources iceoryx2 left behind by processes that are gone.
+pub fn cleanup_dead_nodes() -> u64 {
+    let config = crate::config::build_iceoryx2_config();
+    let state = iceoryx2::node::Node::<Iox>::try_cleanup_dead_nodes(&config);
+
+    if state.failed_cleanups > 0 {
+        log::warn!(
+            "[ice-rpc] {} dead node(s) could not be reaped, {} reaped \
+             (insufficient permissions, or another process is on it)",
+            state.failed_cleanups,
+            state.cleanups
+        );
+    }
+
+    state.cleanups
 }
 
 /// Decodes a rkyv payload, in place when the payload is already aligned.

@@ -23,15 +23,27 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 - With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`
   and `DatabaseServiceDecoder` (see below); every argument and response value is
   rendered with its own `Display` implementation when it has one, with its
-  `Debug` implementation otherwise.
+  `Debug` implementation otherwise;
+- With the `nodejs` feature only: the rkyv ↔ `serde_json::Value` converters
+  (`deserialize_request_to_value`, `serialize_response_from_value`), the
+  `ProviderNodeJs` mode of the proxy and its `provide_nodejs()` constructor;
+- With the `http` feature only: `impl ice_rpc::gen::HttpCallable for
+  DatabaseServiceProxy`, the entry point the HTTP gateway dispatches to.
 
 ## Features
 
 | Feature | Default | Effect |
 |---|---|---|
 | `monitoring` | off | Also generate `impl Display for {Trait}Request` and the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`]. It is the only part that adds code a provider/consumer never calls, so a plain provider/consumer must not carry it. Method arguments and return types only have to be `Debug` — the requirement the generated request enum already imposes: `Display` is preferred when the type provides it, `Debug` is the fallback. `ice-rpc` re-exports it as the `monitoring` feature. |
+| `nodejs` | off | Also generate the rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode. Only the Node.js bridge calls them, so a Rust-only deployment must not carry them: they are about half of the generated code of a service. `gateway_nodejs` asks for them through `common`'s `napi` feature, which enables `ice-rpc/nodejs`. |
+| `http` | off | Also generate the `HttpCallable` implementation the HTTP gateway dispatches to. It is also the block that keeps `serde_json`'s conversion machinery in a binary, so it follows `ice-rpc`'s `http` feature, which the gateway already needs. |
 
-An out-of-band observer built with this feature registers the generated decoders
+Three independent switches, read in exactly one place: `Features::from_cfg`. Every
+generator receives the set as a value, so a build that asks for nothing generates
+nothing optional — and a test can expand a trait in any combination without
+depending on the features of the build it runs in.
+
+An out-of-band observer built with `monitoring` registers the generated decoders
 to render the observed messages in clear text instead of raw bytes.
 
 ## Usage

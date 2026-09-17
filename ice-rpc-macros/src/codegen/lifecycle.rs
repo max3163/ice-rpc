@@ -14,8 +14,12 @@ pub struct LifecycleGenInput<'a> {
     pub logical_name_lit: &'a str,
     /// Channel the service is registered on (the `group` of `#[service]`).
     pub group_lit: &'a str,
+    /// Whether the `ProviderNodeJs` branch belongs to the expansion (the
+    /// `nodejs` feature).
+    pub nodejs: bool,
     /// One native `ServiceDispatcher::method(...)` registration per RPC method,
     /// used by the `ProviderNodeJs` mode to bridge calls to the Node.js host.
+    /// Empty when `nodejs` is unset.
     pub nodejs_native_methods: &'a [TokenStream],
 }
 
@@ -29,8 +33,45 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         mode_name,
         logical_name_lit,
         group_lit,
+        nodejs,
         nodejs_native_methods,
     } = input;
+
+    // Without the feature the enum has no `ProviderNodeJs` variant, so the branch
+    // cannot exist — a `match` arm on a variant that is not declared does not
+    // compile.
+    let nodejs_arm = if *nodejs {
+        quote! {
+            #mode_name::ProviderNodeJs => {
+                // The Node.js host implements the methods: each RPC method
+                // is bridged to the injected dispatch callback.
+                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+                #(#nodejs_native_methods)*
+                // Registered on the channel: the channel thread starts
+                // once every provider of the process is registered.
+                if let Err(e) = ice_rpc::gen::register_native_service(
+                    #group_lit,
+                    ice_rpc::gen::service_id_of(#logical_name_lit),
+                    #logical_name_lit,
+                    dispatcher,
+                ) {
+                    ::log::error!(
+                        "[{}] channel registration failed: {e:?}",
+                        #logical_name_lit
+                    );
+                    return false;
+                }
+                ::log::info!(
+                    "[{}] NodeJS provider registered on channel '{}'.",
+                    #logical_name_lit,
+                    #group_lit
+                );
+                true
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     quote! {
         #[async_trait::async_trait]
@@ -38,32 +79,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             async fn init(&self) -> bool {
                 let mut mode = self.mode.write().await;
                 match &mut *mode {
-                    #mode_name::ProviderNodeJs => {
-                        // The Node.js host implements the methods: each RPC
-                        // method is bridged to the injected dispatch callback.
-                        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
-                        #(#nodejs_native_methods)*
-                        // Registered on the channel: the channel thread starts
-                        // once every provider of the process is registered.
-                        if let Err(e) = ice_rpc::gen::register_native_service(
-                            #group_lit,
-                            ice_rpc::gen::service_id_of(#logical_name_lit),
-                            #logical_name_lit,
-                            dispatcher,
-                        ) {
-                            ::log::error!(
-                                "[{}] channel registration failed: {e:?}",
-                                #logical_name_lit
-                            );
-                            return false;
-                        }
-                        ::log::info!(
-                            "[{}] NodeJS provider registered on channel '{}'.",
-                            #logical_name_lit,
-                            #group_lit
-                        );
-                        true
-                    }
+                    #nodejs_arm
                     #mode_name::Provider { local_impl, init_hook, server_started } => {
                         if !*server_started {
                             if !init_hook.on_init().await {

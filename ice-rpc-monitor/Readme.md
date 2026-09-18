@@ -72,6 +72,15 @@ service, its messages are shown as `<N bytes, no decoder>`.
 | Prometheus endpoint | `GET /metrics` on `127.0.0.1:9898` by default |
 | Trace stream | NDJSON correlated by `correlation_id`, off by default |
 
+Each trace record carries `call_id` — the `correlation_id`, which identifies
+**this call** — and, when the caller propagated a trace, `trace_id` (the
+distributed trace, lowercase hexadecimal) and `parent_span_id` (the span the
+caller parented this call on). Both are read from the request **header**, so the
+observer never decodes a payload to obtain them: the `stats` mode keeps its
+property of never touching the payload. A trace id is per call, so it belongs in
+these records and never in a Prometheus label, where one series per call would
+explode the cardinality.
+
 Metrics exposed:
 
 Bus metrics:

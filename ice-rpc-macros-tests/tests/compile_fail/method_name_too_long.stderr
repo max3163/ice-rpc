@@ -1,4 +1,4 @@
-error: Method name 'this_method_name_is_extremely_long_and_deliberately_exceeds_the_maximum_allowed_length_of_126_characters_for_validation_purposes_aaaaaa' too long (135 > 64 characters). Rename the method so that it is at most 64 characters long.
+error: Method name 'this_method_name_is_extremely_long_and_deliberately_exceeds_the_maximum_allowed_length_of_126_characters_for_validation_purposes_aaaaaa' too long (135 > 32 characters). Rename the method so that it is at most 32 characters long.
  --> tests/compile_fail/method_name_too_long.rs:6:14
   |
 6 | ...fn this_method_name_is_extremely_long_and_deliberately_exceeds_the_maximum_allowed_length_of_126_characters_for_validation_purposes_aaaaaa(&s...

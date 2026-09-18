@@ -296,11 +296,14 @@ place by the bus, so it costs no serialization and no allocation.
 | `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
 | `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
 | `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
+| `trace_id` | `[u8; 16]` | W3C trace id, shared by every hop of a call tree; zero when no trace is propagated |
+| `parent_span_id` | `u64` | span of the caller, onto which the receiver parents its own span |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
-| `method_name` | `StaticString<64>` | target method (carried by requests) |
+| `method_name` | `StaticString<32>` | target method (carried by requests) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` / `RpcError` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
 | `service_version` | `u16` | service API version, validated by the provider and echoed on the responses |
+| `flags` | `u8` | W3C trace flags (bit 0: sampled) |
 
 `Error` labels a **business** error, whose payload is the service's
 `WireEvent<T, E>`; `RpcError` labels a **transport-level** rejection — unknown
@@ -423,10 +426,12 @@ payload, alignment-safe decoding.** The same care applies to the observer: the
 payload, while the `detail` mode pays one decode per sample by design
 ([§13](#13-out-of-band-monitoring)).
 
-The name-length limits (`SERVICE_NAME_LEN`, `METHOD_NAME_LEN`, both 64) are shared
-with `ice-rpc-macros`, which rejects longer names at compile time. `METHOD_NAME_LEN`
-is also the capacity of the header's `StaticString`, and `SERVICE_NAME_LEN` the
-limit of the `group` parameter of `#[service]`.
+The name-length limits are shared with `ice-rpc-macros`, which rejects longer names
+at compile time: `SERVICE_NAME_LEN` = 64, the limit of the `group` parameter of
+`#[service]`, and `METHOD_NAME_LEN` = 32, the capacity of the header's
+`StaticString`. The method name is the largest field of a header capped by
+iceoryx2's `user_header`, and the 32 bytes it gives back fund the trace context —
+32 characters is ample for a method name.
 
 ### 5.1. Stale iceoryx2 services
 

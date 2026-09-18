@@ -238,7 +238,9 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
         {
             dispatcher.method(
                 #method_name_str,
-                move |payload: &[u8], emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
+                move |header: &ice_rpc::gen::RpcHeader,
+                      payload: &[u8],
+                      emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
                     let Some(args) =
                         #proxy_name::deserialize_request_to_value(#method_name_str, payload)
                     else {
@@ -249,8 +251,10 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                         );
                         return;
                     };
+                    // The correlation id is the real one now that the handler
+                    // receives the header: the JS side can correlate its logs.
                     let value = match ice_rpc::nodejs_dispatch::call(
-                        [0u8; 16],
+                        header.correlation_id,
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
                         args,

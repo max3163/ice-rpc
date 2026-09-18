@@ -15,9 +15,9 @@ mod model;
 mod golden_tests;
 
 // Private: the public versions live in `ice-rpc` (`types/consts.rs`). The values
-// MUST stay identical (64), the maximum name lengths the wire framing accepts.
+// MUST stay identical, the maximum name lengths the wire framing accepts.
 pub(crate) const SERVICE_NAME_LEN: usize = 64;
-pub(crate) const METHOD_NAME_LEN: usize = 64;
+pub(crate) const METHOD_NAME_LEN: usize = 32;
 
 use proc_macro::TokenStream;
 use quote::quote;

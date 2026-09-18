@@ -41,8 +41,16 @@ pub enum TraceFormat {
 
 /// One completed call, ready to be serialised.
 pub struct TraceRecord<'a> {
-    /// `correlation_id` formatted as a UUID-like string (the trace id).
-    pub trace_id: &'a str,
+    /// `correlation_id` formatted as a UUID-like string: the id of **this call**.
+    ///
+    /// Named `call_id`, not `trace_id`: a call and a trace are different things,
+    /// and the header carries both. One trace spans many calls, across processes.
+    pub call_id: &'a str,
+    /// Distributed trace id, lowercase hexadecimal; `None` when the caller
+    /// propagated no trace.
+    pub trace_id: Option<&'a str>,
+    /// Span the caller parented this call on; `0` when there is no trace.
+    pub parent_span_id: u64,
     /// Channel the call was observed on.
     pub channel: &'a str,
     /// Service id carried by the header.
@@ -82,7 +90,7 @@ impl TraceRecord<'_> {
         let mut line = format!(
             "[msg] cid={} channel={} service={} method={} kind={} latency_us={} \
              request_bytes={} response_bytes={} emitter_pid={}",
-            self.trace_id,
+            self.call_id,
             self.channel,
             self.service_id,
             self.method,
@@ -92,6 +100,13 @@ impl TraceRecord<'_> {
             self.response_bytes,
             self.emitter_pid
         );
+        if let Some(trace_id) = self.trace_id {
+            let _ = write!(
+                line,
+                " trace={trace_id} parent_span={}",
+                self.parent_span_id
+            );
+        }
         if let Some(text) = self.request_text {
             let _ = write!(line, " request={text}");
         }
@@ -107,7 +122,11 @@ impl TraceRecord<'_> {
     /// stays compact.
     fn to_json(&self) -> String {
         let mut map = Map::new();
+        map.insert("call_id".to_owned(), json!(self.call_id));
+        // `null` rather than absent: a consumer can then tell "no trace" from
+        // "field the writer does not know about".
         map.insert("trace_id".to_owned(), json!(self.trace_id));
+        map.insert("parent_span_id".to_owned(), json!(self.parent_span_id));
         map.insert("channel".to_owned(), json!(self.channel));
         map.insert("service_id".to_owned(), json!(self.service_id));
         map.insert("method".to_owned(), json!(self.method));
@@ -241,7 +260,9 @@ mod tests {
 
     fn record() -> TraceRecord<'static> {
         TraceRecord {
-            trace_id: "deadbeef-cafe-babe-0011-223344556677",
+            call_id: "deadbeef-cafe-babe-0011-223344556677",
+            trace_id: Some("00112233445566778899aabbccddeeff"),
+            parent_span_id: 0,
             channel: "DatabaseService",
             service_id: 42,
             method: "get_user_age",
@@ -258,7 +279,9 @@ mod tests {
     #[test]
     fn a_stats_record_omits_the_message_fields() {
         let json = record().to_json();
-        assert!(json.contains("\"trace_id\":\"deadbeef-cafe-babe-0011-223344556677\""));
+        assert!(json.contains("\"call_id\":\"deadbeef-cafe-babe-0011-223344556677\""));
+        assert!(json.contains("\"trace_id\":\"00112233445566778899aabbccddeeff\""));
+        assert!(json.contains("\"parent_span_id\":0"));
         assert!(json.contains("\"latency_us\":137"));
         assert!(json.contains("\"method\":\"get_user_age\""));
         assert!(
@@ -314,7 +337,9 @@ mod tests {
         for index in 0..(RECENT_KEEP + 3) {
             let channel = format!("c{index}");
             let record = TraceRecord {
-                trace_id: "id",
+                call_id: "id",
+                trace_id: None,
+                parent_span_id: 0,
                 channel: &channel,
                 service_id: 1,
                 method: "m",

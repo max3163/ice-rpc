@@ -385,7 +385,7 @@ fn handle_request(
 
     // An unknown method is answered too: silence would leave the caller waiting
     // for the transport timeout instead of naming the mistake.
-    if !dispatcher.dispatch(header.method(), payload, sink) {
+    if !dispatcher.dispatch(header.method(), header, payload, sink) {
         reject(
             channel,
             header,
@@ -622,21 +622,28 @@ mod tests {
     #[test]
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        first.method("echo", |payload, emitter| {
+        first.method("echo", |_header, payload, emitter| {
             emitter.emit(EventKind::Next, payload);
         });
         let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
-        second.method("ping", |_payload, _emitter| {});
+        second.method("ping", |_header, _payload, _emitter| {});
 
         let table: HashMap<u32, ServiceDispatcher> =
             vec![(7, first), (9, second)].into_iter().collect();
+        let header = RpcHeader::request("echo", 7, 1);
 
         let mut emitter = CollectEmitter::new();
-        assert!(table.get(&7).unwrap().dispatch("echo", b"x", &mut emitter));
+        assert!(table
+            .get(&7)
+            .unwrap()
+            .dispatch("echo", &header, b"x", &mut emitter));
         assert_eq!(emitter.take().len(), 1);
 
         // The second dispatcher has no `echo` method: reported, nothing emitted.
-        assert!(!table.get(&9).unwrap().dispatch("echo", b"x", &mut emitter));
+        assert!(!table
+            .get(&9)
+            .unwrap()
+            .dispatch("echo", &header, b"x", &mut emitter));
         assert!(emitter.take().is_empty());
 
         assert!(!table.contains_key(&11));
@@ -673,11 +680,12 @@ mod tests {
     #[test]
     fn dispatch_reports_whether_the_method_exists() {
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        dispatcher.method("echo", |_payload, _emitter| {});
+        dispatcher.method("echo", |_header, _payload, _emitter| {});
 
+        let header = RpcHeader::request("echo", 7, 1);
         let mut emitter = CollectEmitter::new();
-        assert!(dispatcher.dispatch("echo", b"x", &mut emitter));
-        assert!(!dispatcher.dispatch("missing", b"x", &mut emitter));
+        assert!(dispatcher.dispatch("echo", &header, b"x", &mut emitter));
+        assert!(!dispatcher.dispatch("missing", &header, b"x", &mut emitter));
     }
 
     /// A peer whose framing differs must be rejected, not dispatched: the rest of

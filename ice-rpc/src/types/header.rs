@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iceoryx2::prelude::ZeroCopySend;
 use iceoryx2_bb_container::string::StaticString;
 
+use super::context::TraceContext;
 use crate::labels::impl_labels;
 use crate::types::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION};
 
@@ -129,6 +130,13 @@ pub struct RpcHeader {
     /// observed sequence proves that samples were lost. Set by the emitter at
     /// publication time.
     pub seq: u64,
+    /// W3C trace id of the call, shared by every hop of its call tree.
+    ///
+    /// Zero when the caller propagated no trace — that is the "absent" value,
+    /// not a valid id — which is why [`TraceContext::is_present`] exists.
+    pub trace_id: [u8; 16],
+    /// Span of the caller, onto which the receiver parents its own span.
+    pub parent_span_id: u64,
     /// Identifier of the target service inside the channel it is published on.
     ///
     /// Several services can share one channel (their *group*); this id —
@@ -150,6 +158,8 @@ pub struct RpcHeader {
     pub protocol_version: u16,
     /// Service interface version of the emitter.
     pub service_version: u16,
+    /// W3C trace flags (bit 0: sampled), propagated with the trace.
+    pub flags: u8,
 }
 
 impl RpcHeader {
@@ -166,9 +176,36 @@ impl RpcHeader {
             event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
+            // No trace until the caller attaches one with `with_trace`.
+            trace_id: [0u8; 16],
+            parent_span_id: 0,
+            flags: 0,
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
             timestamp_ns: now_ns(),
+        }
+    }
+
+    /// Attaches the trace context propagated with this sample (builder style).
+    ///
+    /// A caller that is itself serving a traced call passes the context it
+    /// received, so the chain survives the hop; a caller with no ambient trace
+    /// leaves the three fields zeroed, which is the "absent" value.
+    #[inline]
+    pub fn with_trace(mut self, trace: TraceContext) -> Self {
+        self.trace_id = trace.trace_id;
+        self.parent_span_id = trace.parent_span_id;
+        self.flags = trace.flags;
+        self
+    }
+
+    /// Trace context carried by this sample.
+    #[inline]
+    pub fn trace(&self) -> TraceContext {
+        TraceContext {
+            trace_id: self.trace_id,
+            parent_span_id: self.parent_span_id,
+            flags: self.flags,
         }
     }
 
@@ -192,6 +229,10 @@ impl RpcHeader {
             event_kind: event_kind.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
+            // A response echoes the trace of the request it answers.
+            trace_id: request.trace_id,
+            parent_span_id: request.parent_span_id,
+            flags: request.flags,
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
             timestamp_ns: now_ns(),
@@ -335,11 +376,46 @@ mod tests {
         // the machine must agree on it. Pinning the exact size makes any layout
         // drift a deliberate, reviewed change.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
-        assert_eq!(std::mem::size_of::<RpcHeader>(), 128);
+        assert_eq!(std::mem::size_of::<RpcHeader>(), 120);
 
         assert_eq!(std::mem::offset_of!(RpcHeader, correlation_id), 0);
         assert_eq!(std::mem::offset_of!(RpcHeader, timestamp_ns), 16);
         assert_eq!(std::mem::offset_of!(RpcHeader, seq), 24);
+        assert_eq!(std::mem::offset_of!(RpcHeader, trace_id), 32);
+        assert_eq!(std::mem::offset_of!(RpcHeader, parent_span_id), 48);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_id), 56);
+        assert_eq!(std::mem::offset_of!(RpcHeader, method_name), 64);
+        assert_eq!(std::mem::offset_of!(RpcHeader, event_kind), 112);
+        assert_eq!(std::mem::offset_of!(RpcHeader, protocol_version), 114);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_version), 116);
+        assert_eq!(std::mem::offset_of!(RpcHeader, flags), 118);
+    }
+
+    /// The trace context survives a header round-trip, and the response echoes
+    /// the request's.
+    #[test]
+    fn the_trace_context_travels_with_the_header() {
+        let trace = TraceContext {
+            trace_id: [7u8; 16],
+            parent_span_id: 42,
+            flags: 1,
+        };
+
+        let request = RpcHeader::request("ping", service_id_of("Ping"), 1).with_trace(trace);
+        assert_eq!(request.trace(), trace);
+        assert!(request.trace().is_present());
+        assert!(request.trace().is_sampled());
+
+        let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
+        assert_eq!(response.trace(), trace, "the response echoes the trace");
+    }
+
+    /// With no trace attached, the three fields stay at their "absent" value.
+    #[test]
+    fn a_request_without_trace_carries_zeros() {
+        let request = RpcHeader::request("ping", service_id_of("Ping"), 1);
+        assert!(!request.trace().is_present());
+        assert_eq!(request.trace().parent_span_id, 0);
     }
 
     #[test]

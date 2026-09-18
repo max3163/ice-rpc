@@ -22,8 +22,8 @@ use super::{
 use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
-    normalize_wire_event, unbounded_channel, Event, EventKind, Observable, ObservableError,
-    RpcError, RpcHeader, ServiceRef, WireEvent, CORRELATION_ID_LEN,
+    normalize_wire_event, unbounded_channel, CallContext, Event, EventKind, Observable,
+    ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext, WireEvent, CORRELATION_ID_LEN,
 };
 
 /// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.
@@ -231,7 +231,17 @@ where
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
     let ports = consumer_ports(channel)?;
+
+    // A call emitted from inside a provider handler continues that handler's
+    // trace; a call emitted anywhere else starts a new one. The ambient read is
+    // synchronous and the value is copied into the header right away — it is
+    // never held across an await, which is what makes it safe here.
+    let trace = match CallContext::current() {
+        Some(ctx) => ctx.child_trace(),
+        None => TraceContext::new_root(),
+    };
     let header = RpcHeader::request(method, service.id, service.version)
+        .with_trace(trace)
         .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();

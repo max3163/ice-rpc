@@ -27,7 +27,7 @@ fn native_request_response_streams_then_completes() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-    dispatcher.method("echo", |_payload, emitter| {
+    dispatcher.method("echo", |_header, _payload, emitter| {
         // A response stream must end with a terminal event: the transport has no
         // per-call connection to signal the end of the stream.
         let samples: Vec<(EventKind, Vec<u8>)> = (0..3i32)
@@ -79,7 +79,7 @@ fn native_request_response_streams_a_real_observable() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-    dispatcher.method("watch", |_payload, emitter| {
+    dispatcher.method("watch", |_header, _payload, emitter| {
         let observable = Observable::<i32, String>::from_events([
             Event::Next(10),
             Event::Next(20),
@@ -110,7 +110,7 @@ fn a_version_mismatch_is_reported_to_the_caller() {
 
     // The provider answers v2; the caller below asks for v1.
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 2));
-    dispatcher.method("echo", |_payload, emitter| {
+    dispatcher.method("echo", |_header, _payload, emitter| {
         let _ = emitter.emit(EventKind::Complete, &[]);
     });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
@@ -148,7 +148,7 @@ fn an_unknown_method_is_reported_to_the_caller() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-    dispatcher.method("echo", |_payload, emitter| {
+    dispatcher.method("echo", |_header, _payload, emitter| {
         let _ = emitter.emit(EventKind::Complete, &[]);
     });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
@@ -193,7 +193,7 @@ fn an_unknown_service_is_reported_to_the_caller() {
     let stop = CancellationToken::new();
 
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(registered, 1));
-    dispatcher.method("echo", |_payload, emitter| {
+    dispatcher.method("echo", |_header, _payload, emitter| {
         let _ = emitter.emit(EventKind::Complete, &[]);
     });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());

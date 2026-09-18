@@ -49,7 +49,7 @@ fn traffic_settled(metrics: &Metrics, channel: &str, service_id: u32, expected: 
 fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHandle<()>) {
     let service_id = service_id_of(channel);
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-    dispatcher.method("echo", |_payload, emitter| {
+    dispatcher.method("echo", |_header, _payload, emitter| {
         let observable = Observable::<i32, String>::from_events([
             Event::Next(1),
             Event::Next(2),
@@ -198,7 +198,7 @@ fn the_detail_mode_captures_the_payloads() {
     let mut recorded = String::new();
     for _ in 0..40 {
         if let Ok(content) = std::fs::read_to_string(&trace_path) {
-            if content.contains("\"trace_id\"") {
+            if content.contains("\"call_id\"") {
                 recorded = content;
                 break;
             }
@@ -218,8 +218,12 @@ fn the_detail_mode_captures_the_payloads() {
     let _ = std::fs::remove_file(&trace_path);
 
     assert!(
-        recorded.contains("\"trace_id\""),
+        recorded.contains("\"call_id\""),
         "no trace record was written to {trace_path:?}"
+    );
+    assert!(
+        recorded.contains("\"trace_id\":\""),
+        "the distributed trace id, read from the header, is in the record"
     );
     assert!(recorded.contains("\"method\":\"echo\""));
     assert!(recorded.contains("\"event_kind\":\"complete\""));
@@ -270,7 +274,7 @@ fn the_stats_mode_never_emits_payloads() {
     let mut recorded = String::new();
     for _ in 0..40 {
         if let Ok(content) = std::fs::read_to_string(&trace_path) {
-            if content.contains("\"trace_id\"") {
+            if content.contains("\"call_id\"") {
                 recorded = content;
                 break;
             }
@@ -288,7 +292,7 @@ fn the_stats_mode_never_emits_payloads() {
     }
     let _ = std::fs::remove_file(&trace_path);
 
-    assert!(recorded.contains("\"trace_id\""), "no trace record written");
+    assert!(recorded.contains("\"call_id\""), "no trace record written");
     assert!(
         !recorded.contains("\"request\"") && !recorded.contains("\"response\""),
         "stats mode must not read the payload:\n{recorded}"

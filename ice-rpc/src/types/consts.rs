@@ -8,7 +8,12 @@
 /// Maximum byte length of a method name (**inclusive**).
 ///
 /// Must match the private `METHOD_NAME_LEN` constant in `ice-rpc-macros`.
-pub const METHOD_NAME_LEN: usize = 64;
+///
+/// 32 rather than 64 because the method name is the largest field of the
+/// request header, and the header is capped by iceoryx2's `user_header`. The
+/// 32 bytes it gives back fund the tracing context; 32 characters is ample for
+/// a method name (`get_user_age`, `subscribe_events`, ...).
+pub const METHOD_NAME_LEN: usize = 32;
 
 /// Maximum byte length of a service name (**inclusive**).
 ///

@@ -74,6 +74,7 @@ impl CalculatorServer {
                 .method(
                     "add",
                     move |
+                        header: &ice_rpc::gen::RpcHeader,
                         payload: &[u8],
                         emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
                     {
@@ -81,6 +82,11 @@ impl CalculatorServer {
                             CalculatorRequest,
                         >(payload) {
                             Ok(CalculatorRequest::Add { a, b }) => {
+                                let _ctx_scope = ice_rpc::gen::CallContext::new(
+                                        header,
+                                        "add",
+                                    )
+                                    .enter();
                                 let impl_ref = service_impl.clone();
                                 let stream = ice_rpc::rt::block_on(async move {
                                     impl_ref.add(a, b).await

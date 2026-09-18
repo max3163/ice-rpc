@@ -166,7 +166,7 @@ pub use service_traits::ServiceInit;
 
 // ── Public API: Rx vocabulary used in service signatures ────────────
 // Wire-level items live in `ice_rpc::gen`.
-pub use types::{Event, Observable, ObservableError, RpcError};
+pub use types::{CallContext, Event, Observable, ObservableError, RpcError, TraceContext};
 
 // ── Public API: reactive operators and multicast primitives ─────────
 // The operators are carried by `Observable` and `Subject`; only the

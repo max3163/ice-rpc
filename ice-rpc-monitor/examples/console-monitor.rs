@@ -157,7 +157,7 @@ impl Demo {
         let service_id = service_id_of(DEMO_SERVICE);
 
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-        dispatcher.method("get_user_age", |payload, emitter| {
+        dispatcher.method("get_user_age", |_header, payload, emitter| {
             let name = match decode_aligned::<DatabaseServiceRequest>(payload) {
                 Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
                 _ => return,

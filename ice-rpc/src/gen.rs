@@ -17,8 +17,8 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 // ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
     channel, fmt_correlation_id, next_correlation_id, now_ns, raw_pid_to_u32, service_id_of,
-    unbounded_channel, EventKind, NodeId, RpcError, RpcHeader, Sender, ServiceRef, WireEvent,
-    CORRELATION_ID_LEN, METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
+    unbounded_channel, CallContext, EventKind, NodeId, RpcError, RpcHeader, Sender, ServiceRef,
+    WireEvent, CORRELATION_ID_LEN, METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
 // Canonical terminals behind the inherent `Observable` methods.

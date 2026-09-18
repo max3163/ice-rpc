@@ -35,6 +35,12 @@ default = []
 # and falls back to its `Debug`, so a service type carries no formatting
 # requirement of its own.
 monitoring = ["ice-rpc-macros/monitoring"]
+# Call tracing: the provider handler enters one `tracing` span per call, carrying
+# the ids of the call (correlation, trace, span, parent, service, method), so the
+# implementation's own `tracing` / `log` events are attached to the call without
+# it writing anything. Off by default: a deployment that collects no spans pays
+# neither the dependency nor the span.
+tracing = ["dep:tracing"]
 # The HTTP gateway: the server, and the `HttpCallable` implementation of every
 # proxy it exposes. That implementation is also the block which keeps
 # `serde_json`'s conversion code in a binary, so it follows the same switch as
@@ -61,6 +67,7 @@ rkyv = { workspace = true }
 async-trait = { workspace = true }
 toml = { workspace = true }
 thiserror = "2"
+tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
@@ -87,6 +94,9 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
+# `tracing-demo` reads the spans the `tracing` feature emits. Dev-only: the
+# subscriber of a deployment is the deployment's business.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The demo services are declared once, in the `common` crate (not published), and
 # shared with the `gateway_nodejs` examples: no local copy is maintained here.
 common = { path = "../examples/common" }
@@ -129,3 +139,9 @@ required-features = ["tokio"]
 [[example]]
 name = "benchmark-app"
 required-features = ["tokio"]
+
+# Call tracing: one span per provider call, propagated across a hop. It is built
+# only with the `tracing` feature — without it there is no span to show.
+[[example]]
+name = "tracing-demo"
+required-features = ["tokio", "tracing"]

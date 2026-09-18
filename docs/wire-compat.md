@@ -12,7 +12,7 @@ channel, that configuration includes:
 
 | Recorded setting | Changed by |
 |---|---|
-| user header | a field added, removed or reordered in `RpcHeader` (the layout is pinned to 128 bytes by a unit test) |
+| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 120 bytes today) |
 | payload alignment | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs) |
 | payload type | the `Payload` generic of the service definition |
 | safe overflow | the `enable_safe_overflow(false)` of the request and response services |
@@ -113,6 +113,40 @@ run's worth (~20 `*.shm_state` markers) instead of growing by one run per kill.
 The manual procedure below remains the answer when the state cannot be explained
 by a dead process: a service whose *recorded configuration* differs from the
 requested one — another build — is not a dead node, so no cleanup removes it.
+
+## The call context and its trace ids
+
+`RpcHeader` carries the call context an implementation reads through
+`CallContext`: the correlation id, the service and the method the call was routed
+to, and the **trace context** — `trace_id: [u8; 16]`, `parent_span_id: u64` and
+W3C `flags`.
+
+The trace ids are the framework's own. A call made outside any traced work mints
+one (`pid ++ counter`, unique on the machine), and every hop continues it by
+parenting on the span id of the hop that emitted the call. No OpenTelemetry stack
+is needed to obtain them, and `trace_id` is already in the W3C shape, so an
+exporter can be wired downstream later.
+
+Three consequences worth keeping in mind:
+
+- adding fields to `RpcHeader` changes its **size**, and that size is part of what
+  iceoryx2 validates when a service is opened: every process on the machine must
+  be rebuilt together, exactly like the other recorded settings above;
+- the header is capped by iceoryx2's `user_header`, so the room for the trace
+  context was found by reducing `METHOD_NAME_LEN` from 64 to 32 — the header did
+  not grow, it shrank (128 → 120 bytes);
+- a trace id is **per call**. It belongs in the trace records, never in a
+  Prometheus label, where one series per call would explode the cardinality.
+
+[`ice-rpc/examples/tracing-demo.rs`](../ice-rpc/examples/tracing-demo.rs) runs both
+halves across two real hops — the ids an implementation reads with
+`CallContext::current()` (available without the `tracing` feature, so ordinary logs
+carry them) and the span per call the feature adds:
+
+```bash
+cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- provider
+cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
+```
 
 ## The procedure
 

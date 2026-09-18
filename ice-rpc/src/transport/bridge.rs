@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
-use crate::types::{EventKind, Observable, RpcError, ServiceRef, WireEvent};
+use crate::types::{EventKind, Observable, RpcError, RpcHeader, ServiceRef, WireEvent};
 
 /// Sink of the encoded responses of one RPC method.
 ///
@@ -123,8 +123,11 @@ pub fn observable_to_responses<T, E>(
     }
 }
 
-/// Handler of one RPC method: decoded payload plus the sink to push into.
-pub type MethodHandler = Box<dyn Fn(&[u8], &mut dyn ResponseEmitter) + Send + Sync>;
+/// Handler of one RPC method: the request header, its payload, and the sink.
+///
+/// The header travels with the payload so a generated handler can build the
+/// [`CallContext`](crate::types::CallContext) of the call it is serving.
+pub type MethodHandler = Box<dyn Fn(&RpcHeader, &[u8], &mut dyn ResponseEmitter) + Send + Sync>;
 
 /// Per-service table of method handlers, built by a generated provider.
 #[derive(Default)]
@@ -151,7 +154,7 @@ impl ServiceDispatcher {
     /// Registers the handler of one RPC method.
     pub fn method<F>(&mut self, name: &'static str, handler: F) -> &mut Self
     where
-        F: Fn(&[u8], &mut dyn ResponseEmitter) + Send + Sync + 'static,
+        F: Fn(&RpcHeader, &[u8], &mut dyn ResponseEmitter) + Send + Sync + 'static,
     {
         self.handlers.insert(name, Box::new(handler));
         self
@@ -166,12 +169,13 @@ impl ServiceDispatcher {
     pub fn dispatch(
         &self,
         method: &str,
+        header: &RpcHeader,
         payload: &[u8],
         emitter: &mut dyn ResponseEmitter,
     ) -> bool {
         match self.handlers.get(method) {
             Some(handler) => {
-                handler(payload, emitter);
+                handler(header, payload, emitter);
                 true
             }
             None => false,

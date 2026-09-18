@@ -32,10 +32,10 @@ jobs:
       # gateway is excluded: it is the only consumer of the generated converters,
       # so without it that code would not be compiled anywhere in this job.
       - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs,tracing
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs -- -D warnings
+        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs,tracing -- -D warnings
 
       # The default workspace run exercises the agnostic runtime facade.
       - name: Test (workspace, default facade)
@@ -46,6 +46,14 @@ jobs:
       # through `rt::test_block_on`, so the tokio facade is exercised in CI too.
       - name: Test (ice-rpc, tokio facade)
         run: cargo test -p ice-rpc --features tokio --lib
+
+      # The `tracing` feature adds a dependency and a span per provider call,
+      # and nothing else in the workspace turns it on: without this step a break
+      # in it — an unresolved import, a lint on the feature-gated code — would go
+      # unnoticed until a user enabled it. The coverage job runs with default
+      # features on purpose, so it does not cover this either.
+      - name: Test (ice-rpc, tracing feature)
+        run: cargo test -p ice-rpc --features tracing --lib
 
   coverage:
     name: Coverage (Ubuntu)

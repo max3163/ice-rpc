@@ -6,6 +6,7 @@
 //! | Sub-module   | Contents                                                        |
 //! |--------------|-----------------------------------------------------------------|
 //! | [`node`]     | [`NodeId`] and the PID conversion helper                        |
+//! | [`context`]  | [`CallContext`] — the call being served, read-only               |
 //! | [`header`]   | [`RpcHeader`] (zero-copy `user_header`), [`EventKind`]          |
 //! | [`wire`]     | [`ObservableError`] (the single error type), [`Event`], [`WireEvent`], [`Sender`] |
 //! | [`stream`]   | [`Observable`] (the concrete stream), [`channel`]               |
@@ -13,6 +14,7 @@
 //! | [`consts`]   | Name-length limits shared with `ice-rpc-macros`                 |
 
 mod consts;
+mod context;
 mod error;
 mod header;
 mod node;
@@ -23,6 +25,7 @@ mod wire;
 mod tests;
 
 pub use consts::*;
+pub use context::{CallContext, TraceContext};
 pub use error::RpcError;
 pub use header::{
     fmt_correlation_id, next_correlation_id, now_ns, service_id_of, EventKind, RpcHeader,

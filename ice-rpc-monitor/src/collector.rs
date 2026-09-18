@@ -613,7 +613,12 @@ impl Monitor {
         }
 
         let latency_us = header.timestamp_ns.saturating_sub(call.request_ts_ns) / 1_000;
-        let trace_id = fmt_correlation_id(&header.correlation_id);
+        let call_id = fmt_correlation_id(&header.correlation_id);
+        // The distributed trace, when the caller propagated one. Read from the
+        // header alone: the observer never decodes the payload, which is what
+        // keeps the stats mode free of any decode cost.
+        let trace = header.trace();
+        let trace_id = trace.is_present().then(|| trace.trace_id_hex());
         // Decode the response with the registry this observer was built with.
         let response_text = match sample {
             Sample::Full { payload } => Some(if header.event_kind() == EventKind::RpcError {
@@ -631,7 +636,9 @@ impl Monitor {
             Sample::Meta { .. } => None,
         };
         let record = TraceRecord {
-            trace_id: &trace_id,
+            call_id: &call_id,
+            trace_id: trace_id.as_deref(),
+            parent_span_id: trace.parent_span_id,
             channel,
             service_id: header.service_id,
             method: &call.method,

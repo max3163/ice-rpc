@@ -61,6 +61,11 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 
 /// Generates one `ServiceDispatcher::method(...)` registration for the native
 /// request/response transport.
+///
+/// The handler receives the request header — the transport is generic over the
+/// framing — and installs the `CallContext` of the call it serves as an ambient
+/// value for the whole invocation, so the implementation reads it with
+/// `CallContext::current()` and its signature is untouched.
 pub fn gen_native_method(
     fn_name: &Ident,
     var_name: &Ident,
@@ -68,16 +73,24 @@ pub fn gen_native_method(
     req_enum_name: &Ident,
 ) -> TokenStream {
     let method_name_str = fn_name.to_string();
+
     quote! {
         {
             let service_impl = self.service_impl.clone();
             dispatcher.method(
                 #method_name_str,
-                move |payload: &[u8], emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
+                move |header: &ice_rpc::gen::RpcHeader,
+                      payload: &[u8],
+                      emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
                     // The framed payload is not necessarily aligned for rkyv, so
                     // the decode goes through an aligned copy.
                     match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
                         Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
+                            // Ambient for the whole call, responses included: the
+                            // handler runs on this channel's dedicated dispatch
+                            // thread, so a thread-local slot is correct here.
+                            let _ctx_scope =
+                                ice_rpc::gen::CallContext::new(header, #method_name_str).enter();
                             // Clone per invocation: the closure is `Fn`, so it must
                             // not move the captured `Arc` into the coroutine.
                             let impl_ref = service_impl.clone();

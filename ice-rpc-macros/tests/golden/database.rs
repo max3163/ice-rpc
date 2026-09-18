@@ -92,6 +92,7 @@ impl DatabaseApiServer {
                 .method(
                     "get",
                     move |
+                        header: &ice_rpc::gen::RpcHeader,
                         payload: &[u8],
                         emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
                     {
@@ -99,6 +100,11 @@ impl DatabaseApiServer {
                             DatabaseApiRequest,
                         >(payload) {
                             Ok(DatabaseApiRequest::Get { key }) => {
+                                let _ctx_scope = ice_rpc::gen::CallContext::new(
+                                        header,
+                                        "get",
+                                    )
+                                    .enter();
                                 let impl_ref = service_impl.clone();
                                 let stream = ice_rpc::rt::block_on(async move {
                                     impl_ref.get(key).await
@@ -116,6 +122,7 @@ impl DatabaseApiServer {
                 .method(
                     "put",
                     move |
+                        header: &ice_rpc::gen::RpcHeader,
                         payload: &[u8],
                         emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
                     {
@@ -123,6 +130,11 @@ impl DatabaseApiServer {
                             DatabaseApiRequest,
                         >(payload) {
                             Ok(DatabaseApiRequest::Put { key, value }) => {
+                                let _ctx_scope = ice_rpc::gen::CallContext::new(
+                                        header,
+                                        "put",
+                                    )
+                                    .enter();
                                 let impl_ref = service_impl.clone();
                                 let stream = ice_rpc::rt::block_on(async move {
                                     impl_ref.put(key, value).await

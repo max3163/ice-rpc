@@ -24,6 +24,14 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
   external observer renders the observed payloads in clear text — with each
   type's `Display` implementation when it has one, with its `Debug` one
   otherwise. Off by default: a plain provider/consumer never calls that code.
+- **Optional call tracing** (`tracing` feature): the provider handler enters one
+  `tracing` span per call, carrying the ids the caller propagated (correlation,
+  trace, span, parent) plus the service and the method. The implementation's own
+  `tracing` / `log` events land in that span without it writing a line — and the
+  ids are the framework's own, so no OpenTelemetry stack is needed to obtain
+  them. Off by default: a deployment that collects no spans pays neither the
+  dependency nor the span. `examples/tracing-demo.rs` shows both halves across
+  two hops.
 
 ## Installation
 

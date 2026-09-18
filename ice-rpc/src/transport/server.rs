@@ -92,17 +92,22 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
 /// Spawns the provider side of one channel: a thread that routes every request to
 /// the dispatcher registered under its `service_id` and publishes the responses.
 ///
-/// `services` is the `(service_id, dispatcher)` table of the services sharing the
-/// channel; a request whose id is unknown is logged and dropped.
+/// `services` is the set of dispatchers sharing the channel; each one carries its
+/// own identity, so a request whose id is unknown is logged and dropped.
 ///
 /// The ports are opened with a bounded retry on the failures that are transient:
 /// a channel is not worth losing to a race with another process.
 pub fn spawn_native_service(
     channel: &str,
-    services: Vec<(u32, ServiceDispatcher)>,
+    services: Vec<ServiceDispatcher>,
     stop: CancellationToken,
 ) -> JoinHandle<()> {
-    let table: HashMap<u32, ServiceDispatcher> = services.into_iter().collect();
+    // The table key is read from the dispatcher: it is the same value the client
+    // stamps in the frame, so it can never disagree with the version answered for.
+    let table: HashMap<u32, ServiceDispatcher> = services
+        .into_iter()
+        .map(|dispatcher| (dispatcher.service().id, dispatcher))
+        .collect();
     let channel = channel.to_owned();
     let handle = std::thread::spawn(move || {
         // Any port that cannot be opened makes the whole channel useless: log it
@@ -289,6 +294,52 @@ impl ResponseEmitter for ResponseSink<'_> {
     }
 }
 
+/// Reason a request must not reach its handler.
+///
+/// Classified from the **stable header alone**, so it stays readable whatever the
+/// payload layout of the sender is.
+#[derive(Debug, PartialEq, Eq)]
+enum RequestRejection {
+    /// The framing protocol of the sender differs from this build's.
+    Protocol { actual: u16 },
+    /// The service interface version of the sender differs from the provider's.
+    ServiceVersion { expected: u16, actual: u16 },
+}
+
+impl RequestRejection {
+    /// Returns why `header` cannot be served by `dispatcher`, if it cannot.
+    ///
+    /// The protocol is checked first: a peer whose framing differs cannot be
+    /// trusted to have filled the rest of the header at all.
+    fn classify(dispatcher: &ServiceDispatcher, header: &RpcHeader) -> Option<Self> {
+        if header.protocol_version != PROTOCOL_VERSION {
+            return Some(Self::Protocol {
+                actual: header.protocol_version,
+            });
+        }
+        let expected = dispatcher.service().version;
+        if header.service_version != expected {
+            return Some(Self::ServiceVersion {
+                expected,
+                actual: header.service_version,
+            });
+        }
+        None
+    }
+
+    /// Technical error reported to the caller.
+    fn rpc_error(&self) -> RpcError {
+        match *self {
+            Self::Protocol { actual } => RpcError::ProtocolMismatch(format!(
+                "protocol_version {actual} != {PROTOCOL_VERSION}"
+            )),
+            Self::ServiceVersion { expected, actual } => {
+                RpcError::IncompatibleVersion { expected, actual }
+            }
+        }
+    }
+}
+
 /// Routes one request to the dispatcher of its service and publishes the
 /// responses.
 fn handle_request(
@@ -305,13 +356,6 @@ fn handle_request(
         );
         return;
     }
-    if header.protocol_version != PROTOCOL_VERSION {
-        log::warn!(
-            "[transport] '{channel}': protocol {} != {PROTOCOL_VERSION}",
-            header.protocol_version
-        );
-    }
-
     // A channel hosts several services: the header id selects the dispatcher.
     let Some(dispatcher) = table.get(&header.service_id) else {
         log::warn!(
@@ -325,6 +369,27 @@ fn handle_request(
     // The handler pushes its responses into the sink; the consumers are woken
     // once per coalescing window, and only if something was published.
     sink.begin(header);
+
+    // An incompatible protocol or interface version is rejected **before** the
+    // payload is decoded, on the stable header alone: the payload layout is
+    // exactly what changes when either version moves, so a guard that had to
+    // decode first would be doing the very operation it protects against.
+    if let Some(rejection) = RequestRejection::classify(dispatcher, header) {
+        let err = rejection.rpc_error();
+        log::warn!(
+            "[transport] '{channel}': rejecting '{}': {err}",
+            header.method()
+        );
+        if !dispatcher.reject_with(header.method(), err, sink) {
+            log::warn!(
+                "[transport] '{channel}': no handler for method '{}', rejection not reported",
+                header.method()
+            );
+        }
+        sink.finish();
+        return;
+    }
+
     dispatcher.dispatch(header.method(), payload, sink);
     sink.finish();
 }
@@ -334,8 +399,10 @@ fn handle_request(
 // ---------------------------------------------------------------------------
 
 /// One service waiting for its channel to be started.
+///
+/// The id is not duplicated here: it is read back from the dispatcher, which
+/// carries the interface version too.
 struct RegisteredChannelService {
-    id: u32,
     name: &'static str,
     dispatcher: ServiceDispatcher,
 }
@@ -358,25 +425,31 @@ static CHANNELS_SEALED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the name already registered under `id`, if any.
 fn conflicting_name(entries: &[RegisteredChannelService], id: u32) -> Option<&'static str> {
-    entries.iter().find(|svc| svc.id == id).map(|svc| svc.name)
+    entries
+        .iter()
+        .find(|svc| svc.dispatcher.service().id == id)
+        .map(|svc| svc.name)
 }
 
 /// Registers one service on the channel it belongs to.
 ///
 /// Called by a generated provider from its `on_init`. The channel thread starts
 /// later, in [`start_registered_channels`], once the dispatcher table is complete.
+/// The id and the interface version both come from `dispatcher`, so neither can
+/// be passed — or lost — separately.
 pub fn register_native_service(
     channel: &str,
-    service_id: u32,
     service_name: &'static str,
     dispatcher: ServiceDispatcher,
 ) -> Result<(), RpcError> {
+    let service_id = dispatcher.service().id;
+
     if CHANNELS_SEALED.load(Ordering::Acquire) {
         // A provider created after the seal (a lazily initialized service)
         // cannot join its channel: it starts its own thread.
         let handle = spawn_native_service(
             channel,
-            vec![(service_id, dispatcher)],
+            vec![dispatcher],
             crate::global_cancel_token().clone(),
         );
         crate::locator::ServiceLocator::global().register_shutdown_thread(handle);
@@ -401,7 +474,6 @@ pub fn register_native_service(
         }
 
         pending.services.push(RegisteredChannelService {
-            id: service_id,
             name: service_name,
             dispatcher,
         });
@@ -428,7 +500,7 @@ pub fn start_registered_channels() {
         let services = pending
             .services
             .into_iter()
-            .map(|svc| (svc.id, svc.dispatcher))
+            .map(|svc| svc.dispatcher)
             .collect();
         // The handle is registered, never discarded: the thread owns the channel's
         // ports, so the clean shutdown must wait for it to return — otherwise
@@ -442,19 +514,18 @@ pub fn start_registered_channels() {
 mod tests {
     use super::*;
     use crate::transport::CollectEmitter;
+    use crate::types::ServiceRef;
 
     #[test]
     fn a_duplicate_service_id_is_reported_with_the_previous_name() {
         let entries = vec![
             RegisteredChannelService {
-                id: 7,
                 name: "GetPerson",
-                dispatcher: ServiceDispatcher::new(),
+                dispatcher: ServiceDispatcher::new(ServiceRef::new(7, 1)),
             },
             RegisteredChannelService {
-                id: 9,
                 name: "SetPerson",
-                dispatcher: ServiceDispatcher::new(),
+                dispatcher: ServiceDispatcher::new(ServiceRef::new(9, 1)),
             },
         ];
 
@@ -531,11 +602,11 @@ mod tests {
 
     #[test]
     fn a_channel_table_routes_by_service_id() {
-        let mut first = ServiceDispatcher::new();
+        let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
         first.method("echo", |payload, emitter| {
             emitter.emit(EventKind::Next, payload);
         });
-        let mut second = ServiceDispatcher::new();
+        let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
         second.method("ping", |_payload, _emitter| {});
 
         let table: HashMap<u32, ServiceDispatcher> =
@@ -550,5 +621,108 @@ mod tests {
         assert!(emitter.take().is_empty());
 
         assert!(!table.contains_key(&11));
+    }
+
+    /// The type-erased transport borrows the generated emitter to answer a
+    /// version mismatch with the typed `RpcError` the caller decodes.
+    #[test]
+    fn a_version_mismatch_emits_the_typed_incompatible_error() {
+        let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
+        dispatcher.method("echo", |_payload, _emitter| {});
+        dispatcher.on_error("echo", |err, emitter| {
+            crate::transport::emit_rpc_error::<i32, String>(err, emitter);
+        });
+
+        let mut emitter = CollectEmitter::new();
+        assert!(dispatcher.reject_with(
+            "echo",
+            RpcError::IncompatibleVersion {
+                expected: 2,
+                actual: 1,
+            },
+            &mut emitter
+        ));
+
+        let samples = emitter.take();
+        assert_eq!(
+            samples.len(),
+            1,
+            "the rejection is a single terminal sample"
+        );
+        assert_eq!(samples[0].0, EventKind::Error);
+
+        let wire: crate::types::WireEvent<i32, String> =
+            crate::transport::decode_aligned(&samples[0].1).expect("decode the error sample");
+        assert_eq!(
+            wire,
+            crate::types::WireEvent::RpcError(RpcError::IncompatibleVersion {
+                expected: 2,
+                actual: 1,
+            })
+        );
+
+        // An unknown method has no emitter: nothing is emitted, nothing panics.
+        let mut emitter = CollectEmitter::new();
+        assert!(!dispatcher.reject_with(
+            "missing",
+            RpcError::IncompatibleVersion {
+                expected: 2,
+                actual: 1,
+            },
+            &mut emitter
+        ));
+        assert!(emitter.take().is_empty());
+    }
+
+    /// A peer whose framing differs must be rejected, not dispatched: the rest of
+    /// its header cannot be trusted.
+    #[test]
+    fn an_incompatible_protocol_is_rejected_before_dispatch() {
+        let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
+        let mut header = RpcHeader::request("echo", 7, 1);
+        header.protocol_version = PROTOCOL_VERSION.wrapping_add(1);
+
+        let rejection = RequestRejection::classify(&dispatcher, &header).expect("rejected");
+        assert_eq!(
+            rejection,
+            RequestRejection::Protocol {
+                actual: PROTOCOL_VERSION.wrapping_add(1)
+            }
+        );
+        assert!(matches!(
+            rejection.rpc_error(),
+            RpcError::ProtocolMismatch(_)
+        ));
+    }
+
+    /// The interface version is classified with both values, for the caller.
+    #[test]
+    fn an_incompatible_service_version_is_classified() {
+        let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
+        let header = RpcHeader::request("echo", 7, 1);
+
+        let rejection = RequestRejection::classify(&dispatcher, &header).expect("rejected");
+        assert_eq!(
+            rejection,
+            RequestRejection::ServiceVersion {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(
+            rejection.rpc_error(),
+            RpcError::IncompatibleVersion {
+                expected: 2,
+                actual: 1
+            }
+        );
+    }
+
+    /// A header that agrees on both versions is admitted.
+    #[test]
+    fn a_matching_header_is_never_rejected() {
+        let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
+        let header = RpcHeader::request("echo", 7, 2);
+        assert_eq!(RequestRejection::classify(&dispatcher, &header), None);
     }
 }

@@ -15,6 +15,16 @@ pub enum CalculatorRequest {
     Add { a: i32, b: i32 } = 0u8,
 }
 #[allow(missing_docs)]
+impl CalculatorProxy {
+    /// Identity of this service contract: its id inside the channel and
+    /// its interface version, declared once and shared by the generated
+    /// client and provider so the version cannot be lost between them.
+    pub const SERVICE: ice_rpc::gen::ServiceRef = ice_rpc::gen::ServiceRef::new(
+        ice_rpc::gen::service_id_of("calculator"),
+        1u16,
+    );
+}
+#[allow(missing_docs)]
 pub struct CalculatorClient;
 #[allow(missing_docs)]
 impl CalculatorClient {
@@ -27,7 +37,7 @@ impl CalculatorClient {
             i32,
             String,
             _,
-        >("calculator", ice_rpc::gen::service_id_of("calculator"), "add", &req_val)
+        >("calculator", <CalculatorProxy>::SERVICE, "add", &req_val)
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
@@ -55,7 +65,9 @@ impl CalculatorServer {
     /// implementation, and streams the resulting `Observable` through
     /// `observable_to_responses`.
     fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
-        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
+            <CalculatorProxy>::SERVICE,
+        );
         {
             let service_impl = self.service_impl.clone();
             dispatcher
@@ -77,6 +89,16 @@ impl CalculatorServer {
                             }
                             _ => {}
                         }
+                    },
+                );
+            dispatcher
+                .on_error(
+                    "add",
+                    |
+                        err: ice_rpc::gen::RpcError,
+                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
+                    {
+                        ice_rpc::gen::emit_rpc_error::<i32, String>(err, emitter);
                     },
                 );
         }
@@ -182,7 +204,6 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                         .native_dispatcher();
                     if let Err(e) = ice_rpc::gen::register_native_service(
                         "calculator",
-                        ice_rpc::gen::service_id_of("calculator"),
                         "calculator",
                         dispatcher,
                     ) {

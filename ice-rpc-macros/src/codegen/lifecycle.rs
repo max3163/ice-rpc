@@ -14,6 +14,8 @@ pub struct LifecycleGenInput<'a> {
     pub logical_name_lit: &'a str,
     /// Channel the service is registered on (the `group` of `#[service]`).
     pub group_lit: &'a str,
+    /// Expression of the shared [`ServiceRef`] of the service (id + version).
+    pub service_ref: &'a TokenStream,
     /// Whether the `ProviderNodeJs` branch belongs to the expansion (the
     /// `nodejs` feature).
     pub nodejs: bool,
@@ -33,6 +35,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         mode_name,
         logical_name_lit,
         group_lit,
+        service_ref,
         nodejs,
         nodejs_native_methods,
     } = input;
@@ -45,13 +48,12 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             #mode_name::ProviderNodeJs => {
                 // The Node.js host implements the methods: each RPC method
                 // is bridged to the injected dispatch callback.
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
                 #(#nodejs_native_methods)*
                 // Registered on the channel: the channel thread starts
                 // once every provider of the process is registered.
                 if let Err(e) = ice_rpc::gen::register_native_service(
                     #group_lit,
-                    ice_rpc::gen::service_id_of(#logical_name_lit),
                     #logical_name_lit,
                     dispatcher,
                 ) {
@@ -93,7 +95,6 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
                             if let Err(e) = ice_rpc::gen::register_native_service(
                                 #group_lit,
-                                ice_rpc::gen::service_id_of(#logical_name_lit),
                                 #logical_name_lit,
                                 dispatcher,
                             ) {

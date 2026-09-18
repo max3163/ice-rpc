@@ -23,7 +23,7 @@ use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
     normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
-    RpcHeader, WireEvent, CORRELATION_ID_LEN,
+    RpcHeader, ServiceRef, WireEvent, CORRELATION_ID_LEN,
 };
 
 /// Typed handler invoked with the rkyv response payload of one in-flight call.
@@ -204,11 +204,15 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
     crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
 }
 
-/// Sends `payload` as the `method` call of the service `service_id` on
-/// `channel`, and returns the streamed responses as an [`Observable`].
+/// Sends `payload` as the `method` call of `service` on `channel`, and returns
+/// the streamed responses as an [`Observable`].
+///
+/// `service` carries both the id and the interface version, so the version
+/// cannot be dropped between the caller and the frame: it reaches
+/// [`RpcHeader::request`] from the same value the provider registered.
 pub fn native_call<T, E>(
     channel: &str,
-    service_id: u32,
+    service: ServiceRef,
     method: &str,
     payload: &[u8],
 ) -> Result<Observable<T, E>, RpcError>
@@ -224,7 +228,7 @@ where
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
     let ports = consumer_ports(channel)?;
-    let header = RpcHeader::request(method, service_id, 1)
+    let header = RpcHeader::request(method, service.id, service.version)
         .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
@@ -304,7 +308,7 @@ thread_local! {
 /// allocates once per **thread** and not once per call.
 pub fn serialize_and_call<T, E, V>(
     channel: &str,
-    service_id: u32,
+    service: ServiceRef,
     method: &str,
     request: &V,
 ) -> Result<Observable<T, E>, RpcError>
@@ -348,7 +352,7 @@ where
             }
         };
 
-        let call = native_call::<T, E>(channel, service_id, method, &bytes);
+        let call = native_call::<T, E>(channel, service, method, &bytes);
 
         // The allocation goes back to the thread whether the call started or not.
         if let Ok(mut guard) = cell.try_borrow_mut() {

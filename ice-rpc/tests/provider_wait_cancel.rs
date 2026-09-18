@@ -27,8 +27,12 @@ fn a_call_waiting_for_an_absent_provider_aborts_on_shutdown() {
     });
 
     let started = Instant::now();
-    let result =
-        ice_rpc::gen::native_call::<i32, String>(ABSENT_CHANNEL, 0xDEAD_BEEF, "ping", b"go");
+    let result = ice_rpc::gen::native_call::<i32, String>(
+        ABSENT_CHANNEL,
+        ice_rpc::gen::ServiceRef::new(0xDEAD_BEEF, 1),
+        "ping",
+        b"go",
+    );
     let elapsed = started.elapsed();
 
     // `Observable` is not `Debug`, so report the outcome explicitly.

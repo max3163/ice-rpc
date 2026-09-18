@@ -45,6 +45,33 @@ root path: ...
 The classification lives in [`transport/open.rs`](../ice-rpc/src/transport/open.rs),
 which is also where the remedy text is written once.
 
+## A different failure: an interface version mismatch
+
+Two builds of the same service can still open the same channel — the iceoryx2
+service itself is compatible — while disagreeing on the **service interface**.
+That case is not a transport failure and is not detected at open time.
+
+The provider checks two versions, both read from the fixed-layout `RpcHeader` and
+never from the payload, before dispatching anything:
+
+- `protocol_version` — the framing version. A peer whose framing differs cannot be
+  trusted to have filled the rest of the header, so it is checked first and
+  answered with `RpcError::ProtocolMismatch`;
+- `service_version` — the interface version. The service id (the FNV-1a hash of the
+  logical name) and this version are declared together in a `ServiceRef`,
+  generated once per service and shared by the client and the provider, so a call
+  can never carry one without the other. A mismatch is answered with
+  `RpcError::IncompatibleVersion { expected, actual }`.
+
+Both answers are terminal `WireEvent::RpcError` samples, so the caller receives the
+diagnosis instead of waiting for a timeout, and both are deliberately **not
+retryable**: the peers must be rebuilt with the same protocol version, and with the
+same `#[service(..., version = N)]`.
+
+The check reads the header precisely because the payload layout is what changes
+between versions: a guard that had to decode the divergent payload first would be
+doing the very operation it is meant to protect against.
+
 ## The procedure
 
 ## A clean shutdown releases what the process created

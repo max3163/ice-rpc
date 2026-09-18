@@ -65,10 +65,10 @@ pub struct ClientMethodGenInput<'a> {
     pub ok_type: &'a Type,
     pub err_type: &'a Type,
     pub req_enum_name: &'a Ident,
-    pub logical_name: &'a str,
     /// Channel the request is published on (the `group` of `#[service]`).
     pub group: &'a str,
-    pub service_version: u16,
+    /// Expression of the shared [`ServiceRef`] of the service (id + version).
+    pub service_ref: &'a TokenStream,
 }
 
 pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
@@ -79,9 +79,8 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
     let arg_types = input.arg_types;
     let ok_type = input.ok_type;
     let req_enum_name = input.req_enum_name;
-    let logical_name = input.logical_name;
     let group = input.group;
-    let _service_version = input.service_version;
+    let service_ref = input.service_ref;
     let err_type = input.err_type;
 
     let method_name_str = fn_name.to_string();
@@ -96,7 +95,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             // thread's, so a call no longer allocates one.
             ice_rpc::gen::serialize_and_call::<#ok_type, #err_type, _>(
                 #group,
-                ice_rpc::gen::service_id_of(#logical_name),
+                #service_ref,
                 #method_name_str,
                 &req_val,
             )

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ice_rpc::gen::{service_id_of, ServiceDispatcher};
+use ice_rpc::gen::{service_id_of, ServiceDispatcher, ServiceRef};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 use ice_rpc_monitor::config::{Config, Mode};
@@ -48,7 +48,7 @@ fn traffic_settled(metrics: &Metrics, channel: &str, service_id: u32, expected: 
 /// Starts a provider that streams two values then completes.
 fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHandle<()>) {
     let service_id = service_id_of(channel);
-    let mut dispatcher = ServiceDispatcher::new();
+    let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
     dispatcher.method("echo", |_payload, emitter| {
         let observable = Observable::<i32, String>::from_events([
             Event::Next(1),
@@ -58,7 +58,7 @@ fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHa
         observable_to_responses(observable, emitter);
     });
     let stop = CancellationToken::new();
-    let server = spawn_native_service(channel, vec![(service_id, dispatcher)], stop.clone());
+    let server = spawn_native_service(channel, vec![dispatcher], stop.clone());
     std::thread::sleep(Duration::from_millis(300));
     (service_id, stop, server)
 }
@@ -89,8 +89,9 @@ fn the_observer_reconstructs_the_traffic_from_the_headers() {
     // ── Traffic ─────────────────────────────────────────────────────────
     const CALLS: u64 = 10;
     for _ in 0..CALLS {
-        let stream = native_call::<i32, String>(&channel, service_id, "echo", b"go")
-            .expect("native_call opens the service");
+        let stream =
+            native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
+                .expect("native_call opens the service");
         let values = pollster::block_on(stream.collect()).expect("collect");
         assert_eq!(values, vec![1, 2]);
     }
@@ -188,8 +189,9 @@ fn the_detail_mode_captures_the_payloads() {
 
     std::thread::sleep(Duration::from_millis(500));
 
-    let stream = native_call::<i32, String>(&channel, service_id, "echo", b"go")
-        .expect("native_call opens the service");
+    let stream =
+        native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
+            .expect("native_call opens the service");
     let _ = pollster::block_on(stream.collect()).expect("collect");
 
     // Wait until the completed call has been traced.
@@ -260,8 +262,9 @@ fn the_stats_mode_never_emits_payloads() {
 
     std::thread::sleep(Duration::from_millis(500));
 
-    let stream = native_call::<i32, String>(&channel, service_id, "echo", b"go")
-        .expect("native_call opens the service");
+    let stream =
+        native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
+            .expect("native_call opens the service");
     let _ = pollster::block_on(stream.collect()).expect("collect");
 
     let mut recorded = String::new();
@@ -308,8 +311,9 @@ fn a_late_observer_catches_the_following_traffic() {
 
     // Traffic emitted *before* the observer exists.
     for _ in 0..3 {
-        let stream = native_call::<i32, String>(&channel, service_id, "echo", b"early")
-            .expect("native_call opens the service");
+        let stream =
+            native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"early")
+                .expect("native_call opens the service");
         let _ = pollster::block_on(stream.collect()).expect("collect");
     }
 
@@ -331,8 +335,9 @@ fn a_late_observer_catches_the_following_traffic() {
     // Traffic emitted *after* the attachment.
     const AFTER: u64 = 5;
     for _ in 0..AFTER {
-        let stream = native_call::<i32, String>(&channel, service_id, "echo", b"late")
-            .expect("native_call opens the service");
+        let stream =
+            native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"late")
+                .expect("native_call opens the service");
         let _ = pollster::block_on(stream.collect()).expect("collect");
     }
 
@@ -392,8 +397,9 @@ fn an_observer_started_before_the_provider_attaches_once_it_appears() {
 
     const CALLS: u64 = 4;
     for _ in 0..CALLS {
-        let stream = native_call::<i32, String>(&channel, service_id, "echo", b"go")
-            .expect("native_call opens the service");
+        let stream =
+            native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
+                .expect("native_call opens the service");
         let _ = pollster::block_on(stream.collect()).expect("collect");
     }
 

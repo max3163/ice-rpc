@@ -17,7 +17,7 @@
 
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::{service_id_of, spawn_native_service, ServiceDispatcher};
+use ice_rpc::gen::{service_id_of, spawn_native_service, ServiceDispatcher, ServiceRef};
 
 /// Channel — and service name — the test creates on the bus.
 const SERVICE: &str = "CleanShutdownProbeService";
@@ -69,7 +69,10 @@ fn a_clean_shutdown_releases_the_services_this_process_created() {
     // shutdown has nothing to wait for and the services survive the process.
     let handle = spawn_native_service(
         SERVICE,
-        vec![(service_id_of(SERVICE), ServiceDispatcher::new())],
+        vec![ServiceDispatcher::new(ServiceRef::new(
+            service_id_of(SERVICE),
+            1,
+        ))],
         ice_rpc::global_cancel_token().clone(),
     );
     ice_rpc::locator().register_shutdown_thread(handle);

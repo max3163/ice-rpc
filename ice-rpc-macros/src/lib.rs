@@ -133,6 +133,11 @@ fn expand_service_with(
     let mode_name = &model.mode_name;
     let init_default_name = &model.init_default_name;
 
+    // Identity of the contract declared once: the client call and the provider
+    // registration both read this same constant, so the interface version can
+    // neither be dropped nor drift between them.
+    let service_ref = quote! { <#proxy_name>::SERVICE };
+
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
     let mut server_native_methods = Vec::new();
@@ -162,9 +167,8 @@ fn expand_service_with(
             ok_type: &method.ok_type,
             err_type: &method.err_type,
             req_enum_name,
-            logical_name: &logical_name_lit,
             group: &group_lit,
-            service_version,
+            service_ref: &service_ref,
         }));
 
         server_native_methods.push(gen_native_method(
@@ -172,6 +176,8 @@ fn expand_service_with(
             var_name,
             &arg_names,
             req_enum_name,
+            &method.ok_type,
+            &method.err_type,
         ));
 
         if features.nodejs {
@@ -221,6 +227,7 @@ fn expand_service_with(
         visibility,
         server_name,
         server_native_methods: &server_native_methods,
+        service_ref: &service_ref,
     };
     let server_output = gen_server(&server_input);
 
@@ -244,6 +251,7 @@ fn expand_service_with(
         mode_name,
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
+        service_ref: &service_ref,
         nodejs: features.nodejs,
         nodejs_native_methods: &nodejs_native_methods,
     };
@@ -310,6 +318,17 @@ fn expand_service_with(
         #[repr(u8)]
         #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
         #visibility enum #req_enum_name { #(#req_variants),* }
+
+        impl #proxy_name {
+            /// Identity of this service contract: its id inside the channel and
+            /// its interface version, declared once and shared by the generated
+            /// client and provider so the version cannot be lost between them.
+            #visibility const SERVICE: ice_rpc::gen::ServiceRef =
+                ice_rpc::gen::ServiceRef::new(
+                    ice_rpc::gen::service_id_of(#logical_name_lit),
+                    #service_version,
+                );
+        }
 
         #client_struct
         #client_lifecycle

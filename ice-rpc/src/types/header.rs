@@ -213,6 +213,30 @@ pub const fn service_id_of(name: &str) -> u32 {
     hash
 }
 
+/// Identity of a service contract: its id inside the channel and its interface
+/// version.
+///
+/// The two always travel together and are generated **once** per service, so an
+/// id can never be paired with a foreign version. Threading this single value
+/// through the transport is what makes dropping the version a compile error
+/// rather than a silent `1`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ServiceRef {
+    /// Identifier of the service inside its channel ([`service_id_of`]).
+    pub id: u32,
+    /// Service interface version declared by `#[service(..., version = N)]`.
+    pub version: u16,
+}
+
+impl ServiceRef {
+    /// Builds a service identity; usable in a `const` item.
+    #[inline]
+    pub const fn new(id: u32, version: u16) -> Self {
+        Self { id, version }
+    }
+}
+
 /// Allocates a process-unique correlation id: `pid ++ counter`.
 #[inline]
 pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {

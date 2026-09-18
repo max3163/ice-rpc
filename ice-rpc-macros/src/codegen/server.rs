@@ -14,6 +14,8 @@ pub struct ServerGenInput<'a> {
     pub server_name: &'a Ident,
     /// One `ServiceDispatcher::method(...)` registration per RPC method.
     pub server_native_methods: &'a [TokenStream],
+    /// Expression of the shared [`ServiceRef`] of the service (id + version).
+    pub service_ref: &'a TokenStream,
 }
 
 /// Generates the `{Trait}Server` struct and its native dispatcher.
@@ -28,6 +30,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
         visibility,
         server_name,
         server_native_methods,
+        service_ref,
     } = input;
 
     quote! {
@@ -48,7 +51,7 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
             /// implementation, and streams the resulting `Observable` through
             /// `observable_to_responses`.
             fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
                 #(#server_native_methods)*
                 dispatcher
             }
@@ -57,12 +60,14 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 }
 
 /// Generates one `ServiceDispatcher::method(...)` registration for the native
-/// request/response transport.
+/// request/response transport, plus the method's terminal-error emitter.
 pub fn gen_native_method(
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
     req_enum_name: &Ident,
+    ok_type: &syn::Type,
+    err_type: &syn::Type,
 ) -> TokenStream {
     let method_name_str = fn_name.to_string();
     quote! {
@@ -87,6 +92,16 @@ pub fn gen_native_method(
                         // no response is emitted, so the call times out.
                         _ => {}
                     }
+                },
+            );
+
+            // The transport is type-erased, so it borrows this closure to answer
+            // a version mismatch with the typed `(T, E)` of this very method.
+            dispatcher.on_error(
+                #method_name_str,
+                |err: ice_rpc::gen::RpcError,
+                 emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
+                    ice_rpc::gen::emit_rpc_error::<#ok_type, #err_type>(err, emitter);
                 },
             );
         }

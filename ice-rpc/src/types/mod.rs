@@ -26,7 +26,7 @@ pub use consts::*;
 pub use error::RpcError;
 pub use header::{
     fmt_correlation_id, next_correlation_id, now_ns, service_id_of, EventKind, RpcHeader,
-    CORRELATION_ID_LEN,
+    ServiceRef, CORRELATION_ID_LEN,
 };
 pub use node::*;
 pub use stream::{channel, collect_values, first_event, unbounded_channel, Observable};

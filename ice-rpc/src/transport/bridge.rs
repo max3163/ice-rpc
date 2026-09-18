@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
-use crate::types::{EventKind, Observable, WireEvent};
+use crate::types::{EventKind, Observable, RpcError, ServiceRef, WireEvent};
 
 /// Sink of the encoded responses of one RPC method.
 ///
@@ -116,16 +116,36 @@ pub fn observable_to_responses<T, E>(
 /// Handler of one RPC method: decoded payload plus the sink to push into.
 pub type MethodHandler = Box<dyn Fn(&[u8], &mut dyn ResponseEmitter) + Send + Sync>;
 
+/// Type-erased emitter of one terminal technical error for a method.
+///
+/// The concrete `(T, E)` of the method are needed to encode the `WireEvent` its
+/// caller decodes, which the type-erased transport cannot name; the generated
+/// dispatcher supplies a closure that knows them.
+pub type RpcErrorEmitter = Box<dyn Fn(RpcError, &mut dyn ResponseEmitter) + Send + Sync>;
+
 /// Per-service table of method handlers, built by a generated provider.
 #[derive(Default)]
 pub struct ServiceDispatcher {
+    /// Identity (id + interface version) of the service contract.
+    service: ServiceRef,
     handlers: HashMap<&'static str, MethodHandler>,
+    /// Terminal-error emitters, one per method, keyed like `handlers`.
+    errors: HashMap<&'static str, RpcErrorEmitter>,
 }
 
 impl ServiceDispatcher {
-    /// Creates an empty dispatcher.
-    pub fn new() -> Self {
-        Self::default()
+    /// Creates an empty dispatcher for `service`.
+    pub fn new(service: ServiceRef) -> Self {
+        Self {
+            service,
+            handlers: HashMap::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    /// Returns the identity this dispatcher answers for.
+    pub fn service(&self) -> ServiceRef {
+        self.service
     }
 
     /// Registers the handler of one RPC method.
@@ -137,10 +157,72 @@ impl ServiceDispatcher {
         self
     }
 
+    /// Registers the terminal-error emitter of one RPC method.
+    ///
+    /// Pairing it with [`ServiceDispatcher::method`] is what lets the version
+    /// check answer with a typed [`RpcError`] even though `(T, E)` were erased.
+    pub fn on_error<F>(&mut self, name: &'static str, emitter: F) -> &mut Self
+    where
+        F: Fn(RpcError, &mut dyn ResponseEmitter) + Send + Sync + 'static,
+    {
+        self.errors.insert(name, Box::new(emitter));
+        self
+    }
+
     /// Routes a request to its handler; an unknown method emits nothing.
     pub fn dispatch(&self, method: &str, payload: &[u8], emitter: &mut dyn ResponseEmitter) {
         if let Some(handler) = self.handlers.get(method) {
             handler(payload, emitter);
+        }
+    }
+
+    /// Answers `method` with the terminal technical error `err`.
+    ///
+    /// Returns `false` when no emitter is registered for that method (an unknown
+    /// method), leaving the caller to log it. Used by the transport to reject a
+    /// request whose protocol or interface version it cannot serve, without
+    /// naming the erased `(T, E)`.
+    pub fn reject_with(
+        &self,
+        method: &str,
+        err: RpcError,
+        emitter: &mut dyn ResponseEmitter,
+    ) -> bool {
+        let Some(emit) = self.errors.get(method) else {
+            return false;
+        };
+        emit(err, emitter);
+        true
+    }
+}
+
+/// Encodes `err` as the terminal `WireEvent::RpcError` of `(T, E)` and emits it.
+///
+/// The bounds mirror [`observable_to_responses`], since both serialize the same
+/// `WireEvent<T, E>`; `(T, E)` must be the ones the caller's `native_call`
+/// decodes, which is why the generated code supplies them.
+pub fn emit_rpc_error<T, E>(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    for<'a> WireEvent<T, E>: rkyv::Serialize<
+        rkyv::rancor::Strategy<
+            rkyv::ser::Serializer<
+                rkyv::util::AlignedVec,
+                rkyv::ser::allocator::ArenaHandle<'a>,
+                rkyv::ser::sharing::Share,
+            >,
+            rkyv::rancor::Error,
+        >,
+    >,
+{
+    let wire: WireEvent<T, E> = WireEvent::RpcError(err);
+    let scratch = AlignedVec::<16>::with_capacity(256);
+    match to_bytes_in(&wire, scratch) {
+        Ok(bytes) => emitter.emit(EventKind::Error, &bytes),
+        Err(e) => {
+            log::error!("[bridge] rpc error serialization failed: {e:?}");
+            false
         }
     }
 }

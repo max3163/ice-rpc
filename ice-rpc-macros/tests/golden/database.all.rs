@@ -17,6 +17,16 @@ pub enum DatabaseApiRequest {
     Put { key: String, value: Vec<u8> } = 1u8,
 }
 #[allow(missing_docs)]
+impl DatabaseApiProxy {
+    /// Identity of this service contract: its id inside the channel and
+    /// its interface version, declared once and shared by the generated
+    /// client and provider so the version cannot be lost between them.
+    pub const SERVICE: ice_rpc::gen::ServiceRef = ice_rpc::gen::ServiceRef::new(
+        ice_rpc::gen::service_id_of("Database"),
+        2u16,
+    );
+}
+#[allow(missing_docs)]
 pub struct DatabaseApiClient;
 #[allow(missing_docs)]
 impl DatabaseApiClient {
@@ -29,7 +39,7 @@ impl DatabaseApiClient {
             String,
             String,
             _,
-        >("db", ice_rpc::gen::service_id_of("Database"), "get", &req_val)
+        >("db", <DatabaseApiProxy>::SERVICE, "get", &req_val)
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
     pub async fn put(
@@ -45,7 +55,7 @@ impl DatabaseApiClient {
             (),
             String,
             _,
-        >("db", ice_rpc::gen::service_id_of("Database"), "put", &req_val)
+        >("db", <DatabaseApiProxy>::SERVICE, "put", &req_val)
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
@@ -73,7 +83,9 @@ impl DatabaseApiServer {
     /// implementation, and streams the resulting `Observable` through
     /// `observable_to_responses`.
     fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
-        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
+            <DatabaseApiProxy>::SERVICE,
+        );
         {
             let service_impl = self.service_impl.clone();
             dispatcher
@@ -95,6 +107,16 @@ impl DatabaseApiServer {
                             }
                             _ => {}
                         }
+                    },
+                );
+            dispatcher
+                .on_error(
+                    "get",
+                    |
+                        err: ice_rpc::gen::RpcError,
+                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
+                    {
+                        ice_rpc::gen::emit_rpc_error::<String, String>(err, emitter);
                     },
                 );
         }
@@ -119,6 +141,16 @@ impl DatabaseApiServer {
                             }
                             _ => {}
                         }
+                    },
+                );
+            dispatcher
+                .on_error(
+                    "put",
+                    |
+                        err: ice_rpc::gen::RpcError,
+                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
+                    {
+                        ice_rpc::gen::emit_rpc_error::<(), String>(err, emitter);
                     },
                 );
         }
@@ -251,7 +283,9 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
         let mut mode = self.mode.write().await;
         match &mut *mode {
             DatabaseApiMode::ProviderNodeJs => {
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new();
+                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
+                    <DatabaseApiProxy>::SERVICE,
+                );
                 {
                     dispatcher
                         .method(
@@ -338,7 +372,6 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                 }
                 if let Err(e) = ice_rpc::gen::register_native_service(
                     "db",
-                    ice_rpc::gen::service_id_of("Database"),
                     "Database",
                     dispatcher,
                 ) {
@@ -362,7 +395,6 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                         .native_dispatcher();
                     if let Err(e) = ice_rpc::gen::register_native_service(
                         "db",
-                        ice_rpc::gen::service_id_of("Database"),
                         "Database",
                         dispatcher,
                     ) {

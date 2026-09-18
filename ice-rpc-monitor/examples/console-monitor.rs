@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{decoders as common_decoders, DatabaseError, DatabaseServiceRequest};
-use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher};
+use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher, ServiceRef};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
@@ -156,7 +156,7 @@ impl Demo {
         let channel = format!("ConsoleMonitorDemo{}", std::process::id());
         let service_id = service_id_of(DEMO_SERVICE);
 
-        let mut dispatcher = ServiceDispatcher::new();
+        let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
         dispatcher.method("get_user_age", |payload, emitter| {
             let name = match decode_aligned::<DatabaseServiceRequest>(payload) {
                 Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
@@ -175,11 +175,7 @@ impl Demo {
         });
 
         let server_stop = CancellationToken::new();
-        let server = spawn_native_service(
-            &channel,
-            vec![(service_id, dispatcher)],
-            server_stop.clone(),
-        );
+        let server = spawn_native_service(&channel, vec![dispatcher], server_stop.clone());
         // Give the provider time to open every port before the first call.
         std::thread::sleep(Duration::from_millis(300));
 
@@ -197,7 +193,7 @@ impl Demo {
                     Ok(bytes) => {
                         if let Ok(stream) = native_call::<i32, DatabaseError>(
                             &generator_channel,
-                            service_id,
+                            ServiceRef::new(service_id, 1),
                             "get_user_age",
                             &bytes,
                         ) {

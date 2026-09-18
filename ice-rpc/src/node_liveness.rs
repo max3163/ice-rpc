@@ -127,11 +127,24 @@ fn poller_started() -> &'static Global<()> {
 /// Idempotent. Starts the unique poller on first use. A node equal to the
 /// current process is ignored (a process cannot watch itself).
 pub fn register_node_liveness_watcher(node_id: NodeId) {
+    if register_watcher(node_id) {
+        ensure_poller();
+    }
+}
+
+/// Inserts a node into the watch registry, with no side effect.
+///
+/// Returns `false` when the node is the current process, which is never
+/// watched. Split out of [`register_node_liveness_watcher`] so the registry
+/// semantics can be asserted without spawning the shared poller: a running
+/// poller reaps a synthetic pid on its next sweep, which would race the
+/// assertion.
+fn register_watcher(node_id: NodeId) -> bool {
     if node_id == NodeId::current() {
-        return;
+        return false;
     }
     watched_nodes().with(|watched| watched.insert(node_id.0));
-    ensure_poller();
+    true
 }
 
 /// Removes a remote node from crash detection.
@@ -234,6 +247,12 @@ mod tests {
         assert!(!is_provider());
     }
 
+    /// The registry tracks and untracks a node.
+    ///
+    /// Goes through [`register_watcher`] rather than the public entry point:
+    /// the latter spawns the shared poller, whose sweep would reap this
+    /// synthetic pid and race the assertion (observed on Linux CI). The
+    /// poller itself is covered end-to-end by `tests/crash_reconnect.rs`.
     #[test]
     fn register_and_unregister_are_tracked() {
         // Assert on the *specific* node rather than on the global count.
@@ -242,7 +261,7 @@ mod tests {
 
         unregister_node_liveness_watcher(fake);
         assert!(!is_watched(fake));
-        register_node_liveness_watcher(fake);
+        assert!(register_watcher(fake));
         assert!(is_watched(fake));
         unregister_node_liveness_watcher(fake);
         assert!(!is_watched(fake));
@@ -250,6 +269,7 @@ mod tests {
 
     #[test]
     fn a_process_never_watches_itself() {
+        assert!(!register_watcher(NodeId::current()));
         register_node_liveness_watcher(NodeId::current());
         assert!(!is_watched(NodeId::current()));
     }

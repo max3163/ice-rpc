@@ -49,7 +49,10 @@ http = ["dep:trillium", "dep:trillium-smol", "ice-rpc-macros/http"]
 # The Node.js gateway: the rkyv ↔ `serde_json::Value` converters and the
 # `ProviderNodeJs` mode. A Rust-only deployment never calls them.
 nodejs = ["ice-rpc-macros/nodejs"]
-tokio = ["dep:tokio"]
+# `ice-rpc-rx` owns the execution facade, so the runtime choice is forwarded
+# there: enabling `tokio` here switches the stream layer and the transport
+# together, and a consumer never names the stream crate.
+tokio = ["dep:tokio", "ice-rpc-rx/tokio"]
 smol = ["dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
@@ -57,6 +60,10 @@ http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 full = ["http", "tokio", "http-tokio"]
 
 [dependencies]
+# The reactive layer: the stream type, the operators, the multicast primitive
+# and the execution facade. It knows nothing about the wire; this crate
+# re-exports its items unchanged, at their historical paths.
+ice-rpc-rx = { workspace = true }
 ice-rpc-macros = { workspace = true }
 log = { workspace = true }
 iceoryx2 = "0.10.0"
@@ -71,14 +78,14 @@ tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
-# Runtime-agnostic primitives used by the core.
+# Runtime-agnostic primitives used by the core. The stream layer keeps its own
+# copy of the ones it needs (`ice-rpc-rx`); what is listed here is what the
+# transport, the locator and the HTTP gateway use directly.
 futures = "0.3"
 futures-lite = "2"
 pin-project-lite = "0.2"
-futures-timer = "3"
 async-channel = "2"
 async-lock = "3"
-async-global-executor = "3"
 # Optional runtime adapters.
 tokio = { workspace = true, optional = true }
 # Optional runtime-agnostic HTTP gateway (trillium + runtime adapters).
@@ -117,9 +124,10 @@ name = "hot_path"
 harness = false
 
 # ── Demo applications ───────────────────────────────────────────────
-# Hosted here (see `plans/merge-rx.md`) so a single crate ships the library,
-# its reactive layer, its examples and its benches. They all need the Tokio
-# runtime facade.
+# Hosted here (see `plans/split-rx-layer.md`) so a single crate ships the
+# library, its examples and its benches. They all need the Tokio runtime facade,
+# which the transport selects through the `tokio` feature; the reactive layer
+# they use is re-exported from `ice-rpc-rx`.
 [[example]]
 name = "state_service"
 required-features = ["tokio"]

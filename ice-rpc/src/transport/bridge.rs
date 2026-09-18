@@ -1,11 +1,13 @@
 //! Bridge from a service `Observable` to the samples the transport publishes.
 
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
-use crate::types::{EventKind, Observable, RpcError, RpcHeader, ServiceRef, WireEvent};
+use crate::types::{Event, EventKind, Observable, RpcError, RpcHeader, ServiceRef, WireEvent};
 
 /// Sink of the encoded responses of one RPC method.
 ///
@@ -50,9 +52,87 @@ impl ResponseEmitter for CollectEmitter {
     }
 }
 
+pin_project_lite::pin_project! {
+    /// Folds a stream of [`Event`] into the wire events the transport publishes.
+    ///
+    /// This is the **single** place where the local stream vocabulary becomes the
+    /// wire one, and the **single** implementation of the `CompleteWith` rule: a
+    /// `Next(value)` immediately followed by a `Complete` is one
+    /// [`WireEvent::CompleteWith`] sample instead of two, so a single-response
+    /// service travels as one iceoryx2 sample. The channels created by
+    /// [`crate::types::channel`] carry plain events; the fold happens on the way
+    /// out, where the wire format is known.
+    ///
+    /// The look-ahead is **non-blocking**: a value is never held back while
+    /// waiting for the event that follows it, so a stream that emits a value and
+    /// then stays silent is published immediately.
+    struct WireFolding<T, E> {
+        #[pin]
+        source: Observable<T, E>,
+        // Event read one step ahead while looking for the `Complete` that closes
+        // a single-sample response.
+        pending: Option<Event<T, E>>,
+    }
+}
+
+impl<T, E> WireFolding<T, E> {
+    /// Wraps the observable returned by one RPC method.
+    fn new(source: Observable<T, E>) -> Self {
+        Self {
+            source,
+            pending: None,
+        }
+    }
+
+    /// Awaits the next wire event, or `None` when the source is exhausted.
+    async fn next_wire(mut self: Pin<&mut Self>) -> Option<WireEvent<T, E>> {
+        futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(self.as_mut(), cx)).await
+    }
+}
+
+impl<T, E> futures_lite::Stream for WireFolding<T, E> {
+    /// Wire event, ready to be framed and encoded.
+    type Item = WireEvent<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        // The event to emit: the one read one step ahead by the previous call, or
+        // the next event of the source. Both go through the fold below, so a value
+        // is never emitted without its look-ahead — otherwise the last `Next` of a
+        // stream would never meet its `Complete`.
+        let event = match this.pending.take() {
+            Some(event) => event,
+            None => match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
+                Poll::Ready(Some(event)) => event,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            },
+        };
+
+        match event {
+            Event::Next(value) => {
+                // Best-effort peek with the same context: when the `Complete` is
+                // already available, the pair is one sample.
+                match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
+                    Poll::Ready(Some(Event::Complete)) => {
+                        Poll::Ready(Some(WireEvent::CompleteWith(value)))
+                    }
+                    Poll::Ready(other) => {
+                        *this.pending = other;
+                        Poll::Ready(Some(WireEvent::Next(value)))
+                    }
+                    Poll::Pending => Poll::Ready(Some(WireEvent::Next(value))),
+                }
+            }
+            other => Poll::Ready(Some(other.into())),
+        }
+    }
+}
+
 /// Drives `observable` into `emitter`, encoding each event as it arrives.
 ///
-/// The events are taken raw (`recv_wire`), which preserves the `CompleteWith`
+/// The events go through `WireFolding`, which preserves the `CompleteWith`
 /// single-sample optimization. The [`EventKind`] of each sample is derived from
 /// the wire variant before serialization, so the transport can stamp it in the
 /// zero-copy header and an out-of-band observer can label the response without
@@ -68,7 +148,7 @@ impl ResponseEmitter for CollectEmitter {
 /// belongs to this call and is never shared: `benches/concurrency.rs` measures a
 /// shared, locked scratch as 20 to 45 times slower than a local one.
 pub fn observable_to_responses<T, E>(
-    mut observable: Observable<T, E>,
+    observable: Observable<T, E>,
     emitter: &mut dyn ResponseEmitter,
 ) where
     T: Send + 'static,
@@ -85,12 +165,15 @@ pub fn observable_to_responses<T, E>(
     >,
 {
     let mut scratch = AlignedVec::<16>::with_capacity(256);
+    // Pinned on the stack: `Observable` is not `Unpin`, and this costs no
+    // allocation on the response path.
+    let mut stream = std::pin::pin!(WireFolding::new(observable));
 
     loop {
-        let wire = match crate::rt::block_on(observable.recv_wire()) {
-            Ok(wire) => wire,
+        let wire = match crate::rt::block_on(stream.as_mut().next_wire()) {
+            Some(wire) => wire,
             // The source is exhausted, or closed abruptly.
-            Err(_) => return,
+            None => return,
         };
         // The writer appends: the buffer must be emptied before each sample, and
         // it comes back from the call, so its allocation is reused. `AlignedVec`
@@ -198,5 +281,137 @@ pub fn emit_rpc_error(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool 
             log::error!("[bridge] rpc error serialization failed: {e:?}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ObservableError;
+    use std::time::Duration;
+
+    /// Encodes a whole stream into its samples.
+    fn encode(observable: Observable<i32, String>) -> Vec<(EventKind, Vec<u8>)> {
+        let mut emitter = CollectEmitter::new();
+        observable_to_responses(observable, &mut emitter);
+        emitter.take()
+    }
+
+    /// Same, with every sample decoded back: a test then asserts on the wire
+    /// framing a subscriber actually receives.
+    fn fold(observable: Observable<i32, String>) -> Vec<(EventKind, WireEvent<i32, String>)> {
+        encode(observable)
+            .into_iter()
+            .map(|(kind, payload)| {
+                let event =
+                    rkyv::from_bytes::<WireEvent<i32, String>, rkyv::rancor::Error>(&payload)
+                        .expect("the payload of a service response is a WireEvent");
+                (kind, event)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_single_value_response_travels_as_one_sample() {
+        let samples = fold(Observable::from_events([Event::Next(42), Event::Complete]));
+        assert_eq!(samples.len(), 1, "the pair must fold into one sample");
+        assert_eq!(samples[0].0, EventKind::Complete);
+        assert_eq!(samples[0].1, WireEvent::CompleteWith(42));
+    }
+
+    #[test]
+    fn intermediate_values_keep_their_own_sample() {
+        let samples = fold(Observable::from_events([
+            Event::Next(1),
+            Event::Next(2),
+            Event::Complete,
+        ]));
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0], (EventKind::Next, WireEvent::Next(1)));
+        assert_eq!(
+            samples[1],
+            (EventKind::Complete, WireEvent::CompleteWith(2))
+        );
+    }
+
+    /// The fold is the last step of a pipeline: an operator in front of the
+    /// source must not cost the single-sample optimization.
+    #[test]
+    fn a_pipeline_single_value_keeps_one_wire_sample() {
+        let samples = fold(
+            Observable::<i32, String>::from_events([Event::Next(7), Event::Complete])
+                .map(|v| v * 6),
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(
+            samples[0],
+            (EventKind::Complete, WireEvent::CompleteWith(42))
+        );
+    }
+
+    /// A technical error is framed as a bare `RpcError`, never as a
+    /// `WireEvent<T, E>`: an observer must decode it without knowing the types.
+    #[test]
+    fn a_technical_error_is_framed_as_a_bare_rpc_error() {
+        let samples = encode(Observable::from_events([Event::Error(
+            ObservableError::Technical(RpcError::Timeout),
+        )]));
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].0, EventKind::RpcError);
+
+        // Reading it as the service's `WireEvent` must fail: that is exactly
+        // what lets a provider answer a call for a method it does not have.
+        assert!(
+            rkyv::from_bytes::<WireEvent<i32, String>, rkyv::rancor::Error>(&samples[0].1).is_err()
+        );
+        let error = rkyv::from_bytes::<RpcError, rkyv::rancor::Error>(&samples[0].1)
+            .expect("a technical error carries a bare RpcError");
+        assert_eq!(error, RpcError::Timeout);
+    }
+
+    #[test]
+    fn a_business_error_keeps_the_service_framing() {
+        let samples = fold(Observable::from_events([Event::Error(
+            ObservableError::Business("boom".into()),
+        )]));
+        assert_eq!(samples.len(), 1);
+        assert_eq!(
+            samples[0],
+            (EventKind::Error, WireEvent::Error("boom".into()))
+        );
+    }
+
+    /// The look-ahead must not hold a value back: a channel that emits a value
+    /// and then stays open is published immediately, not after the next event.
+    #[test]
+    fn a_value_followed_by_silence_is_published_at_once() {
+        let (tx, rx) = crate::types::unbounded_channel::<i32, String>();
+        tx.try_send_next(1).expect("the channel is unbounded");
+
+        let mut stream = std::pin::pin!(WireFolding::new(rx));
+        let wire = crate::rt::block_on(crate::rt::timeout(
+            Duration::from_millis(500),
+            stream.as_mut().next_wire(),
+        ));
+        assert_eq!(
+            wire.expect("a value must not wait for the event that follows it"),
+            Some(WireEvent::Next(1))
+        );
+    }
+
+    /// `send_complete_with` enqueues two events, so the channel must have room
+    /// for both: this is the documented contract of the bounded constructor.
+    #[test]
+    fn send_complete_with_folds_on_a_two_slot_channel() {
+        let (tx, rx) = crate::types::channel::<i32, String>(2);
+        crate::rt::block_on(tx.send_complete_with(42)).expect("two slots are enough");
+        drop(tx);
+
+        let mut stream = std::pin::pin!(WireFolding::new(rx));
+        assert_eq!(
+            crate::rt::block_on(stream.as_mut().next_wire()),
+            Some(WireEvent::CompleteWith(42))
+        );
+        assert_eq!(crate::rt::block_on(stream.as_mut().next_wire()), None);
     }
 }

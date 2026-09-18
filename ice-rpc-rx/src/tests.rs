@@ -1,8 +1,7 @@
-//! Tests for the fundamental types: events, wire events, the `Observable`
-//! stream and the technical error predicates.
+//! Tests of the reactive layer: the event vocabulary, the `Observable` stream,
+//! the operators and the terminals.
 
 use super::*;
-use crate::types::wire::normalize_wire_event;
 
 // ── Event ───────────────────────────────────────────────────────────
 
@@ -66,41 +65,12 @@ fn rpc_error_display_variants() {
         .contains("boom"));
 }
 
-// ── WireEvent ───────────────────────────────────────────────────────
-
-#[test]
-fn wire_event_is_terminal_flags() {
-    assert!(!WireEvent::<i32, String>::Next(1).is_terminal());
-    assert!(WireEvent::<i32, String>::Complete.is_terminal());
-    assert!(WireEvent::<i32, String>::CompleteWith(1).is_terminal());
-    assert!(WireEvent::<i32, String>::Error("boom".to_string()).is_terminal());
-    assert!(WireEvent::<i32, String>::RpcError(RpcError::Timeout).is_terminal());
-}
-
-#[test]
-fn wire_event_rkyv_roundtrip_complete_with() {
-    let event: WireEvent<i32, String> = WireEvent::CompleteWith(42);
-    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event).unwrap();
-    let decoded = rkyv::from_bytes::<WireEvent<i32, String>, rkyv::rancor::Error>(&bytes).unwrap();
-    match decoded {
-        WireEvent::CompleteWith(v) => assert_eq!(v, 42),
-        other => panic!("expected CompleteWith, got {other:?}"),
-    }
-}
-
-#[test]
-fn normalize_complete_with_expands_into_next_then_complete() {
-    let (event, follow_up) = normalize_wire_event(WireEvent::<i32, String>::CompleteWith(7));
-    assert_eq!(event, Event::Next(7));
-    assert_eq!(follow_up, Some(Event::Complete));
-}
-
 // ── Observable ──────────────────────────────────────────────────────
 
 #[test]
-fn stream_poll_next_normalizes_complete_with() {
+fn stream_yields_a_single_value_then_completion() {
     let (tx, mut rx) = channel::<i32, String>(4);
-    tx.try_send_wire(WireEvent::CompleteWith(42)).unwrap();
+    tx.try_send_complete_with(42).unwrap();
     drop(tx);
 
     assert_eq!(pollster::block_on(rx.recv()).unwrap(), Event::Next(42));
@@ -123,29 +93,6 @@ fn from_technical_error_emits_single_terminal_error() {
         Event::Error(ObservableError::Technical(RpcError::Timeout)) => {}
         other => panic!("expected a technical error, got {other:?}"),
     }
-}
-
-#[test]
-fn recv_wire_coalesces_next_complete_into_complete_with() {
-    let mut stream = Observable::<i32, String>::from_events([Event::Next(3), Event::Complete]);
-    assert_eq!(
-        pollster::block_on(stream.recv_wire()).unwrap(),
-        WireEvent::CompleteWith(3)
-    );
-}
-
-#[test]
-fn recv_wire_keeps_intermediate_values_then_coalesces_last() {
-    let mut stream =
-        Observable::<i32, String>::from_events([Event::Next(1), Event::Next(2), Event::Complete]);
-    assert_eq!(
-        pollster::block_on(stream.recv_wire()).unwrap(),
-        WireEvent::Next(1)
-    );
-    assert_eq!(
-        pollster::block_on(stream.recv_wire()).unwrap(),
-        WireEvent::CompleteWith(2)
-    );
 }
 
 #[test]
@@ -194,14 +141,14 @@ fn next_turns_an_abrupt_close_into_a_technical_error() {
 }
 
 #[test]
-fn wire_relay_forwards_terminal_errors_unchanged() {
+fn a_relayed_terminal_error_reaches_the_consumer_unchanged() {
     let (tx, mut stream) = channel::<i32, String>(4);
     tx.try_send_event(Event::Error(ObservableError::Business("boom".into())))
         .unwrap();
     drop(tx);
     assert_eq!(
-        pollster::block_on(stream.recv_wire()).unwrap(),
-        WireEvent::Error("boom".to_string())
+        pollster::block_on(stream.recv()).unwrap(),
+        Event::Error(ObservableError::Business("boom".to_string()))
     );
 }
 
@@ -237,4 +184,178 @@ fn collect_values_gathers_values_and_reports_business_error() {
         ObservableError::Business("boom".into()),
     )]);
     assert!(pollster::block_on(collect_values(failing)).is_err());
+}
+
+use super::{from, of, throw_error};
+use crate::{Event, ObservableError};
+use std::convert::Infallible;
+
+async fn drain<S, T, E>(stream: S) -> Vec<Event<T, E>>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    let mut stream = Box::pin(stream);
+    let mut out = Vec::new();
+    while let Some(event) =
+        futures_lite::future::poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx))
+            .await
+    {
+        out.push(event);
+    }
+    out
+}
+
+#[test]
+fn from_emits_values_then_complete() {
+    let events: Vec<Event<i32, Infallible>> = pollster::block_on(drain(from([1, 2, 3])));
+    assert_eq!(events.len(), 4);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+    assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+    assert!(matches!(&events[2], Event::Next(v) if *v == 3));
+    assert!(matches!(&events[3], Event::Complete));
+}
+
+#[test]
+fn of_emits_next_then_complete() {
+    let events: Vec<Event<i32, Infallible>> = pollster::block_on(drain(of(42)));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 42));
+    assert!(matches!(&events[1], Event::Complete));
+}
+
+#[test]
+fn collect_gathers_all_values() {
+    let stream: crate::Observable<i32, Infallible> = from([1, 2, 3]);
+    let values = pollster::block_on(stream.collect()).unwrap();
+    assert_eq!(values, vec![1, 2, 3]);
+}
+
+#[test]
+fn of_returns_a_channel_free_observable() {
+    let stream: crate::Observable<i32, Infallible> = of(7);
+    let values = pollster::block_on(stream.collect()).unwrap();
+    assert_eq!(values, vec![7]);
+}
+
+#[test]
+fn a_pipeline_stays_one_observable_type() {
+    // An operator returns the same `Observable` type as its source, so a
+    // pipeline can be returned by a service method as-is: no `into_observable`.
+    let stream: crate::Observable<i32, Infallible> = from([1, 2, 3]).map(|v| v * 2);
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 4);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 2));
+    assert!(matches!(&events[1], Event::Next(v) if *v == 4));
+    assert!(matches!(&events[2], Event::Next(v) if *v == 6));
+    assert!(matches!(&events[3], Event::Complete));
+}
+
+/// Terminal consumption on a plain [`crate::Observable`].
+fn native_first(events: Vec<Event<i32, String>>) -> Result<i32, crate::ObservableError<String>> {
+    pollster::block_on(crate::Observable::<i32, String>::from_events(events).first_value())
+}
+
+/// Same input, consumed at the end of an operator pipeline.
+fn pipeline_first(events: Vec<Event<i32, String>>) -> Result<i32, crate::ObservableError<String>> {
+    pollster::block_on(
+        crate::Observable::<i32, String>::from_events(events)
+            .map(|v| v)
+            .first_value(),
+    )
+}
+
+/// Same pair, for `collect`.
+fn native_collect(
+    events: Vec<Event<i32, String>>,
+) -> Result<Vec<i32>, crate::ObservableError<String>> {
+    pollster::block_on(crate::Observable::<i32, String>::from_events(events).collect())
+}
+
+fn pipeline_collect(
+    events: Vec<Event<i32, String>>,
+) -> Result<Vec<i32>, crate::ObservableError<String>> {
+    pollster::block_on(
+        crate::Observable::<i32, String>::from_events(events)
+            .map(|v| v)
+            .collect(),
+    )
+}
+
+/// Every outcome, fed to both terminal surfaces, must be identical.
+fn terminal_cases() -> Vec<Vec<Event<i32, String>>> {
+    vec![
+        // Value then `Complete`.
+        vec![Event::Next(5), Event::Complete],
+        // Values then `Complete`.
+        vec![Event::Next(1), Event::Next(2), Event::Complete],
+        // Business error, before and after a value.
+        vec![Event::Error(ObservableError::Business("boom".into()))],
+        vec![
+            Event::Next(1),
+            Event::Error(ObservableError::Business("boom".into())),
+        ],
+        // Technical error.
+        vec![Event::Error(ObservableError::Technical(
+            crate::RpcError::Timeout,
+        ))],
+        // Empty.
+        vec![Event::Complete],
+        vec![],
+    ]
+}
+
+#[test]
+fn terminal_first_value_surfaces_agree_on_every_outcome() {
+    for case in terminal_cases() {
+        let native = native_first(case.clone());
+        let pipeline = pipeline_first(case.clone());
+        assert_eq!(
+            format!("{native:?}"),
+            format!("{pipeline:?}"),
+            "first_value diverged on {case:?}"
+        );
+    }
+
+    assert_eq!(
+        native_first(vec![Event::Next(5), Event::Complete]).unwrap(),
+        5
+    );
+    assert!(matches!(
+        pipeline_first(vec![Event::Complete]),
+        Err(crate::ObservableError::Empty)
+    ));
+}
+
+#[test]
+fn terminal_collect_surfaces_agree_on_every_outcome() {
+    for case in terminal_cases() {
+        let native = native_collect(case.clone());
+        let pipeline = pipeline_collect(case.clone());
+        assert_eq!(
+            format!("{native:?}"),
+            format!("{pipeline:?}"),
+            "collect diverged on {case:?}"
+        );
+    }
+
+    assert_eq!(
+        native_collect(vec![Event::Next(1), Event::Next(2), Event::Complete]).unwrap(),
+        vec![1, 2]
+    );
+    assert!(matches!(
+        pipeline_collect(vec![Event::Next(1)]),
+        Ok(values) if values == vec![1]
+    ));
+}
+
+#[test]
+fn throw_error_emits_business_error() {
+    let events: Vec<Event<i32, String>> =
+        pollster::block_on(drain(throw_error::<i32, String>("boom".into())));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "boom"
+    ));
 }

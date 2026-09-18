@@ -996,7 +996,6 @@ name = "ice-rpc"
 version = "0.2.2"
 dependencies = [
  "async-channel",
- "async-global-executor",
  "async-lock",
  "async-trait",
  "base64",
@@ -1005,8 +1004,8 @@ dependencies = [
  "env_logger",
  "futures",
  "futures-lite",
- "futures-timer",
  "ice-rpc-macros",
+ "ice-rpc-rx",
  "iceoryx2",
  "iceoryx2-bb-container",
  "iceoryx2-bb-posix",
@@ -1065,6 +1064,24 @@ dependencies = [
  "pollster",
  "serde_json",
  "sysinfo",
+]
+
+[[package]]
+name = "ice-rpc-rx"
+version = "0.2.2"
+dependencies = [
+ "async-channel",
+ "async-global-executor",
+ "async-lock",
+ "futures",
+ "futures-lite",
+ "futures-timer",
+ "log",
+ "pin-project-lite",
+ "pollster",
+ "rkyv",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

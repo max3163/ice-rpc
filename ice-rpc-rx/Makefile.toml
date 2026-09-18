@@ -1,0 +1,6 @@
+# Makefile.toml — Extension of the workspace Makefile for `ice-rpc-rx`.
+#
+# The tasks that drive this crate (`rx-test`, `rx-test-tokio`, `rx-clippy`) are
+# defined in the root `Makefile.toml`; this file only makes them resolvable when
+# cargo-make is run from this directory, and inherits every workspace task.
+extend = "../Makefile.toml"

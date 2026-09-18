@@ -97,7 +97,8 @@
 //!
 //! | Crate             | Role                                               |
 //! |-------------------|----------------------------------------------------|
-//! | `ice-rpc`         | Core framework (types, transport, ServiceLocator)  |
+//! | `ice-rpc-rx`      | Reactive layer: `Observable`, operators, `Subject`, execution facade |
+//! | `ice-rpc`         | Core framework (protocol, transport, ServiceLocator) |
 //! | `ice-rpc-macros`  | Procedural macros (`#[service]`)                   |
 //! | `common`          | Example services (not shipped)                     |
 //! | `gateway_nodejs`  | Node.js bridge (N-API) for the services            |
@@ -119,8 +120,9 @@
 //!
 //! | Module | Role |
 //! |--------|------|
-//! | `types` | Public pull API (`Observable` with `next`/`recv`/`collect`, `Event`, `ObservableError`, `RpcError`) and the wire types re-exported through `gen` |
-//! | `rx` | Reactive operators, constructors and multicast primitives, all reachable from the `Observable` stream |
+//! | `rx` | The reactive layer, re-exported from `ice-rpc-rx`: operators, constructors and multicast primitives, all reachable from the `Observable` stream |
+//! | `rt` | Execution facade, re-exported from `ice-rpc-rx`: `spawn`, `sleep`, `block_on`, cancellation |
+//! | `types` | Protocol types (`RpcHeader`, `EventKind`, `WireEvent`) and the reactive vocabulary re-exported from `ice-rpc-rx` |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
@@ -136,8 +138,6 @@ mod global;
 mod labels;
 mod locator;
 mod node_liveness;
-pub mod rt;
-pub mod rx;
 mod service_traits;
 mod shutdown;
 mod sync;
@@ -164,22 +164,38 @@ mod http_gateway;
 // Only `ServiceInit` is implemented by the developer.
 pub use service_traits::ServiceInit;
 
-// ── Public API: Rx vocabulary used in service signatures ────────────
-// Wire-level items live in `ice_rpc::gen`.
-pub use types::{CallContext, Event, Observable, ObservableError, RpcError, TraceContext};
+// ── Public API: the reactive vocabulary ─────────────────────────────
+// Defined by `ice-rpc-rx` and re-exported unchanged: the crate keeps one single
+// stream type, and a consumer never has to name the stream crate.
+pub use ice_rpc_rx::{
+    from, of, throw_error, CancellationToken, Event, Observable, ObservableError, RpcError,
+    Subject, Subscription,
+};
 
-// ── Public API: reactive operators and multicast primitives ─────────
-// The operators are carried by `Observable` and `Subject`; only the
-// constructors and the cancellation handle are re-exported here.
-pub use rx::{from, of, throw_error, Subject, Subscription};
+// Wire-level items live in `ice_rpc::gen`; the protocol types come from `types`.
+pub use types::{CallContext, TraceContext};
+
+/// Reactive layer, re-exported under its historical path.
+///
+/// The items live in [`ice_rpc_rx`]; this module keeps the paths a consumer of
+/// `ice-rpc` may already use (`ice_rpc::rx::from`, `ice_rpc::rx::Subject`, …).
+pub mod rx {
+    pub use ice_rpc_rx::*;
+}
+
+/// Runtime-agnostic execution facade, re-exported under its historical path.
+///
+/// `spawn`, `sleep`, `block_on` and the cancellation token live in
+/// [`ice_rpc_rx::rt`]; the transport and the examples keep using them here.
+pub mod rt {
+    pub use ice_rpc_rx::rt::*;
+}
 
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;
 
 // ── Public API: out-of-band monitoring ──────────────────────────────
 pub mod monitor;
-
-pub use crate::rt::CancellationToken;
 
 /// Global cancellation token for the background IPC threads.
 ///

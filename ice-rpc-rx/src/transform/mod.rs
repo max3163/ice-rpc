@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use crate::{Observable, ObservableError};
 
-use super::subscribe::{spawn_push, ObserverFns};
-use super::Subscription;
+use crate::subscribe::{spawn_push, ObserverFns};
+use crate::Subscription;
 
 impl<T, E> Observable<T, E> {
     /// Transforms every `Next` value with `f`; terminal events pass through

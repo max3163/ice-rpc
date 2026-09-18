@@ -42,8 +42,14 @@ jobs:
         run: cargo test --workspace --exclude gateway-nodejs
 
       # The `tokio` feature swaps the runtime facade: `rt::spawn` / `rt::sleep`
-      # then require an active runtime. The `ice-rpc` unit tests supply one
-      # through `rt::test_block_on`, so the tokio facade is exercised in CI too.
+      # then require an active runtime. The facade itself, and the operators that
+      # need it (`delay`, `timeout`, `subscribe`), live in `ice-rpc-rx`; its tests
+      # supply a runtime through `rt::test_block_on`. `ice-rpc` is tested under the
+      # same facade for the transport side. Both steps are needed: the workspace
+      # run above only exercises the default, runtime-agnostic facade.
+      - name: Test (ice-rpc-rx, tokio facade)
+        run: cargo test -p ice-rpc-rx --features tokio
+
       - name: Test (ice-rpc, tokio facade)
         run: cargo test -p ice-rpc --features tokio --lib
 

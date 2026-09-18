@@ -1,14 +1,15 @@
 //! The pull-based [`Observable`] — the concrete stream type returned by services.
 //!
-//! `Observable` is the push→pull boundary: it wraps either a transport channel,
-//! an inline buffer (`of`/`from`) or a boxed operator pipeline, and always
-//! presents the same normalized sequence of [`Event`]s.
+//! `Observable` is the push→pull boundary: it wraps either a local channel, an
+//! inline buffer (`of`/`from`) or a boxed operator pipeline, and always presents
+//! the same sequence of [`Event`]s. It knows nothing about the wire: framing and
+//! serialization belong to the transport.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::error::RpcError;
-use super::wire::{normalize_wire_event, Event, ObservableError, Sender, WireEvent};
+use crate::error::RpcError;
+use crate::{Event, ObservableError, Sender};
 
 /// Action run when the transport stream of a call is dropped.
 ///
@@ -20,16 +21,14 @@ type Cleanup = Box<dyn FnOnce() + Send>;
 pin_project_lite::pin_project! {
     /// Internal storage backing an [`Observable`].
     ///
-    /// Three sources: `Transport` (transport-backed RPC call), `Inline`
-    /// (already-computed `of`/`from` events) and `Pipeline` (a boxed operator
-    /// stream).
+    /// Three sources: `Channel` (a local producer/consumer pair, the RPC response
+    /// path), `Inline` (already-computed `of`/`from` events) and `Pipeline` (a
+    /// boxed operator stream).
     #[project = StreamInnerProj]
     enum StreamInner<T, E> {
-        Transport {
+        Channel {
             #[pin]
-            rx: async_channel::Receiver<WireEvent<T, E>>,
-            // Buffered `Complete` left over after expanding a `CompleteWith`.
-            pending: Option<Event<T, E>>,
+            rx: async_channel::Receiver<Event<T, E>>,
             // Released with the stream, see `Observable::with_cleanup`.
             _cleanup: Option<Cleanup>,
         },
@@ -40,9 +39,6 @@ pin_project_lite::pin_project! {
         Pipeline {
             // Boxed so the wrapped stream need not be `Unpin`.
             stream: Pin<Box<dyn futures_lite::Stream<Item = Event<T, E>> + Send>>,
-            // One-event look-ahead, used to fold `Next(v) + Complete` into the
-            // single-sample `CompleteWith` optimization.
-            pending: Option<Event<T, E>>,
         },
     }
 }
@@ -55,8 +51,8 @@ pin_project_lite::pin_project! {
     /// [`Observable::recv`] yields the full [`Event`] vocabulary, while
     /// [`Observable::next`] yields `Option<Result<T, ObservableError<E>>>`.
     ///
-    /// Both normalize the transport `CompleteWith` optimization away; raw
-    /// transport events stay internal (`recv_wire`).
+    /// Both observe the same sequence of `Next` values followed by a terminal
+    /// event, whatever the source.
     ///
     /// An `Observable` is **single-subscription** (it does not implement
     /// `Clone`): use `Subject` to fan a stream out to several consumers.
@@ -74,7 +70,7 @@ pin_project_lite::pin_project! {
     // macro destroys the pinned enum.
     impl<T, E> PinnedDrop for Observable<T, E> {
         fn drop(this: Pin<&mut Self>) {
-            if let StreamInnerProj::Transport { _cleanup, .. } = this.project().inner.project() {
+            if let StreamInnerProj::Channel { _cleanup, .. } = this.project().inner.project() {
                 if let Some(action) = _cleanup.take() {
                     action();
                 }
@@ -131,7 +127,6 @@ impl<T, E> Observable<T, E> {
         Self {
             inner: StreamInner::Pipeline {
                 stream: Box::pin(stream),
-                pending: None,
             },
             terminated: false,
         }
@@ -145,11 +140,11 @@ impl<T, E> Observable<T, E> {
     /// the original observable alive and the cleanup runs with the pipeline, not
     /// with the intermediate steps.
     ///
-    /// Ignored for an observable with no transport source, which has nothing to
+    /// Ignored for an observable with no channel source, which has nothing to
     /// release.
     #[doc(hidden)]
     pub fn with_cleanup(mut self, cleanup: impl FnOnce() + Send + 'static) -> Self {
-        if let StreamInner::Transport { _cleanup, .. } = &mut self.inner {
+        if let StreamInner::Channel { _cleanup, .. } = &mut self.inner {
             *_cleanup = Some(Box::new(cleanup));
         }
         self
@@ -157,7 +152,6 @@ impl<T, E> Observable<T, E> {
 
     /// Receives the next user-facing event — the full [`Event`] vocabulary.
     ///
-    /// A transport `CompleteWith(v)` is replayed as `Next(v)` then `Complete`.
     /// `Err(RecvError)` means the source closed: a normal end if a terminal event
     /// was already delivered, an abrupt close otherwise.
     ///
@@ -165,38 +159,19 @@ impl<T, E> Observable<T, E> {
     /// interior mutability.
     pub async fn recv(&mut self) -> Result<Event<T, E>, async_channel::RecvError> {
         let event = match &mut self.inner {
-            StreamInner::Transport { rx, pending, .. } => {
-                if let Some(event) = pending.take() {
-                    Ok(event)
-                } else {
-                    match rx.recv().await {
-                        Ok(event) => {
-                            let (current, follow_up) = normalize_wire_event(event);
-                            if let Some(next) = follow_up {
-                                *pending = Some(next);
-                            }
-                            Ok(current)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-            }
+            StreamInner::Channel { rx, .. } => rx.recv().await,
             StreamInner::Inline { queue } => match queue.pop_front() {
                 Some(event) => Ok(event),
                 None => Err(async_channel::RecvError),
             },
-            StreamInner::Pipeline { stream, pending } => {
-                if let Some(event) = pending.take() {
-                    Ok(event)
-                } else {
-                    match futures_lite::future::poll_fn(|cx| {
-                        futures_lite::Stream::poll_next(stream.as_mut(), cx)
-                    })
-                    .await
-                    {
-                        Some(event) => Ok(event),
-                        None => Err(async_channel::RecvError),
-                    }
+            StreamInner::Pipeline { stream } => {
+                match futures_lite::future::poll_fn(|cx| {
+                    futures_lite::Stream::poll_next(stream.as_mut(), cx)
+                })
+                .await
+                {
+                    Some(event) => Ok(event),
+                    None => Err(async_channel::RecvError),
                 }
             }
         };
@@ -231,59 +206,6 @@ impl<T, E> Observable<T, E> {
                     "stream closed before completion".to_string(),
                 ))))
             }
-        }
-    }
-
-    /// Receives the next raw transport event (server relay only).
-    ///
-    /// For an inline observable the last `Next(v)` followed by a `Complete` is
-    /// folded back into the single-sample [`WireEvent::CompleteWith`]
-    /// optimization, so a single-response service travels as one iceoryx2
-    /// sample.
-    pub(crate) async fn recv_wire(&mut self) -> Result<WireEvent<T, E>, async_channel::RecvError> {
-        match &mut self.inner {
-            StreamInner::Transport { rx, .. } => rx.recv().await,
-            StreamInner::Pipeline { stream, pending } => {
-                if let Some(event) = pending.take() {
-                    return Ok(event.into());
-                }
-                futures_lite::future::poll_fn(|cx| {
-                    match futures_lite::Stream::poll_next(Pin::new(&mut *stream), cx) {
-                        Poll::Ready(None) => Poll::Ready(Err(async_channel::RecvError)),
-                        Poll::Ready(Some(Event::Next(v))) => {
-                            // Best-effort peek with the same context: fold the
-                            // `Complete` into one sample when it is available.
-                            match futures_lite::Stream::poll_next(Pin::new(&mut *stream), cx) {
-                                Poll::Ready(Some(Event::Complete)) => {
-                                    Poll::Ready(Ok(WireEvent::CompleteWith(v)))
-                                }
-                                Poll::Ready(other) => {
-                                    *pending = other;
-                                    Poll::Ready(Ok(WireEvent::Next(v)))
-                                }
-                                Poll::Pending => Poll::Ready(Ok(WireEvent::Next(v))),
-                            }
-                        }
-                        Poll::Ready(Some(other)) => Poll::Ready(Ok(other.into())),
-                        Poll::Pending => Poll::Pending,
-                    }
-                })
-                .await
-            }
-            StreamInner::Inline { queue } => match queue.pop_front() {
-                None => Err(async_channel::RecvError),
-                Some(Event::Next(v)) => {
-                    // A value immediately followed by `Complete` is exactly
-                    // the `CompleteWith` single-sample case.
-                    if matches!(queue.front(), Some(Event::Complete)) {
-                        queue.pop_front();
-                        Ok(WireEvent::CompleteWith(v))
-                    } else {
-                        Ok(WireEvent::Next(v))
-                    }
-                }
-                Some(event) => Ok(event.into()),
-            },
         }
     }
 
@@ -366,34 +288,13 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
         let polled = match this.inner.project() {
-            StreamInnerProj::Transport { rx, pending, .. } => {
-                // A previous `CompleteWith` left a trailing `Complete` behind.
-                if let Some(event) = pending.take() {
-                    Poll::Ready(Some(event))
-                } else {
-                    match futures_lite::Stream::poll_next(rx, cx) {
-                        Poll::Ready(Some(event)) => {
-                            let (current, follow_up) = normalize_wire_event(event);
-                            if let Some(next) = follow_up {
-                                *pending = Some(next);
-                            }
-                            Poll::Ready(Some(current))
-                        }
-                        Poll::Ready(None) => Poll::Ready(None),
-                        Poll::Pending => Poll::Pending,
-                    }
-                }
-            }
+            StreamInnerProj::Channel { rx, .. } => futures_lite::Stream::poll_next(rx, cx),
             StreamInnerProj::Inline { queue } => match queue.pop_front() {
                 Some(event) => Poll::Ready(Some(event)),
                 None => Poll::Ready(None),
             },
-            StreamInnerProj::Pipeline { stream, pending } => {
-                if let Some(event) = pending.take() {
-                    Poll::Ready(Some(event))
-                } else {
-                    futures_lite::Stream::poll_next(stream.as_mut(), cx)
-                }
+            StreamInnerProj::Pipeline { stream } => {
+                futures_lite::Stream::poll_next(stream.as_mut(), cx)
             }
         };
 
@@ -412,17 +313,17 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
 /// Creates a bounded channel of RPC events.
 ///
 /// Runtime-agnostic replacement for `tokio::sync::mpsc::channel`. This is the
-/// transport boundary: producers push, the returned [`Observable`] pulls.
+/// local producer/consumer boundary: producers push [`Event`]s, the returned
+/// [`Observable`] pulls them.
+///
+/// A capacity of 1 cannot carry [`Sender::send_complete_with`], which enqueues
+/// two events: give a producer that closes a single value at least two slots.
 pub fn channel<T, E>(capacity: usize) -> (Sender<T, E>, Observable<T, E>) {
-    let (tx, rx) = async_channel::bounded::<WireEvent<T, E>>(capacity);
+    let (tx, rx) = async_channel::bounded::<Event<T, E>>(capacity);
     (
         Sender { inner: tx },
         Observable {
-            inner: StreamInner::Transport {
-                rx,
-                pending: None,
-                _cleanup: None,
-            },
+            inner: StreamInner::Channel { rx, _cleanup: None },
             terminated: false,
         },
     )
@@ -434,15 +335,11 @@ pub fn channel<T, E>(capacity: usize) -> (Sender<T, E>, Observable<T, E>) {
 /// synchronous callback and cannot apply backpressure, so a bounded channel
 /// would turn a slow consumer into a **silent** loss.
 pub fn unbounded_channel<T, E>() -> (Sender<T, E>, Observable<T, E>) {
-    let (tx, rx) = async_channel::unbounded::<WireEvent<T, E>>();
+    let (tx, rx) = async_channel::unbounded::<Event<T, E>>();
     (
         Sender { inner: tx },
         Observable {
-            inner: StreamInner::Transport {
-                rx,
-                pending: None,
-                _cleanup: None,
-            },
+            inner: StreamInner::Channel { rx, _cleanup: None },
             terminated: false,
         },
     )
@@ -454,19 +351,19 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    /// A cleanup attached to a transport observable runs when it is dropped.
+    /// A cleanup attached to a channel observable runs when it is dropped.
     #[test]
-    fn dropping_a_transport_observable_runs_its_cleanup() {
+    fn dropping_a_channel_observable_runs_its_cleanup() {
         let ran = Arc::new(AtomicBool::new(false));
         let (_tx, rx) = unbounded_channel::<i32, String>();
 
         let flag = Arc::clone(&ran);
         let observable = rx.with_cleanup(move || flag.store(true, Ordering::Relaxed));
         match &observable.inner {
-            StreamInner::Transport { _cleanup, .. } => {
+            StreamInner::Channel { _cleanup, .. } => {
                 assert!(_cleanup.is_some(), "with_cleanup must attach the action");
             }
-            _ => panic!("expected a transport observable"),
+            _ => panic!("expected a channel observable"),
         }
         assert!(!ran.load(Ordering::Relaxed), "the cleanup runs on drop");
 

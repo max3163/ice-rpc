@@ -102,6 +102,19 @@ sequenceDiagram
 ## 2. Code architecture
 
 ```
+ice-rpc-rx/                     ← Reactive layer (foundation crate, no iceoryx2)
+├── src/
+│   ├── lib.rs                  ← Public exports, MULTICAST_CHANNEL_CAPACITY
+│   ├── event.rs                ← Event, ObservableError, Sender (producer side)
+│   ├── stream.rs               ← Observable (recv/next/collect), channel()
+│   ├── error.rs                ← RpcError (technical error of the stack)
+│   ├── creation.rs             ← from(), of(), throw_error()
+│   ├── subject.rs              ← Subject (multicast, with replay)
+│   ├── subscribe.rs            ← Subscription, push-based consumption
+│   ├── transform/              ← Operators: map, filter, scan, delay, timeout, …
+│   ├── rt/                     ← Execution facade (spawn/sleep/block_on, tokio switch)
+│   └── tests.rs                ← Tests of the stream vocabulary and the terminals
+│
 ice-rpc/                        ← Main crate (library + runtime)
 ├── src/
 │   ├── lib.rs                  ← Public exports, cancellation tokens, shutdown()
@@ -114,13 +127,11 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   │   ├── bridge.rs           ← Observable → wire samples, ServiceDispatcher
 │   │   ├── client.rs           ← request publication + response routing
 │   │   └── server.rs           ← channel creation, dispatch, response publication
-│   ├── rx/                     ← Reactive layer: operators on Observable, Subject
-│   │                              (with replay), constructors, Subscription
-│   ├── types/                  ← RPC fundamental types, one file per concern:
+│   ├── types/                  ← Protocol types + the stream vocabulary re-exported
+│   │   │                          from ice-rpc-rx (Event, Observable, Sender, …):
 │   │   ├── node.rs             ← NodeId (PID) + raw_pid_to_u32
-│   │   ├── wire.rs             ← Event, WireEvent, Sender, ObservableError
-│   │   ├── stream.rs           ← Observable (next/recv/collect), channel()
-│   │   ├── error.rs            ← RpcError
+│   │   ├── wire.rs             ← WireEvent (serializable event), normalize_wire_event
+│   │   ├── header.rs           ← RpcHeader (zero-copy) + EventKind
 │   │   └── consts.rs           ← name-length limits shared with the macros
 │   ├── node_liveness.rs        ← Native iceoryx2 node monitoring (Node::list,
 │   │                              NodeState::Alive/Dead), single shared poller
@@ -1234,12 +1245,13 @@ cargo release patch --workspace --no-publish --no-confirm
 
 ### Publish to crates.io
 
-Publish the two crates **in dependency order** (macros first, since `ice-rpc`
-depends on `ice-rpc-macros` by version):
+Publish the three crates **in dependency order** (`ice-rpc` depends on both
+`ice-rpc-rx` and `ice-rpc-macros` by version):
 
 ```bash
 cargo login                       # once per machine
 
+cargo publish -p ice-rpc-rx       # the reactive layer, without iceoryx2
 cargo publish -p ice-rpc-macros
 cargo publish -p ice-rpc
 ```

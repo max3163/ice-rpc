@@ -21,7 +21,7 @@
 
 use std::collections::VecDeque;
 
-use crate::gen::Sender;
+use crate::Sender;
 use crate::{Event, Observable, ObservableError};
 
 /// A multi-producer / multi-consumer multicast source.
@@ -33,7 +33,7 @@ use crate::{Event, Observable, ObservableError};
 /// Once terminated every later event is **ignored**, and a new subscriber
 /// immediately observes the replayed terminal state.
 pub struct Subject<T, E> {
-    state: std::sync::Arc<crate::gen::async_lock::Mutex<State<T, E>>>,
+    state: std::sync::Arc<async_lock::Mutex<State<T, E>>>,
 }
 
 struct State<T, E> {
@@ -90,7 +90,7 @@ impl<T, E> Subject<T, E> {
 
     fn with_replay(capacity: usize) -> Self {
         Self {
-            state: std::sync::Arc::new(crate::gen::async_lock::Mutex::new(State {
+            state: std::sync::Arc::new(async_lock::Mutex::new(State {
                 replay: VecDeque::with_capacity(capacity),
                 capacity,
                 completed: false,
@@ -115,7 +115,7 @@ impl<T, E> Subject<T, E> {
         T: Clone,
         E: Clone,
     {
-        let (tx, rx) = crate::gen::channel::<T, E>(crate::rx::MULTICAST_CHANNEL_CAPACITY);
+        let (tx, rx) = crate::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
         {
             let mut state = self.state.lock().await;
             // Replay the snapshot first, then register the subscriber so that no

@@ -1,101 +1,21 @@
-//! Wire-level types and the conversion rules between them.
+//! The wire representation of a stream event.
 //!
-//! [`Event`] is what consumers observe, [`WireEvent`] is what travels over
-//! iceoryx2, and [`Sender`] is the producer side.
+//! [`WireEvent`] is what the transport serializes: [`Event`] plus the
+//! single-sample `CompleteWith` optimization, which lets a one-value response
+//! travel as a single iceoryx2 sample. The conversion to and from the
+//! user-facing [`Event`] lives here too, because this is the only place where
+//! the two vocabularies meet — the stream layer knows nothing about the wire.
 
+use ice_rpc_rx::{Event, ObservableError, RpcError};
 use rkyv::{Archive, Deserialize, Serialize};
 
-use super::error::RpcError;
 use super::header::EventKind;
 
-/// The single error type of the whole streaming API.
-///
-/// Follows the Rx pattern: a single `error` channel whose payload distinguishes
-/// a **business** error (authored by the service) from a **technical** one
-/// (raised by the framework/transport). [`ObservableError::Empty`] is a
-/// pull-side artefact and never travels over the wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObservableError<E> {
-    /// Business error emitted by the service.
-    Business(E),
-    /// Technical RPC error (transport, discovery, protocol, ...).
-    Technical(RpcError),
-    /// The stream ended without emitting any value.
-    Empty,
-}
-
-impl<E> ObservableError<E> {
-    /// Returns `true` when this is a technical error.
-    #[inline]
-    pub fn is_technical(&self) -> bool {
-        matches!(self, ObservableError::Technical(_))
-    }
-
-    /// Returns `true` when this is a business error.
-    #[inline]
-    pub fn is_business(&self) -> bool {
-        matches!(self, ObservableError::Business(_))
-    }
-
-    /// Returns the inner business error, if any.
-    #[inline]
-    pub fn as_business(&self) -> Option<&E> {
-        match self {
-            ObservableError::Business(e) => Some(e),
-            ObservableError::Technical(_) | ObservableError::Empty => None,
-        }
-    }
-
-    /// Returns the inner technical error, if any.
-    #[inline]
-    pub fn as_technical(&self) -> Option<&RpcError> {
-        match self {
-            ObservableError::Technical(e) => Some(e),
-            ObservableError::Business(_) | ObservableError::Empty => None,
-        }
-    }
-}
-
-impl<E: std::fmt::Display> std::fmt::Display for ObservableError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ObservableError::Business(e) => write!(f, "{e}"),
-            ObservableError::Technical(e) => write!(f, "{e}"),
-            ObservableError::Empty => write!(f, "stream ended without a value"),
-        }
-    }
-}
-
-impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for ObservableError<E> {}
-
-/// Event emitted by an RPC stream, as observed by consumers.
-///
-/// This is the user-facing event type: the transport-level [`WireEvent`]
-/// `CompleteWith` optimization is never exposed here. A single `Error` variant
-/// carries both business and technical failures ([`ObservableError`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event<T, E> {
-    /// Intermediate business value.
-    Next(T),
-    /// Normal end of the stream.
-    Complete,
-    /// Terminal error (business or technical).
-    Error(ObservableError<E>),
-}
-
-impl<T, E> Event<T, E> {
-    /// Returns `true` if this event terminates the stream.
-    #[inline]
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Event::Complete | Event::Error(_))
-    }
-}
-
-/// Transport-level event carried over the wire and through the producer channel.
+/// Transport-level event carried over the wire and through a producer channel.
 ///
 /// Internal counterpart of [`Event`]: it adds the [`WireEvent::CompleteWith`]
 /// single-sample optimization used by producers. Consumers never observe it —
-/// [`crate::Observable::recv`] normalizes it into [`Event`].
+/// the transport folds and normalizes it back into [`Event`] on both sides.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum WireEvent<T, E> {
@@ -142,125 +62,6 @@ impl<T, E> WireEvent<T, E> {
     }
 }
 
-/// Producer-side sender of RPC events.
-///
-/// Producers emit through the ergonomic methods [`Sender::send_next`],
-/// [`Sender::send_complete`], [`Sender::send_complete_with`] and
-/// [`Sender::send_error`]. [`Sender::send_event`] is a passthrough used by the
-/// transport relays to forward any [`Event`], including technical errors.
-pub struct Sender<T, E> {
-    /// Shared with `channel` in [`super::stream`].
-    pub(crate) inner: async_channel::Sender<WireEvent<T, E>>,
-}
-
-impl<T, E> Clone for Sender<T, E> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<T, E> Sender<T, E> {
-    /// Sends a business value.
-    #[inline]
-    pub async fn send_next(
-        &self,
-        value: T,
-    ) -> Result<(), async_channel::SendError<WireEvent<T, E>>> {
-        self.inner.send(WireEvent::Next(value)).await
-    }
-
-    /// Sends a normal end of stream.
-    #[inline]
-    pub async fn send_complete(&self) -> Result<(), async_channel::SendError<WireEvent<T, E>>> {
-        self.inner.send(WireEvent::Complete).await
-    }
-
-    /// Sends a single terminal value (producer shortcut, one wire sample).
-    #[inline]
-    pub async fn send_complete_with(
-        &self,
-        value: T,
-    ) -> Result<(), async_channel::SendError<WireEvent<T, E>>> {
-        self.inner.send(WireEvent::CompleteWith(value)).await
-    }
-
-    /// Sends a business error.
-    #[inline]
-    pub async fn send_error(
-        &self,
-        err: E,
-    ) -> Result<(), async_channel::SendError<WireEvent<T, E>>> {
-        self.inner.send(WireEvent::Error(err)).await
-    }
-
-    /// Forwards any consumer [`Event`] (transport/relay passthrough).
-    ///
-    /// The only way a technical error transits, via the [`From`] conversion.
-    #[inline]
-    pub async fn send_event(
-        &self,
-        event: Event<T, E>,
-    ) -> Result<(), async_channel::SendError<WireEvent<T, E>>> {
-        self.inner.send(event.into()).await
-    }
-
-    /// Non-blocking variant of [`Sender::send_next`].
-    #[inline]
-    pub fn try_send_next(
-        &self,
-        value: T,
-    ) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(WireEvent::Next(value))
-    }
-
-    /// Non-blocking variant of [`Sender::send_complete`].
-    #[inline]
-    pub fn try_send_complete(&self) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(WireEvent::Complete)
-    }
-
-    /// Non-blocking variant of [`Sender::send_complete_with`].
-    #[inline]
-    pub fn try_send_complete_with(
-        &self,
-        value: T,
-    ) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(WireEvent::CompleteWith(value))
-    }
-
-    /// Non-blocking variant of [`Sender::send_error`].
-    #[inline]
-    pub fn try_send_error(
-        &self,
-        err: E,
-    ) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(WireEvent::Error(err))
-    }
-
-    /// Non-blocking variant of [`Sender::send_event`].
-    #[inline]
-    pub fn try_send_event(
-        &self,
-        event: Event<T, E>,
-    ) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(event.into())
-    }
-
-    /// Forwards a raw transport event (relay passthrough, consumer side).
-    ///
-    /// Relays an IPC sample **without re-encoding it**, so the
-    /// [`WireEvent::CompleteWith`] optimization survives as a single message.
-    #[doc(hidden)]
-    #[inline]
-    pub fn try_send_wire(
-        &self,
-        event: WireEvent<T, E>,
-    ) -> Result<(), async_channel::TrySendError<WireEvent<T, E>>> {
-        self.inner.try_send(event)
-    }
-}
 /// Converts a user-facing [`Event`] into its transport representation: a
 /// business error becomes [`WireEvent::Error`], a technical one
 /// [`WireEvent::RpcError`].
@@ -282,6 +83,11 @@ impl<T, E> From<Event<T, E>> for WireEvent<T, E> {
 /// Returns the event to yield **now** plus an optional **follow-up**: the
 /// [`WireEvent::CompleteWith`] optimization expands into `Next(v)` then
 /// `Complete`.
+///
+/// Used by the consumer side, which decodes an incoming sample and relays it to
+/// the caller. The producer side applies the mirror-image fold
+/// (`transport::bridge`), where a local `Next` followed by a `Complete` becomes
+/// one [`WireEvent::CompleteWith`] sample.
 pub(crate) fn normalize_wire_event<T, E>(
     event: WireEvent<T, E>,
 ) -> (Event<T, E>, Option<Event<T, E>>) {
@@ -291,5 +97,63 @@ pub(crate) fn normalize_wire_event<T, E>(
         WireEvent::CompleteWith(v) => (Event::Next(v), Some(Event::Complete)),
         WireEvent::Error(e) => (Event::Error(ObservableError::Business(e)), None),
         WireEvent::RpcError(e) => (Event::Error(ObservableError::Technical(e)), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_event_is_terminal_flags() {
+        assert!(!WireEvent::<i32, String>::Next(1).is_terminal());
+        assert!(WireEvent::<i32, String>::Complete.is_terminal());
+        assert!(WireEvent::<i32, String>::CompleteWith(1).is_terminal());
+        assert!(WireEvent::<i32, String>::Error("boom".to_string()).is_terminal());
+        assert!(WireEvent::<i32, String>::RpcError(RpcError::Timeout).is_terminal());
+    }
+
+    #[test]
+    fn wire_event_rkyv_roundtrip_complete_with() {
+        let event: WireEvent<i32, String> = WireEvent::CompleteWith(42);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event).expect("the event is encodable");
+        let decoded = rkyv::from_bytes::<WireEvent<i32, String>, rkyv::rancor::Error>(&bytes)
+            .expect("what was just encoded must decode");
+        match decoded {
+            WireEvent::CompleteWith(v) => assert_eq!(v, 42),
+            other => panic!("expected CompleteWith, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_complete_with_expands_into_next_then_complete() {
+        let (event, follow_up) = normalize_wire_event(WireEvent::<i32, String>::CompleteWith(7));
+        assert_eq!(event, Event::Next(7));
+        assert_eq!(follow_up, Some(Event::Complete));
+    }
+
+    /// Every wire kind is stamped with its own label: an observer then counts
+    /// completion and errors without decoding the payload.
+    #[test]
+    fn every_wire_variant_maps_to_its_own_kind() {
+        let kinds = [
+            (WireEvent::<i32, String>::Next(1), EventKind::Next),
+            (WireEvent::<i32, String>::Complete, EventKind::Complete),
+            (
+                WireEvent::<i32, String>::CompleteWith(1),
+                EventKind::Complete,
+            ),
+            (
+                WireEvent::<i32, String>::Error(String::new()),
+                EventKind::Error,
+            ),
+            (
+                WireEvent::<i32, String>::RpcError(RpcError::Timeout),
+                EventKind::RpcError,
+            ),
+        ];
+        for (event, expected) in kinds {
+            assert_eq!(event.kind(), expected, "wrong kind for {event:?}");
+        }
     }
 }

@@ -1,0 +1,51 @@
+[package]
+name = "ice-rpc-rx"
+version.workspace = true
+rust-version.workspace = true
+edition = "2021"
+description = "Reactive stream layer of ice-rpc: Observable, operators, Subject and the execution facade"
+license = "Apache-2.0"
+repository = "https://github.com/max3163/ice-rpc"
+homepage = "https://github.com/max3163/ice-rpc"
+documentation = "https://docs.rs/ice-rpc-rx"
+keywords = ["reactive", "stream", "observable", "rx", "async"]
+categories = ["asynchronous", "concurrency"]
+readme = "Readme.md"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+# The execution facade (`spawn`, `sleep`, `block_on`) is runtime-agnostic by
+# default: async-global-executor + blocking + async-io. This feature switches it
+# to tokio. `ice-rpc` forwards its own `tokio` feature here, so a consumer never
+# names this crate to pick a runtime.
+default = []
+tokio = ["dep:tokio"]
+
+[dependencies]
+# The single technical error of the stack. It carries the rkyv derives because
+# the transport serializes it as-is when it rejects a call, and the transport
+# cannot reach a type it does not depend on.
+rkyv = { workspace = true }
+thiserror = "2"
+log = { workspace = true }
+# Poll-based combinators: every operator wraps its source as a boxed
+# `futures_lite::Stream`, so there is no intermediate channel and no task.
+futures = "0.3"
+futures-lite = "2"
+pin-project-lite = "0.2"
+# Timers and channels of the stream layer (`delay`, `timeout`, `Subject`).
+futures-timer = "3"
+async-channel = "2"
+async-lock = "3"
+# Default execution facade (runtime-agnostic).
+async-global-executor = "3"
+# Optional execution facade.
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+pollster = "1.0"

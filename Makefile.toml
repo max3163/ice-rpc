@@ -10,6 +10,7 @@
 #   cargo make provider                 # Run the Rust provider example (debug)
 #   cargo make consumer                 # Run the Rust consumer example (debug)
 #   cargo make monitoring-demo-detail   # Console observer, self-contained + decoded messages
+#   cargo make rx-test                  # Test the reactive layer alone (no iceoryx2 involved)
 #   cargo make provider-release         # Same, compiled in release
 #   cargo make provider-context-nodejs  # Run the Node.js provider example
 #
@@ -449,6 +450,29 @@ args = ["test", "-p", "ice-rpc-monitor"]
 description = "Lint the observer crate and its example"
 command = "cargo"
 args = ["clippy", "-p", "ice-rpc-monitor", "--all-targets"]
+
+# =============================================================================
+# REACTIVE LAYER (ice-rpc-rx)
+#
+# The stream vocabulary, the operators, the multicast primitive and the
+# execution facade. It has no dependency on iceoryx2, so its suite runs
+# anywhere, and the `tokio` feature switches the facade it exercises.
+# =============================================================================
+
+[tasks.rx-test]
+description = "Run the reactive layer tests (default, runtime-agnostic facade)"
+command = "cargo"
+args = ["test", "-p", "ice-rpc-rx"]
+
+[tasks.rx-test-tokio]
+description = "Run the reactive layer tests against the tokio facade"
+command = "cargo"
+args = ["test", "-p", "ice-rpc-rx", "--features", "tokio"]
+
+[tasks.rx-clippy]
+description = "Lint the reactive layer, every target"
+command = "cargo"
+args = ["clippy", "-p", "ice-rpc-rx", "--all-targets"]
 
 # =============================================================================
 # NODE.JS EXAMPLES (gateway_nodejs)

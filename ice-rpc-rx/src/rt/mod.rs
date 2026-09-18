@@ -249,11 +249,15 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     futures_lite::future::block_on(future)
 }
 
-/// Runs a future on the facade's own runtime (unit tests only).
+/// Runs a future on the facade's own runtime.
 ///
-/// Under the `tokio` facade, [`spawn`] and [`sleep`] require an active runtime.
-#[cfg(test)]
-pub(crate) fn test_block_on<F: Future>(future: F) -> F::Output {
+/// Under the `tokio` facade, [`spawn`] and [`sleep`] require an active runtime:
+/// a test that drives them has to supply one for the whole poll.
+///
+/// `#[doc(hidden)]`: this is a test helper shared by `ice-rpc-rx` and `ice-rpc`,
+/// not part of the API.
+#[doc(hidden)]
+pub fn test_block_on<F: Future>(future: F) -> F::Output {
     #[cfg(feature = "tokio")]
     {
         tokio::runtime::Builder::new_multi_thread()

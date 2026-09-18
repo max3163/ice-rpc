@@ -220,7 +220,7 @@ mod tests {
 
         let seen_c = seen.clone();
         let done_c = done.clone();
-        let stream: crate::Observable<i32, String> = crate::rx::from([1, 2, 3]);
+        let stream: crate::Observable<i32, String> = crate::from([1, 2, 3]);
         let _sub = stream.subscribe_all(
             move |v| seen_c.lock().unwrap().push(v),
             |_e: ObservableError<String>| {},
@@ -279,7 +279,7 @@ mod tests {
         let next_c = next_called.clone();
 
         // A channel-backed stream that never emits: the task parks on the pull.
-        let (tx, rx) = crate::gen::channel::<i32, String>(1);
+        let (tx, rx) = crate::channel::<i32, String>(1);
         let sub = rx.subscribe(move |_v| next_c.store(true, Ordering::SeqCst));
 
         // Dropping cancels silently: no callback, no panic.
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn subscription_closed_resolves_on_complete() {
-        let stream: crate::Observable<i32, String> = crate::rx::of(1);
+        let stream: crate::Observable<i32, String> = crate::of(1);
         let sub = stream.subscribe(|_v| {});
 
         // The push task cancels its token when it returns, so `closed` resolves
@@ -305,7 +305,7 @@ mod tests {
     fn for_each_runs_to_completion() {
         let sum = Arc::new(AtomicI32::new(0));
         let sum_c = sum.clone();
-        let stream: crate::Observable<i32, String> = crate::rx::from([1, 2, 3]);
+        let stream: crate::Observable<i32, String> = crate::from([1, 2, 3]);
 
         let result = pollster::block_on(stream.for_each(move |v| {
             sum_c.fetch_add(v, Ordering::SeqCst);

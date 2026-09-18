@@ -296,9 +296,17 @@ place by the bus, so it costs no serialization and no allocation.
 | `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
 | `method_name` | `StaticString<64>` | target method (carried by requests) |
-| `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` |
+| `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` / `RpcError` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
-| `service_version` | `u16` | service API version, echoed on the responses |
+| `service_version` | `u16` | service API version, validated by the provider and echoed on the responses |
+
+`Error` labels a **business** error, whose payload is the service's
+`WireEvent<T, E>`; `RpcError` labels a **transport-level** rejection — unknown
+method, unknown service, protocol or interface-version mismatch — whose payload
+is a bare `RpcError`. The distinction is deliberate: a rejection must be
+decodable **without** the service types, since the provider cannot name them for
+a method it does not have. That is what lets it answer such a call immediately
+instead of leaving the client to time out.
 
 The header carries **no emitter identity**: iceoryx2's native sample header
 already exposes the source `node_id` (hence the PID) and the unique

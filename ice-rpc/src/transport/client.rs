@@ -22,12 +22,15 @@ use super::{
 use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
-    normalize_wire_event, unbounded_channel, Event, Observable, ObservableError, RpcError,
-    RpcHeader, ServiceRef, WireEvent, CORRELATION_ID_LEN,
+    normalize_wire_event, unbounded_channel, Event, EventKind, Observable, ObservableError,
+    RpcError, RpcHeader, ServiceRef, WireEvent, CORRELATION_ID_LEN,
 };
 
-/// Typed handler invoked with the rkyv response payload of one in-flight call.
-type ResponseHandler = Arc<dyn Fn(&[u8]) + Send + Sync>;
+/// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.
+///
+/// The kind is needed to pick the framing: a bare `RpcError` for a transport-level
+/// rejection, the method's `WireEvent<T, E>` otherwise.
+type ResponseHandler = Arc<dyn Fn(EventKind, &[u8]) + Send + Sync>;
 
 /// Handlers of the calls in flight on one channel, keyed by correlation id.
 type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
@@ -195,7 +198,7 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
                 // before the handler runs.
                 let handler = lock(&ports.handlers).get(&header.correlation_id).cloned();
                 if let Some(handler) = handler {
-                    handler(payload);
+                    handler(header.event_kind(), payload);
                 }
             },
         );
@@ -234,31 +237,43 @@ where
     let (tx, rx) = unbounded_channel::<T, E>();
 
     let handler_ports = Arc::clone(&ports);
-    let handler: ResponseHandler =
-        Arc::new(
-            move |bytes: &[u8]| match super::decode_aligned::<WireEvent<T, E>>(bytes) {
-                Ok(wire) => {
-                    let (event, follow_up) = normalize_wire_event(wire);
-                    let terminal = event.is_terminal();
-                    if tx.try_send_event(event).is_err() {
-                        release_handler(&handler_ports, &cid);
-                        return;
-                    }
-                    if let Some(next) = follow_up {
-                        let _ = tx.try_send_event(next);
-                    }
-                    if terminal {
-                        release_handler(&handler_ports, &cid);
-                    }
+    let handler: ResponseHandler = Arc::new(move |kind: EventKind, bytes: &[u8]| {
+        // A transport-level rejection is a bare `RpcError`, framed without the
+        // service types: it can be answered for any method, known or not, so it
+        // must be decoded without naming `(T, E)`.
+        if kind == EventKind::RpcError {
+            let error = match super::decode_aligned::<RpcError>(bytes) {
+                Ok(err) => err,
+                Err(e) => transport_error("decode rpc error", e),
+            };
+            let _ = tx.try_send_event(Event::Error(ObservableError::Technical(error)));
+            release_handler(&handler_ports, &cid);
+            return;
+        }
+
+        match super::decode_aligned::<WireEvent<T, E>>(bytes) {
+            Ok(wire) => {
+                let (event, follow_up) = normalize_wire_event(wire);
+                let terminal = event.is_terminal();
+                if tx.try_send_event(event).is_err() {
+                    release_handler(&handler_ports, &cid);
+                    return;
                 }
-                Err(e) => {
-                    let _ = tx.try_send_event(Event::Error(ObservableError::Technical(
-                        transport_error("decode response", e),
-                    )));
+                if let Some(next) = follow_up {
+                    let _ = tx.try_send_event(next);
+                }
+                if terminal {
                     release_handler(&handler_ports, &cid);
                 }
-            },
-        );
+            }
+            Err(e) => {
+                let _ = tx.try_send_event(Event::Error(ObservableError::Technical(
+                    transport_error("decode response", e),
+                )));
+                release_handler(&handler_ports, &cid);
+            }
+        }
+    });
     lock(&ports.handlers).insert(cid, handler);
 
     if let Err(e) = publish_until_delivered(

@@ -63,12 +63,20 @@ never from the payload, before dispatching anything:
   can never carry one without the other. A mismatch is answered with
   `RpcError::IncompatibleVersion { expected, actual }`.
 
-Both answers are terminal `WireEvent::RpcError` samples, so the caller receives the
-diagnosis instead of waiting for a timeout, and both are deliberately **not
-retryable**: the peers must be rebuilt with the same protocol version, and with the
-same `#[service(..., version = N)]`.
+Every rejection is framed as a **bare `RpcError`** labelled `EventKind::RpcError`
+(not the service's `WireEvent<T, E>`), so the caller receives the diagnosis instead
+of waiting for a timeout, and all of them are deliberately **not retryable**: the
+peers must be rebuilt with the same protocol version, and with the same
+`#[service(..., version = N)]`.
 
-The check reads the header precisely because the payload layout is what changes
+The same framing answers the two cases where the provider cannot produce a typed
+response at all — a request whose `service_id` nobody registered, and a method the
+service does not expose — with `RpcError::UnknownService` and
+`RpcError::UnknownMethod`. A rejection must not depend on the service types: the
+provider cannot name them for a method it does not have, so a generic framing would
+leave those calls unanswered.
+
+The checks read the header precisely because the payload layout is what changes
 between versions: a guard that had to decode the divergent payload first would be
 doing the very operation it is meant to protect against.
 

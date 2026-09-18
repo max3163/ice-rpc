@@ -113,9 +113,6 @@ fn a_version_mismatch_is_reported_to_the_caller() {
     dispatcher.method("echo", |_payload, emitter| {
         let _ = emitter.emit(EventKind::Complete, &[]);
     });
-    dispatcher.on_error("echo", |err, emitter| {
-        ice_rpc::transport::emit_rpc_error::<i32, String>(err, emitter);
-    });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
 
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -136,6 +133,85 @@ fn a_version_mismatch_is_reported_to_the_caller() {
             ))
         ),
         "expected IncompatibleVersion, got {outcome:?}"
+    );
+
+    stop.cancel();
+    let _ = server.join();
+}
+
+/// A call to a method the provider does not expose is answered immediately,
+/// instead of leaving the caller waiting for the transport timeout.
+#[test]
+fn an_unknown_method_is_reported_to_the_caller() {
+    let channel = format!("IceRpcIntegration/UnknownMethod{}", std::process::id());
+    let service_id = service_id_of(&channel);
+    let stop = CancellationToken::new();
+
+    let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
+    dispatcher.method("echo", |_payload, emitter| {
+        let _ = emitter.emit(EventKind::Complete, &[]);
+    });
+    let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let started = std::time::Instant::now();
+    let stream = native_call::<i32, String>(
+        &channel,
+        ServiceRef::new(service_id, 1),
+        "does_not_exist",
+        b"go",
+    )
+    .expect("native_call must open the native service");
+    let outcome = pollster::block_on(stream.collect());
+
+    assert!(
+        matches!(
+            outcome,
+            Err(ice_rpc::ObservableError::Technical(
+                ice_rpc::RpcError::UnknownMethod(_)
+            ))
+        ),
+        "expected UnknownMethod, got {outcome:?}"
+    );
+    // The point of the change: an answer, not a timeout.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the rejection waited for the transport timeout instead of being answered"
+    );
+
+    stop.cancel();
+    let _ = server.join();
+}
+
+/// A call whose `service_id` nobody registered is answered immediately too.
+#[test]
+fn an_unknown_service_is_reported_to_the_caller() {
+    let channel = format!("IceRpcIntegration/UnknownService{}", std::process::id());
+    let registered = service_id_of(&format!("{channel}-registered"));
+    let missing = service_id_of(&format!("{channel}-missing"));
+    let stop = CancellationToken::new();
+
+    let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(registered, 1));
+    dispatcher.method("echo", |_payload, emitter| {
+        let _ = emitter.emit(EventKind::Complete, &[]);
+    });
+    let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let stream = native_call::<i32, String>(&channel, ServiceRef::new(missing, 1), "echo", b"go")
+        .expect("native_call must open the native service");
+    let outcome = pollster::block_on(stream.collect());
+
+    assert!(
+        matches!(
+            outcome,
+            Err(ice_rpc::ObservableError::Technical(
+                ice_rpc::RpcError::UnknownService(_)
+            ))
+        ),
+        "expected UnknownService, got {outcome:?}"
     );
 
     stop.cancel();

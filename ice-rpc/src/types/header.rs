@@ -50,15 +50,27 @@ pub enum EventKind {
     Next = 1,
     /// Normal end of the stream (terminal).
     Complete = 2,
-    /// Terminal error (business or technical).
+    /// Terminal business error, whose payload is the service's `WireEvent<T, E>`.
     Error = 3,
+    /// Terminal **transport-level** technical error, whose payload is a bare
+    /// [`RpcError`](crate::types::RpcError).
+    ///
+    /// Distinct from [`EventKind::Error`] on purpose: a rejection (unknown
+    /// method, unknown service, protocol or interface version mismatch) says
+    /// nothing about the service types, and the provider cannot name them at all
+    /// for a method it does not have. Framing it as a bare `RpcError` is what
+    /// lets any request be answered instead of silently timing out.
+    RpcError = 4,
 }
 
 impl EventKind {
     /// Returns `true` if this kind terminates the stream.
     #[inline]
     pub fn is_terminal(self) -> bool {
-        matches!(self, EventKind::Complete | EventKind::Error)
+        matches!(
+            self,
+            EventKind::Complete | EventKind::Error | EventKind::RpcError
+        )
     }
 
     /// Returns the wire value of this kind.
@@ -79,6 +91,8 @@ impl EventKind {
             0 => EventKind::Request,
             1 => EventKind::Next,
             2 => EventKind::Complete,
+            3 => EventKind::Error,
+            4 => EventKind::RpcError,
             _ => EventKind::Error,
         }
     }
@@ -91,6 +105,7 @@ impl_labels!(EventKind {
     EventKind::Next => "next",
     EventKind::Complete => "complete",
     EventKind::Error => "error",
+    EventKind::RpcError => "rpc-error",
 });
 
 /// Zero-copy RPC header attached to every request and response sample.
@@ -367,7 +382,7 @@ mod tests {
     /// An unknown kind must decode to `Error`, never to the terminal `Complete`.
     #[test]
     fn an_unknown_event_kind_decodes_as_error_not_complete() {
-        for value in 4u8..=u8::MAX {
+        for value in 5u8..=u8::MAX {
             assert_eq!(
                 EventKind::from_u8(value),
                 EventKind::Error,
@@ -375,12 +390,13 @@ mod tests {
             );
         }
 
-        // The four declared values round-trip, `Complete` included.
+        // Every declared value round-trips, `Complete` included.
         for kind in [
             EventKind::Request,
             EventKind::Next,
             EventKind::Complete,
             EventKind::Error,
+            EventKind::RpcError,
         ] {
             assert_eq!(EventKind::from_u8(kind.as_u8()), kind);
         }

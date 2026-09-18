@@ -58,6 +58,11 @@ impl ResponseEmitter for CollectEmitter {
 /// zero-copy header and an out-of-band observer can label the response without
 /// decoding the payload.
 ///
+/// A technical error is framed as a **bare [`RpcError`]** labelled
+/// [`EventKind::RpcError`], like every transport-level rejection: it must be
+/// decodable without knowing the service types. Every other kind carries the
+/// method's `WireEvent<T, E>`.
+///
 /// One scratch buffer serves the whole stream: encoding `n` responses costs one
 /// allocation, and the bytes reach the emitter without being copied. The buffer
 /// belongs to this call and is never shared: `benches/concurrency.rs` measures a
@@ -87,14 +92,19 @@ pub fn observable_to_responses<T, E>(
             // The source is exhausted, or closed abruptly.
             Err(_) => return,
         };
-        let kind = wire.kind();
-
         // The writer appends: the buffer must be emptied before each sample, and
         // it comes back from the call, so its allocation is reused. `AlignedVec`
         // is a pointer, a length and a capacity: passing it by value costs
         // nothing, and the encoded bytes reach the emitter without a copy.
         scratch.clear();
-        let result: Result<AlignedVec<16>, rkyv::rancor::Error> = to_bytes_in(&wire, scratch);
+
+        // Two framings: a bare `RpcError` for a technical error, the service's
+        // `WireEvent<T, E>` for everything else.
+        let framed: (EventKind, Result<AlignedVec<16>, rkyv::rancor::Error>) = match &wire {
+            WireEvent::RpcError(err) => (EventKind::RpcError, to_bytes_in(err, scratch)),
+            _ => (wire.kind(), to_bytes_in(&wire, scratch)),
+        };
+        let (kind, result) = framed;
 
         match result {
             Ok(bytes) => {
@@ -116,21 +126,12 @@ pub fn observable_to_responses<T, E>(
 /// Handler of one RPC method: decoded payload plus the sink to push into.
 pub type MethodHandler = Box<dyn Fn(&[u8], &mut dyn ResponseEmitter) + Send + Sync>;
 
-/// Type-erased emitter of one terminal technical error for a method.
-///
-/// The concrete `(T, E)` of the method are needed to encode the `WireEvent` its
-/// caller decodes, which the type-erased transport cannot name; the generated
-/// dispatcher supplies a closure that knows them.
-pub type RpcErrorEmitter = Box<dyn Fn(RpcError, &mut dyn ResponseEmitter) + Send + Sync>;
-
 /// Per-service table of method handlers, built by a generated provider.
 #[derive(Default)]
 pub struct ServiceDispatcher {
     /// Identity (id + interface version) of the service contract.
     service: ServiceRef,
     handlers: HashMap<&'static str, MethodHandler>,
-    /// Terminal-error emitters, one per method, keyed like `handlers`.
-    errors: HashMap<&'static str, RpcErrorEmitter>,
 }
 
 impl ServiceDispatcher {
@@ -139,7 +140,6 @@ impl ServiceDispatcher {
         Self {
             service,
             handlers: HashMap::new(),
-            errors: HashMap::new(),
         }
     }
 
@@ -157,69 +157,39 @@ impl ServiceDispatcher {
         self
     }
 
-    /// Registers the terminal-error emitter of one RPC method.
+    /// Routes a request to its handler.
     ///
-    /// Pairing it with [`ServiceDispatcher::method`] is what lets the version
-    /// check answer with a typed [`RpcError`] even though `(T, E)` were erased.
-    pub fn on_error<F>(&mut self, name: &'static str, emitter: F) -> &mut Self
-    where
-        F: Fn(RpcError, &mut dyn ResponseEmitter) + Send + Sync + 'static,
-    {
-        self.errors.insert(name, Box::new(emitter));
-        self
-    }
-
-    /// Routes a request to its handler; an unknown method emits nothing.
-    pub fn dispatch(&self, method: &str, payload: &[u8], emitter: &mut dyn ResponseEmitter) {
-        if let Some(handler) = self.handlers.get(method) {
-            handler(payload, emitter);
-        }
-    }
-
-    /// Answers `method` with the terminal technical error `err`.
-    ///
-    /// Returns `false` when no emitter is registered for that method (an unknown
-    /// method), leaving the caller to log it. Used by the transport to reject a
-    /// request whose protocol or interface version it cannot serve, without
-    /// naming the erased `(T, E)`.
-    pub fn reject_with(
+    /// Returns `false` when no handler is registered for `method`, which the
+    /// transport turns into an immediate [`crate::types::RpcError::UnknownMethod`]
+    /// — a silent drop would only reach the caller as a timeout. One lookup: the
+    /// transport needs no separate `has_method` probe.
+    pub fn dispatch(
         &self,
         method: &str,
-        err: RpcError,
+        payload: &[u8],
         emitter: &mut dyn ResponseEmitter,
     ) -> bool {
-        let Some(emit) = self.errors.get(method) else {
-            return false;
-        };
-        emit(err, emitter);
-        true
+        match self.handlers.get(method) {
+            Some(handler) => {
+                handler(payload, emitter);
+                true
+            }
+            None => false,
+        }
     }
 }
 
-/// Encodes `err` as the terminal `WireEvent::RpcError` of `(T, E)` and emits it.
+/// Encodes a transport-level technical error and emits it.
 ///
-/// The bounds mirror [`observable_to_responses`], since both serialize the same
-/// `WireEvent<T, E>`; `(T, E)` must be the ones the caller's `native_call`
-/// decodes, which is why the generated code supplies them.
-pub fn emit_rpc_error<T, E>(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool
-where
-    T: Send + 'static,
-    E: Send + 'static,
-    for<'a> WireEvent<T, E>: rkyv::Serialize<
-        rkyv::rancor::Strategy<
-            rkyv::ser::Serializer<
-                rkyv::util::AlignedVec,
-                rkyv::ser::allocator::ArenaHandle<'a>,
-                rkyv::ser::sharing::Share,
-            >,
-            rkyv::rancor::Error,
-        >,
-    >,
-{
-    let wire: WireEvent<T, E> = WireEvent::RpcError(err);
+/// The payload is the archived [`RpcError`] **alone**, labelled
+/// [`EventKind::RpcError`] — never a `WireEvent<T, E>`. A rejection says nothing
+/// about the service types, and the provider cannot name them at all for a
+/// method it does not have, so a generic framing could not answer those calls.
+pub fn emit_rpc_error(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool {
     let scratch = AlignedVec::<16>::with_capacity(256);
-    match to_bytes_in(&wire, scratch) {
-        Ok(bytes) => emitter.emit(EventKind::Error, &bytes),
+    let encoded: Result<AlignedVec<16>, rkyv::rancor::Error> = to_bytes_in(&err, scratch);
+    match encoded {
+        Ok(bytes) => emitter.emit(EventKind::RpcError, &bytes),
         Err(e) => {
             log::error!("[bridge] rpc error serialization failed: {e:?}");
             false

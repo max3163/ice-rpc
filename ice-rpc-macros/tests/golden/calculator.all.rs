@@ -91,16 +91,6 @@ impl CalculatorServer {
                         }
                     },
                 );
-            dispatcher
-                .on_error(
-                    "add",
-                    |
-                        err: ice_rpc::gen::RpcError,
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        ice_rpc::gen::emit_rpc_error::<i32, String>(err, emitter);
-                    },
-                );
         }
         dispatcher
     }

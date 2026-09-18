@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
 
-use super::bridge::{ResponseEmitter, ServiceDispatcher};
+use super::bridge::{emit_rpc_error, ResponseEmitter, ServiceDispatcher};
 use super::client::publish_until_delivered;
 use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
@@ -356,41 +356,60 @@ fn handle_request(
         );
         return;
     }
+
+    // The sink is pointed at the request before the lookup: every rejection below
+    // answers the caller, including when the target service is unknown. The
+    // handler then pushes its responses into the same sink, and the consumers are
+    // woken once per coalescing window, only if something was published.
+    sink.begin(header);
+
     // A channel hosts several services: the header id selects the dispatcher.
     let Some(dispatcher) = table.get(&header.service_id) else {
-        log::warn!(
-            "[transport] channel '{channel}': unknown service_id {:#010x} for method '{}' (service not registered, or id collision)",
-            header.service_id,
-            header.method()
+        reject(
+            channel,
+            header,
+            sink,
+            RpcError::UnknownService(format!("{:#010x}", header.service_id)),
         );
         return;
     };
-
-    // The handler pushes its responses into the sink; the consumers are woken
-    // once per coalescing window, and only if something was published.
-    sink.begin(header);
 
     // An incompatible protocol or interface version is rejected **before** the
     // payload is decoded, on the stable header alone: the payload layout is
     // exactly what changes when either version moves, so a guard that had to
     // decode first would be doing the very operation it protects against.
     if let Some(rejection) = RequestRejection::classify(dispatcher, header) {
-        let err = rejection.rpc_error();
-        log::warn!(
-            "[transport] '{channel}': rejecting '{}': {err}",
-            header.method()
-        );
-        if !dispatcher.reject_with(header.method(), err, sink) {
-            log::warn!(
-                "[transport] '{channel}': no handler for method '{}', rejection not reported",
-                header.method()
-            );
-        }
-        sink.finish();
+        reject(channel, header, sink, rejection.rpc_error());
         return;
     }
 
-    dispatcher.dispatch(header.method(), payload, sink);
+    // An unknown method is answered too: silence would leave the caller waiting
+    // for the transport timeout instead of naming the mistake.
+    if !dispatcher.dispatch(header.method(), payload, sink) {
+        reject(
+            channel,
+            header,
+            sink,
+            RpcError::UnknownMethod(header.method().to_owned()),
+        );
+        return;
+    }
+
+    sink.finish();
+}
+
+/// Answers a request that cannot be served, and logs the reason.
+///
+/// The rejection is framed as a bare [`RpcError`], so it needs neither the
+/// service types nor even a registered handler: every request gets an answer.
+fn reject(channel: &str, header: &RpcHeader, sink: &mut ResponseSink<'_>, err: RpcError) {
+    log::warn!(
+        "[transport] '{channel}': rejecting '{}': {err}",
+        header.method()
+    );
+    if !emit_rpc_error(err, sink) {
+        log::error!("[transport] '{channel}': the rejection could not be published");
+    }
     sink.finish();
 }
 
@@ -613,33 +632,23 @@ mod tests {
             vec![(7, first), (9, second)].into_iter().collect();
 
         let mut emitter = CollectEmitter::new();
-        table.get(&7).unwrap().dispatch("echo", b"x", &mut emitter);
+        assert!(table.get(&7).unwrap().dispatch("echo", b"x", &mut emitter));
         assert_eq!(emitter.take().len(), 1);
 
-        // The second dispatcher has no `echo` method: nothing is emitted.
-        table.get(&9).unwrap().dispatch("echo", b"x", &mut emitter);
+        // The second dispatcher has no `echo` method: reported, nothing emitted.
+        assert!(!table.get(&9).unwrap().dispatch("echo", b"x", &mut emitter));
         assert!(emitter.take().is_empty());
 
         assert!(!table.contains_key(&11));
     }
 
-    /// The type-erased transport borrows the generated emitter to answer a
-    /// version mismatch with the typed `RpcError` the caller decodes.
+    /// A transport-level rejection is framed as a bare `RpcError`, so it needs
+    /// neither the service types nor even a registered handler.
     #[test]
-    fn a_version_mismatch_emits_the_typed_incompatible_error() {
-        let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
-        dispatcher.method("echo", |_payload, _emitter| {});
-        dispatcher.on_error("echo", |err, emitter| {
-            crate::transport::emit_rpc_error::<i32, String>(err, emitter);
-        });
-
+    fn a_rejection_is_framed_as_a_bare_rpc_error() {
         let mut emitter = CollectEmitter::new();
-        assert!(dispatcher.reject_with(
-            "echo",
-            RpcError::IncompatibleVersion {
-                expected: 2,
-                actual: 1,
-            },
+        assert!(crate::transport::emit_rpc_error(
+            RpcError::UnknownMethod("nope".to_owned()),
             &mut emitter
         ));
 
@@ -649,29 +658,26 @@ mod tests {
             1,
             "the rejection is a single terminal sample"
         );
-        assert_eq!(samples[0].0, EventKind::Error);
+        assert_eq!(samples[0].0, EventKind::RpcError);
+        assert!(samples[0].0.is_terminal());
 
-        let wire: crate::types::WireEvent<i32, String> =
+        // No `WireEvent<T, E>`: the payload is the `RpcError` alone, decodable
+        // without knowing the service types.
+        let decoded: RpcError =
             crate::transport::decode_aligned(&samples[0].1).expect("decode the error sample");
-        assert_eq!(
-            wire,
-            crate::types::WireEvent::RpcError(RpcError::IncompatibleVersion {
-                expected: 2,
-                actual: 1,
-            })
-        );
+        assert_eq!(decoded, RpcError::UnknownMethod("nope".to_owned()));
+    }
 
-        // An unknown method has no emitter: nothing is emitted, nothing panics.
+    /// Dispatch reports whether the method exists, with a single lookup: that
+    /// boolean is what turns an unknown method into an immediate error.
+    #[test]
+    fn dispatch_reports_whether_the_method_exists() {
+        let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
+        dispatcher.method("echo", |_payload, _emitter| {});
+
         let mut emitter = CollectEmitter::new();
-        assert!(!dispatcher.reject_with(
-            "missing",
-            RpcError::IncompatibleVersion {
-                expected: 2,
-                actual: 1,
-            },
-            &mut emitter
-        ));
-        assert!(emitter.take().is_empty());
+        assert!(dispatcher.dispatch("echo", b"x", &mut emitter));
+        assert!(!dispatcher.dispatch("missing", b"x", &mut emitter));
     }
 
     /// A peer whose framing differs must be rejected, not dispatched: the rest of

@@ -134,7 +134,10 @@ impl<T, E> WireEvent<T, E> {
         match self {
             WireEvent::Next(_) => EventKind::Next,
             WireEvent::Complete | WireEvent::CompleteWith(_) => EventKind::Complete,
-            WireEvent::Error(_) | WireEvent::RpcError(_) => EventKind::Error,
+            WireEvent::Error(_) => EventKind::Error,
+            // A technical error has its own kind: its framed payload is a bare
+            // `RpcError`, not a `WireEvent<T, E>`.
+            WireEvent::RpcError(_) => EventKind::RpcError,
         }
     }
 }

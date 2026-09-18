@@ -24,6 +24,15 @@ pub enum RpcError {
     /// The service on the bus is not the one this build asks for.
     #[error("RPC error: incompatible service on the bus: {0}")]
     ProtocolMismatch(String),
+    /// The provider has no method of that name on the requested service.
+    ///
+    /// Answered immediately by the provider instead of leaving the call to time
+    /// out, so a typo or a stale client is diagnosable.
+    #[error("RPC error: unknown method '{0}'")]
+    UnknownMethod(String),
+    /// No service is registered under the requested id on that channel.
+    #[error("RPC error: unknown service id {0}")]
+    UnknownService(String),
     /// The provider's service interface version differs from the requested one.
     ///
     /// Emitted by the provider before dispatching, so the caller learns the
@@ -44,9 +53,10 @@ impl RpcError {
     /// Returns `true` when retrying the same call may succeed.
     ///
     /// Transient failures (transport, timeout) are retryable; serialization
-    /// failures, internal errors, [`RpcError::ProtocolMismatch`] and
-    /// [`RpcError::IncompatibleVersion`] — which no amount of retrying resolves —
-    /// are not.
+    /// failures, internal errors, [`RpcError::ProtocolMismatch`],
+    /// [`RpcError::IncompatibleVersion`], [`RpcError::UnknownMethod`] and
+    /// [`RpcError::UnknownService`] — which no amount of retrying resolves — are
+    /// not.
     pub fn is_retryable(&self) -> bool {
         matches!(self, RpcError::TransportError(_) | RpcError::Timeout)
     }

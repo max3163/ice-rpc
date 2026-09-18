@@ -109,16 +109,6 @@ impl DatabaseApiServer {
                         }
                     },
                 );
-            dispatcher
-                .on_error(
-                    "get",
-                    |
-                        err: ice_rpc::gen::RpcError,
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        ice_rpc::gen::emit_rpc_error::<String, String>(err, emitter);
-                    },
-                );
         }
         {
             let service_impl = self.service_impl.clone();
@@ -141,16 +131,6 @@ impl DatabaseApiServer {
                             }
                             _ => {}
                         }
-                    },
-                );
-            dispatcher
-                .on_error(
-                    "put",
-                    |
-                        err: ice_rpc::gen::RpcError,
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        ice_rpc::gen::emit_rpc_error::<(), String>(err, emitter);
                     },
                 );
         }

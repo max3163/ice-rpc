@@ -616,12 +616,18 @@ impl Monitor {
         let trace_id = fmt_correlation_id(&header.correlation_id);
         // Decode the response with the registry this observer was built with.
         let response_text = match sample {
-            Sample::Full { payload } => Some(
+            Sample::Full { payload } => Some(if header.event_kind() == EventKind::RpcError {
+                // A transport-level rejection carries a bare `RpcError`, not the
+                // service's `WireEvent<T, E>`: it is rendered without the registry.
+                ice_rpc::transport::decode_aligned::<ice_rpc::RpcError>(payload)
+                    .map(|err| format!("rpc error: {err}"))
+                    .unwrap_or_else(|_| undecoded(payload.len()))
+            } else {
                 self.config
                     .decoders
                     .response(call.service_id, &call.method, payload)
-                    .unwrap_or_else(|| undecoded(payload.len())),
-            ),
+                    .unwrap_or_else(|| undecoded(payload.len()))
+            }),
             Sample::Meta { .. } => None,
         };
         let record = TraceRecord {

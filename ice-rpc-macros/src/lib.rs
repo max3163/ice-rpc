@@ -176,8 +176,6 @@ fn expand_service_with(
             var_name,
             &arg_names,
             req_enum_name,
-            &method.ok_type,
-            &method.err_type,
         ));
 
         if features.nodejs {

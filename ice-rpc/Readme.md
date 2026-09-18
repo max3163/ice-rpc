@@ -1,6 +1,6 @@
 # ice-rpc
 
-High-performance, **zero-copy** RPC framework over [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) shared memory.
+High-performance RPC framework over [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) shared memory: **zero-copy header**, **rkyv payload**, **in-place decoding** when the payload is aligned.
 
 From a single `#[service]`-annotated trait, the procedural macro generates the entire IPC code: client, server, proxy and lifecycle. Automatic reconnection after a provider crash (including `SIGKILL`) is provided by iceoryx2's **native node monitoring**: the OS releases the node's monitoring file lock when the process dies, and `Node::list` reports it as `NodeState::Dead`.
 

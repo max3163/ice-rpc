@@ -7,7 +7,9 @@
 [![crates.io](https://img.shields.io/crates/v/ice-rpc.svg)](https://crates.io/crates/ice-rpc)
 [![docs.rs](https://docs.rs/ice-rpc/badge.svg)](https://docs.rs/ice-rpc)
 
-`ice-rpc` is a **zero-copy** Rust RPC (Remote Procedure Call) library built on [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) for inter-process communication (IPC) through shared memory.
+`ice-rpc` is a Rust RPC (Remote Procedure Call) library built on [iceoryx2](https://github.com/eclipse-iceoryx/iceoryx2) for inter-process communication (IPC) through shared memory.
+
+The **header is zero-copy** — written and read in place — while the **payload is rkyv-serialized**, copied once into the shared-memory sample, and read in place on the receiving side. [§5](#5-payload-encoding) gives the per-step detail.
 
 From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The transport is iceoryx2's **publish/subscribe**: one request channel and one response channel per logical service, correlated by a 16-byte request id, which keeps the throughput close to the raw bus (see [§4](#4-transport--publishsubscribe-with-correlation-ids)).
 
@@ -392,15 +394,34 @@ iceoryx2 node to its process.
 ## 5. Payload encoding
 
 The routing metadata (correlation id, service id, method, event kind, versions)
-travels in the zero-copy `user_header`, so the payload holds the rkyv bytes alone:
+travels in the `user_header`, so the payload holds the rkyv bytes alone:
 `rkyv(args)` for a request, `rkyv(WireEvent<T, E>)` for a response.
 
+**Zero-copy applies to the header and to reading a payload in place — not to the
+payload itself:**
+
+| Step | Byte copy | What happens |
+|---|---|---|
+| Encode (both directions) | none — but **serialization** | `rkyv` walks the object graph into a reusable scratch buffer (`to_bytes_in`): one allocation per **thread**, then reused |
+| Publish | **one copy** | [`try_publish`](ice-rpc/src/transport/client.rs:454) loans a sample and writes `header ++ payload` into it (`write_from_fn`); this is where the bytes enter shared memory |
+| Deliver on the bus | none | iceoryx2 makes the sample visible to its subscribers |
+| Decode, aligned | **none of the raw bytes** | [`decode_aligned`](ice-rpc/src/transport/mod.rs:113) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` directly on the sample |
+| Materialise | none — but **deserialization** | `from_bytes` performs access **and** deserialization into an owned `T`: the traversal and the allocations remain |
+| Decode, unaligned | one copy | the fallback: the payload is copied into a 16-byte-aligned `AlignedVec` first |
+
 The sample is requested with `payload_alignment(Alignment::new(16))`, the
-alignment `rkyv::to_bytes` produces, so the payload is decodable in place. The
-decoder still copies it into a 16-byte-aligned buffer first
-([`decode_aligned`](ice-rpc/src/transport/mod.rs:74)): calling `rkyv::from_bytes`
-on a misaligned slice fails at runtime for any type with an alignment greater
-than 1, which is what silently produced empty response streams before.
+alignment `rkyv::to_bytes` produces, so a delivered payload is aligned by
+construction and the in-place path is the one actually taken. The copy is kept
+for the callers that cannot promise that alignment — a payload built by hand, a
+buffer read outside the transport — because `rkyv::from_bytes` fails at runtime
+on a misaligned slice for any type whose alignment is greater than 1, which is
+what silently produced empty response streams before.
+
+In one line: **zero-copy header, one copy into shared memory, serialized rkyv
+payload, alignment-safe decoding.** The same care applies to the observer: the
+`stats` mode reads the header and the payload length and never touches the
+payload, while the `detail` mode pays one decode per sample by design
+([§13](#13-out-of-band-monitoring)).
 
 The name-length limits (`SERVICE_NAME_LEN`, `METHOD_NAME_LEN`, both 64) are shared
 with `ice-rpc-macros`, which rejects longer names at compile time. `METHOD_NAME_LEN`
@@ -479,7 +500,7 @@ addressing is entirely static. What remains is **liveness**:
 │  │  JS → NodeJsBridge → serialize → rkyv → IPC                  │    │
 │  │                                                              │    │
 │  │  The JS callback is UNIQUE for all services.                 │    │
-│  │  Value ↔ native JS conversion : zero-copy via NAPI serde-json│    │
+│  │  Not zero-copy: rkyv → serde_json::Value → JS                │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                      │
 │  Constructors :                                                      │

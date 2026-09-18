@@ -68,13 +68,18 @@ impl EventKind {
     }
 
     /// Decodes a wire value; unknown values map to [`EventKind::Error`].
+    ///
+    /// Deliberately fail-closed: an unknown value must never read as a
+    /// successful completion. `Complete` is terminal, so a corrupt kind decoded
+    /// that way would close a call as if it had succeeded — inflating the
+    /// completion counters and hiding the very corruption it should report.
     #[inline]
     pub const fn from_u8(value: u8) -> Self {
         match value {
             0 => EventKind::Request,
             1 => EventKind::Next,
-            3 => EventKind::Error,
-            _ => EventKind::Complete,
+            2 => EventKind::Complete,
+            _ => EventKind::Error,
         }
     }
 }
@@ -357,5 +362,27 @@ mod tests {
             fmt_correlation_id(&cid),
             "deadbeef-cafe-babe-0011-223344556677"
         );
+    }
+
+    /// An unknown kind must decode to `Error`, never to the terminal `Complete`.
+    #[test]
+    fn an_unknown_event_kind_decodes_as_error_not_complete() {
+        for value in 4u8..=u8::MAX {
+            assert_eq!(
+                EventKind::from_u8(value),
+                EventKind::Error,
+                "the unknown kind {value} must not read as a successful completion"
+            );
+        }
+
+        // The four declared values round-trip, `Complete` included.
+        for kind in [
+            EventKind::Request,
+            EventKind::Next,
+            EventKind::Complete,
+            EventKind::Error,
+        ] {
+            assert_eq!(EventKind::from_u8(kind.as_u8()), kind);
+        }
     }
 }

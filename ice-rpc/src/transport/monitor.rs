@@ -77,7 +77,7 @@ impl Emitter {
     /// Builds the identity from the native sample header.
     fn from_native(header: &SampleHeader) -> Self {
         Self {
-            pid: crate::types::raw_pid_to_u32(header.node_id().pid().value()),
+            pid: crate::types::node_pid_to_u32(header.node_id().pid::<Iox>()),
             node_id: header.node_id().value(),
             publisher_id: header.publisher_id().value(),
         }
@@ -184,9 +184,8 @@ impl DirectionView {
     /// # Errors
     /// Returns a [`RpcError`] when the listener reports a failure.
     pub fn wait(&self, timeout: Duration) -> Result<bool, RpcError> {
-        match self.listener.timed_wait_one(timeout) {
-            Ok(Some(_)) => Ok(true),
-            Ok(None) => Ok(false),
+        match self.listener.timed_wait(|_activation| {}, timeout) {
+            Ok(activations) => Ok(activations > 0),
             Err(e) => Err(transport_error("monitor wait", e)),
         }
     }

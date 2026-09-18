@@ -483,7 +483,7 @@ pub async fn run_provider_inner(
     ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // Reap what previous runs left behind, before creating anything: a provider
+    // Reap what previous runs left behind, before creating any service: a provider
     // that was killed is still on the bus, and nothing else removes it — see
     // `transport::cleanup_dead_nodes`. This is what makes a machine self-healing
     // in production, where nobody runs a purge script.

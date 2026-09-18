@@ -84,8 +84,16 @@ pub fn release_process_ports() -> usize {
 
 /// Reaps the resources iceoryx2 left behind by processes that are gone.
 pub fn cleanup_dead_nodes() -> u64 {
-    let config = crate::config::build_iceoryx2_config();
-    let state = iceoryx2::node::Node::<Iox>::try_cleanup_dead_nodes(&config);
+    let mut config = crate::config::build_iceoryx2_config();
+    config.global.node.cleanup_dead_nodes_on_creation = false;
+
+    let Ok(node) = iceoryx2::node::NodeBuilder::new()
+        .config(&config)
+        .create::<Iox>()
+    else {
+        return 0;
+    };
+    let state = node.try_cleanup_dead_nodes();
 
     if state.failed_cleanups > 0 {
         log::warn!(
@@ -130,7 +138,7 @@ where
 
 /// Whether `bytes` starts on the alignment the transport guarantees a sample.
 fn is_sample_aligned(bytes: &[u8]) -> bool {
-    bytes.as_ptr() as usize % PAYLOAD_ALIGNMENT == 0
+    (bytes.as_ptr() as usize).is_multiple_of(PAYLOAD_ALIGNMENT)
 }
 
 #[cfg(test)]

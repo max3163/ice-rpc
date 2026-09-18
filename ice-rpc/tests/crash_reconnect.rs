@@ -144,7 +144,15 @@ fn dump_nodes() -> Vec<(u32, &'static str)> {
             NodeState::Inaccessible(_) => "Inaccessible",
             NodeState::Undefined(_) => "Undefined",
         };
-        rows.push((raw_pid_to_u32(state.node_id().pid().value()), label));
+        // iceoryx2 0.10: `pid()` is generic over the service and returns a
+        // `Result` (a `UniqueIdGenerator` may not provide a process id).
+        let pid = state
+            .node_id()
+            .pid::<Service>()
+            .ok()
+            .map(|pid| raw_pid_to_u32(pid.value()))
+            .unwrap_or(0);
+        rows.push((pid, label));
         CallbackProgression::Continue
     });
     rows

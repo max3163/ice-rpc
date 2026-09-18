@@ -1,8 +1,9 @@
 [package]
 name = "gateway-nodejs"
 version.workspace = true
-# Local override of the workspace MSRV (1.85): the napi family requires 1.88.
-rust-version = "1.88"
+# The workspace floor (1.89, imposed by iceoryx2 0.10) already covers the 1.88
+# the napi family needs, so no local override is required anymore.
+rust-version.workspace = true
 edition = "2021"
 description = "Node.js napi gateway for ice-rpc"
 license = "Apache-2.0"

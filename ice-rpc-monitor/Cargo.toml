@@ -24,7 +24,7 @@ ice-rpc = { path = "../ice-rpc" }
 log = { workspace = true }
 serde_json = { workspace = true }
 # Clean termination detection (`SignalHandler::termination_requested`).
-iceoryx2-bb-posix = "0.9.3"
+iceoryx2-bb-posix = "0.10.0"
 env_logger = "0.11"
 # Optional: per-process resources of the observed nodes.
 sysinfo = { version = "0.39", optional = true }

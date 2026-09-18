@@ -43,7 +43,13 @@ fn label<S: Service>(state: &NodeState<S>) -> &'static str {
 fn scan() -> Vec<(u32, &'static str)> {
     let mut out = Vec::new();
     Node::<ipc_threadsafe::Service>::list(Config::global_config(), |state| {
-        out.push((raw_pid_to_u32(state.node_id().pid().value()), label(&state)));
+        let pid = state
+            .node_id()
+            .pid::<ipc_threadsafe::Service>()
+            .ok()
+            .map(|pid| raw_pid_to_u32(pid.value()))
+            .unwrap_or(0);
+        out.push((pid, label(&state)));
         CallbackProgression::Continue
     })
     .expect("Node::list failed");

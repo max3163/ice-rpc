@@ -32,6 +32,18 @@ pub fn raw_pid_to_u32<P: TryInto<u32>>(pid: P) -> u32 {
     pid.try_into().unwrap_or(0)
 }
 
+/// Converts the result of an iceoryx2 node id's `pid()` call into the unsigned
+/// value stored in [`NodeId`].
+///
+/// Since iceoryx2 0.10 a service's `UniqueIdGenerator` may legitimately not
+/// provide a process id (a custom generator returns `NotImplemented`), so
+/// `UniqueNodeId::pid()` yields a `Result`; a missing or anomalous value is
+/// mapped to `0`, the same sentinel [`raw_pid_to_u32`] uses.
+#[inline]
+pub(crate) fn node_pid_to_u32<E>(pid: Result<ProcessId, E>) -> u32 {
+    pid.map(|p| raw_pid_to_u32(p.value())).unwrap_or(0)
+}
+
 impl std::fmt::Display for NodeId {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

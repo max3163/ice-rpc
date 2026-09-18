@@ -12,12 +12,13 @@ resolver = "2"
 [workspace.package]
 version = "0.2.2"
 # True floor driven by the dependency tree, not by the local toolchain:
-# `iceoryx2` requires 1.85, the library crates only need older features
+# `iceoryx2` 0.10 requires 1.89, the library crates only need older features
 # (`std::mem::offset_of!` is 1.77, `u64::div_ceil` is 1.73, `OnceLock` is 1.70).
-# `gateway_nodejs` overrides it with 1.88, forced by the napi family. Keeping the
-# value as low as the dependencies allow is what lets `cargo` pick an MSRV-aware
-# dependency resolution and keeps `rust-version` a *contract*, not a pin.
-rust-version = "1.85"
+# The napi family pulled in by `gateway_nodejs` needs 1.88, below this floor, so
+# that crate inherits the workspace value unchanged. Keeping the value as low as
+# the dependencies allow is what lets `cargo` pick an MSRV-aware dependency
+# resolution and keeps `rust-version` a *contract*, not a pin.
+rust-version = "1.89"
 
 [workspace.lints.rust]
 # An `unsafe fn` must wrap its own operations in an explicit `unsafe` block.

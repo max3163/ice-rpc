@@ -64,7 +64,7 @@ pub fn list_nodes() -> Option<Vec<NodeInfo>> {
     let mut nodes = Vec::new();
 
     let result = Node::<Iox>::list(&config, |state| {
-        let pid = crate::types::raw_pid_to_u32(state.node_id().pid().value());
+        let pid = crate::types::node_pid_to_u32(state.node_id().pid::<Iox>());
         let (health, details) = match &state {
             IoxNodeState::Alive(view) => (NodeHealth::Alive, view.details()),
             IoxNodeState::Dead(view) => (NodeHealth::Dead, view.details()),

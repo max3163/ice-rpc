@@ -608,7 +608,7 @@ impl Monitor {
         }
         self.traced = self.traced.wrapping_add(1);
         let rate = self.config.trace_sample_rate;
-        if rate == 0 || self.traced % rate != 0 {
+        if rate == 0 || !self.traced.is_multiple_of(rate) {
             return;
         }
 

@@ -192,10 +192,7 @@ fn system_in_flux(context: &str) -> RpcError {
 
 /// Reports an event-service creation failure, with the same split.
 fn event_create_error(context: &str, error: EventCreateError) -> RpcError {
-    if matches!(
-        error,
-        EventCreateError::ServiceInCorruptedState | EventCreateError::HangsInCreation
-    ) {
+    if matches!(error, EventCreateError::ServiceInCorruptedState) {
         RpcError::ProtocolMismatch(format!("{context}: {error:?}. {REMEDY}"))
     } else {
         transport_error(context, error)

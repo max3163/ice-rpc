@@ -13,7 +13,7 @@ use std::time::Duration;
 use iceoryx2::prelude::*;
 
 use crate::global::{Global, Locked};
-use crate::types::{raw_pid_to_u32, NodeId};
+use crate::types::{node_pid_to_u32, NodeId};
 
 /// Polling interval of the liveness poller (ms).
 ///
@@ -84,7 +84,9 @@ pub fn alive_pids() -> Option<HashSet<u32>> {
 
     let result = Node::<ipc_threadsafe::Service>::list(&config, |state| {
         if matches!(state, NodeState::Alive(_)) {
-            pids.insert(raw_pid_to_u32(state.node_id().pid().value()));
+            pids.insert(node_pid_to_u32(
+                state.node_id().pid::<ipc_threadsafe::Service>(),
+            ));
         }
         CallbackProgression::Continue
     });
@@ -217,7 +219,7 @@ fn is_confirmed_dead(pid: u32) -> bool {
     let mut crashed = false;
 
     let result = Node::<ipc_threadsafe::Service>::list(&config, |state| {
-        if raw_pid_to_u32(state.node_id().pid().value()) != pid {
+        if node_pid_to_u32(state.node_id().pid::<ipc_threadsafe::Service>()) != pid {
             return CallbackProgression::Continue;
         }
         found = true;

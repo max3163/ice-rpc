@@ -232,6 +232,10 @@ pub fn gen_nodejs_serialize_fn(input: &NodeJsGenInput<'_>) -> TokenStream {
 /// that is converted back into rkyv-encoded `WireEvent` samples. The service
 /// name comes from the proxy's own `SERVICE_NAME` constant, so no extra
 /// parameter is needed.
+///
+/// Like the native dispatcher, the handler is wrapped in `call_scoped`, so
+/// `CallContext::current()` works inside a JS-served method and a call it emits
+/// continues the incoming trace instead of starting a new root.
 pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStream {
     let method_name_str = fn_name.to_string();
     quote! {
@@ -242,56 +246,22 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                       payload: Vec<u8>,
                       emitter: ice_rpc::gen::OwnedEmitter|
                       -> ice_rpc::gen::BoxResponseFuture {
-                    Box::pin(async move {
-                        let mut emitter = emitter;
-                     let Some(args) =
-                            #proxy_name::deserialize_request_to_value(#method_name_str, &payload)
-                        else {
-                            ::log::error!(
-                                "[{}::{}] Failed to deserialize the request",
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str
-                            );
-                            let _ = ice_rpc::gen::emit_rpc_error(
-                                ice_rpc::gen::RpcError::SerializationError,
-                                &mut *emitter,
-                            );
-                            return;
-                        };
-                        // The correlation id is the real one now that the handler
-                        // receives the header: the JS side can correlate its logs.
-                        let value = match ice_rpc::nodejs_dispatch::call(
-                            header.correlation_id,
-                            <#proxy_name>::SERVICE_NAME,
-                            #method_name_str,
-                            args,
-                        ) {
-                            Ok(value) => value,
-                            Err(e) => {
+                    // Built before the coroutine: it is copied into the task, and
+                    // the header itself is not needed past this point.
+                    let ctx = ice_rpc::gen::CallContext::new(&header, #method_name_str);
+                    // Same wrapper as the native dispatcher: the context is
+                    // installed around every poll, so the JS-served method reads it
+                    // with `CallContext::current()`, and a call it emits continues
+                    // the incoming trace instead of starting a new root.
+                    ice_rpc::gen::call_scoped(
+                        ctx,
+                        async move {
+                            let mut emitter = emitter;
+                            let Some(args) =
+                                #proxy_name::deserialize_request_to_value(#method_name_str, &payload)
+                            else {
                                 ::log::error!(
-                                    "[{}::{}] NodeJS dispatch failed: {}",
-                                    <#proxy_name>::SERVICE_NAME,
-                                    #method_name_str,
-                                    e
-                                );
-                                // The failure is the provider's, not the framing:
-                                // reported as an internal error rather than dropped.
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::Internal(e),
-                                    &mut *emitter,
-                                );
-                                return;
-                            }
-                        };
-                        match #proxy_name::serialize_response_from_value(#method_name_str, value) {
-                            Some((kind, sample)) => {
-                                emitter.emit(kind, &sample);
-                            }
-                            // A JS response that cannot be encoded would leave the
-                            // call unanswered: it is reported instead of dropped.
-                            None => {
-                                ::log::error!(
-                                    "[{}::{}] Failed to serialize the NodeJS response",
+                                    "[{}::{}] Failed to deserialize the request",
                                     <#proxy_name>::SERVICE_NAME,
                                     #method_name_str
                                 );
@@ -299,9 +269,53 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                                     ice_rpc::gen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
+                                return;
+                            };
+                            // The correlation id is the real one now that the handler
+                            // receives the header: the JS side can correlate its logs.
+                            let value = match ice_rpc::nodejs_dispatch::call(
+                                header.correlation_id,
+                                <#proxy_name>::SERVICE_NAME,
+                                #method_name_str,
+                                args,
+                            ) {
+                                Ok(value) => value,
+                                Err(e) => {
+                                    ::log::error!(
+                                        "[{}::{}] NodeJS dispatch failed: {}",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str,
+                                        e
+                                    );
+                                    // The failure is the provider's, not the framing:
+                                    // reported as an internal error rather than dropped.
+                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                        ice_rpc::gen::RpcError::Internal(e),
+                                        &mut *emitter,
+                                    );
+                                    return;
+                                }
+                            };
+                            match #proxy_name::serialize_response_from_value(#method_name_str, value) {
+                                Some((kind, sample)) => {
+                                    emitter.emit(kind, &sample);
+                                }
+                                // A JS response that cannot be encoded would leave the
+                                // call unanswered: it is reported instead of dropped.
+                                None => {
+                                    ::log::error!(
+                                        "[{}::{}] Failed to serialize the NodeJS response",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str
+                                    );
+                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                        ice_rpc::gen::RpcError::SerializationError,
+                                        &mut *emitter,
+                                    );
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                 },
             );
         }

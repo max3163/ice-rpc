@@ -20,9 +20,9 @@
 //!
 //! Everything a context carries is already transported by the request header, so
 //! building one costs no allocation and no decode. The value is **ambient** for
-//! the duration of one invocation of one handler (see [`CallContext::enter`]):
-//! [`CallContext::current`] returns `None` outside a handler, and inside a task
-//! the implementation spawned itself.
+//! one invocation of one handler, installed around **every poll** of its task
+//! (see [`call_scoped`]): [`CallContext::current`] returns `None` outside a
+//! handler, and inside a task the implementation spawned itself.
 //!
 //! The tracing fields (see [`TraceContext`]) are zero until the wire carries
 //! them; callers must read [`TraceContext::is_present`] rather than assume a
@@ -296,8 +296,9 @@ impl CallContext {
     /// Installs this context as the ambient one for the current thread, tracing
     /// span included, for the duration of one **synchronous** scope.
     ///
-    /// Reserved for the callers that are not polled by an executor — the Node.js
-    /// bridge and the tests. A handler running as a task uses [`call_scoped`].
+    /// Reserved for the callers that are not polled by an executor — the tests,
+    /// and any synchronous integration. A provider handler runs as a task,
+    /// native or Node.js, and therefore uses [`call_scoped`].
     ///
     /// Dropping the returned scope restores the **previous** value rather than
     /// clearing the slot, which is what makes nested calls — a provider calling

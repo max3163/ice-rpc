@@ -332,60 +332,64 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                 payload: Vec<u8>,
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
-                                Box::pin(async move {
-                                    let mut emitter = emitter;
-                                    let Some(args) = DatabaseApiProxy::deserialize_request_to_value(
-                                        "get",
-                                        &payload,
-                                    ) else {
-                                        ::log::error!(
-                                            "[{}::{}] Failed to deserialize the request", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "get"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                        return;
-                                    };
-                                    let value = match ice_rpc::nodejs_dispatch::call(
-                                        header.correlation_id,
-                                        <DatabaseApiProxy>::SERVICE_NAME,
-                                        "get",
-                                        args,
-                                    ) {
-                                        Ok(value) => value,
-                                        Err(e) => {
+                                let ctx = ice_rpc::gen::CallContext::new(&header, "get");
+                                ice_rpc::gen::call_scoped(
+                                    ctx,
+                                    async move {
+                                        let mut emitter = emitter;
+                                        let Some(args) = DatabaseApiProxy::deserialize_request_to_value(
+                                            "get",
+                                            &payload,
+                                        ) else {
                                             ::log::error!(
-                                                "[{}::{}] NodeJS dispatch failed: {}", < DatabaseApiProxy >
-                                                ::SERVICE_NAME, "get", e
-                                            );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::Internal(e),
-                                                &mut *emitter,
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    match DatabaseApiProxy::serialize_response_from_value(
-                                        "get",
-                                        value,
-                                    ) {
-                                        Some((kind, sample)) => {
-                                            emitter.emit(kind, &sample);
-                                        }
-                                        None => {
-                                            ::log::error!(
-                                                "[{}::{}] Failed to serialize the NodeJS response", <
+                                                "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "get"
                                             );
                                             let _ = ice_rpc::gen::emit_rpc_error(
                                                 ice_rpc::gen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
+                                            return;
+                                        };
+                                        let value = match ice_rpc::nodejs_dispatch::call(
+                                            header.correlation_id,
+                                            <DatabaseApiProxy>::SERVICE_NAME,
+                                            "get",
+                                            args,
+                                        ) {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                ::log::error!(
+                                                    "[{}::{}] NodeJS dispatch failed: {}", < DatabaseApiProxy >
+                                                    ::SERVICE_NAME, "get", e
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                    &mut *emitter,
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        match DatabaseApiProxy::serialize_response_from_value(
+                                            "get",
+                                            value,
+                                        ) {
+                                            Some((kind, sample)) => {
+                                                emitter.emit(kind, &sample);
+                                            }
+                                            None => {
+                                                ::log::error!(
+                                                    "[{}::{}] Failed to serialize the NodeJS response", <
+                                                    DatabaseApiProxy > ::SERVICE_NAME, "get"
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::SerializationError,
+                                                    &mut *emitter,
+                                                );
+                                            }
                                         }
-                                    }
-                                })
+                                    },
+                                )
                             },
                         );
                 }
@@ -398,60 +402,64 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                 payload: Vec<u8>,
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
-                                Box::pin(async move {
-                                    let mut emitter = emitter;
-                                    let Some(args) = DatabaseApiProxy::deserialize_request_to_value(
-                                        "put",
-                                        &payload,
-                                    ) else {
-                                        ::log::error!(
-                                            "[{}::{}] Failed to deserialize the request", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "put"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                        return;
-                                    };
-                                    let value = match ice_rpc::nodejs_dispatch::call(
-                                        header.correlation_id,
-                                        <DatabaseApiProxy>::SERVICE_NAME,
-                                        "put",
-                                        args,
-                                    ) {
-                                        Ok(value) => value,
-                                        Err(e) => {
+                                let ctx = ice_rpc::gen::CallContext::new(&header, "put");
+                                ice_rpc::gen::call_scoped(
+                                    ctx,
+                                    async move {
+                                        let mut emitter = emitter;
+                                        let Some(args) = DatabaseApiProxy::deserialize_request_to_value(
+                                            "put",
+                                            &payload,
+                                        ) else {
                                             ::log::error!(
-                                                "[{}::{}] NodeJS dispatch failed: {}", < DatabaseApiProxy >
-                                                ::SERVICE_NAME, "put", e
-                                            );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::Internal(e),
-                                                &mut *emitter,
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    match DatabaseApiProxy::serialize_response_from_value(
-                                        "put",
-                                        value,
-                                    ) {
-                                        Some((kind, sample)) => {
-                                            emitter.emit(kind, &sample);
-                                        }
-                                        None => {
-                                            ::log::error!(
-                                                "[{}::{}] Failed to serialize the NodeJS response", <
+                                                "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "put"
                                             );
                                             let _ = ice_rpc::gen::emit_rpc_error(
                                                 ice_rpc::gen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
+                                            return;
+                                        };
+                                        let value = match ice_rpc::nodejs_dispatch::call(
+                                            header.correlation_id,
+                                            <DatabaseApiProxy>::SERVICE_NAME,
+                                            "put",
+                                            args,
+                                        ) {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                ::log::error!(
+                                                    "[{}::{}] NodeJS dispatch failed: {}", < DatabaseApiProxy >
+                                                    ::SERVICE_NAME, "put", e
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                    &mut *emitter,
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        match DatabaseApiProxy::serialize_response_from_value(
+                                            "put",
+                                            value,
+                                        ) {
+                                            Some((kind, sample)) => {
+                                                emitter.emit(kind, &sample);
+                                            }
+                                            None => {
+                                                ::log::error!(
+                                                    "[{}::{}] Failed to serialize the NodeJS response", <
+                                                    DatabaseApiProxy > ::SERVICE_NAME, "put"
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::SerializationError,
+                                                    &mut *emitter,
+                                                );
+                                            }
                                         }
-                                    }
-                                })
+                                    },
+                                )
                             },
                         );
                 }

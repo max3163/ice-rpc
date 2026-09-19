@@ -245,60 +245,64 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                                 payload: Vec<u8>,
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
-                                Box::pin(async move {
-                                    let mut emitter = emitter;
-                                    let Some(args) = CalculatorProxy::deserialize_request_to_value(
-                                        "add",
-                                        &payload,
-                                    ) else {
-                                        ::log::error!(
-                                            "[{}::{}] Failed to deserialize the request", <
-                                            CalculatorProxy > ::SERVICE_NAME, "add"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                        return;
-                                    };
-                                    let value = match ice_rpc::nodejs_dispatch::call(
-                                        header.correlation_id,
-                                        <CalculatorProxy>::SERVICE_NAME,
-                                        "add",
-                                        args,
-                                    ) {
-                                        Ok(value) => value,
-                                        Err(e) => {
+                                let ctx = ice_rpc::gen::CallContext::new(&header, "add");
+                                ice_rpc::gen::call_scoped(
+                                    ctx,
+                                    async move {
+                                        let mut emitter = emitter;
+                                        let Some(args) = CalculatorProxy::deserialize_request_to_value(
+                                            "add",
+                                            &payload,
+                                        ) else {
                                             ::log::error!(
-                                                "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
-                                                ::SERVICE_NAME, "add", e
-                                            );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::Internal(e),
-                                                &mut *emitter,
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    match CalculatorProxy::serialize_response_from_value(
-                                        "add",
-                                        value,
-                                    ) {
-                                        Some((kind, sample)) => {
-                                            emitter.emit(kind, &sample);
-                                        }
-                                        None => {
-                                            ::log::error!(
-                                                "[{}::{}] Failed to serialize the NodeJS response", <
+                                                "[{}::{}] Failed to deserialize the request", <
                                                 CalculatorProxy > ::SERVICE_NAME, "add"
                                             );
                                             let _ = ice_rpc::gen::emit_rpc_error(
                                                 ice_rpc::gen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
+                                            return;
+                                        };
+                                        let value = match ice_rpc::nodejs_dispatch::call(
+                                            header.correlation_id,
+                                            <CalculatorProxy>::SERVICE_NAME,
+                                            "add",
+                                            args,
+                                        ) {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                ::log::error!(
+                                                    "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
+                                                    ::SERVICE_NAME, "add", e
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                    &mut *emitter,
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        match CalculatorProxy::serialize_response_from_value(
+                                            "add",
+                                            value,
+                                        ) {
+                                            Some((kind, sample)) => {
+                                                emitter.emit(kind, &sample);
+                                            }
+                                            None => {
+                                                ::log::error!(
+                                                    "[{}::{}] Failed to serialize the NodeJS response", <
+                                                    CalculatorProxy > ::SERVICE_NAME, "add"
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::SerializationError,
+                                                    &mut *emitter,
+                                                );
+                                            }
                                         }
-                                    }
-                                })
+                                    },
+                                )
                             },
                         );
                 }

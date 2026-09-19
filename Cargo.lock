@@ -472,7 +472,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "common"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "gateway-nodejs"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "common",
@@ -993,7 +993,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "ice-rpc"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "async-lock",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "ice-rpc-macros"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "log",
  "prettyplease 0.3.0",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "ice-rpc-macros-tests"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytecheck",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "ice-rpc-monitor"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "common",
  "env_logger",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "ice-rpc-rx"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "async-executor",

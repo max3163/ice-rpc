@@ -115,7 +115,26 @@ impl DatabaseApiServer {
                                         ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
                                             .await;
                                     }
-                                    _ => {}
+                                    Err(e) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload decoding failed: {:?}", <
+                                            DatabaseApiProxy > ::SERVICE_NAME, "get", e
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
+                                    Ok(_) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload is another method's variant", <
+                                            DatabaseApiProxy > ::SERVICE_NAME, "get"
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
                                 }
                             },
                         )
@@ -146,7 +165,26 @@ impl DatabaseApiServer {
                                         ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
                                             .await;
                                     }
-                                    _ => {}
+                                    Err(e) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload decoding failed: {:?}", <
+                                            DatabaseApiProxy > ::SERVICE_NAME, "put", e
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
+                                    Ok(_) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload is another method's variant", <
+                                            DatabaseApiProxy > ::SERVICE_NAME, "put"
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
                                 }
                             },
                         )

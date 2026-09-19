@@ -75,7 +75,14 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// The handler installs the `CallContext` of the call it serves as an ambient
 /// value for every poll of that task, so the implementation reads it with
 /// `CallContext::current()` and its signature is untouched.
+///
+/// A payload that does not decode — or that decodes as another method's request
+/// variant — is answered **immediately** with a `RpcError::SerializationError`,
+/// never dropped: silence would leave the caller waiting for a transport timeout
+/// that names nothing. Every request routed to a known service and method is
+/// therefore answered, which is what makes the whole protocol fail-fast.
 pub fn gen_native_method(
+    proxy_name: &Ident,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
@@ -115,10 +122,35 @@ pub fn gen_native_method(
                                     ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
                                         .await;
                                 }
-                                // A payload of another method, or one that does
-                                // not decode: no response is emitted, so the call
-                                // times out.
-                                _ => {}
+                                // Fail-fast: a payload that does not decode is
+                                // answered at once with a technical error.
+                                Err(e) => {
+                                    ice_rpc::gen::log::error!(
+                                        "[{}::{}] request payload decoding failed: {:?}",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str,
+                                        e
+                                    );
+                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                        ice_rpc::gen::RpcError::SerializationError,
+                                        &mut *emitter,
+                                    );
+                                }
+                                // The payload decoded, but as the request variant
+                                // of another method: a caller contract violation,
+                                // answered like a decoding failure rather than
+                                // silently. The log line tells the two cases apart.
+                                Ok(_) => {
+                                    ice_rpc::gen::log::error!(
+                                        "[{}::{}] request payload is another method's variant",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str
+                                    );
+                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                        ice_rpc::gen::RpcError::SerializationError,
+                                        &mut *emitter,
+                                    );
+                                }
                             }
                         },
                     )

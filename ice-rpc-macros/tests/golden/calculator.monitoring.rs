@@ -97,7 +97,26 @@ impl CalculatorServer {
                                         ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
                                             .await;
                                     }
-                                    _ => {}
+                                    Err(e) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload decoding failed: {:?}", <
+                                            CalculatorProxy > ::SERVICE_NAME, "add", e
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
+                                    Ok(_) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload is another method's variant", <
+                                            CalculatorProxy > ::SERVICE_NAME, "add"
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
                                 }
                             },
                         )

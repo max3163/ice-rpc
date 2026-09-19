@@ -244,13 +244,17 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                       -> ice_rpc::gen::BoxResponseFuture {
                     Box::pin(async move {
                         let mut emitter = emitter;
-                        let Some(args) =
+                     let Some(args) =
                             #proxy_name::deserialize_request_to_value(#method_name_str, &payload)
                         else {
                             ::log::error!(
                                 "[{}::{}] Failed to deserialize the request",
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str
+                            );
+                            let _ = ice_rpc::gen::emit_rpc_error(
+                                ice_rpc::gen::RpcError::SerializationError,
+                                &mut *emitter,
                             );
                             return;
                         };
@@ -270,13 +274,32 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                                     #method_name_str,
                                     e
                                 );
+                                // The failure is the provider's, not the framing:
+                                // reported as an internal error rather than dropped.
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::Internal(e),
+                                    &mut *emitter,
+                                );
                                 return;
                             }
                         };
-                        if let Some((kind, sample)) =
-                            #proxy_name::serialize_response_from_value(#method_name_str, value)
-                        {
-                            emitter.emit(kind, &sample);
+                        match #proxy_name::serialize_response_from_value(#method_name_str, value) {
+                            Some((kind, sample)) => {
+                                emitter.emit(kind, &sample);
+                            }
+                            // A JS response that cannot be encoded would leave the
+                            // call unanswered: it is reported instead of dropped.
+                            None => {
+                                ::log::error!(
+                                    "[{}::{}] Failed to serialize the NodeJS response",
+                                    <#proxy_name>::SERVICE_NAME,
+                                    #method_name_str
+                                );
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                            }
                         }
                     })
                 },

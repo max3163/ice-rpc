@@ -97,7 +97,26 @@ impl CalculatorServer {
                                         ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
                                             .await;
                                     }
-                                    _ => {}
+                                    Err(e) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload decoding failed: {:?}", <
+                                            CalculatorProxy > ::SERVICE_NAME, "add", e
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
+                                    Ok(_) => {
+                                        ice_rpc::gen::log::error!(
+                                            "[{}::{}] request payload is another method's variant", <
+                                            CalculatorProxy > ::SERVICE_NAME, "add"
+                                        );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
+                                    }
                                 }
                             },
                         )
@@ -236,6 +255,10 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                                             "[{}::{}] Failed to deserialize the request", <
                                             CalculatorProxy > ::SERVICE_NAME, "add"
                                         );
+                                        let _ = ice_rpc::gen::emit_rpc_error(
+                                            ice_rpc::gen::RpcError::SerializationError,
+                                            &mut *emitter,
+                                        );
                                         return;
                                     };
                                     let value = match ice_rpc::nodejs_dispatch::call(
@@ -250,14 +273,30 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                                                 "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
                                                 ::SERVICE_NAME, "add", e
                                             );
+                                            let _ = ice_rpc::gen::emit_rpc_error(
+                                                ice_rpc::gen::RpcError::Internal(e),
+                                                &mut *emitter,
+                                            );
                                             return;
                                         }
                                     };
-                                    if let Some((kind, sample)) = CalculatorProxy::serialize_response_from_value(
+                                    match CalculatorProxy::serialize_response_from_value(
                                         "add",
                                         value,
                                     ) {
-                                        emitter.emit(kind, &sample);
+                                        Some((kind, sample)) => {
+                                            emitter.emit(kind, &sample);
+                                        }
+                                        None => {
+                                            ::log::error!(
+                                                "[{}::{}] Failed to serialize the NodeJS response", <
+                                                CalculatorProxy > ::SERVICE_NAME, "add"
+                                            );
+                                            let _ = ice_rpc::gen::emit_rpc_error(
+                                                ice_rpc::gen::RpcError::SerializationError,
+                                                &mut *emitter,
+                                            );
+                                        }
                                     }
                                 })
                             },

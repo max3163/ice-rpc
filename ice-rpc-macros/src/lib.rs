@@ -172,6 +172,7 @@ fn expand_service_with(
         }));
 
         server_native_methods.push(gen_native_method(
+            proxy_name,
             fn_name,
             var_name,
             &arg_names,

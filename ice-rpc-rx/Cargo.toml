@@ -16,15 +16,31 @@ readme = "Readme.md"
 workspace = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Deliberately not `all-features = true`: the execution modes are mutually
+# exclusive (see this crate's `rt` module), so the documented build picks one.
+features = ["tokio"]
 
 [features]
-# The execution facade (`spawn`, `sleep`, `block_on`) is runtime-agnostic by
-# default: async-global-executor + blocking + async-io. This feature switches it
-# to tokio. `ice-rpc` forwards its own `tokio` feature here, so a consumer never
-# names this crate to pick a runtime.
-default = []
+# One full execution facade per host runtime, plus a fallback for a deployment
+# that has none. `ice-rpc` forwards these features, so a consumer never names
+# this crate to pick a runtime.
+#
+# - `rt-threads` (default) — owned `async-executor` instance run by OS threads,
+#   `blocking` for the pool, `futures-timer` for the timers. No third-party
+#   runtime and no I/O reactor: the core does no async I/O.
+# - `tokio` — tokio only (`spawn`, `time`, `spawn_blocking`).
+# - `smol` — smol only (its global executor, its `Timer`, its `unblock`), so the
+#   tasks share the executor of the application that already runs smol.
+#
+# The modes are exclusive by priority (`tokio` > `smol` > `rt-threads`) and
+# `tokio` + `smol` together is a compile error: a process must not run two full
+# runtimes. Enabling a mode does not remove the fallback from the graph, because
+# Cargo features are additive; for a build with no residue of the other modes,
+# use `default-features = false, features = ["tokio"]`.
+default = ["rt-threads"]
+rt-threads = ["dep:async-executor", "dep:blocking", "dep:futures-timer"]
 tokio = ["dep:tokio"]
+smol = ["dep:smol"]
 
 [dependencies]
 # The single technical error of the stack. It carries the rkyv derives because
@@ -38,14 +54,26 @@ log = { workspace = true }
 futures = "0.3"
 futures-lite = "2"
 pin-project-lite = "0.2"
-# Timers and channels of the stream layer (`delay`, `timeout`, `Subject`).
-futures-timer = "3"
+# Channels and locks of the stream layer (`Subject`, the multicast primitive).
+# Both are runtime-free: no I/O, no reactor, no runtime context.
 async-channel = "2"
 async-lock = "3"
-# Default execution facade (runtime-agnostic).
-async-global-executor = "3"
-# Optional execution facade.
-tokio = { workspace = true, optional = true }
+# Fallback execution facade: an `async-executor` instance this crate owns, driven
+# by OS threads, with `blocking` for the pool and `futures-timer` (a thread of
+# its own) for `sleep`.
+async-executor = { version = "1", optional = true }
+blocking = { version = "1", optional = true }
+futures-timer = { version = "3", optional = true }
+# Optional execution facades, one per host runtime. Declared directly rather than
+# through the workspace entry, whose `features = ["full"]` is meant for the demo
+# binaries: the facade needs `rt-multi-thread` (the fallback runtime and the test
+# helper), `time` (`sleep`) and `rt` (`spawn`, `spawn_blocking`) — nothing else.
+# An application that enables `http-tokio` gets the extra tokio features from
+# trillium-tokio itself, which declares what it uses.
+tokio = { version = "1.30", optional = true, features = ["rt", "rt-multi-thread", "time"] }
+# smol's global executor is the whole point of this mode: sharing it with the
+# application is what makes "full smol" a single pool.
+smol = { version = "2", optional = true }
 
 [dev-dependencies]
 pollster = "1.0"

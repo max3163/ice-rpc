@@ -1071,8 +1071,9 @@ name = "ice-rpc-rx"
 version = "0.2.2"
 dependencies = [
  "async-channel",
- "async-global-executor",
+ "async-executor",
  "async-lock",
+ "blocking",
  "futures",
  "futures-lite",
  "futures-timer",
@@ -1080,6 +1081,7 @@ dependencies = [
  "pin-project-lite",
  "pollster",
  "rkyv",
+ "smol",
  "thiserror",
  "tokio",
 ]

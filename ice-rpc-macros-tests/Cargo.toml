@@ -19,9 +19,9 @@ workspace = true
 # `nodejs` is requested for the same reason, plus one of its own: the converters
 # it generates are what the Node.js gateway calls, and until this test existed
 # nothing executed them — they were only type-checked. It has no dependency of
-# its own, unlike `http`, which would pull the whole HTTP stack into every
-# workspace test run; `HttpCallable` stays covered by CI's `--features http` job
-# and by the gateway.
+# its own, unlike `http` + an adapter, which would pull the whole HTTP stack into
+# every workspace test run; `HttpCallable` stays covered by CI's
+# `--features tokio,http-tokio` job and by the gateway.
 ice-rpc = { path = "../ice-rpc", features = ["monitoring", "nodejs"] }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
 async-trait = { workspace = true }

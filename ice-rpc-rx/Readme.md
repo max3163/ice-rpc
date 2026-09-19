@@ -55,11 +55,28 @@ let doubled = stream.map(|v| v * 2);
 | `transform` | the operators, carried by `Observable` |
 | `rt` | execution facade (`spawn`, `Spawner`, `sleep`, `block_on`) and `CancellationToken` |
 
-## Runtime
+## Execution modes
 
-The execution facade is runtime-agnostic by default (async-global-executor). The
-`tokio` feature switches it to tokio; `ice-rpc` forwards its own feature to this
-one, so the choice is made once, at the top of the dependency tree.
+The facade has one **full mode per host runtime**, and a fallback for a
+deployment that has none:
+
+| Feature | `spawn` | `sleep` | blocking pool |
+|---|---|---|---|
+| `rt-threads` (default) | an `async-executor` instance this crate owns, on `available_parallelism()` OS threads | `futures-timer` | `blocking` |
+| `tokio` | `tokio::spawn` | `tokio::time::sleep` | tokio's pool |
+| `smol` | `smol::spawn` (the application's global executor) | `smol::Timer` | `smol::unblock` |
+
+`ice-rpc` forwards its own features here, so the choice is made once, at the top
+of the dependency tree. The modes are exclusive (`tokio` + `smol` is a compile
+error) and selected by priority `tokio` > `smol` > `rt-threads`. Cargo features
+being additive, enabling a mode leaves the fallback in the graph; a build that
+carries one runtime only uses `default-features = false`.
+
+A full mode, rather than a single runtime-agnostic executor, is what lets the
+process run *one* pool: the fallback adds no reactor (the core does no async
+I/O), the smol mode lets the application and the crate share one executor, and
+the tokio mode drops `async-executor`, `blocking` and `futures-timer` entirely.
+The modes are enforced by `cargo tree` assertions in CI, one per mode.
 
 The facade lives here on purpose, and the switch is a **single** `cfg` at a
 **single** level. A separate `ice-rpc-rt` crate would shed `rkyv` and
@@ -68,12 +85,8 @@ The facade lives here on purpose, and the switch is a **single** `cfg` at a
 covers that need. For a consumer of `ice-rpc` it would change nothing, and it
 would put the runtime choice on two levels (`ice-rpc-rx/tokio` **and**
 `ice-rpc-rt/tokio`): enabling one without the other yields a silent mismatch, such
-as an agnostic `sleep` next to a tokio `spawn`, which panics at run time.
-
-Extracting the facade becomes worthwhile the day a third execution backend is
-wanted, or the day this crate must stop depending on `async-global-executor`
-(wasm, caller-provided executor). The right answer then is an executor trait
-inside that new crate, not a plain move.
+as a `sleep` from one mode next to a `spawn` from another, which panics at run
+time.
 
 ## License
 

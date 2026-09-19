@@ -18,17 +18,27 @@ exclude = ["config/iceoryx2.toml"]
 workspace = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Deliberately not `all-features = true`: the execution modes are mutually
+# exclusive (`tokio` + `smol` is a compile error, see `ice-rpc-rx::rt`), so the
+# documented build picks one full mode and the adapter that belongs to it.
+features = ["tokio", "http-tokio", "monitoring", "nodejs", "tracing"]
 
 [features]
-# The core is runtime-agnostic by default (async-global-executor + blocking +
-# async-io). Optional features switch the execution facade to a dedicated
-# runtime.
-default = []
-# The HTTP gateway is built on trillium (runtime-agnostic core). Its runtime
-# adapter is selected by the `http-tokio` feature:
-# - `http` (alone)         → trillium-smol (async-global-executor, no tokio)
-# - `http` + `http-tokio`  → trillium-tokio (requires the `tokio` feature)
+# One full execution mode per host runtime, plus a fallback for a deployment
+# that has none:
+# - `rt-threads` (default) — the crate's own executor on OS threads;
+# - `tokio` — tokio only;
+# - `smol` — smol only, sharing the global executor of the application.
+# `ice-rpc-rx` owns the facade, so the choice is forwarded there: enabling
+# `tokio` here switches the stream layer and the transport together, and a
+# consumer never names the stream crate. The modes are exclusive (`tokio` +
+# `smol` is a compile error). Enabling a mode does not remove the fallback from
+# the dependency graph, because Cargo features are additive: a build with no
+# residue of the other modes uses `default-features = false`.
+default = ["rt-threads"]
+rt-threads = ["ice-rpc-rx/rt-threads"]
+tokio = ["dep:tokio", "ice-rpc-rx/tokio"]
+smol = ["ice-rpc-rx/smol"]
 # Generates, from `#[service]`, the `{Service}Decoder` and the `Display` impl an
 # out-of-band observer uses to render the payloads. Off by default: a plain
 # provider/consumer never calls that code. Rendering prefers a type's `Display`
@@ -45,16 +55,24 @@ tracing = ["dep:tracing"]
 # proxy it exposes. That implementation is also the block which keeps
 # `serde_json`'s conversion code in a binary, so it follows the same switch as
 # the gateway: enabling one enables the other.
-http = ["dep:trillium", "dep:trillium-smol", "ice-rpc-macros/http"]
+#
+# trillium needs exactly one runtime adapter, and this feature does **not** pick
+# one. Cargo features are additive, so a manifest cannot express "if tokio then
+# trillium-tokio": leaving the adapter out is what lets each mode choose its own
+# instead of dragging a second runtime in. Each adapter feature enables the mode
+# it belongs to:
+# - `http-threads` → trillium-smol on the fallback mode;
+# - `http-smol`    → trillium-smol on smol, so the gateway shares the
+#                    application's executor;
+# - `http-tokio`   → trillium-tokio on tokio.
+# Enabling `http` without any of them is a compile error naming the three.
+http = ["dep:trillium", "ice-rpc-macros/http"]
+http-threads = ["http", "rt-threads", "dep:trillium-smol"]
+http-smol = ["http", "smol", "dep:trillium-smol"]
+http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 # The Node.js gateway: the rkyv ↔ `serde_json::Value` converters and the
 # `ProviderNodeJs` mode. A Rust-only deployment never calls them.
 nodejs = ["ice-rpc-macros/nodejs"]
-# `ice-rpc-rx` owns the execution facade, so the runtime choice is forwarded
-# there: enabling `tokio` here switches the stream layer and the transport
-# together, and a consumer never names the stream crate.
-tokio = ["dep:tokio", "ice-rpc-rx/tokio"]
-smol = ["dep:trillium-smol"]
-http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
 # N-API), not another way of serving the same process.
 full = ["http", "tokio", "http-tokio"]
@@ -63,7 +81,10 @@ full = ["http", "tokio", "http-tokio"]
 # The reactive layer: the stream type, the operators, the multicast primitive
 # and the execution facade. It knows nothing about the wire; this crate
 # re-exports its items unchanged, at their historical paths.
-ice-rpc-rx = { workspace = true }
+# `default-features = false`: the fallback facade is a feature of its own
+# (`rt-threads`), so a deployment that picks `tokio` or `smol` can build without
+# compiling it at all.
+ice-rpc-rx = { workspace = true, default-features = false }
 ice-rpc-macros = { workspace = true }
 log = { workspace = true }
 iceoryx2 = "0.10.0"
@@ -86,9 +107,14 @@ futures-lite = "2"
 pin-project-lite = "0.2"
 async-channel = "2"
 async-lock = "3"
-# Optional runtime adapters.
-tokio = { workspace = true, optional = true }
-# Optional runtime-agnostic HTTP gateway (trillium + runtime adapters).
+# Optional runtime adapter. Declared directly rather than through the workspace
+# entry, whose `features = ["full"]` is meant for the demo binaries: the library
+# needs `rt-multi-thread` (the runtime built by `#[ice_rpc::main(tokio)]`),
+# `time` (`rt::sleep` on the tokio facade) and `rt` (`spawn`, `spawn_blocking`).
+# An application that enables `http-tokio` gets the extra tokio features from
+# trillium-tokio itself, which declares what it uses.
+tokio = { version = "1.30", optional = true, features = ["rt", "rt-multi-thread", "time"] }
+# Optional HTTP gateway (trillium + one runtime adapter per mode).
 trillium = { version = "1.4", optional = true }
 trillium-smol = { version = "0.7", optional = true }
 trillium-tokio = { version = "0.6", optional = true }

@@ -460,14 +460,21 @@ args = ["clippy", "-p", "ice-rpc-monitor", "--all-targets"]
 # =============================================================================
 
 [tasks.rx-test]
-description = "Run the reactive layer tests (default, runtime-agnostic facade)"
+description = "Run the reactive layer tests (default mode: rt-threads)"
 command = "cargo"
 args = ["test", "-p", "ice-rpc-rx"]
 
+# The mode runs are strict on purpose: `--no-default-features` is what proves a
+# deployment can build one runtime without the fallback following it in.
 [tasks.rx-test-tokio]
-description = "Run the reactive layer tests against the tokio facade"
+description = "Run the reactive layer tests in the tokio mode (strict)"
 command = "cargo"
-args = ["test", "-p", "ice-rpc-rx", "--features", "tokio"]
+args = ["test", "-p", "ice-rpc-rx", "--no-default-features", "--features", "tokio"]
+
+[tasks.rx-test-smol]
+description = "Run the reactive layer tests in the smol mode (strict)"
+command = "cargo"
+args = ["test", "-p", "ice-rpc-rx", "--no-default-features", "--features", "smol"]
 
 [tasks.rx-clippy]
 description = "Lint the reactive layer, every target"

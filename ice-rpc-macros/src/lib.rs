@@ -412,9 +412,10 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
 /// # Runtime
 ///
 /// No runtime is hard-coded:
-/// - `#[ice_rpc::main]` → runtime-agnostic, driven by `ice_rpc::rt::block_on`;
+/// - `#[ice_rpc::main]` → driven by `ice_rpc::rt::block_on`, which requires no
+///   runtime and suits every execution mode (`rt-threads`, `tokio`, `smol`);
 /// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime;
-/// - `#[ice_rpc::main(smol::block_on)]` → any user-provided `fn(Future) -> T`.
+/// - `#[ice_rpc::main(pollster::block_on)]` → any user-provided `fn(Future) -> T`.
 ///
 /// # Example
 /// ```rust,ignore

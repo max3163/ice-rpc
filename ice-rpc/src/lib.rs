@@ -189,10 +189,12 @@ pub mod rx {
     pub use ice_rpc_rx::*;
 }
 
-/// Runtime-agnostic execution facade, re-exported under its historical path.
+/// Execution facade, re-exported under its historical path.
 ///
 /// `spawn`, `sleep`, `block_on` and the cancellation token live in
-/// [`ice_rpc_rx::rt`]; the transport and the examples keep using them here.
+/// [`ice_rpc_rx::rt`]; the transport and the examples keep using them here. The
+/// facade has one full mode per host runtime — `rt-threads` (the default),
+/// `tokio`, `smol` — and the modes are exclusive.
 pub mod rt {
     pub use ice_rpc_rx::rt::*;
 }
@@ -405,9 +407,9 @@ pub fn init_without_ctrl_c() -> ShutdownGuard {
 
 /// Starts the HTTP REST gateway with the given service mapping.
 ///
-/// Requires the `http` feature in `Cargo.toml`:
+/// Requires the `http` feature and one runtime adapter in `Cargo.toml`:
 /// ```toml
-/// ice-rpc = { features = ["http"] }
+/// ice-rpc = { features = ["http", "http-tokio"] }
 /// ```
 ///
 /// Prefer the [`start_http_gateway!`] macro which builds the mapping

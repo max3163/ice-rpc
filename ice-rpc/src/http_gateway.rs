@@ -5,8 +5,21 @@
 //! URL `/{service}/{method}` with the parameters passed as a query string
 //! (GET) or as a JSON body (POST).
 //!
-//! The server is runtime-agnostic: it runs on `async-global-executor` through
-//! the `trillium-smol` adapter, so **no tokio runtime is required**.
+//! The server itself is runtime-agnostic; the trillium adapter that drives it is
+//! chosen by the `http-*` features, one per execution mode:
+//!
+//! | Feature | Adapter | Mode |
+//! |---|---|---|
+//! | `http-threads` | `trillium-smol` | `rt-threads` (the default) |
+//! | `http-smol` | `trillium-smol` | `smol` |
+//! | `http-tokio` | `trillium-tokio` | `tokio` |
+//!
+//! Enabling `http` without one of them is a compile error, and a mismatch
+//! between an adapter and the mode is not expressible: each adapter enables the
+//! mode it belongs to. `http-tokio` runs the server on the application's tokio
+//! runtime; the two `trillium-smol` adapters run it on the executor
+//! `trillium-smol` embeds (`async-global-executor`), which is a pool of its own
+//! — the ice-rpc tasks themselves stay on the executor of the selected mode.
 //!
 //! # Quick start
 //!
@@ -39,6 +52,19 @@
 //! {"status":"ok","data":{...}}
 //! {"status":"error","error":"error message"}
 //! ```
+
+// trillium is built on one runtime adapter at a time, and the manifest
+// deliberately does not choose: `http` alone deciding the runtime of the gateway
+// would contradict the execution mode the deployment picked.
+#[cfg(not(any(
+    feature = "http-tokio",
+    feature = "http-smol",
+    feature = "http-threads"
+)))]
+compile_error!(
+    "the `http` feature needs one runtime adapter: enable `http-tokio` (tokio), \
+     `http-smol` (smol) or `http-threads` (the default mode)."
+);
 
 use crate::service_traits::HttpCallable;
 use async_lock::RwLock;
@@ -444,8 +470,10 @@ pub async fn start_http_server(
         signal_swansong.shut_down().await;
     });
 
-    // Runtime adapter: `http-tokio` → trillium-tokio, otherwise trillium-smol
-    // (runtime-agnostic, no tokio required).
+    // Runtime adapter, one per mode: `http-tokio` on tokio, `http-smol` and
+    // `http-threads` on `trillium-smol` (whose server runs on
+    // `async-global-executor` threads, so no tokio runtime is required). The
+    // `http` feature alone cannot reach either block — the manifest refuses it.
     #[cfg(feature = "http-tokio")]
     {
         trillium_tokio::config()
@@ -457,7 +485,10 @@ pub async fn start_http_server(
             .await;
     }
 
-    #[cfg(not(feature = "http-tokio"))]
+    #[cfg(all(
+        not(feature = "http-tokio"),
+        any(feature = "http-smol", feature = "http-threads")
+    ))]
     {
         trillium_smol::config()
             .with_port(port)

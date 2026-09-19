@@ -12,8 +12,10 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs` — the last one
   only when the `nodejs` feature is on.
-- **Optional HTTP gateway** (`http` feature) built on trillium (runtime-agnostic, no tokio required).
-  The feature also generates the `HttpCallable` implementation of every proxy, which is what
+- **Optional HTTP gateway** (`http` plus one `http-*` adapter) built on trillium.
+  `http-tokio` runs the server on the application's tokio runtime; the
+  `trillium-smol` adapters run it on the executor trillium embeds, while the
+  ice-rpc tasks stay on the executor of the selected mode. The feature also generates the `HttpCallable` implementation of every proxy, which is what
   keeps `serde_json`'s conversion code out of a binary that never speaks HTTP.
 - **Optional Node.js gateway** (`nodejs` feature): `#[service]` also generates the
   rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode the
@@ -46,25 +48,41 @@ log = "0.4"
 
 The generated code references `log` directly (`::log::…`), and your own types derive `rkyv` traits, so both crates must be declared in your `Cargo.toml`.
 
-## Runtime-agnostic
+## Execution modes
 
-The ice-rpc core has **no dependency on a specific async runtime**. By
-default, the execution facade (`ice_rpc::rt`) is backed by
-`async-global-executor` (task spawning), `std::thread` (blocking IPC threads)
-and `futures-timer` (timers), so it runs on any executor: tokio, smol,
-or even pollster.
-
-Optional Cargo features switch the facade to a dedicated runtime:
+The core names **no runtime** outside one façade (`ice_rpc::rt`). A façade
+cannot be runtime-*neutral*: a detached task has to be polled by someone, and
+"who polls" is the only thing a runtime is asked for here. So instead of one
+lowest-common-denominator executor, there is one **full mode per host runtime**,
+plus a fallback for a deployment that has none. "Full" means the process then
+runs **one** pool, not three.
 
 ```toml
-ice-rpc = { version = "0.1" }                           # agnostic (default)
-ice-rpc = { version = "0.1", features = ["smol"] }      # smol (native facade)
-ice-rpc = { version = "0.1", features = ["tokio"] }     # tokio facade
-ice-rpc = { version = "0.1", features = ["http"] }      # trillium gateway (runtime-agnostic)
-ice-rpc = { version = "0.1", features = ["full"] }      # http + tokio
+ice-rpc = { version = "0.1" }                              # rt-threads (default)
+ice-rpc = { version = "0.1", features = ["tokio"] }        # tokio only
+ice-rpc = { version = "0.1", features = ["smol"] }         # smol only
 ```
 
-`full` is a convenience feature that enables `http` and `tokio` in one shot.
+| Mode | Task spawning, timers, blocking pool |
+|---|---|
+| `rt-threads` (default) | an `async-executor` instance owned by the crate, run by `available_parallelism()` OS threads (`ICE_RPC_THREADS` overrides the count), `futures-timer` for `sleep`, `blocking` for the pool. No third-party runtime, and **no I/O reactor**: the core performs no async I/O. |
+| `tokio` | `tokio::spawn`, `tokio::time::sleep`, tokio's blocking pool |
+| `smol` | `smol::spawn` on smol's global executor — so the tasks share the pool of an application that already runs smol — `smol::Timer`, `smol::unblock`. Set `SMOL_THREADS`: that executor runs **one** thread by default. |
+
+The modes are exclusive: `tokio` + `smol` is a compile error. Enabling a mode
+does *not* remove the fallback from the dependency graph, because Cargo features
+are additive; a build that carries one runtime and nothing else says so:
+
+```toml
+ice-rpc = { version = "0.1", default-features = false, features = ["tokio"] }
+```
+
+The two long-lived IPC loops own a `std::thread` and block on an iceoryx2
+`WaitSet`: they never go through a runtime. `#[ice_rpc::main]` drives `main`
+with `ice_rpc::rt::block_on` (no runtime required, any mode),
+`#[ice_rpc::main(tokio)]` builds a multi-thread tokio runtime, and any
+`fn(Future) -> T` can be given instead, e.g.
+`#[ice_rpc::main(pollster::block_on)]`.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
   stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
@@ -263,10 +281,13 @@ tests), the lifecycle lives in `ice_rpc::gen`: `let guard = ice_rpc::gen::init()
 
 ## HTTP gateway (optional)
 
-Enable the `http` feature:
+Enable the `http` feature **and one adapter**, `http-<mode>`: trillium needs one,
+and letting the bare feature pick would contradict the mode chosen above.
 
 ```toml
-ice-rpc = { version = "0.1", features = ["http"] }
+ice-rpc = { version = "0.1", features = ["tokio", "http-tokio"] }
+ice-rpc = { version = "0.1", features = ["smol", "http-smol"] }
+ice-rpc = { version = "0.1", features = ["http-threads"] }   # the default mode
 ```
 
 ```rust,ignore

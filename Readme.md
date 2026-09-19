@@ -1082,7 +1082,7 @@ The HTTP gateway is available via the **`http` feature flag** of the `ice-rpc` c
 
 ```toml
 [dependencies]
-ice-rpc = { features = ["http"] }
+ice-rpc = { features = ["tokio", "http-tokio"] }
 ```
 
 **Full startup :**

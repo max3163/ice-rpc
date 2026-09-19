@@ -1,9 +1,44 @@
-//! Runtime-agnostic execution facade.
+//! Execution facade: one full mode per host runtime, and a fallback for a
+//! deployment that has none.
 //!
-//! All the concurrency primitives used by the ice-rpc core go through this
-//! module so that the crate has no direct dependency on a particular async
-//! runtime. By default the facade is backed by `async-global-executor`,
-//! `std::thread` and `futures-timer`; the `tokio` feature switches it to tokio.
+//! Every concurrency primitive of the ice-rpc core goes through this module, so
+//! the rest of the crate never names a runtime. What this facade cannot be is
+//! *neutral*: a detached task must be polled by someone, and "who polls" is the
+//! only thing a runtime is asked for here. That is why there is one mode per
+//! host runtime rather than a single lowest-common-denominator executor, and why
+//! the modes are exclusive — the point of a full mode is that the process runs
+//! *one* pool, not three.
+//!
+//! | Mode | `spawn` | `sleep` | blocking pool |
+//! |---|---|---|---|
+//! | `rt-threads` (default) | owned `async-executor` instance on OS threads | `futures-timer` | `blocking` |
+//! | `tokio` | `tokio::spawn` | `tokio::time::sleep` | tokio's pool |
+//! | `smol` | `smol::spawn` (its global executor) | `smol::Timer` | `smol::unblock` |
+//!
+//! The two long-lived IPC loops do not go through a runtime at all: they own a
+//! `std::thread` and block on an iceoryx2 `WaitSet` (see [`spawn_blocking`]).
+//! Nothing in the core performs async I/O, which is why the default mode needs
+//! no I/O reactor.
+//!
+//! The modes are selected by feature, by priority: `tokio` > `smol` >
+//! `rt-threads`. Enabling a mode does not remove the fallback from the
+//! dependency graph, because Cargo features are additive; a build with no
+//! residue of the other modes uses `default-features = false`.
+
+// Cargo features are additive and cannot express "if tokio then not smol", so
+// the exclusivity the modes require is enforced here rather than in the
+// manifest. Two full runtimes in one process is precisely what these modes exist
+// to avoid: the first one to start would silently own the tasks of both.
+#[cfg(all(feature = "tokio", feature = "smol"))]
+compile_error!(
+    "features `tokio` and `smol` are mutually exclusive: pick one execution facade. \
+     The `ice-rpc` crate exposes both under the same names."
+);
+
+#[cfg(not(any(feature = "tokio", feature = "smol", feature = "rt-threads")))]
+compile_error!(
+    "no execution facade selected: enable `rt-threads` (the default), `tokio` or `smol`."
+);
 
 mod cancel;
 
@@ -43,55 +78,7 @@ impl Future for BlockingHandle {
     }
 }
 
-// ── Default (agnostic) implementation ─────────────────────────────────────
-#[cfg(not(feature = "tokio"))]
-mod imp {
-    use super::*;
-
-    pub fn spawn<F>(future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        async_global_executor::spawn(future).detach();
-    }
-
-    pub fn sleep(dur: Duration) -> impl Future<Output = ()> + Send + 'static {
-        futures_timer::Delay::new(dur)
-    }
-
-    /// Pooled variant of [`super::spawn_blocking`].
-    ///
-    /// Backed by the `blocking` crate's pool; a panicking closure is caught here.
-    pub fn spawn_blocking<F, R>(f: F) -> impl Future<Output = ()> + Send + 'static
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        async_global_executor::spawn_blocking(move || {
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-                log::error!(
-                    "[ice-rpc] pooled blocking task panicked: {}",
-                    super::panic_payload_message(payload)
-                );
-            }
-        })
-    }
-
-    /// Pooled variant of [`super::spawn_blocking_value`].
-    pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        async_global_executor::spawn_blocking(move || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        })
-        .await
-        .map_err(super::panic_payload_message)
-    }
-}
-
-// ── Tokio implementation ──────────────────────────────────────────────────
+// ── Mode 1: tokio ─────────────────────────────────────────────────────────
 #[cfg(feature = "tokio")]
 mod imp {
     use super::*;
@@ -136,11 +123,160 @@ mod imp {
     }
 }
 
+// ── Mode 2: smol ──────────────────────────────────────────────────────────
+#[cfg(all(feature = "smol", not(feature = "tokio")))]
+mod imp {
+    use super::*;
+
+    /// Spawns onto smol's **global** executor.
+    ///
+    /// That global executor is the point of this mode: the task runs on the very
+    /// executor the application's own `smol::spawn` uses, so ice-rpc and the
+    /// application share one pool instead of running two. It starts lazily, on
+    /// the first spawn, and runs `SMOL_THREADS` threads — **one** by default,
+    /// unlike the `available_parallelism()` threads of the fallback mode. A
+    /// provider that serves concurrent calls has to set it.
+    pub fn spawn<F>(future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // `detach` is mandatory: dropping an `async_executor::Task` cancels its
+        // future, and the core spawns tasks it never joins.
+        smol::spawn(future).detach();
+    }
+
+    /// Sleeps through smol's timer, whose `async-io` reactor owns a background
+    /// thread: nothing to enter, from any thread.
+    pub fn sleep(dur: Duration) -> impl Future<Output = ()> + Send + 'static {
+        // `smol::Timer` resolves to the deadline instant; the facade exposes `()`.
+        async move {
+            smol::Timer::after(dur).await;
+        }
+    }
+
+    /// Pooled variant of [`super::spawn_blocking`].
+    ///
+    /// `smol::unblock` *is* `blocking::unblock`, the pool the fallback mode uses.
+    /// It re-raises a panic in the awaiting task, so the closure is caught here
+    /// exactly as in the fallback mode.
+    pub fn spawn_blocking<F, R>(f: F) -> impl Future<Output = ()> + Send + 'static
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        smol::unblock(move || {
+            if let Err(message) = catch_panic(f) {
+                log::error!("[ice-rpc] pooled blocking task panicked: {message}");
+            }
+        })
+    }
+
+    /// Pooled variant of [`super::spawn_blocking_value`].
+    pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        smol::unblock(move || catch_panic(f)).await
+    }
+}
+
+// ── Mode 3: OS threads (the fallback) ─────────────────────────────────────
+#[cfg(all(feature = "rt-threads", not(feature = "tokio"), not(feature = "smol")))]
+mod imp {
+    use super::*;
+    use std::sync::{Arc, OnceLock};
+
+    /// Number of threads running the owned executor.
+    ///
+    /// `available_parallelism()` matches the thread count of the executor this
+    /// mode replaced (`async-global-executor`); `ICE_RPC_THREADS` overrides it,
+    /// which is what a deployment pinning a core — or one that must not let a
+    /// dependency start a pool of its own — sets.
+    fn worker_threads() -> usize {
+        std::env::var("ICE_RPC_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| count.get()))
+    }
+
+    /// The process-wide executor, started on first use.
+    ///
+    /// Unlike the global of a third-party runtime, this one is an instance this
+    /// crate owns: no `static` executor buried in a dependency, no `thread_local`
+    /// to enter, no I/O reactor to start — nothing in the core performs async
+    /// I/O. The threads below live for the rest of the process, like the pool of
+    /// the executor this mode replaced.
+    fn executor() -> &'static Arc<async_executor::Executor<'static>> {
+        static EXECUTOR: OnceLock<Arc<async_executor::Executor<'static>>> = OnceLock::new();
+        EXECUTOR.get_or_init(|| {
+            let executor = Arc::new(async_executor::Executor::new());
+            for index in 1..=worker_threads() {
+                let worker = Arc::clone(&executor);
+                std::thread::Builder::new()
+                    .name(format!("ice-rpc-rt-{index}"))
+                    .spawn(move || {
+                        // `pending()` never completes, so the thread polls the
+                        // executor for the whole process lifetime.
+                        futures_lite::future::block_on(
+                            worker.run(futures_lite::future::pending::<()>()),
+                        )
+                    })
+                    .expect("failed to start an ice-rpc runtime worker thread");
+            }
+            executor
+        })
+    }
+
+    /// Spawns a task onto the owned executor.
+    pub fn spawn<F>(future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // `detach` is mandatory: dropping an `async_executor::Task` cancels its
+        // future, and the core spawns tasks it never joins.
+        executor().spawn(future).detach();
+    }
+
+    /// Sleeps through `futures-timer`, which owns its thread: no runtime, no
+    /// reactor, nothing to enter.
+    pub fn sleep(dur: Duration) -> impl Future<Output = ()> + Send + 'static {
+        futures_timer::Delay::new(dur)
+    }
+
+    /// Pooled variant of [`super::spawn_blocking`].
+    ///
+    /// `blocking::unblock` re-raises a panic in the awaiting task, so the closure
+    /// is caught here and logged.
+    pub fn spawn_blocking<F, R>(f: F) -> impl Future<Output = ()> + Send + 'static
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        blocking::unblock(move || {
+            if let Err(message) = catch_panic(f) {
+                log::error!("[ice-rpc] pooled blocking task panicked: {message}");
+            }
+        })
+    }
+
+    /// Pooled variant of [`super::spawn_blocking_value`].
+    pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        blocking::unblock(move || catch_panic(f)).await
+    }
+}
+
 /// Spawns a future onto the configured runtime.
 ///
-/// The task is detached: its result is discarded. Works from any context,
-/// including one without an active async runtime (the default agnostic
-/// facade starts its own global executor lazily).
+/// The task is detached: its result is discarded. Under the `rt-threads` and
+/// `smol` facades this works from any context, including one without an active
+/// async runtime: those executors start lazily and accept a spawn from any
+/// thread. Under the `tokio` facade an active runtime is required.
 pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -155,8 +291,8 @@ where
 /// without one. The transport boots its channel threads with `std::thread` —
 /// they never run inside a runtime — so it captures a [`Spawner`] on the thread
 /// that starts the channel (which is inside the runtime) and moves it into the
-/// channel thread. Under the default facade nothing is captured: the global
-/// executor accepts a spawn from any thread.
+/// channel thread. Under the `rt-threads` and `smol` facades nothing is
+/// captured: both executors accept a spawn from any thread.
 #[derive(Clone, Default)]
 pub struct Spawner {
     /// Runtime captured by [`Spawner::capture`] (`tokio` facade only).
@@ -293,9 +429,9 @@ where
 /// Runs a short blocking closure on the runtime's **bounded** thread pool and
 /// returns an awaitable handle.
 ///
-/// The pool is the executor's own (the `blocking` crate by default, tokio's
-/// blocking pool under the `tokio` feature). A panicking closure is caught and
-/// logged, never propagated to the awaiter.
+/// The pool belongs to the mode: `blocking` in the `rt-threads` and `smol`
+/// facades, tokio's blocking pool under the `tokio` feature. A panicking closure
+/// is caught and logged, never propagated to the awaiter.
 pub fn blocking_call<F, R>(f: F) -> BlockingHandle
 where
     F: FnOnce() -> R + Send + 'static,
@@ -319,10 +455,24 @@ where
     imp::spawn_blocking_value(f).await
 }
 
+/// Runs a pooled blocking closure, turning a panic into an `Err(message)`.
+///
+/// The pooled variants of the `rt-threads` and `smol` facades are built on
+/// `blocking::unblock`, which re-raises a panic in the awaiting task: catching it
+/// here is what keeps a panicking task from taking its awaiter down with it.
+/// Under the `tokio` feature the pool reports panics through `JoinError`
+/// instead, so none of this is compiled there.
+#[cfg(not(feature = "tokio"))]
+fn catch_panic<F, R>(f: F) -> Result<R, String>
+where
+    F: FnOnce() -> R,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_payload_message)
+}
+
 /// Formats the payload of a caught panic into a human-readable message.
 ///
-/// Only used by the agnostic facade: under the `tokio` feature the pool reports
-/// panics through `JoinError` instead.
+/// Only used by the modes whose pool re-raises panics.
 #[cfg(not(feature = "tokio"))]
 fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {

@@ -27,31 +27,73 @@ jobs:
         run: cargo fmt --all -- --check
 
       # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
-      # `tokio,http,nodejs` covers the optional runtime adapter, the HTTP gateway
-      # and the Node.js codegen. `nodejs` matters here precisely because the
-      # gateway is excluded: it is the only consumer of the generated converters,
-      # so without it that code would not be compiled anywhere in this job.
+      # `tokio,http-tokio,nodejs` covers the tokio execution mode, the HTTP
+      # gateway on its tokio adapter and the Node.js codegen. `nodejs` matters
+      # here precisely because the gateway is excluded: it is the only consumer
+      # of the generated converters, so without it that code would not be
+      # compiled anywhere in this job.
+      # `http-tokio` rather than `http`: the gateway needs one adapter per mode,
+      # and the manifest refuses to pick one on its own.
       - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs,tracing
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,nodejs,tracing
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http,nodejs,tracing -- -D warnings
+        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,nodejs,tracing -- -D warnings
 
-      # The default workspace run exercises the agnostic runtime facade.
-      - name: Test (workspace, default facade)
+      # The default workspace run exercises the `rt-threads` mode, the fallback
+      # facade (an `async-executor` instance on OS threads, `futures-timer` for
+      # the timers, `blocking` for the pool).
+      - name: Test (workspace, default mode)
         run: cargo test --workspace --exclude gateway-nodejs
 
-      # The `tokio` feature swaps the runtime facade: `rt::spawn` / `rt::sleep`
-      # then require an active runtime. The facade itself, and the operators that
-      # need it (`delay`, `timeout`, `subscribe`), live in `ice-rpc-rx`; its tests
-      # supply a runtime through `rt::test_block_on`. `ice-rpc` is tested under the
-      # same facade for the transport side. Both steps are needed: the workspace
-      # run above only exercises the default, runtime-agnostic facade.
-      - name: Test (ice-rpc-rx, tokio facade)
-        run: cargo test -p ice-rpc-rx --features tokio
+      # One full mode per host runtime. The facade, and the operators that need
+      # it (`delay`, `timeout`, `subscribe`), live in `ice-rpc-rx`, which drives
+      # itself through `rt::test_block_on`; `ice-rpc` is tested under the same
+      # mode for the transport side. `--no-default-features` is what makes these
+      # runs strict: without it the fallback mode is compiled too, and the point
+      # of a mode is that a deployment can build one only.
+      - name: Test (ice-rpc-rx, tokio mode)
+        run: cargo test -p ice-rpc-rx --no-default-features --features tokio
 
-      - name: Test (ice-rpc, tokio facade)
-        run: cargo test -p ice-rpc --features tokio --lib
+      - name: Test (ice-rpc, tokio mode)
+        run: cargo test -p ice-rpc --lib --no-default-features --features tokio
+
+      - name: Test (ice-rpc-rx, smol mode)
+        run: cargo test -p ice-rpc-rx --no-default-features --features smol
+
+      - name: Test (ice-rpc, smol mode)
+        run: cargo test -p ice-rpc --lib --no-default-features --features smol
+
+      # A mode is only a mode if it brings *one* runtime: this step turns "full
+      # tokio" and "full smol" from a documentation claim into a build property.
+      # `-e normal` leaves the build dependencies out of the tree.
+      - name: One runtime per mode (dependency purity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          crates() {
+            cargo tree -p ice-rpc --no-default-features --features "$1" -e normal \
+              --prefix none --no-dedupe 2>/dev/null |
+              sed 's/ (.*//' | awk '{print $1}' | sort -u
+          }
+          assert_absent() {
+            if crates "$1" | grep -qx "$2"; then
+              echo "::error::the $1 mode must not depend on $2"
+              exit 1
+            fi
+          }
+          # tokio mode: none of the smol lineage may follow the runtime in.
+          for forbidden in smol async-executor blocking async-io futures-timer; do
+            assert_absent tokio "$forbidden"
+          done
+          # smol mode: no tokio.
+          assert_absent smol tokio
+          # fallback mode: neither runtime, and no I/O reactor at all — the core
+          # performs no async I/O, the transport blocks on its iceoryx2 WaitSet.
+          for forbidden in tokio smol async-io; do
+            assert_absent rt-threads "$forbidden"
+          done
+          echo "each mode carries exactly one runtime"
 
       # The `tracing` feature adds a dependency and a span per provider call,
       # and nothing else in the workspace turns it on: without this step a break

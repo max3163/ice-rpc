@@ -17,11 +17,14 @@
 #   cargo monitoring-demo     # observer, self-contained demo (--demo --detail)
 #   cargo monitoring-serve    # observer binary, Prometheus endpoint on :9898
 #
-# `-release` variants build with optimisations.
+# `-release` variants build with optimisations, `provider-size` with the
+# size-first `size` profile (see `docs/binary-size.md`).
 [alias]
 provider = "run -p ice-rpc --example provider-app --features tokio"
 provider-release = "run -p ice-rpc --release --example provider-app --features tokio"
 provider-http = "run -p ice-rpc --example provider-app --features=tokio,http-tokio"
+# Same app, built for the smallest possible image (`opt-level = "z"`, stripped).
+provider-size = "build -p ice-rpc --example provider-app --features tokio --profile size"
 
 consumer = "run -p ice-rpc --example consumer-app --features tokio"
 consumer-release = "run -p ice-rpc --release --example consumer-app --features tokio"

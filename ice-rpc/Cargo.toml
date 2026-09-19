@@ -120,7 +120,19 @@ trillium-smol = { version = "0.7", optional = true }
 trillium-tokio = { version = "0.6", optional = true }
 
 [dev-dependencies]
-env_logger = "0.11"
+# `default-features = false` drops `env_logger/regex` -> `env_filter/regex` ->
+# `regex` -> `regex-automata` + `aho-corasick` + `regex-syntax`. The demos only
+# ever build their filter from a plain level
+# (`Env::default().default_filter_or("info")`), so that engine is dead weight:
+# `cargo bloat` reported `regex_automata::meta::strategy::new` as the *largest*
+# single function of `provider-app`, ~630 KiB of `.text` in total. Directives
+# that need a regex (`RUST_LOG=/foo/`) are therefore unavailable in the demos;
+# `RUST_LOG=info,ice_rpc=debug` keeps working, and `humantime` + `auto-color`
+# are kept so the console output is unchanged.
+env_logger = { version = "0.11", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
 pollster = "1.0"
 criterion = "0.8"
 # The examples still demonstrate a Tokio application; the core crate itself

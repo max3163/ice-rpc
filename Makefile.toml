@@ -7,6 +7,8 @@
 #   cargo make build-all                # Compile everything (Rust + Node.js addon)
 #   cargo make examples-build           # Build all Rust examples (debug)
 #   cargo make examples-build-release   # Build all Rust examples (release)
+#   cargo make examples-build-size      # Release examples, tuned for binary size
+#   cargo make bloat                    # Where the bytes go (needs cargo-bloat)
 #   cargo make provider                 # Run the Rust provider example (debug)
 #   cargo make consumer                 # Run the Rust consumer example (debug)
 #   cargo make monitoring-demo-detail   # Console observer, self-contained + decoded messages
@@ -154,6 +156,41 @@ dependencies = ["examples-build-apps"]
 description = "Build all Rust examples (release), with the correct features"
 workspace = false
 dependencies = ["examples-build-apps-release"]
+
+# Size-first counterpart of `examples-build-release`: same targets, built with
+# the `size` profile (see the workspace `Cargo.toml`). Use it to answer "how big
+# is the image we ship?" without giving up the `release` profile the benchmarks
+# and the latency-sensitive runs rely on.
+[tasks.examples-build-size]
+description = "Build all Rust examples (size profile: opt-level=z, stripped)"
+workspace = false
+dependencies = ["examples-build-apps-size"]
+
+[tasks.examples-build-apps-size]
+description = "Build the ice-rpc examples (profile: size, features: ${EXAMPLES_FEATURES})"
+workspace = false
+command = "cargo"
+args = ["build", "-p", "${EXAMPLES_CRATE}", "--examples", "--features", "${EXAMPLES_FEATURES}", "--profile", "size"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+# Attribution of the bytes of the *minimal* deployment (a provider on Tokio, no
+# HTTP gateway, no monitoring): `--crates` ranks the crates, `bloat-detail`
+# ranks the individual functions. Requires `cargo install cargo-bloat`, and the
+# symbols the analysis needs, which is why it runs on `release` (`strip = false`)
+# and not on `size` (`strip = true`).
+[tasks.bloat]
+description = "Rank the crates of the minimal provider example by contribution (needs cargo-bloat)"
+workspace = false
+command = "cargo"
+args = ["bloat", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "--release", "--crates", "-n", "30"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+
+[tasks.bloat-detail]
+description = "Rank the functions of the minimal provider example by size (needs cargo-bloat)"
+workspace = false
+command = "cargo"
+args = ["bloat", "-p", "ice-rpc", "--example", "provider-app", "--features", "tokio", "--release", "-n", "30"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 
 [tasks.examples-build-apps]
 description = "Build the ice-rpc examples (debug, features: ${EXAMPLES_FEATURES})"

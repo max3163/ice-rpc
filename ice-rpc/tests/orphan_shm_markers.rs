@@ -16,6 +16,18 @@
 //!
 //! The test re-executes its own binary as a child provider, the same way
 //! `crash_reconnect.rs` obtains a real second process from `cargo test`.
+//!
+//! **Windows only**, and the gate below is part of the contract rather than a
+//! convenience. What makes the sweep act is a side effect of the `shm_open`
+//! *emulation*: `iceoryx2-pal-posix` unlinks the state file of a name whose
+//! mapping is gone, which is exactly the orphan case. Where `shm_open` is the
+//! real one — Linux, macOS, FreeBSD — the very same call opens the object and
+//! closes it again, so `does_exist` can only report "it is there": nothing is
+//! removed, and the marker this test waits for never goes away. On Linux,
+//! `SharedMemory::list()` does not even return markers: it returns the segments
+//! themselves. Run there, the test asserts the opposite of what the sweep
+//! promises, which is what the Ubuntu coverage job did.
+#![cfg(windows)]
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 use std::io::{BufRead, BufReader, Write};

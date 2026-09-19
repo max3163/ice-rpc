@@ -59,6 +59,27 @@ codegen-units = 1   # single codegen-unit: better inlining / dead code eliminati
 panic = "abort"     # reduces the size and removes the unwind tables
 strip = false       # keep the symbols for profiling (set true in production)
 
+# Size-first variant of `release`, for a deployment where flash / RAM / image
+# size matters more than throughput:
+#
+#     cargo build --profile size -p ice-rpc --example provider-app --features tokio
+#
+# `opt-level = "z"` is by far the largest lever: on `provider-app` it takes the
+# binary from 2.5 MiB to 1.7 MiB of `.text` (-33%) by trading inlining for
+# smaller code, so it is a *deliberate* speed/size trade-off, not a free win —
+# keep `release` for the benchmarks and for a latency-sensitive deployment.
+# `lto` and `codegen-units = 1` are inherited from `release`; they are what lets
+# the linker drop the code of the crates nothing calls.
+#
+# `strip = true` is kept for ELF targets, where it removes the symbol table
+# (hundreds of KiB). On Windows/MSVC the symbols already live in the separate
+# `.pdb`, so it buys almost nothing there — which also means that on MSVC the
+# reported `.exe` size is all code and data, with no symbol table to shave.
+[profile.size]
+inherits = "release"
+opt-level = "z"
+strip = true
+
 [profile.bench]
 opt-level = 3
 lto = true

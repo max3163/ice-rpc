@@ -25,7 +25,13 @@ log = { workspace = true }
 serde_json = { workspace = true }
 # Clean termination detection (`SignalHandler::termination_requested`).
 iceoryx2-bb-posix = "0.10.0"
-env_logger = "0.11"
+# Same trade-off as in `ice-rpc`: the observer builds its filter from a plain
+# level string, so `env_filter`'s regex engine (`regex` -> `regex-automata` +
+# `aho-corasick` + `regex-syntax`) would be linked for nothing.
+env_logger = { version = "0.11", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
 # Optional: per-process resources of the observed nodes.
 sysinfo = { version = "0.39", optional = true }
 

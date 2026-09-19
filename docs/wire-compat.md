@@ -246,6 +246,15 @@ gone unlinks its marker as a side effect — so a live segment is left untouched
 an orphan is removed. The script below therefore only remains the answer for the
 state no running provider would sweep.
 
+This is a **Windows-only** remedy, and that is a property of the primitive, not a
+choice: the removal is a side effect of the `shm_open` emulation described above.
+Where `shm_open` is the real one, the same call merely reports that the object
+exists, so it can remove nothing; on Linux, `SharedMemory::list()` returns the
+segments themselves rather than markers. The guard test of the sweep
+([`orphan_shm_markers.rs`](../ice-rpc/tests/orphan_shm_markers.rs)) therefore
+carries `#![cfg(windows)]`: on any other platform it would assert the opposite of
+what the code promises, which is exactly what it did on the Ubuntu coverage job.
+
 ## Two adjacent cases
 
 - A service that simply **does not exist yet** is not this problem: `native_call`

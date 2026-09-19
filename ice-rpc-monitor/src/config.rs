@@ -39,6 +39,11 @@ pub struct Config {
     /// Channels forced to [`Mode::Detail`] even when the global mode is `Stats`.
     pub detail_channels: Vec<String>,
     /// How often the channel list is refreshed when discovery is enabled.
+    ///
+    /// Paces the *listing* of the channels only, which costs a scan of the
+    /// service registry: attaching to a channel already known is retried far more
+    /// often, so a provider that starts after the observer is observed from its
+    /// first call instead of the next discovery tick.
     pub discover_interval: Duration,
     /// How often correlation entries older than [`Config::call_ttl`] are swept.
     pub sweep_interval: Duration,

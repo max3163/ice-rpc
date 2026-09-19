@@ -248,11 +248,38 @@ impl Metrics {
         }
     }
 
+    /// Replaces the per-channel attachment block.
+    ///
+    /// Built from the observer's own views, so it costs no scan and is published
+    /// on every acquisition pass: a channel must never be reported as unattached
+    /// — nor the reverse — one inventory interval late.
+    pub fn set_channels(&self, channels: &[ChannelHealth]) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+
+        inner.channels.clear();
+        for channel in channels {
+            inner.channels.insert(
+                (channel.channel.clone(), channel.direction),
+                ChannelSample {
+                    attached: i64::from(channel.attached),
+                    publishers: channel.publishers as i64,
+                    subscribers: channel.subscribers as i64,
+                    max_publishers: channel.max_publishers as i64,
+                    max_subscribers: channel.max_subscribers as i64,
+                    subscriber_buffer: channel.subscriber_buffer as i64,
+                },
+            );
+        }
+    }
+
     /// Replaces the whole health inventory with a fresh scan.
     ///
     /// The inventory is *replaced*, never accumulated, so a service or a node
-    /// that disappears stops being exported on the very next scan.
-    pub fn set_health(&self, snapshot: &HealthSnapshot, channels: &[ChannelHealth]) {
+    /// that disappears stops being exported on the very next scan. The
+    /// per-channel block is not part of it, see [`Metrics::set_channels`].
+    pub fn set_health(&self, snapshot: &HealthSnapshot) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -276,21 +303,6 @@ impl Metrics {
             inner
                 .service_participants
                 .insert(service.name.clone(), service.participants as i64);
-        }
-
-        inner.channels.clear();
-        for channel in channels {
-            inner.channels.insert(
-                (channel.channel.clone(), channel.direction),
-                ChannelSample {
-                    attached: i64::from(channel.attached),
-                    publishers: channel.publishers as i64,
-                    subscribers: channel.subscribers as i64,
-                    max_publishers: channel.max_publishers as i64,
-                    max_subscribers: channel.max_subscribers as i64,
-                    subscriber_buffer: channel.subscriber_buffer as i64,
-                },
-            );
         }
 
         inner.processes.clear();
@@ -448,7 +460,8 @@ mod tests {
             max_subscribers: 16,
             subscriber_buffer: 8,
         }];
-        metrics.set_health(&snapshot, &channels);
+        metrics.set_channels(&channels);
+        metrics.set_health(&snapshot);
 
         let text = metrics.render_prometheus();
         assert!(text.contains("ice_rpc_nodes{state=\"alive\"} 1"), "{text}");

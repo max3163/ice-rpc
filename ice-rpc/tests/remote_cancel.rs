@@ -80,6 +80,26 @@ fn wait_for(flag: &AtomicBool) -> bool {
     flag.load(Ordering::SeqCst)
 }
 
+/// Opens a read-only view of `channel`, retrying until the provider is there.
+///
+/// The provider creates four iceoryx2 services in turn, so a channel is briefly
+/// half-registered: an observer opened a moment too early fails on the service
+/// that is not created yet, for a reason that disappears by itself. A fixed sleep
+/// cannot express "wait until it exists", and a slow machine turns it into a
+/// failure that has nothing to do with the test.
+fn open_view(channel: &str, direction: Direction) -> DirectionView {
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    loop {
+        match DirectionView::open(channel, direction) {
+            Ok(view) => return view,
+            Err(e) if Instant::now() >= deadline => {
+                panic!("'{channel}' ({direction:?}) never became observable: {e}")
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
 /// Drains an observer, returning the kind and the correlation id of every sample
 /// it has seen.
 fn drain(view: &DirectionView) -> Vec<(EventKind, [u8; 16])> {
@@ -138,10 +158,8 @@ fn dropping_a_stream_cancels_the_call_on_the_provider() {
     });
 
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
-    std::thread::sleep(CHANNEL_STARTUP);
 
-    let observer = DirectionView::open(&channel, Direction::Request)
-        .expect("the request direction of the channel is observable");
+    let observer = open_view(&channel, Direction::Request);
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "report", b"")
@@ -203,10 +221,8 @@ fn a_completed_call_is_not_cancelled() {
         })
     });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
-    std::thread::sleep(CHANNEL_STARTUP);
 
-    let observer = DirectionView::open(&channel, Direction::Request)
-        .expect("the request direction of the channel is observable");
+    let observer = open_view(&channel, Direction::Request);
 
     // `collect` consumes the stream, so its drop happens as the call completes —
     // the case that must stay silent.

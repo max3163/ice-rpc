@@ -19,6 +19,15 @@ use crate::traces::{RecentBuffer, TraceRecord, TraceSink};
 const DRAIN_BUDGET: usize = 4096;
 /// Idle wait before draining again when nothing was received.
 const IDLE_WAIT: Duration = Duration::from_millis(5);
+/// Delay before re-attempting the channels that are known but not attached yet.
+///
+/// Independent of [`Config::discover_interval`], which paces the *listing* of the
+/// channels: that one costs a scan of the service registry, while a channel whose
+/// service does not exist yet appears within milliseconds of its provider's ports
+/// being created. Retrying only on the discovery interval — seconds by default —
+/// left the observer blind to the first calls of a provider that starts just
+/// after it, which is the very traffic it was started for.
+const ATTACH_RETRY: Duration = Duration::from_millis(50);
 /// Capacity of the trace queue (records are dropped beyond it).
 const TRACE_QUEUE: usize = 16_384;
 /// How long a response waits for its still-unseen request.
@@ -100,7 +109,10 @@ pub struct Monitor {
     known_channels: Vec<String>,
     /// Failed channel-discovery attempts.
     discovery_errors: u64,
+    /// When the channel *list* was last refreshed.
     last_discover: Instant,
+    /// When the known channels were last probed for attachment.
+    last_attach: Instant,
     last_sweep: Instant,
     last_liveness: Instant,
     wait_cursor: usize,
@@ -159,6 +171,7 @@ impl Monitor {
             known_channels: Vec::new(),
             discovery_errors: 0,
             last_discover: now,
+            last_attach: now,
             last_sweep: now,
             last_liveness: now,
             wait_cursor: 0,
@@ -185,12 +198,21 @@ impl Monitor {
             "[monitor] observing {} channel(s) requested",
             self.config.channels.len()
         );
-        self.refresh_channels();
+        self.refresh_channel_list();
+        self.attach_known_channels();
 
         while !cancel.load(Ordering::Relaxed) {
+            // The channel *list* is re-scanned on the discovery interval only: it
+            // costs a walk of the service registry.
             if self.last_discover.elapsed() >= self.config.discover_interval {
                 self.last_discover = Instant::now();
-                self.refresh_channels();
+                self.refresh_channel_list();
+            }
+            // Attachment is retried far more often: a channel that appears late
+            // must be observed from its first call, see [`ATTACH_RETRY`].
+            if self.last_attach.elapsed() >= ATTACH_RETRY {
+                self.last_attach = Instant::now();
+                self.attach_known_channels();
             }
             self.refresh_health();
 
@@ -222,8 +244,12 @@ impl Monitor {
         Ok(())
     }
 
-    /// Discovers the channels and attaches to the missing directions.
-    fn refresh_channels(&mut self) {
+    /// Refreshes the list of the channels the observer must watch.
+    ///
+    /// Only the *list* is established here, because discovering it costs a scan of
+    /// the service registry; attaching to the channels it names is retried much
+    /// more often, see [`Monitor::attach_known_channels`].
+    fn refresh_channel_list(&mut self) {
         let targets = if self.config.channels.is_empty() {
             match discover_channels() {
                 Ok(channels) => channels,
@@ -238,13 +264,24 @@ impl Monitor {
         };
 
         self.known_channels.clone_from(&targets);
-        for channel in targets {
+    }
+
+    /// Attaches to every known channel whose directions are not observed yet.
+    ///
+    /// A channel that does not exist yet is retried until its services appear.
+    /// Every call published before the attachment is out of the observer's reach:
+    /// iceoryx2 subscribers never receive past samples.
+    fn attach_known_channels(&mut self) {
+        // Indexed rather than iterated: `open_if_missing` borrows the whole
+        // observer, the list of known channels included.
+        for index in 0..self.known_channels.len() {
+            let channel = self.known_channels[index].clone();
             self.open_if_missing(&channel, Direction::Request);
             self.open_if_missing(&channel, Direction::Response);
         }
     }
 
-    /// Scans the inventory when due and publishes it to the metrics.
+    /// Publishes the attachment state, and the inventory when a scan is due.
     fn refresh_health(&mut self) {
         let due = self
             .health
@@ -253,11 +290,14 @@ impl Monitor {
             .unwrap_or(false);
 
         if due {
-            let channels = self.channel_health();
             if let Some(snapshot) = self.health.as_ref().map(Scanner::snapshot) {
-                self.metrics.set_health(snapshot, &channels);
+                self.metrics.set_health(snapshot);
             }
         }
+        // The per-channel block is built from the observer's own views, so it is
+        // published on every pass: the inventory scan is throttled, the truth
+        // about what is attached must not be.
+        self.metrics.set_channels(&self.channel_health());
         // The observer's own counters are published on every pass.
         self.metrics
             .set_observer(self.dropped_traces(), self.discovery_errors);
@@ -687,7 +727,10 @@ impl Monitor {
     /// Blocks briefly on one listener (round-robin) when nothing was drained.
     fn wait_idle(&mut self) {
         if self.views.is_empty() {
-            std::thread::sleep(Duration::from_millis(250));
+            // Nothing to block on: wait only until the next attachment retry, so
+            // a channel whose provider starts late is picked up within
+            // [`ATTACH_RETRY`] of its appearance.
+            std::thread::sleep(ATTACH_RETRY);
             return;
         }
         self.wait_cursor = (self.wait_cursor + 1) % self.views.len();

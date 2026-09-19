@@ -45,6 +45,27 @@ fn traffic_settled(metrics: &Metrics, channel: &str, service_id: u32, expected: 
     requests == Some(expected) && completes == Some(expected)
 }
 
+/// Waits until the observer reports both directions of `channel` as attached.
+///
+/// This is the precondition of every traffic assertion below: the observer only
+/// sees the calls published **after** it subscribed. How long the attachment
+/// itself takes depends on when the provider's ports exist — which a fixed sleep
+/// cannot express, and a slow machine turns into a missed burst.
+fn wait_until_attached(metrics: &Metrics, channel: &str) {
+    let expected = [
+        format!("ice_rpc_channel{{channel=\"{channel}\",direction=\"req\"}} 1"),
+        format!("ice_rpc_channel{{channel=\"{channel}\",direction=\"resp\"}} 1"),
+    ];
+    for _ in 0..400 {
+        let text = metrics.render_prometheus();
+        if expected.iter().all(|series| text.contains(series)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the observer never attached to '{channel}'");
+}
+
 /// Starts a provider that streams two values then completes.
 fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHandle<()>) {
     let service_id = service_id_of(channel);
@@ -85,8 +106,8 @@ fn the_observer_reconstructs_the_traffic_from_the_headers() {
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
 
-    // Let the observer discover and attach to the channel.
-    std::thread::sleep(Duration::from_millis(500));
+    // Every call must be observed, so the attachment comes first.
+    wait_until_attached(&metrics, &channel);
 
     // ── Traffic ─────────────────────────────────────────────────────────
     const CALLS: u64 = 10;
@@ -189,7 +210,9 @@ fn the_detail_mode_captures_the_payloads() {
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
 
-    std::thread::sleep(Duration::from_millis(500));
+    // Detail mode is about the payload of *observed* samples: the observer must
+    // be attached before the call is published.
+    wait_until_attached(&metrics, &channel);
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
@@ -266,7 +289,8 @@ fn the_stats_mode_never_emits_payloads() {
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
 
-    std::thread::sleep(Duration::from_millis(500));
+    // The observer must be attached before the call is published.
+    wait_until_attached(&metrics, &channel);
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
@@ -335,8 +359,9 @@ fn a_late_observer_catches_the_following_traffic() {
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
 
-    // Let it discover and attach to the already-running channel.
-    std::thread::sleep(Duration::from_millis(500));
+    // The channel already exists: attaching first is what makes the count below
+    // exact — no call of the burst that follows may be missed.
+    wait_until_attached(&metrics, &channel);
 
     // Traffic emitted *after* the attachment.
     const AFTER: u64 = 5;
@@ -388,8 +413,6 @@ fn an_observer_started_before_the_provider_attaches_once_it_appears() {
     let config = Config {
         channels: vec![channel.clone()],
         prometheus_addr: None,
-        // Speed the discovery retry up so the test stays quick.
-        discover_interval: Duration::from_millis(200),
         ..Config::default()
     };
     let monitor = Monitor::new(config, metrics.clone()).expect("monitor builds");
@@ -397,9 +420,10 @@ fn an_observer_started_before_the_provider_attaches_once_it_appears() {
     let monitor_cancel = cancel.clone();
     let observer = std::thread::spawn(move || monitor.run(&monitor_cancel).expect("monitor runs"));
 
-    // The provider appears afterwards; the next discovery tick attaches.
+    // The provider appears afterwards: the attachment is retried until its
+    // services exist, and it must not wait for the discovery interval to do so.
     let (service_id, stop, server) = start_provider(&channel);
-    std::thread::sleep(Duration::from_millis(800));
+    wait_until_attached(&metrics, &channel);
 
     const CALLS: u64 = 4;
     for _ in 0..CALLS {

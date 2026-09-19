@@ -19,11 +19,13 @@
 # also grows the `FindNextFileA ... [ 18 ]` noise iceoryx2 prints on Windows
 # (error 18 is "no more files": that is the end of its scan).
 #
-# This is the *fallback*, not the routine: a provider reaps the dead nodes of
-# previous runs when it starts (`transport::cleanup_dead_nodes`), so a machine
-# that only ever restarts providers cleans itself. What this script is for is the
-# state a dead node does not explain — a service whose recorded configuration
-# differs from the requested one, i.e. another build of the service.
+# This is the *fallback*, not the routine: a provider cleans after itself at
+# start — `transport::cleanup_dead_nodes` reaps the dead nodes, and
+# `transport::sweep_orphan_shm_markers` removes the `*.shm_state` markers those
+# nodes left behind, which the reaping alone does not reach. What this script is
+# for is the state a dead node does not explain — a service whose recorded
+# configuration differs from the requested one, i.e. another build of the service
+# — and for a machine whose markers accumulated before the sweep existed.
 #
 # Usage:
 #   scripts/purge-iceoryx2-root.sh            # dry run: paths, file counts, sizes

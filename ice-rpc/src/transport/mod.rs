@@ -108,6 +108,47 @@ pub fn cleanup_dead_nodes() -> u64 {
     state.cleanups
 }
 
+/// Reaps the `iox2_*.shm_state` markers iceoryx2 left behind on this machine.
+///
+/// `iceoryx2-pal-posix` emulates `shm_open` with memory-mapped files and keeps
+/// one `<segment>.shm_state` marker per segment. The marker is deleted by
+/// `shm_unlink` when a process releases its last reference, which is why a
+/// process that is **killed** rather than exiting leaves it behind: the segment
+/// is gone, the marker stays. [`cleanup_dead_nodes`] cannot reach those markers —
+/// it removes the *service and port tags* of a dead node, never the dynamic
+/// storage of an event service — and nothing ages them out, so they accumulate,
+/// one per event service and per killed run.
+///
+/// This sweep is the missing half. `SharedMemory::list()` enumerates the markers
+/// and `SharedMemory::does_exist()` answers, for each name, whether its segment is
+/// still mapped. On Windows that call **is** the test: `shm_open` unlinks a name
+/// it cannot open, which is exactly the orphan case — "the segment is gone, the
+/// marker stays". Elsewhere it is a harmless no-op.
+///
+/// The primitive is iceoryx2's own, so it carries the assumption iceoryx2 makes
+/// elsewhere: the state belongs to the current user, and a mapping owned by
+/// another account may fail to open and lose its marker with it. That is why the
+/// sweep runs at provider startup rather than in a shared or privileged context,
+/// and why it is a one-shot before anything is created — the only race left is
+/// another process that has written its marker but not yet its mapping.
+///
+/// # Returns
+/// Number of markers removed.
+pub fn sweep_orphan_shm_markers() -> usize {
+    use iceoryx2_bb_posix::shared_memory::SharedMemory;
+
+    let names = SharedMemory::list();
+    let before = names.len();
+
+    for name in &names {
+        // The answer is deliberately ignored: the observable effect wanted here
+        // is the unlink of an orphan, which `does_exist` performs itself.
+        let _ = SharedMemory::does_exist(name);
+    }
+
+    before.saturating_sub(SharedMemory::list().len())
+}
+
 /// Decodes a rkyv payload, in place when the payload is already aligned.
 ///
 /// A sample payload is aligned by construction — `PAYLOAD_ALIGNMENT` is the

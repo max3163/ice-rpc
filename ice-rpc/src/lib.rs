@@ -516,6 +516,8 @@ pub async fn run_provider_inner(
         log::info!("[ice-rpc] reaped {reaped} dead node(s) left by previous runs");
     }
 
+    crate::transport::sweep_orphan_shm_markers();
+
     let loc = ServiceLocator::global();
     for svc in services {
         svc.register_into(loc).await;

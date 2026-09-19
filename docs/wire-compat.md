@@ -133,10 +133,15 @@ and asks for the cleanup explicitly once, when a provider starts:
 [ice-rpc] reaped 1 dead node(s) left by previous runs
 ```
 
-That single call is what makes a machine self-healing in production, where nobody
-runs a purge script: each restart absorbs the state left by the run that was
-killed. Measured on a kill/restart loop, the leftover count stabilizes at one
-run's worth (~20 `*.shm_state` markers) instead of growing by one run per kill.
+That call reaps the *service and port tags* a dead node left, and with them the
+per-port segments. It does **not** reach the `_mgmt` dynamic storage of an event
+service: a marker of that kind survives the reaping, which is why a second call
+follows it, when a provider starts.
+
+The pair is what makes a machine self-healing in production, where nobody runs a
+purge script: each restart absorbs the state left by the runs that were killed.
+Measured on a kill/restart loop, the leftover count fell back to zero instead of
+growing by one run per kill.
 
 The manual procedure below remains the answer when the state cannot be explained
 by a dead process: a service whose *recorded configuration* differs from the
@@ -219,8 +224,10 @@ Three consequences worth knowing:
 
 - a purge that only removes the root path leaves those markers behind, so the
   state of a machine that has seen many killed runs is never fully reset;
-- each file is 8 bytes, but they accumulate one per segment per run, and nothing
-  ages them out;
+- each file is 8 bytes, but they accumulate one per segment per run; the ones
+  actually observed were all `*.event_mgmt.shm_state` — the `_mgmt` storage of an
+  **event service**, the one resource the dead-node reaping does not remove
+  (it stops at the service and port *tags*);
 - every segment operation enumerates that directory, which is where the
   `< Win32 API error > ... FindNextFileA ... [ 18 ]` lines on Windows come from.
   Error 18 is *no more files*: that is the end of the scan, printed through a
@@ -230,6 +237,14 @@ Three consequences worth knowing:
 Since the directory is shared with everything else on the machine, never delete
 it wholesale: only the `iox2_*` entries belong to iceoryx2, and only when nothing
 is running.
+
+A provider start does exactly that, once, before it creates anything:
+[`sweep_orphan_shm_markers`](../ice-rpc/src/transport/mod.rs) enumerates the
+markers through `SharedMemory::list()` and asks `SharedMemory::does_exist()` for
+each name. On Windows that call **is** the test — opening a name whose mapping is
+gone unlinks its marker as a side effect — so a live segment is left untouched and
+an orphan is removed. The script below therefore only remains the answer for the
+state no running provider would sweep.
 
 ## Two adjacent cases
 

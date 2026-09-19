@@ -11,12 +11,19 @@ use std::task::{Context, Poll};
 use crate::error::RpcError;
 use crate::{Event, ObservableError, Sender};
 
-/// Action run when the transport stream of a call is dropped.
+/// Action run when the transport stream of a call is dropped, told whether the
+/// stream had delivered a terminal event.
 ///
-/// The transport registers the removal of its response handler here: an
+/// The transport registers the release of its response handler here: an
 /// abandoned call (`timeout`, `take_until`, a dropped stream) must not leave the
 /// handler registered for the rest of the process lifetime.
-type Cleanup = Box<dyn FnOnce() + Send>;
+///
+/// The flag is what tells an **abandoned** call from an **answered** one, and it
+/// is read where the answer is known for certain: the terminal travels through
+/// this very stream, so the flag cannot race with the handler that published it.
+/// The transport uses it to cancel a call remotely only when the caller really
+/// stopped listening.
+type Cleanup = Box<dyn FnOnce(bool) + Send>;
 
 pin_project_lite::pin_project! {
     /// Internal storage backing an [`Observable`].
@@ -70,9 +77,13 @@ pin_project_lite::pin_project! {
     // macro destroys the pinned enum.
     impl<T, E> PinnedDrop for Observable<T, E> {
         fn drop(this: Pin<&mut Self>) {
-            if let StreamInnerProj::Channel { _cleanup, .. } = this.project().inner.project() {
+            let this = this.project();
+            // Read before the cleanup is taken: an answered call and an abandoned
+            // one are not the same drop.
+            let terminated = *this.terminated;
+            if let StreamInnerProj::Channel { _cleanup, .. } = this.inner.project() {
                 if let Some(action) = _cleanup.take() {
-                    action();
+                    action(terminated);
                 }
             }
         }
@@ -134,8 +145,13 @@ impl<T, E> Observable<T, E> {
 
     /// Attaches an action run when this observable is dropped.
     ///
-    /// The transport uses it to release the response handler of a call. The
-    /// action fires exactly when the **last** owner of the stream is dropped:
+    /// The transport uses it to release the response handler of a call, and to
+    /// cancel the call remotely when nobody was listening anymore. The action
+    /// receives **whether a terminal event had been delivered** through this
+    /// stream: `true` means the call was answered, `false` that it was abandoned
+    /// — an unread response, a `take_until` that fired, a `timeout` that elapsed.
+    ///
+    /// The action fires exactly when the **last** owner of the stream is dropped:
     /// every operator moves its source into its own wrapper, so a pipeline keeps
     /// the original observable alive and the cleanup runs with the pipeline, not
     /// with the intermediate steps.
@@ -143,7 +159,7 @@ impl<T, E> Observable<T, E> {
     /// Ignored for an observable with no channel source, which has nothing to
     /// release.
     #[doc(hidden)]
-    pub fn with_cleanup(mut self, cleanup: impl FnOnce() + Send + 'static) -> Self {
+    pub fn with_cleanup(mut self, cleanup: impl FnOnce(bool) + Send + 'static) -> Self {
         if let StreamInner::Channel { _cleanup, .. } = &mut self.inner {
             *_cleanup = Some(Box::new(cleanup));
         }
@@ -358,7 +374,7 @@ mod tests {
         let (_tx, rx) = unbounded_channel::<i32, String>();
 
         let flag = Arc::clone(&ran);
-        let observable = rx.with_cleanup(move || flag.store(true, Ordering::Relaxed));
+        let observable = rx.with_cleanup(move |_terminated| flag.store(true, Ordering::Relaxed));
         match &observable.inner {
             StreamInner::Channel { _cleanup, .. } => {
                 assert!(_cleanup.is_some(), "with_cleanup must attach the action");
@@ -381,7 +397,7 @@ mod tests {
 
         let flag = Arc::clone(&ran);
         let pipeline = rx
-            .with_cleanup(move || flag.store(true, Ordering::Relaxed))
+            .with_cleanup(move |_terminated| flag.store(true, Ordering::Relaxed))
             .map(|value| value * 2)
             .filter(|value| *value > 0);
         assert!(
@@ -391,5 +407,40 @@ mod tests {
 
         drop(pipeline);
         assert!(ran.load(Ordering::Relaxed));
+    }
+
+    /// An abandoned call and an answered one are not the same drop: the cleanup
+    /// is told which one it is, from the one place that cannot race — the stream
+    /// the terminal travelled through.
+    #[test]
+    fn the_cleanup_is_told_whether_the_stream_terminated() {
+        // Abandoned: nothing was ever read, so no terminal was delivered.
+        let abandoned = Arc::new(AtomicBool::new(true));
+        let (_tx, rx) = unbounded_channel::<i32, String>();
+        let flag = Arc::clone(&abandoned);
+        drop(rx.with_cleanup(move |terminated| flag.store(terminated, Ordering::Relaxed)));
+        assert!(
+            !abandoned.load(Ordering::Relaxed),
+            "a stream nobody read was never answered"
+        );
+
+        // Answered: the terminal went through the observable.
+        let answered = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = unbounded_channel::<i32, String>();
+        let flag = Arc::clone(&answered);
+        let mut observable =
+            rx.with_cleanup(move |terminated| flag.store(terminated, Ordering::Relaxed));
+        tx.try_send_event(Event::Complete)
+            .expect("the channel is unbounded");
+        assert!(matches!(
+            crate::rt::block_on(observable.recv()),
+            Ok(Event::Complete)
+        ));
+
+        drop(observable);
+        assert!(
+            answered.load(Ordering::Relaxed),
+            "the call was answered before the drop"
+        );
     }
 }

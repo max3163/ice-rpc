@@ -2,8 +2,11 @@
 //! the deferred channel start used during service initialization.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
@@ -19,7 +22,11 @@ use super::{
     RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
-use crate::types::{EventKind, RpcError, RpcHeader, PROTOCOL_VERSION};
+use crate::sync::lock;
+use crate::types::{
+    fmt_correlation_id, install_call_cancellation, BoxResponseFuture, EventKind, RpcError,
+    RpcHeader, CORRELATION_ID_LEN, PROTOCOL_VERSION,
+};
 use crate::CancellationToken;
 
 /// The ports of one channel, provider side.
@@ -248,6 +255,73 @@ struct ResponseHub {
     seq: AtomicU64,
     /// Coalescing window of the consumer wake-ups.
     coalescer: Coalescer,
+    /// Calls in flight on this channel, keyed by correlation id; the token is the
+    /// one a remote Cancel fires.
+    ///
+    /// Shared as an `Arc` with the task of each call: the guard that releases an
+    /// entry needs the table, not the whole hub — which owns the ports.
+    in_flight: Arc<InFlightCalls>,
+}
+
+/// Calls in flight on one channel, keyed by correlation id.
+///
+/// Split from [`ResponseHub`] deliberately: this is the only state a
+/// cancellation touches, so it stays testable without opening an iceoryx2 port.
+///
+/// Per channel and not per service, because a Cancel names a **call**: it arrives
+/// on the request channel that carried the request, and it must be served without
+/// looking up a dispatcher — a Cancel for a method this build does not have still
+/// has to stop the call it names.
+///
+/// The correlation id is process-unique (`pid ++ counter`), so one flat table
+/// suffices however many consumers share the channel.
+#[derive(Default)]
+struct InFlightCalls {
+    calls: Mutex<HashMap<[u8; CORRELATION_ID_LEN], CancellationToken>>,
+}
+
+impl InFlightCalls {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates the token of one call and records it as in flight.
+    ///
+    /// Called **before** the handler is dispatched: a Cancel published right
+    /// behind its request then always finds the token to fire, which is what the
+    /// per-publisher FIFO order of the request channel guarantees.
+    fn register(&self, cid: [u8; CORRELATION_ID_LEN]) -> CancellationToken {
+        let token = CancellationToken::new();
+        lock(&self.calls).insert(cid, token.clone());
+        token
+    }
+
+    /// Fires the token of `cid`, reporting whether such a call was in flight.
+    ///
+    /// Idempotent and tolerant: an unknown id — a call already finished, or one
+    /// this channel never served — is a no-op, not an error. The entry is removed
+    /// by the task's own guard and never here, so a Cancel can never make the
+    /// registry forget a call that is still running.
+    fn cancel(&self, cid: &[u8; CORRELATION_ID_LEN]) -> bool {
+        match lock(&self.calls).get(cid) {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Forgets a call; called when its task ends, or is dropped by a Cancel.
+    fn unregister(&self, cid: &[u8; CORRELATION_ID_LEN]) {
+        lock(&self.calls).remove(cid);
+    }
+
+    /// Calls in flight: the tests' window on the registry.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        lock(&self.calls).len()
+    }
 }
 
 impl ResponseHub {
@@ -264,6 +338,7 @@ impl ResponseHub {
             notifier,
             seq: AtomicU64::new(0),
             coalescer: Coalescer::new(),
+            in_flight: Arc::new(InFlightCalls::new()),
         }
     }
 
@@ -273,6 +348,35 @@ impl ResponseHub {
             hub: Arc::clone(self),
             request: *request,
         }
+    }
+
+    /// Creates the token of one call and records it as in flight.
+    fn register(&self, cid: [u8; CORRELATION_ID_LEN]) -> CancellationToken {
+        self.in_flight.register(cid)
+    }
+
+    /// Fires the token of `cid`, reporting whether the call was in flight.
+    fn cancel(&self, cid: &[u8; CORRELATION_ID_LEN]) -> bool {
+        self.in_flight.cancel(cid)
+    }
+
+    /// Forgets a call answered in place, which never became a task.
+    fn unregister(&self, cid: &[u8; CORRELATION_ID_LEN]) {
+        self.in_flight.unregister(cid);
+    }
+
+    /// Wraps the task of one call so a Cancel can drop it.
+    ///
+    /// Returns the boxed task the executor runs: the wrapper is the whole
+    /// cancellation mechanism on the provider side, which is why the codegen never
+    /// mentions it.
+    fn cancellable(
+        self: &Arc<Self>,
+        cid: [u8; CORRELATION_ID_LEN],
+        token: CancellationToken,
+        task: BoxResponseFuture,
+    ) -> BoxResponseFuture {
+        CancellableCall::wrap(Arc::clone(&self.in_flight), cid, token, task)
     }
 
     /// Publishes one response and wakes the consumers up.
@@ -323,6 +427,94 @@ impl ResponseEmitter for CallEmitter {
     }
 }
 
+/// Removes the registry entry of a call once its task is gone.
+///
+/// A drop side effect on purpose: a cancelled call leaves `poll` without running
+/// a single line of the handler, so the removal cannot live at the end of it — an
+/// entry that outlived its call would keep a dead token in the table until the
+/// process ends.
+struct InFlightGuard {
+    registry: Arc<InFlightCalls>,
+    cid: [u8; CORRELATION_ID_LEN],
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.registry.unregister(&self.cid);
+    }
+}
+
+/// Future that makes the task of one call cancellable, and drops it when asked.
+///
+/// Wrapping the task the dispatcher produced is what lets the transport own both
+/// halves of a cancellation without the generated handler knowing anything about
+/// it:
+///
+/// - it installs the call's [`CancellationToken`] as the **ambient** one around
+///   every poll, so an implementation reads it with
+///   [`CallContext::cancellation`](crate::types::CallContext::cancellation),
+///   exactly like the context the generated code installs;
+/// - it polls the token next to the task, so a Cancel arriving from the client
+///   wakes that task at that instant instead of at its next timer.
+///
+/// When the token is cancelled the task is **dropped**, which *is* the
+/// cancellation: a future nobody polls cannot keep working. Nothing is published
+/// on the response channel — the caller that sent the Cancel stopped listening,
+/// and silence costs the response channel nothing.
+struct CancellableCall {
+    /// Registry entry, released when this future is dropped.
+    _guard: InFlightGuard,
+    token: CancellationToken,
+    /// `Pin<Box<..>>` is `Unpin`, so this wrapper needs no pin projection.
+    task: BoxResponseFuture,
+}
+
+impl CancellableCall {
+    /// Wraps `task` with the cancellation token of its call, boxed for the
+    /// executor — the shape [`Spawner::run_or_spawn`](crate::rt::Spawner) takes.
+    fn wrap(
+        registry: Arc<InFlightCalls>,
+        cid: [u8; CORRELATION_ID_LEN],
+        token: CancellationToken,
+        task: BoxResponseFuture,
+    ) -> BoxResponseFuture {
+        Box::pin(Self {
+            _guard: InFlightGuard { registry, cid },
+            token,
+            task,
+        })
+    }
+}
+
+impl Future for CancellableCall {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+
+        if this.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+
+        // Ambient for this poll only, for the same reason the call context is:
+        // several calls are polled interleaved on the same thread, and a token
+        // held across an await would leak into whichever task is polled next.
+        let _ambient = install_call_cancellation(this.token.clone());
+
+        if this.task.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+
+        // The registration is what makes the cancellation immediate. It is polled
+        // *after* the task, so a Cancel that fired during that poll is seen here
+        // rather than on the next wake-up — the task is dropped at once.
+        if this.token.poll_cancelled(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        Poll::Pending
+    }
+}
+
 /// Reason a request must not reach its handler.
 ///
 /// Classified from the **stable header alone**, so it stays readable whatever the
@@ -370,11 +562,15 @@ impl RequestRejection {
 }
 
 /// Routes one request to the dispatcher of its service, and **spawns** the task
-/// that serves it.
+/// that serves it. It is also where a Cancel is honoured.
 ///
 /// Nothing here runs a handler: the returned future goes to the executor, so this
 /// call returns as soon as the task is queued — which is what keeps the channel's
 /// thread free for the next request.
+///
+/// A Cancel is routed **before** any dispatcher lookup, by correlation id alone:
+/// it names a call, not a service, and it must reach the token of a call whose
+/// method this build may not even know.
 fn handle_request(
     channel: &str,
     table: &HashMap<u32, ServiceDispatcher>,
@@ -383,12 +579,25 @@ fn handle_request(
     header: &RpcHeader,
     payload: &[u8],
 ) {
-    if header.event_kind() != EventKind::Request {
-        log::warn!(
-            "[transport] '{channel}': unexpected {:?} sample",
-            header.event_kind()
-        );
-        return;
+    match header.event_kind() {
+        EventKind::Request => {}
+        EventKind::Cancel => {
+            let in_flight = hub.cancel(&header.correlation_id);
+            log::debug!(
+                "[transport] '{channel}': cancel for {} ({})",
+                fmt_correlation_id(&header.correlation_id),
+                if in_flight {
+                    "call in flight"
+                } else {
+                    "unknown call"
+                }
+            );
+            return;
+        }
+        other => {
+            log::warn!("[transport] '{channel}': unexpected {other:?} sample");
+            return;
+        }
     }
 
     // A channel hosts several services: the header id selects the dispatcher.
@@ -415,6 +624,11 @@ fn handle_request(
     // it came from: a borrow of the received payload could not be held across an
     // await. It is one copy of a small blob, and the rkyv decode that follows
     // allocates the arguments anyway.
+    //
+    // The token is created here, before the dispatch, so that the Cancel of this
+    // request — published on the very channel this loop drains — finds it.
+    let cid = header.correlation_id;
+    let token = hub.register(cid);
     let emitter: OwnedEmitter = Box::new(hub.emitter(header));
     match dispatcher.dispatch(header.method(), *header, payload.to_vec(), emitter) {
         // Polled once here before being detached: a handler that answers without
@@ -422,15 +636,24 @@ fn handle_request(
         // 240 k req/s with the hop and 313 k without it. One that awaits is
         // spawned at its first `Pending` and keeps the whole benefit of running as
         // a task.
-        Some(task) => spawner.run_or_spawn(task),
+        //
+        // The task is wrapped before it runs: a handler that completes inline then
+        // releases its registry entry through the guard, exactly like one that was
+        // detached and cancelled.
+        Some(task) => spawner.run_or_spawn(hub.cancellable(cid, token, task)),
         // An unknown method is answered too: silence would leave the caller
-        // waiting for the transport timeout instead of naming the mistake.
-        None => reject(
-            channel,
-            header,
-            hub,
-            RpcError::UnknownMethod(header.method().to_owned()),
-        ),
+        // waiting for the transport timeout instead of naming the mistake. The
+        // call is answered at once, so it is not in flight and must not stay
+        // registered.
+        None => {
+            hub.unregister(&cid);
+            reject(
+                channel,
+                header,
+                hub,
+                RpcError::UnknownMethod(header.method().to_owned()),
+            );
+        }
     }
 }
 
@@ -573,7 +796,7 @@ pub fn start_registered_channels() {
 mod tests {
     use super::*;
     use crate::transport::CollectEmitter;
-    use crate::types::ServiceRef;
+    use crate::types::{next_correlation_id, ServiceRef};
     use std::sync::Mutex;
 
     #[test]
@@ -819,5 +1042,157 @@ mod tests {
         let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
         let header = RpcHeader::request("echo", 7, 2);
         assert_eq!(RequestRejection::classify(&dispatcher, &header), None);
+    }
+
+    // ── Remote cancellation ──────────────────────────────────────────
+
+    /// A task under the wrapper's control: it records that it was polled and that
+    /// it was dropped, and stays pending until something ends it.
+    struct Controlled {
+        polled: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Controlled {
+        /// The task, plus the two flags the test asserts on.
+        fn new() -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let polled = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    polled: Arc::clone(&polled),
+                    dropped: Arc::clone(&dropped),
+                },
+                polled,
+                dropped,
+            )
+        }
+    }
+
+    impl Future for Controlled {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            self.get_mut().polled.store(true, Ordering::SeqCst);
+            Poll::Pending
+        }
+    }
+
+    impl Drop for Controlled {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Polls a boxed task once, with a waker that does nothing: the inline poll of
+    /// `Spawner::run_or_spawn`, where a handler that never awaits completes.
+    fn poll_once(task: &mut BoxResponseFuture) -> Poll<()> {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        task.as_mut().poll(&mut cx)
+    }
+
+    /// The whole point of the wrapper: a Cancel ends the handler by dropping it,
+    /// and the registry entry goes with it.
+    #[test]
+    fn cancelling_a_call_drops_its_task_and_releases_its_entry() {
+        let registry = Arc::new(InFlightCalls::new());
+        let cid = next_correlation_id();
+        let token = registry.register(cid);
+
+        let (task, polled, dropped) = Controlled::new();
+        let mut wrapped = CancellableCall::wrap(Arc::clone(&registry), cid, token, Box::pin(task));
+
+        assert!(
+            poll_once(&mut wrapped).is_pending(),
+            "the handler is awaiting something"
+        );
+        assert!(polled.load(Ordering::SeqCst), "the handler ran");
+        assert!(!dropped.load(Ordering::SeqCst));
+        assert_eq!(registry.len(), 1, "the call is in flight");
+
+        // The Cancel fires the token from the channel's thread.
+        assert!(registry.cancel(&cid));
+        assert!(poll_once(&mut wrapped).is_ready(), "the call is ended");
+
+        // The executor drops the completed task, which drops the wrapper: the
+        // handler's future and the registry entry go with it.
+        drop(wrapped);
+        assert!(dropped.load(Ordering::SeqCst), "the handler was dropped");
+        assert_eq!(registry.len(), 0, "the entry was released");
+        assert!(
+            !registry.cancel(&cid),
+            "a call ended by a Cancel is no longer in flight"
+        );
+    }
+
+    /// A call cancelled before its first poll must not run at all: the token is
+    /// checked before the handler is polled, not only after.
+    #[test]
+    fn an_already_cancelled_call_never_reaches_its_handler() {
+        let registry = Arc::new(InFlightCalls::new());
+        let cid = next_correlation_id();
+        let token = registry.register(cid);
+        token.cancel();
+
+        let (task, polled, _dropped) = Controlled::new();
+        let mut wrapped = CancellableCall::wrap(Arc::clone(&registry), cid, token, Box::pin(task));
+
+        assert!(poll_once(&mut wrapped).is_ready());
+        assert!(
+            !polled.load(Ordering::SeqCst),
+            "a call cancelled before its first poll never runs"
+        );
+    }
+
+    /// The wrapper installs the call's token as the ambient one, which is the only
+    /// way an implementation reads it: `CallContext::cancellation()`.
+    #[test]
+    fn the_wrapped_handler_reads_the_call_token_ambiently() {
+        let registry = Arc::new(InFlightCalls::new());
+        let cid = next_correlation_id();
+        let token = registry.register(cid);
+
+        let task: BoxResponseFuture = Box::pin(async move {
+            let ambient =
+                crate::CallContext::cancellation().expect("the wrapper installs the call's token");
+            assert!(!ambient.is_cancelled(), "a fresh call is not cancelled");
+            // Cancelling through the ambient handle proves it is the very token
+            // the registry holds, and not a look-alike.
+            ambient.cancel();
+        });
+        let mut wrapped = CancellableCall::wrap(Arc::clone(&registry), cid, token.clone(), task);
+
+        assert!(
+            poll_once(&mut wrapped).is_ready(),
+            "the handler answers inline"
+        );
+        assert!(token.is_cancelled(), "the ambient handle is the call token");
+        assert!(
+            crate::CallContext::cancellation().is_none(),
+            "the token is ambient for the poll only"
+        );
+
+        drop(wrapped);
+        assert_eq!(registry.len(), 0, "an answered call releases its entry");
+    }
+
+    /// A Cancel for an id nobody registered is a no-op: a call that already
+    /// finished, or one this channel never served.
+    #[test]
+    fn cancelling_an_unknown_call_does_nothing() {
+        let registry = InFlightCalls::new();
+        let cid = next_correlation_id();
+        let token = registry.register(cid);
+
+        assert!(!registry.cancel(&next_correlation_id()), "unknown id");
+        assert!(!token.is_cancelled(), "an unknown id fires no token");
+        assert_eq!(registry.len(), 1, "the in-flight call is untouched");
+
+        // Idempotent on a known id: the entry belongs to the task, so a second
+        // Cancel still finds the call and cancelling again changes nothing.
+        assert!(registry.cancel(&cid));
+        assert!(registry.cancel(&cid), "cancelling twice is fine");
+        registry.unregister(&cid);
+        assert!(!registry.cancel(&cid), "a call that ended is gone for good");
     }
 }

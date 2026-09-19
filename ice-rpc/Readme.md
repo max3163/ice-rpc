@@ -180,7 +180,13 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
 - `first_value() -> Result<T, ObservableError<E>>` (`Empty` when the stream completes
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
-- the `timeout` and `take_until` operators bound the response wait and cancel a stream.
+- the `timeout` and `take_until` operators bound the response wait and cancel a stream;
+- dropping a response stream whose call is still in flight **cancels the call on
+  the provider**: the handler's future is dropped, so the work stops instead of
+  running on for a caller that no longer listens. A call whose terminal event was
+  read is released silently — nothing is sent. The implementation honours the
+  signal by reading `CallContext::cancellation()`;
+  [`examples/remote_cancel.rs`](examples/remote_cancel.rs) shows both halves.
 
 ## Error semantics
 
@@ -199,7 +205,7 @@ Every variant the enum declares, in declaration order:
 | `SerializationError` | rkyv serialization/deserialization failure | no |
 | `TransportError` | iceoryx2 I/O failure (loan, send, receive, port creation) | yes |
 | `Timeout` | deadline exceeded | yes |
-| `Cancelled` | global shutdown (SIGINT/SIGTERM or programmatic) | no |
+| `Cancelled` | cancelled by a global shutdown (SIGINT/SIGTERM or programmatic), a `take_until` token or a `timeout`; a remote Cancel published by a consumer that abandoned the call is handled by the provider and stays silent | no |
 | `Internal` | unexpected internal error / invariant violation | no |
 | `ProtocolMismatch` | the service already on the bus was created by another build, or by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no |
 

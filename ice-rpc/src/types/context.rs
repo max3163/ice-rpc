@@ -27,14 +27,21 @@
 //! The tracing fields (see [`TraceContext`]) are zero until the wire carries
 //! them; callers must read [`TraceContext::is_present`] rather than assume a
 //! trace exists.
+//!
+//! [`CallContext::cancellation`] is the **second ambient value** of a handler. It
+//! does not come from the header: the transport creates one token per call,
+//! installs it around every poll of the task and fires it when a remote Cancel
+//! names that call. The implementation reads it to stay interruptible — the
+//! provider drops the handler's future as soon as the token is cancelled.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use super::header::{fmt_correlation_id, next_correlation_id, RpcHeader, CORRELATION_ID_LEN};
+use crate::CancellationToken;
 
 thread_local! {
     /// Context of the call being **polled** on this thread, if any.
@@ -44,6 +51,14 @@ thread_local! {
     /// several calls are polled interleaved on the same thread, so a slot held
     /// across an await would leak into whichever call is polled next.
     static CURRENT: Cell<Option<CallContext>> = const { Cell::new(None) };
+
+    /// Cancellation token of the call being **polled** on this thread, if any.
+    ///
+    /// Same discipline as [`CURRENT`], for the same reason: installed around one
+    /// poll, restored — not cleared — on the way out. A `RefCell` rather than a
+    /// `Cell`, because a [`CancellationToken`] is not `Copy` and reading the slot
+    /// must not consume it.
+    static CURRENT_CANCEL: RefCell<Option<CancellationToken>> = const { RefCell::new(None) };
 }
 
 /// Trace ids of one call.
@@ -255,6 +270,22 @@ impl CallContext {
         CURRENT.with(Cell::get)
     }
 
+    /// Cancellation token of the call being served on this thread, if any.
+    ///
+    /// Installed by the transport around **every poll** of a handler task, exactly
+    /// like the context itself, so an implementation reads it the same way. It is
+    /// the token a remote Cancel fires: dropping the future that awaits it,
+    /// returning early, or racing a `cancelled()` future is what makes the
+    /// cancellation effective — cooperative, and therefore the implementation's
+    /// decision.
+    ///
+    /// `None` outside a provider handler, for the same reasons as
+    /// [`CallContext::current`].
+    #[inline]
+    pub fn cancellation() -> Option<CancellationToken> {
+        CURRENT_CANCEL.with(|slot| slot.borrow().clone())
+    }
+
     /// Installs this context as the thread-local ambient one, and nothing else.
     ///
     /// Dropping the returned scope restores the **previous** value rather than
@@ -401,6 +432,35 @@ mod span_fields {
     }
 }
 
+/// Installs `token` as the cancellation token of the call being polled on this
+/// thread, returning the scope that restores the previous one.
+///
+/// Called by the transport around every poll of a handler task, next to the
+/// context installation the generated handler performs: one is the identity of
+/// the call, the other is the ability to abandon it. Restoring the **previous**
+/// token — rather than clearing the slot — is what makes nested calls correct.
+#[must_use = "the token is only ambient while the returned scope is alive"]
+pub(crate) fn install_call_cancellation(token: CancellationToken) -> AmbientCancelScope {
+    AmbientCancelScope {
+        previous: CURRENT_CANCEL.with(|slot| slot.replace(Some(token))),
+    }
+}
+
+/// Scope that installs a [`CancellationToken`] as the ambient one of the current
+/// thread.
+///
+/// Created by [`install_call_cancellation`]. Not `Send`, like [`AmbientScope`]:
+/// it is bound to the thread whose slot it owns.
+pub(crate) struct AmbientCancelScope {
+    previous: Option<CancellationToken>,
+}
+
+impl Drop for AmbientCancelScope {
+    fn drop(&mut self) {
+        CURRENT_CANCEL.with(|slot| *slot.borrow_mut() = self.previous.take());
+    }
+}
+
 /// Scope that installs a [`CallContext`] as the ambient value of the current
 /// thread, tracing excluded.
 ///
@@ -499,6 +559,66 @@ mod tests {
             ctx.trace().trace_id,
             "the fresh id replaces the absent one rather than reusing it"
         );
+    }
+
+    /// Same contract as the context slot, for the token: ambient for one scope,
+    /// and the previous value is restored rather than cleared.
+    #[test]
+    fn the_cancellation_token_is_ambient_only_within_its_scope() {
+        assert!(
+            CallContext::cancellation().is_none(),
+            "nothing before entering"
+        );
+
+        let outer = CancellationToken::new();
+        let outer_scope = install_call_cancellation(outer.clone());
+        assert!(
+            !CallContext::cancellation()
+                .expect("the outer token is ambient")
+                .is_cancelled(),
+            "a fresh token is not cancelled"
+        );
+
+        {
+            let inner = CancellationToken::new();
+            let _inner_scope = install_call_cancellation(inner.clone());
+            // Cancelling the inner token is what proves the slot holds it, and
+            // `CancellationToken` needs no `PartialEq` for that.
+            inner.cancel();
+            assert!(
+                CallContext::cancellation().unwrap().is_cancelled(),
+                "the inner token is the ambient one"
+            );
+        }
+
+        // The inner scope restored the outer token: it did not clear the slot.
+        assert!(
+            !CallContext::cancellation().unwrap().is_cancelled(),
+            "the outer token is back"
+        );
+
+        drop(outer_scope);
+        assert!(
+            CallContext::cancellation().is_none(),
+            "the slot is restored after"
+        );
+    }
+
+    /// The generated handler installs the context; the transport installs the
+    /// token. A task wrapped by `call_scoped` alone therefore has a context and no
+    /// token — the two slots are independent.
+    #[test]
+    fn a_context_without_a_transport_wrapper_has_no_token() {
+        let header = RpcHeader::request("ping", 7, 1);
+        let task = call_scoped(CallContext::new(&header, "ping"), async {
+            assert!(CallContext::current().is_some(), "the context is installed");
+            assert!(
+                CallContext::cancellation().is_none(),
+                "no token was installed by the transport"
+            );
+        });
+
+        futures_lite::future::block_on(task);
     }
 
     #[test]

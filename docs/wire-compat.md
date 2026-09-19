@@ -80,6 +80,34 @@ The checks read the header precisely because the payload layout is what changes
 between versions: a guard that had to decode the divergent payload first would be
 doing the very operation it is meant to protect against.
 
+## A third case: a new *value* in a recorded field
+
+`EventKind` gained a variant for the remote cancellation of a call:
+
+| Value | Variant | Direction | Terminal |
+|---|---|---|---|
+| 5 | `Cancel` | consumer → provider | no |
+
+It is a new **value** of an existing field, not a new field: `RpcHeader` keeps its
+layout, its size (120 bytes, pinned by a unit test), its offsets, the payload
+alignment and every buffer size. Nothing of what iceoryx2 records when a service
+is created changes, so **no purge is needed** and two builds of this table can
+share a channel:
+
+- a **new** consumer talking to an **older** provider: the provider reads the
+  unknown value through `EventKind::from_u8`, which is deliberately fail-closed —
+  an unknown value maps to `EventKind::Error`, never to a terminal `Complete` — so
+  it logs `unexpected Error sample` and ignores the sample. The call is simply not
+  cancelled, which is exactly what that build did before;
+- an **older** consumer talking to a **new** provider: no Cancel is ever
+  published, and nothing changes.
+
+What a new consumer does expect is a provider that honours a Cancel: the in-flight
+registry keyed by correlation id, and the token a handler reads with
+`CallContext::cancellation()`. A Cancel names a **call**, not a service, so it is
+routed before any dispatcher lookup — a Cancel for a method the provider does not
+have still stops the call it names.
+
 ## The procedure
 
 ## A clean shutdown releases what the process created

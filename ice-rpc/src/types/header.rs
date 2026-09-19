@@ -62,6 +62,19 @@ pub enum EventKind {
     /// for a method it does not have. Framing it as a bare `RpcError` is what
     /// lets any request be answered instead of silently timing out.
     RpcError = 4,
+    /// Client to provider signal asking the provider to abandon the call named by
+    /// the correlation id it carries (non-terminal).
+    ///
+    /// Published on the **request** channel, because that is the direction the
+    /// caller already publishes on: no extra service, no extra port, and the
+    /// correlation id travels in the zero-copy header like every other sample.
+    ///
+    /// It is not an answer: a provider that does not know the id ignores it, and
+    /// an older build decodes it as [`EventKind::Error`] through the fail-closed
+    /// [`EventKind::from_u8`], so mixed builds degrade instead of breaking.
+    /// Being non-terminal matters to the out-of-band observer too: a Cancel ends a
+    /// call's tail, it does not close the call as answered.
+    Cancel = 5,
 }
 
 impl EventKind {
@@ -94,6 +107,7 @@ impl EventKind {
             2 => EventKind::Complete,
             3 => EventKind::Error,
             4 => EventKind::RpcError,
+            5 => EventKind::Cancel,
             _ => EventKind::Error,
         }
     }
@@ -107,6 +121,7 @@ impl_labels!(EventKind {
     EventKind::Complete => "complete",
     EventKind::Error => "error",
     EventKind::RpcError => "rpc-error",
+    EventKind::Cancel => "cancel",
 });
 
 /// Zero-copy RPC header attached to every request and response sample.
@@ -234,6 +249,34 @@ impl RpcHeader {
             parent_span_id: request.parent_span_id,
             flags: request.flags,
             // Stamped by the caller with the per-channel sequence.
+            seq: 0,
+            timestamp_ns: now_ns(),
+        }
+    }
+
+    /// Builds the header of the Cancel that abandons `request`.
+    ///
+    /// Mirrors [`response_from`](Self::response_from): same correlation id, same
+    /// service identity and same trace, so the provider finds the call it must
+    /// stop and an out-of-band observer joins the Cancel to its request. The
+    /// method name is left empty on purpose — the correlation id names the call
+    /// on its own, and a provider routes a Cancel without looking up a service,
+    /// which is exactly what lets it be answered for a call it never dispatched.
+    #[inline]
+    pub fn cancel_from(request: &RpcHeader) -> Self {
+        Self {
+            correlation_id: request.correlation_id,
+            service_id: request.service_id,
+            method_name: StaticString::default(),
+            event_kind: EventKind::Cancel.as_u8(),
+            protocol_version: PROTOCOL_VERSION,
+            service_version: request.service_version,
+            // A Cancel stays in the trace of the call it abandons.
+            trace_id: request.trace_id,
+            parent_span_id: request.parent_span_id,
+            flags: request.flags,
+            // Stamped by the emitter with the per-channel sequence, like every
+            // other sample: a gap in `seq` is how the observer detects a loss.
             seq: 0,
             timestamp_ns: now_ns(),
         }
@@ -458,7 +501,7 @@ mod tests {
     /// An unknown kind must decode to `Error`, never to the terminal `Complete`.
     #[test]
     fn an_unknown_event_kind_decodes_as_error_not_complete() {
-        for value in 5u8..=u8::MAX {
+        for value in 6u8..=u8::MAX {
             assert_eq!(
                 EventKind::from_u8(value),
                 EventKind::Error,
@@ -473,8 +516,38 @@ mod tests {
             EventKind::Complete,
             EventKind::Error,
             EventKind::RpcError,
+            EventKind::Cancel,
         ] {
             assert_eq!(EventKind::from_u8(kind.as_u8()), kind);
         }
+    }
+
+    /// A Cancel abandons a call, it does not answer it: reading it as terminal
+    /// would let an observer close a call the provider never finished.
+    #[test]
+    fn a_cancel_is_not_terminal_and_has_its_own_label() {
+        assert!(!EventKind::Cancel.is_terminal());
+        assert_eq!(EventKind::Cancel.label(), "cancel");
+        assert_eq!(EventKind::from_u8(5), EventKind::Cancel);
+    }
+
+    /// The Cancel names the call and nothing else: same identity as the request,
+    /// no method, and its own emission time.
+    #[test]
+    fn cancel_header_reuses_the_request_identity_without_a_method() {
+        let id = service_id_of("GetPerson");
+        let request = RpcHeader::request("get_person", id, 3).with_trace(TraceContext::new_root());
+        let cancel = RpcHeader::cancel_from(&request);
+
+        assert_eq!(cancel.correlation_id, request.correlation_id);
+        assert_eq!(cancel.service_id, id);
+        assert_eq!(cancel.service_version, 3);
+        assert_eq!(cancel.event_kind(), EventKind::Cancel);
+        assert!(cancel.method().is_empty(), "a Cancel names no method");
+        assert_eq!(cancel.trace(), request.trace(), "the Cancel stays traced");
+        // `seq` belongs to the emitter, exactly like a response's.
+        assert_eq!(cancel.seq, 0);
+        assert_eq!(cancel.with_seq(9).seq, 9);
+        assert!(cancel.timestamp_ns >= request.timestamp_ns);
     }
 }

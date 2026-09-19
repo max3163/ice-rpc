@@ -22,8 +22,9 @@ use super::{
 use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
-    normalize_wire_event, unbounded_channel, CallContext, Event, EventKind, Observable,
-    ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext, WireEvent, CORRELATION_ID_LEN,
+    fmt_correlation_id, normalize_wire_event, unbounded_channel, CallContext, Event, EventKind,
+    Observable, ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext, WireEvent,
+    CORRELATION_ID_LEN,
 };
 
 /// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.
@@ -37,10 +38,67 @@ type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
 
 /// Removes the handler of one call, releasing its entry.
 ///
+/// Returns `true` when the entry was still there — which is exactly what "the
+/// call is still in flight" means, since the terminal event of a call removes it
+/// too. That answer is what separates an abandoned call, which must be cancelled
+/// remotely, from an answered one, which has nothing left to cancel.
+///
 /// Idempotent, because both the terminal event of the call and the drop of its
 /// response stream call it.
-fn release_handler(ports: &ConsumerPorts, cid: &[u8; CORRELATION_ID_LEN]) {
-    lock(&ports.handlers).remove(cid);
+fn release_handler(ports: &ConsumerPorts, cid: &[u8; CORRELATION_ID_LEN]) -> bool {
+    lock(&ports.handlers).remove(cid).is_some()
+}
+
+/// Tells the provider to abandon the call of `request`, best-effort.
+///
+/// Published by the drop of a response stream whose call is **still in flight**,
+/// and only then: a call already closed by a terminal event has nothing left to
+/// cancel. This is what turns a local abandonment (`timeout`, `take_until`, a
+/// dropped stream) into a remote one, instead of leaving a query, a report or a
+/// scan running for a consumer that stopped listening.
+///
+/// Three properties, all deliberate:
+///
+/// - **one sample, no waiting**: the caller drops a stream on whatever thread it
+///   happens to be on, so nothing here may block — not even the provider wait a
+///   request is allowed;
+/// - **the channel sequence is consumed**: a sample loss is detected in the gap
+///   of [`RpcHeader::seq`], so a Cancel that skipped the counter would make the
+///   observer report a loss that does not exist;
+/// - **best-effort**: no subscriber connected, or a full buffer, and the Cancel
+///   is simply lost. Cancelling a call nobody serves is not worth failing for.
+fn publish_cancel(ports: &ConsumerPorts, request: &RpcHeader) {
+    let header =
+        RpcHeader::cancel_from(request).with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
+    log::debug!(
+        "[transport] cancelling call {}",
+        fmt_correlation_id(&header.correlation_id)
+    );
+
+    publish_best_effort(ports, header);
+
+    // Coalesced like a request's wake-up: at worst the provider polls the Cancel
+    // on its next waitset expiry, one deadline (1 ms) later.
+    if ports.last_request_notify.should_notify() {
+        let _ = ports
+            .request_notifier
+            .notify_with_custom_event_id(EventId::new(0));
+    }
+}
+
+/// Publishes one sample without ever waiting for anything.
+///
+/// Unlike [`publish_until_delivered`], this does **not** consult the global
+/// shutdown tokens: a client asked to stop is precisely a client whose providers
+/// should stop too, and one non-blocking write on shared memory is the right cost
+/// for saying so. A failed attempt is logged and dropped.
+fn publish_best_effort(ports: &ConsumerPorts, header: RpcHeader) {
+    match try_publish(&ports.publisher, header, &[]) {
+        // `Ok(false)` is the ordinary "nobody was there to take it" case: no
+        // subscriber yet, or a subscriber buffer that stayed full.
+        Ok(_) => {}
+        Err(e) => log::debug!("[transport] best-effort sample not published: {e}"),
+    }
 }
 
 /// Every port, handler table and counter of one consumed channel, kept alive for
@@ -213,6 +271,10 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
 /// `service` carries both the id and the interface version, so the version
 /// cannot be dropped between the caller and the frame: it reaches
 /// [`RpcHeader::request`] from the same value the provider registered.
+///
+/// Dropping the returned stream while the call is in flight **cancels the call
+/// remotely**: the provider abandons it, so the work it was doing for a caller
+/// that stopped listening does not keep running.
 pub fn native_call<T, E>(
     channel: &str,
     service: ServiceRef,
@@ -263,8 +325,14 @@ where
 
         match super::decode_aligned::<WireEvent<T, E>>(bytes) {
             Ok(wire) => {
+                // Terminality is read on the **wire** event, not on the normalized
+                // one: a `CompleteWith` — the single-response case, by far the
+                // most common — expands into `Next` followed by `Complete`, and
+                // the call is over at the wire event. Reading the normalized
+                // `Next` would leave the entry registered until the consumer
+                // happens to drop the stream.
+                let terminal = wire.is_terminal();
                 let (event, follow_up) = normalize_wire_event(wire);
-                let terminal = event.is_terminal();
                 if tx.try_send_event(event).is_err() {
                     release_handler(&handler_ports, &cid);
                     return;
@@ -305,8 +373,21 @@ where
     // The call owns its handler: dropping the response stream releases it, so an
     // abandoned call (`timeout`, `take_until`, a dropped stream) cannot leave an
     // entry behind for the rest of the process lifetime.
+    //
+    // The same drop is the cancellation point. Two conditions must hold, and both
+    // are needed: the stream must not have delivered a terminal event
+    // (`terminated`), and the transport must not have answered the call yet
+    // (`release_handler`). Together they mean "the caller stopped listening while
+    // the provider was still working" — the only case where there is work to
+    // abandon.
     let cleanup_ports = Arc::clone(&ports);
-    Ok(rx.with_cleanup(move || release_handler(&cleanup_ports, &cid)))
+    Ok(rx.with_cleanup(move |terminated| {
+        // Released whatever the outcome: this drop is the last owner of the call.
+        let in_flight = release_handler(&cleanup_ports, &cid);
+        if !terminated && in_flight {
+            publish_cancel(&cleanup_ports, &header);
+        }
+    }))
 }
 
 thread_local! {

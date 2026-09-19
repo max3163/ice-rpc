@@ -148,6 +148,12 @@ required-features = ["tokio"]
 name = "benchmark-app"
 required-features = ["tokio"]
 
+# Remote cancellation: the caller drops its stream while the call is in flight,
+# the provider abandons the work. Needs the async timer of the `tokio` facade.
+[[example]]
+name = "remote_cancel"
+required-features = ["tokio"]
+
 # Call tracing: one span per provider call, propagated across a hop. It is built
 # only with the `tracing` feature — without it there is no span to show.
 [[example]]

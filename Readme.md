@@ -363,6 +363,15 @@ and is converted with `as_u8()` / `from_u8()`. A response carries the **real**
 kind of its sample (derived from the `WireEvent` before serialization), so an
 observer counts completion and errors without decoding the payload.
 
+The field carries one **request-direction** kind as well: `EventKind::Cancel`,
+which asks the provider to abandon the call named by the correlation id. The
+consumer publishes it on `{channel}_req` when it drops a call that is still in
+flight — see the consumption section below — so a cancellation needs neither an
+extra service nor an extra port. It is **not** terminal: it ends the tail of a
+call, it does not close the call as answered. `from_u8` being fail-closed, a
+provider from an older build reads it as `EventKind::Error`, logs an unexpected
+sample and ignores it — see [`docs/wire-compat.md`](docs/wire-compat.md).
+
 `service_id` is a `const fn` of the name
 ([`service_id_of`](ice-rpc/src/types/header.rs:129)), so the provider and the
 consumer derive the **same** value with no coordination and no discovery; a
@@ -1193,6 +1202,42 @@ let age = db.get_user_age("Alice".into()).await
 // `RpcError::Cancelled`, surfaced by `first_value` as `ObservableError::Technical`.
 let stream = db.get_user_age("Alice".into()).await.take_until(my_cancel_token);
 let age = stream.first_value().await?;
+```
+
+Dropping a response stream whose call is still in flight is what makes the
+cancellation **remote**: the consumer publishes an `EventKind::Cancel` carrying
+the call's correlation id on the request channel, and the provider drops the
+handler's future instead of letting it run to completion. The two cases are told
+apart exactly — a call whose terminal event was read is released in silence, an
+abandoned one is cancelled.
+
+The implementation is what makes it effective, by reading **its own** token:
+
+```rust,ignore
+async fn generate_report(&self, id: String) -> Observable<Report, DbError> {
+    let cancel = CallContext::cancellation().expect("a served call always has one");
+    // The operator turns the token into the end of the response stream: the work
+    // stops where the caller abandoned it, instead of after the last value.
+    self.build_report(id).take_until(&cancel)
+}
+```
+
+Cancellation is **cooperative**: it takes effect at an `await` point. A handler
+that computes without ever yielding — and a Node.js handler, synchronous by
+construction — is not interrupted mid-poll, and a blocking library called through
+`spawn_blocking` only stops if it watches the token itself. On the provider side
+the transport drops the **handler's** future, so a producer task the handler
+offloaded its work to has to watch the token itself — which is exactly what the
+example below does.
+
+[`examples/remote_cancel.rs`](ice-rpc/examples/remote_cancel.rs) runs both halves,
+in one process or in two, and the provider logs the line that proves the signal
+arrived:
+
+```bash
+cargo run -p ice-rpc --example remote_cancel --features tokio
+cargo run -p ice-rpc --example remote_cancel --features tokio -- provider
+cargo run -p ice-rpc --example remote_cancel --features tokio -- consumer
 ```
 
 ---

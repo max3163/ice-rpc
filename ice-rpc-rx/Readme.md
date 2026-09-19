@@ -53,7 +53,7 @@ let doubled = stream.map(|v| v * 2);
 | `subject` | `Subject`, the multicast source |
 | `subscribe` | `Subscription`, the cancellation handle |
 | `transform` | the operators, carried by `Observable` |
-| `rt` | execution facade (`spawn`, `sleep`, `block_on`) and `CancellationToken` |
+| `rt` | execution facade (`spawn`, `Spawner`, `sleep`, `block_on`) and `CancellationToken` |
 
 ## Runtime
 

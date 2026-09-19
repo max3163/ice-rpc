@@ -112,8 +112,14 @@
 //!   business (`E`) or technical (`RpcError`)
 //! - **ServiceLocator** : registry of the services the process provides, plus a
 //!   lazy cache of the consumer proxies
-//! - **transport** : iceoryx2 publish/subscribe, one channel per service,
-//!   correlated by a 16-byte request id (`ice_rpc::transport`)
+//! - **transport** : iceoryx2 publish/subscribe, one channel per group of
+//!   services, correlated by a 16-byte request id (`ice_rpc::transport`)
+//! - **dispatch** : one thread per channel receives the requests and polls each
+//!   handler **once**, on that thread. A handler that answers without yielding
+//!   completes there, exactly as if the transport had called it inline; one that
+//!   `await`s is detached at its first `Pending` and runs as a task on the
+//!   execution facade, so a slow call never holds back the next request of the
+//!   same channel
 //! - **Proxy** : unified entry point supporting 3 modes (Provider / Consumer / ProviderNodeJs)
 //!
 //! ## Main modules
@@ -121,7 +127,7 @@
 //! | Module | Role |
 //! |--------|------|
 //! | `rx` | The reactive layer, re-exported from `ice-rpc-rx`: operators, constructors and multicast primitives, all reachable from the `Observable` stream |
-//! | `rt` | Execution facade, re-exported from `ice-rpc-rx`: `spawn`, `sleep`, `block_on`, cancellation |
+//! | `rt` | Execution facade, re-exported from `ice-rpc-rx`: `spawn`, `Spawner`, `sleep`, `block_on`, cancellation |
 //! | `types` | Protocol types (`RpcHeader`, `EventKind`, `WireEvent`) and the reactive vocabulary re-exported from `ice-rpc-rx` |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |

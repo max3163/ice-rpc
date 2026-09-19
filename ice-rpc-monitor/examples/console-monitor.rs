@@ -157,21 +157,27 @@ impl Demo {
         let service_id = service_id_of(DEMO_SERVICE);
 
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-        dispatcher.method("get_user_age", |_header, payload, emitter| {
-            let name = match decode_aligned::<DatabaseServiceRequest>(payload) {
-                Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
-                _ => return,
-            };
-            let age: i32 = match name.as_str() {
-                "Alice" => 30,
-                "Bob" => 42,
-                "Charlie" => 25,
-                _ => 99,
-            };
-            observable_to_responses(
-                Observable::<i32, DatabaseError>::from_events([Event::Next(age), Event::Complete]),
-                emitter,
-            );
+        dispatcher.method("get_user_age", |_header, payload, mut emitter| {
+            Box::pin(async move {
+                let name = match decode_aligned::<DatabaseServiceRequest>(&payload) {
+                    Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
+                    _ => return,
+                };
+                let age: i32 = match name.as_str() {
+                    "Alice" => 30,
+                    "Bob" => 42,
+                    "Charlie" => 25,
+                    _ => 99,
+                };
+                observable_to_responses(
+                    Observable::<i32, DatabaseError>::from_events([
+                        Event::Next(age),
+                        Event::Complete,
+                    ]),
+                    &mut *emitter,
+                )
+                .await;
+            })
         });
 
         let server_stop = CancellationToken::new();

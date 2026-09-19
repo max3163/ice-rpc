@@ -147,10 +147,13 @@ impl<T, E> futures_lite::Stream for WireFolding<T, E> {
 /// allocation, and the bytes reach the emitter without being copied. The buffer
 /// belongs to this call and is never shared: `benches/concurrency.rs` measures a
 /// shared, locked scratch as 20 to 45 times slower than a local one.
-pub fn observable_to_responses<T, E>(
-    observable: Observable<T, E>,
-    emitter: &mut dyn ResponseEmitter,
-) where
+///
+/// **Async on purpose.** Awaiting the next wire event — instead of blocking on
+/// it — is what lets the other calls served on the same executor make progress
+/// while this one is silent, and what the emitter's own back-pressure needs.
+pub async fn observable_to_responses<T, E, S>(observable: Observable<T, E>, emitter: &mut S)
+where
+    S: ResponseEmitter + ?Sized,
     T: Send + 'static,
     E: Send + 'static,
     for<'a> WireEvent<T, E>: rkyv::Serialize<
@@ -170,7 +173,9 @@ pub fn observable_to_responses<T, E>(
     let mut stream = std::pin::pin!(WireFolding::new(observable));
 
     loop {
-        let wire = match crate::rt::block_on(stream.as_mut().next_wire()) {
+        // Yields here when the source is silent: the executor runs the other
+        // in-flight calls of the same channel meanwhile.
+        let wire = match stream.as_mut().next_wire().await {
             Some(wire) => wire,
             // The source is exhausted, or closed abruptly.
             None => return,
@@ -206,11 +211,24 @@ pub fn observable_to_responses<T, E>(
     }
 }
 
-/// Handler of one RPC method: the request header, its payload, and the sink.
+/// Sink of one call's responses, owned by the task that serves it.
 ///
-/// The header travels with the payload so a generated handler can build the
-/// [`CallContext`](crate::types::CallContext) of the call it is serving.
-pub type MethodHandler = Box<dyn Fn(&RpcHeader, &[u8], &mut dyn ResponseEmitter) + Send + Sync>;
+/// Type-erased and `Send` so a handler never names the transport: a test hands it
+/// a [`CollectEmitter`], a provider hands it the channel's sink.
+pub type OwnedEmitter = Box<dyn ResponseEmitter + Send>;
+
+/// Handler of one RPC method: an owned request, and the sink of its responses.
+///
+/// **Owned, and returning a future**, because the handler runs as a task that
+/// outlives the sample it was decoded from: a borrow of the received payload
+/// could not be held across an await. The header travels with the payload so the
+/// task can build the [`CallContext`](crate::types::CallContext) of the call it
+/// serves.
+pub type MethodHandler =
+    Box<dyn Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync>;
+
+/// A handler's boxed future, re-exported where the codegen names it.
+pub type BoxResponseFuture = crate::types::BoxResponseFuture;
 
 /// Per-service table of method handlers, built by a generated provider.
 #[derive(Default)]
@@ -237,32 +255,33 @@ impl ServiceDispatcher {
     /// Registers the handler of one RPC method.
     pub fn method<F>(&mut self, name: &'static str, handler: F) -> &mut Self
     where
-        F: Fn(&RpcHeader, &[u8], &mut dyn ResponseEmitter) + Send + Sync + 'static,
+        F: Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync + 'static,
     {
         self.handlers.insert(name, Box::new(handler));
         self
     }
 
-    /// Routes a request to its handler.
+    /// Builds the task that serves one request — **without running it**.
     ///
-    /// Returns `false` when no handler is registered for `method`, which the
+    /// Returns `None` when no handler is registered for `method`, which the
     /// transport turns into an immediate [`crate::types::RpcError::UnknownMethod`]
     /// — a silent drop would only reach the caller as a timeout. One lookup: the
     /// transport needs no separate `has_method` probe.
+    ///
+    /// The future is handed back rather than awaited: the transport decides when
+    /// it runs. It polls it once on the channel's thread — a handler that answers
+    /// without yielding then costs no hop at all — and detaches it the moment it
+    /// yields, so one slow call cannot hold back the next ones.
     pub fn dispatch(
         &self,
         method: &str,
-        header: &RpcHeader,
-        payload: &[u8],
-        emitter: &mut dyn ResponseEmitter,
-    ) -> bool {
-        match self.handlers.get(method) {
-            Some(handler) => {
-                handler(header, payload, emitter);
-                true
-            }
-            None => false,
-        }
+        header: RpcHeader,
+        payload: Vec<u8>,
+        emitter: OwnedEmitter,
+    ) -> Option<BoxResponseFuture> {
+        self.handlers
+            .get(method)
+            .map(|handler| handler(header, payload, emitter))
     }
 }
 
@@ -291,9 +310,11 @@ mod tests {
     use std::time::Duration;
 
     /// Encodes a whole stream into its samples.
+    ///
+    /// An in-memory observable is ready on every poll, so this needs no runtime.
     fn encode(observable: Observable<i32, String>) -> Vec<(EventKind, Vec<u8>)> {
         let mut emitter = CollectEmitter::new();
-        observable_to_responses(observable, &mut emitter);
+        crate::rt::block_on(observable_to_responses(observable, &mut emitter));
         emitter.take()
     }
 
@@ -383,13 +404,17 @@ mod tests {
 
     /// The look-ahead must not hold a value back: a channel that emits a value
     /// and then stays open is published immediately, not after the next event.
+    ///
+    /// `test_block_on`, not `block_on`: `timeout` is built on the facade's
+    /// `sleep`, which under the `tokio` feature needs an active runtime — exactly
+    /// what the test helper supplies.
     #[test]
     fn a_value_followed_by_silence_is_published_at_once() {
         let (tx, rx) = crate::types::unbounded_channel::<i32, String>();
         tx.try_send_next(1).expect("the channel is unbounded");
 
         let mut stream = std::pin::pin!(WireFolding::new(rx));
-        let wire = crate::rt::block_on(crate::rt::timeout(
+        let wire = crate::rt::test_block_on(crate::rt::timeout(
             Duration::from_millis(500),
             stream.as_mut().next_wire(),
         ));

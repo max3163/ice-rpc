@@ -29,16 +29,20 @@
 //! trace exists.
 
 use std::cell::Cell;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use super::header::{fmt_correlation_id, next_correlation_id, RpcHeader, CORRELATION_ID_LEN};
 
 thread_local! {
-    /// Context of the call being served on this thread, if any.
+    /// Context of the call being **polled** on this thread, if any.
     ///
-    /// One slot per thread, installed by [`CallContext::enter`] for the duration
-    /// of one handler call. The dispatch thread of a channel is dedicated, so the
-    /// slot cannot be shared with an unrelated call.
+    /// One slot per thread, installed around every poll of a handler task by
+    /// [`call_scoped`] — not for the whole call. A handler runs as a task, and
+    /// several calls are polled interleaved on the same thread, so a slot held
+    /// across an await would leak into whichever call is polled next.
     static CURRENT: Cell<Option<CallContext>> = const { Cell::new(None) };
 }
 
@@ -251,25 +255,32 @@ impl CallContext {
         CURRENT.with(Cell::get)
     }
 
-    /// Installs this context as the ambient one for the current thread.
+    /// Installs this context as the thread-local ambient one, and nothing else.
     ///
-    /// The generated provider handler calls this around the implementation, so
-    /// the implementation reads the context with [`CallContext::current`] instead
-    /// of receiving a parameter. Dropping the returned scope restores the
-    /// **previous** value rather than clearing the slot, which is what makes
-    /// nested calls — a provider calling another service in-process — correct.
+    /// Dropping the returned scope restores the **previous** value rather than
+    /// clearing the slot, which is what makes nested calls — a provider calling
+    /// another service in-process — correct.
     ///
-    /// With the `tracing` feature, the same call also enters the span of the
-    /// call, so the implementation's own events are attached to it. The span is
-    /// created here rather than in the generated code on purpose: the codegen has
-    /// one call site, and a build without the feature carries neither the span
-    /// nor the dependency.
+    /// This is the half [`call_scoped`] uses, once per poll: it is a plain
+    /// thread-local swap, so re-installing it thousands of times per call costs
+    /// nothing and creates no span.
     #[must_use = "the context is only ambient while the returned scope is alive"]
-    pub fn enter(self) -> CallContextScope {
-        let previous = CURRENT.with(|slot| slot.replace(Some(self)));
+    pub fn enter_ambient(self) -> AmbientScope {
+        AmbientScope {
+            previous: CURRENT.with(|slot| slot.replace(Some(self))),
+            _not_send: PhantomData,
+        }
+    }
 
-        #[cfg(feature = "tracing")]
-        let _span = tracing::info_span!(
+    /// The `tracing` span of this call, **created once per call**.
+    ///
+    /// A task cannot hold an `EnteredSpan` across its awaits: entering is
+    /// thread-bound, and the tasks polled between two of its awaits would be
+    /// recorded inside it. The span is therefore stored in the task and entered
+    /// around every poll — see [`call_scoped`].
+    #[cfg(feature = "tracing")]
+    pub fn span(&self) -> tracing::Span {
+        tracing::info_span!(
             "rpc",
             service = self.service_id,
             version = self.service_version,
@@ -280,14 +291,82 @@ impl CallContext {
             span = self.span_id,
             sampled = self.trace.is_sampled(),
         )
-        .entered();
+    }
+
+    /// Installs this context as the ambient one for the current thread, tracing
+    /// span included, for the duration of one **synchronous** scope.
+    ///
+    /// Reserved for the callers that are not polled by an executor — the Node.js
+    /// bridge and the tests. A handler running as a task uses [`call_scoped`].
+    ///
+    /// Dropping the returned scope restores the **previous** value rather than
+    /// clearing the slot, which is what makes nested calls — a provider calling
+    /// another service in-process — correct.
+    #[must_use = "the context is only ambient while the returned scope is alive"]
+    pub fn enter(self) -> CallContextScope {
+        let _ambient = self.enter_ambient();
+
+        #[cfg(feature = "tracing")]
+        let _span = self.span().entered();
 
         CallContextScope {
-            previous,
-            _not_send: PhantomData,
+            _ambient,
             #[cfg(feature = "tracing")]
             _span,
         }
+    }
+}
+
+/// A handler's future, erased: what [`ServiceDispatcher`](crate::transport)
+/// spawns per request.
+pub type BoxResponseFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Wraps a handler's future so the call context is installed around **each poll**.
+///
+/// This is the replacement for installing the context once, around the whole
+/// handler: a handler now runs as a task, several calls are polled interleaved on
+/// the same thread, and a thread-local held across an await would attribute the
+/// events of one call to another.
+///
+/// The scope never crosses an await point — it is created and dropped inside
+/// `poll` — so it never becomes part of the future's state, which is what keeps
+/// the task `Send`.
+pub fn call_scoped<F>(ctx: CallContext, future: F) -> BoxResponseFuture
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    #[cfg(feature = "tracing")]
+    let span = ctx.span();
+
+    Box::pin(CallScope {
+        ctx,
+        inner: Box::pin(future),
+        #[cfg(feature = "tracing")]
+        span,
+    })
+}
+
+/// Future wrapping a handler, installing its context around each poll.
+///
+/// Every field is `Unpin`, so no pin projection is needed.
+struct CallScope {
+    ctx: CallContext,
+    inner: BoxResponseFuture,
+    #[cfg(feature = "tracing")]
+    span: tracing::Span,
+}
+
+impl Future for CallScope {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        // Installed for this poll only: the next task polled on this thread must
+        // not inherit it.
+        let _ambient = this.ctx.enter_ambient();
+        #[cfg(feature = "tracing")]
+        let _span = this.span.enter();
+        this.inner.as_mut().poll(cx)
     }
 }
 
@@ -321,24 +400,36 @@ mod span_fields {
     }
 }
 
-/// Scope that installs a [`CallContext`] for the current thread.
+/// Scope that installs a [`CallContext`] as the ambient value of the current
+/// thread, tracing excluded.
 ///
-/// Created by [`CallContext::enter`]. Not `Send` on purpose: the scope is bound
-/// to the thread whose slot it owns, and dropping it elsewhere would clobber
-/// another thread's slot.
-pub struct CallContextScope {
+/// Created by [`CallContext::enter_ambient`], and by [`call_scoped`] around every
+/// poll. Not `Send` on purpose: the scope is bound to the thread whose slot it
+/// owns, and dropping it elsewhere would clobber another thread's slot.
+pub struct AmbientScope {
     previous: Option<CallContext>,
     _not_send: PhantomData<*const ()>,
-    /// Entered span of the call, exited on drop — held for that side effect only.
-    /// Also `!Send`, which reinforces the reason `_not_send` exists.
-    #[cfg(feature = "tracing")]
-    _span: tracing::span::EnteredSpan,
 }
 
-impl Drop for CallContextScope {
+impl Drop for AmbientScope {
     fn drop(&mut self) {
         CURRENT.with(|slot| slot.set(self.previous));
     }
+}
+
+/// Scope that installs a [`CallContext`] for the current thread, tracing span
+/// included.
+///
+/// Created by [`CallContext::enter`], for a synchronous scope. Not `Send` on
+/// purpose: the scope is bound to the thread whose slot it owns, and dropping it
+/// elsewhere would clobber another thread's slot.
+pub struct CallContextScope {
+    /// Restores the previous ambient value on drop, and does nothing else.
+    _ambient: AmbientScope,
+    /// Entered span of the call, exited on drop — held for that side effect only.
+    /// Also `!Send`, which reinforces the reason `AmbientScope` is `!Send`.
+    #[cfg(feature = "tracing")]
+    _span: tracing::span::EnteredSpan,
 }
 
 #[cfg(test)]
@@ -503,6 +594,132 @@ mod tests {
             recorder.exited.load(Ordering::Relaxed),
             1,
             "exited when the scope drops"
+        );
+    }
+
+    /// With the feature on, the span of a call is created **once** and entered
+    /// around **every poll** of the task.
+    ///
+    /// A task is polled several times, on a thread that may change between two
+    /// polls, and a thread-bound `EnteredSpan` cannot be held across an await — so
+    /// the span is stored in the task and entered per poll. Creating it per poll
+    /// instead would mint a new span on every wake-up, which would break the very
+    /// thing a span is for: joining the events of one call.
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn the_call_scope_enters_one_span_per_poll() {
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        /// Yields once: the task is polled twice, like one that awaits.
+        async fn yields_once() {
+            let mut yielded = false;
+            futures_lite::future::poll_fn(|_cx| {
+                if yielded {
+                    Poll::Ready(())
+                } else {
+                    yielded = true;
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+
+        let recorder = Arc::new(SpanRecorder::default());
+        let dispatch = tracing::Dispatch::new(Arc::clone(&recorder));
+
+        // Built inside the dispatcher: the span of a call is created when the task
+        // is built, not when it is polled.
+        tracing::dispatcher::with_default(&dispatch, || {
+            let header = RpcHeader::request("ping", 7, 1);
+            let mut task = call_scoped(CallContext::new(&header, "ping"), yields_once());
+
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            assert!(task.as_mut().poll(&mut cx).is_pending());
+            assert!(task.as_mut().poll(&mut cx).is_ready());
+        });
+
+        let names = recorder
+            .names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(
+            names,
+            ["rpc"],
+            "one span for the whole call, not one per poll"
+        );
+        assert_eq!(
+            recorder.entered.load(Ordering::Relaxed),
+            2,
+            "entered around each of the two polls"
+        );
+        assert_eq!(
+            recorder.exited.load(Ordering::Relaxed),
+            2,
+            "and left after each"
+        );
+    }
+
+    /// The context must follow the **task** being polled, not the thread.
+    ///
+    /// Two calls of one channel are polled interleaved on the same thread by the
+    /// same executor. A scope installed for the whole call would still be the
+    /// first one's when the second is polled — which is exactly what this wrapper
+    /// prevents.
+    #[test]
+    fn the_context_follows_the_task_being_polled() {
+        use std::sync::{Arc, Mutex};
+
+        /// Yields once, so a second task can be polled in between.
+        async fn yield_once() {
+            let mut yielded = false;
+            futures_lite::future::poll_fn(|_cx| {
+                if yielded {
+                    Poll::Ready(())
+                } else {
+                    yielded = true;
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+
+        type Seen = Vec<(&'static str, Option<&'static str>)>;
+        let seen: Arc<Mutex<Seen>> = Arc::default();
+
+        let task = |method: &'static str, seen: Arc<Mutex<Seen>>| {
+            let ctx = CallContext::new(&RpcHeader::request(method, 1, 1), method);
+            call_scoped(ctx, async move {
+                let observed = CallContext::current().map(|ctx| ctx.method());
+                seen.lock().unwrap().push((method, observed));
+                yield_once().await;
+                let observed = CallContext::current().map(|ctx| ctx.method());
+                seen.lock().unwrap().push((method, observed));
+            })
+        };
+
+        let mut first = std::pin::pin!(task("first", Arc::clone(&seen)));
+        let mut second = std::pin::pin!(task("second", Arc::clone(&seen)));
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+        assert!(first.as_mut().poll(&mut cx).is_ready());
+        assert!(second.as_mut().poll(&mut cx).is_ready());
+
+        assert_eq!(
+            &*seen.lock().unwrap(),
+            &[
+                ("first", Some("first")),
+                ("second", Some("second")),
+                ("first", Some("first")),
+                ("second", Some("second")),
+            ],
+            "each poll must observe the context of its own call"
         );
     }
 }

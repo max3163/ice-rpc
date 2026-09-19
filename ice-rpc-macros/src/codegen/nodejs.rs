@@ -238,43 +238,47 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
         {
             dispatcher.method(
                 #method_name_str,
-                move |header: &ice_rpc::gen::RpcHeader,
-                      payload: &[u8],
-                      emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
-                    let Some(args) =
-                        #proxy_name::deserialize_request_to_value(#method_name_str, payload)
-                    else {
-                        ::log::error!(
-                            "[{}::{}] Failed to deserialize the request",
-                            <#proxy_name>::SERVICE_NAME,
-                            #method_name_str
-                        );
-                        return;
-                    };
-                    // The correlation id is the real one now that the handler
-                    // receives the header: the JS side can correlate its logs.
-                    let value = match ice_rpc::nodejs_dispatch::call(
-                        header.correlation_id,
-                        <#proxy_name>::SERVICE_NAME,
-                        #method_name_str,
-                        args,
-                    ) {
-                        Ok(value) => value,
-                        Err(e) => {
+                move |header: ice_rpc::gen::RpcHeader,
+                      payload: Vec<u8>,
+                      emitter: ice_rpc::gen::OwnedEmitter|
+                      -> ice_rpc::gen::BoxResponseFuture {
+                    Box::pin(async move {
+                        let mut emitter = emitter;
+                        let Some(args) =
+                            #proxy_name::deserialize_request_to_value(#method_name_str, &payload)
+                        else {
                             ::log::error!(
-                                "[{}::{}] NodeJS dispatch failed: {}",
+                                "[{}::{}] Failed to deserialize the request",
                                 <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                e
+                                #method_name_str
                             );
                             return;
+                        };
+                        // The correlation id is the real one now that the handler
+                        // receives the header: the JS side can correlate its logs.
+                        let value = match ice_rpc::nodejs_dispatch::call(
+                            header.correlation_id,
+                            <#proxy_name>::SERVICE_NAME,
+                            #method_name_str,
+                            args,
+                        ) {
+                            Ok(value) => value,
+                            Err(e) => {
+                                ::log::error!(
+                                    "[{}::{}] NodeJS dispatch failed: {}",
+                                    <#proxy_name>::SERVICE_NAME,
+                                    #method_name_str,
+                                    e
+                                );
+                                return;
+                            }
+                        };
+                        if let Some((kind, sample)) =
+                            #proxy_name::serialize_response_from_value(#method_name_str, value)
+                        {
+                            emitter.emit(kind, &sample);
                         }
-                    };
-                    if let Some((kind, sample)) =
-                        #proxy_name::serialize_response_from_value(#method_name_str, value)
-                    {
-                        emitter.emit(kind, &sample);
-                    }
+                    })
                 },
             );
         }

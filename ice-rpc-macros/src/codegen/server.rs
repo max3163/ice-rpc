@@ -50,6 +50,11 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
             /// the rkyv request enum from the payload, invokes the local
             /// implementation, and streams the resulting `Observable` through
             /// `observable_to_responses`.
+            ///
+            /// Each handler returns a **task**, which the transport polls once on
+            /// the channel's thread before detaching it: a handler that answers
+            /// without yielding runs on that thread, one that `await`s runs as a
+            /// task and cannot hold back the next request.
             fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
                 let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
                 #(#server_native_methods)*
@@ -62,9 +67,13 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// Generates one `ServiceDispatcher::method(...)` registration for the native
 /// request/response transport.
 ///
-/// The handler receives the request header — the transport is generic over the
-/// framing — and installs the `CallContext` of the call it serves as an ambient
-/// value for the whole invocation, so the implementation reads it with
+/// The handler returns a **task**: an owned request in, a boxed future out. The
+/// transport polls it once on the channel's thread and detaches it only if it
+/// yields, so a call that waits on a database cannot hold back the next request
+/// of the same `group` — while a call that answers from memory pays no hop at all.
+///
+/// The handler installs the `CallContext` of the call it serves as an ambient
+/// value for every poll of that task, so the implementation reads it with
 /// `CallContext::current()` and its signature is untouched.
 pub fn gen_native_method(
     fn_name: &Ident,
@@ -79,30 +88,40 @@ pub fn gen_native_method(
             let service_impl = self.service_impl.clone();
             dispatcher.method(
                 #method_name_str,
-                move |header: &ice_rpc::gen::RpcHeader,
-                      payload: &[u8],
-                      emitter: &mut dyn ice_rpc::gen::ResponseEmitter| {
-                    // The framed payload is not necessarily aligned for rkyv, so
-                    // the decode goes through an aligned copy.
-                    match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
-                        Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
-                            // Ambient for the whole call, responses included: the
-                            // handler runs on this channel's dedicated dispatch
-                            // thread, so a thread-local slot is correct here.
-                            let _ctx_scope =
-                                ice_rpc::gen::CallContext::new(header, #method_name_str).enter();
-                            // Clone per invocation: the closure is `Fn`, so it must
-                            // not move the captured `Arc` into the coroutine.
-                            let impl_ref = service_impl.clone();
-                            let stream = ice_rpc::rt::block_on(async move {
-                                impl_ref.#fn_name(#(#arg_names),*).await
-                            });
-                            ice_rpc::gen::observable_to_responses(stream, emitter);
-                        }
-                        // A payload of another method, or one that does not decode:
-                        // no response is emitted, so the call times out.
-                        _ => {}
-                    }
+                move |header: ice_rpc::gen::RpcHeader,
+                      payload: Vec<u8>,
+                      emitter: ice_rpc::gen::OwnedEmitter|
+                      -> ice_rpc::gen::BoxResponseFuture {
+                    // Built before the coroutine: it is copied into the task, and
+                    // the header itself is not needed past this point.
+                    let ctx = ice_rpc::gen::CallContext::new(&header, #method_name_str);
+                    // Clone per invocation: the closure is `Fn`, so it must not
+                    // move the captured `Arc` into the coroutine.
+                    let impl_ref = service_impl.clone();
+                    // Installed around each poll rather than around the whole
+                    // call: the tasks of one channel are polled interleaved, so a
+                    // context held across an await would label the wrong call.
+                    ice_rpc::gen::call_scoped(
+                        ctx,
+                        async move {
+                            let mut emitter = emitter;
+                            // The framed payload is not necessarily aligned for
+                            // rkyv, so the decode goes through an aligned copy.
+                            match ice_rpc::gen::decode_aligned::<#req_enum_name>(&payload) {
+                                Ok(#req_enum_name::#var_name { #(#arg_names),* }) => {
+                                    let stream = impl_ref.#fn_name(#(#arg_names),*).await;
+                                    // Awaited, never blocked on: the other calls
+                                    // of the channel run meanwhile.
+                                    ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                        .await;
+                                }
+                                // A payload of another method, or one that does
+                                // not decode: no response is emitted, so the call
+                                // times out.
+                                _ => {}
+                            }
+                        },
+                    )
                 },
             );
         }

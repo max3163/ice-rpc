@@ -25,7 +25,8 @@ mod tuning;
 mod waitset;
 
 pub use bridge::{
-    emit_rpc_error, observable_to_responses, CollectEmitter, ResponseEmitter, ServiceDispatcher,
+    emit_rpc_error, observable_to_responses, BoxResponseFuture, CollectEmitter, OwnedEmitter,
+    ResponseEmitter, ServiceDispatcher,
 };
 pub use client::{native_call, serialize_and_call};
 pub use monitor::{discover_channels, Direction, DirectionView, Emitter};

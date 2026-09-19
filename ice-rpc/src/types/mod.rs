@@ -24,7 +24,7 @@ mod node;
 mod wire;
 
 pub use consts::*;
-pub use context::{CallContext, TraceContext};
+pub use context::{call_scoped, BoxResponseFuture, CallContext, TraceContext};
 pub use header::{
     fmt_correlation_id, next_correlation_id, now_ns, service_id_of, EventKind, RpcHeader,
     ServiceRef, CORRELATION_ID_LEN,

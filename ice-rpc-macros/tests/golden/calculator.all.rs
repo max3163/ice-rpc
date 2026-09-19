@@ -64,6 +64,11 @@ impl CalculatorServer {
     /// the rkyv request enum from the payload, invokes the local
     /// implementation, and streams the resulting `Observable` through
     /// `observable_to_responses`.
+    ///
+    /// Each handler returns a **task**, which the transport polls once on
+    /// the channel's thread before detaching it: a handler that answers
+    /// without yielding runs on that thread, one that `await`s runs as a
+    /// task and cannot hold back the next request.
     fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
         let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
             <CalculatorProxy>::SERVICE,
@@ -74,27 +79,28 @@ impl CalculatorServer {
                 .method(
                     "add",
                     move |
-                        header: &ice_rpc::gen::RpcHeader,
-                        payload: &[u8],
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        match ice_rpc::gen::decode_aligned::<
-                            CalculatorRequest,
-                        >(payload) {
-                            Ok(CalculatorRequest::Add { a, b }) => {
-                                let _ctx_scope = ice_rpc::gen::CallContext::new(
-                                        header,
-                                        "add",
-                                    )
-                                    .enter();
-                                let impl_ref = service_impl.clone();
-                                let stream = ice_rpc::rt::block_on(async move {
-                                    impl_ref.add(a, b).await
-                                });
-                                ice_rpc::gen::observable_to_responses(stream, emitter);
-                            }
-                            _ => {}
-                        }
+                        header: ice_rpc::gen::RpcHeader,
+                        payload: Vec<u8>,
+                        emitter: ice_rpc::gen::OwnedEmitter,
+                    | -> ice_rpc::gen::BoxResponseFuture {
+                        let ctx = ice_rpc::gen::CallContext::new(&header, "add");
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::gen::call_scoped(
+                            ctx,
+                            async move {
+                                let mut emitter = emitter;
+                                match ice_rpc::gen::decode_aligned::<
+                                    CalculatorRequest,
+                                >(&payload) {
+                                    Ok(CalculatorRequest::Add { a, b }) => {
+                                        let stream = impl_ref.add(a, b).await;
+                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                            .await;
+                                    }
+                                    _ => {}
+                                }
+                            },
+                        )
                     },
                 );
         }
@@ -216,41 +222,44 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                         .method(
                             "add",
                             move |
-                                header: &ice_rpc::gen::RpcHeader,
-                                payload: &[u8],
-                                emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                            {
-                                let Some(args) = CalculatorProxy::deserialize_request_to_value(
-                                    "add",
-                                    payload,
-                                ) else {
-                                    ::log::error!(
-                                        "[{}::{}] Failed to deserialize the request", <
-                                        CalculatorProxy > ::SERVICE_NAME, "add"
-                                    );
-                                    return;
-                                };
-                                let value = match ice_rpc::nodejs_dispatch::call(
-                                    header.correlation_id,
-                                    <CalculatorProxy>::SERVICE_NAME,
-                                    "add",
-                                    args,
-                                ) {
-                                    Ok(value) => value,
-                                    Err(e) => {
+                                header: ice_rpc::gen::RpcHeader,
+                                payload: Vec<u8>,
+                                emitter: ice_rpc::gen::OwnedEmitter,
+                            | -> ice_rpc::gen::BoxResponseFuture {
+                                Box::pin(async move {
+                                    let mut emitter = emitter;
+                                    let Some(args) = CalculatorProxy::deserialize_request_to_value(
+                                        "add",
+                                        &payload,
+                                    ) else {
                                         ::log::error!(
-                                            "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
-                                            ::SERVICE_NAME, "add", e
+                                            "[{}::{}] Failed to deserialize the request", <
+                                            CalculatorProxy > ::SERVICE_NAME, "add"
                                         );
                                         return;
+                                    };
+                                    let value = match ice_rpc::nodejs_dispatch::call(
+                                        header.correlation_id,
+                                        <CalculatorProxy>::SERVICE_NAME,
+                                        "add",
+                                        args,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(e) => {
+                                            ::log::error!(
+                                                "[{}::{}] NodeJS dispatch failed: {}", < CalculatorProxy >
+                                                ::SERVICE_NAME, "add", e
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    if let Some((kind, sample)) = CalculatorProxy::serialize_response_from_value(
+                                        "add",
+                                        value,
+                                    ) {
+                                        emitter.emit(kind, &sample);
                                     }
-                                };
-                                if let Some((kind, sample)) = CalculatorProxy::serialize_response_from_value(
-                                    "add",
-                                    value,
-                                ) {
-                                    emitter.emit(kind, &sample);
-                                }
+                                })
                             },
                         );
                 }

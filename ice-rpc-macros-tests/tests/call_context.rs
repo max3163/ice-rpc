@@ -21,7 +21,7 @@ fn init_global() {
 }
 
 /// What a handler observed, for the test to assert on.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Observed {
     method: &'static str,
     correlation: String,
@@ -46,21 +46,27 @@ fn the_handler_receives_the_request_header() {
     let captured = Arc::clone(&seen);
 
     let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
-    dispatcher.method("echo", move |header, _payload, emitter| {
-        // Exactly what a generated provider handler does with the header.
-        let ctx = CallContext::new(header, "echo");
-        *captured.lock().unwrap() = Some(Observed {
-            method: ctx.method(),
-            correlation: ctx.correlation(),
-            service_id: ctx.service_id(),
-            service_version: ctx.service_version(),
-            received_at_ns: ctx.received_at_ns(),
-            trace: ctx.trace(),
-        });
+    dispatcher.method("echo", move |header, _payload, mut emitter| {
+        // Exactly what a generated provider handler does: the context is
+        // installed around every poll of the task, and the body reads it back
+        // through `CallContext::current`.
+        let ctx = CallContext::new(&header, "echo");
+        let captured = Arc::clone(&captured);
+        ice_rpc::gen::call_scoped(ctx, async move {
+            let ctx = CallContext::current().expect("the ambient context is installed per poll");
+            *captured.lock().unwrap() = Some(Observed {
+                method: ctx.method(),
+                correlation: ctx.correlation(),
+                service_id: ctx.service_id(),
+                service_version: ctx.service_version(),
+                received_at_ns: ctx.received_at_ns(),
+                trace: ctx.trace(),
+            });
 
-        let sample = rkyv::to_bytes::<rkyv::rancor::Error>(&WireEvent::<i32, String>::Complete)
-            .expect("encode the terminal event");
-        let _ = emitter.emit(EventKind::Complete, &sample);
+            let sample = rkyv::to_bytes::<rkyv::rancor::Error>(&WireEvent::<i32, String>::Complete)
+                .expect("encode the terminal event");
+            let _ = emitter.emit(EventKind::Complete, &sample);
+        })
     });
 
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
@@ -95,7 +101,33 @@ fn the_handler_receives_the_request_header() {
 
 // ── 2. The ambient context, through the macro-generated handler ──────────────
 
-static SEEN: Mutex<Option<Observed>> = Mutex::new(None);
+static SEEN: Mutex<Option<Probe>> = Mutex::new(None);
+
+/// What the implementation read around its own yield.
+///
+/// One call is polled several times by the executor — and, when the runtime is
+/// multi-threaded, possibly on a different thread each time. The ambient context
+/// is installed by the wrapper **around every poll**, so both reads must describe
+/// the same call; a context installed for the whole call would be lost or, worse,
+/// hold whatever call was polled in between.
+#[derive(Clone, Debug, PartialEq)]
+struct Probe {
+    before: Observed,
+    after: Observed,
+}
+
+/// Reads the ambient context of the call being served.
+fn observe() -> Observed {
+    let ctx = CallContext::current().expect("the generated handler installs the context");
+    Observed {
+        method: ctx.method(),
+        correlation: ctx.correlation(),
+        service_id: ctx.service_id(),
+        service_version: ctx.service_version(),
+        received_at_ns: ctx.received_at_ns(),
+        trace: ctx.trace(),
+    }
+}
 
 #[service("AmbientContextDemo")]
 #[async_trait::async_trait]
@@ -109,15 +141,13 @@ struct Impl;
 #[async_trait::async_trait]
 impl AmbientContextDemo for Impl {
     async fn probe(&self, value: i32) -> Observable<i32, String> {
-        let ctx = CallContext::current().expect("the generated handler installs the context");
-        *SEEN.lock().unwrap() = Some(Observed {
-            method: ctx.method(),
-            correlation: ctx.correlation(),
-            service_id: ctx.service_id(),
-            service_version: ctx.service_version(),
-            received_at_ns: ctx.received_at_ns(),
-            trace: ctx.trace(),
-        });
+        let before = observe();
+        // Forces a second poll of the handler's task, with no timer involved —
+        // the first `Pending` of the task, and on a multi-threaded runtime a
+        // chance to be resumed on another thread.
+        ice_rpc::gen::futures_lite::future::yield_now().await;
+        let after = observe();
+        *SEEN.lock().unwrap() = Some(Probe { before, after });
         Observable::from_events([Event::Next(value + 1), Event::Complete])
     }
 }
@@ -142,7 +172,16 @@ fn the_implementation_reads_the_ambient_context() {
     let values = ice_rpc::rt::block_on(stream.collect()).expect("collect");
     assert_eq!(values, vec![42]);
 
-    let seen = SEEN.lock().unwrap().clone().expect("the handler ran");
+    let probe = SEEN.lock().unwrap().clone().expect("the handler ran");
+
+    // The yield must not have cost the call anything: the implementation still
+    // reads the very same call after it.
+    assert_eq!(
+        probe.before, probe.after,
+        "the ambient context must survive a yield in the handler"
+    );
+
+    let seen = probe.before;
     assert_eq!(seen.method, "probe");
     assert_eq!(seen.service_version, 1);
     assert_eq!(seen.correlation.len(), 36, "uuid-shaped");

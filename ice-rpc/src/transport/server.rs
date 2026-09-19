@@ -2,12 +2,13 @@
 //! the deferred channel start used during service initialization.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
 
-use super::bridge::{emit_rpc_error, ResponseEmitter, ServiceDispatcher};
+use super::bridge::{emit_rpc_error, OwnedEmitter, ResponseEmitter, ServiceDispatcher};
 use super::client::publish_until_delivered;
 use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
@@ -76,7 +77,6 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
         .notifier_builder()
         .create()
         .map_err(|e| transport_error("response notifier", e))?;
-
     Ok(ChannelPorts {
         _request_service: request_service,
         _response_service: response_service,
@@ -90,10 +90,18 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
 }
 
 /// Spawns the provider side of one channel: a thread that routes every request to
-/// the dispatcher registered under its `service_id` and publishes the responses.
+/// the dispatcher registered under its `service_id`, hands it to the executor and
+/// publishes the responses the tasks produce.
 ///
 /// `services` is the set of dispatchers sharing the channel; each one carries its
 /// own identity, so a request whose id is unknown is logged and dropped.
+///
+/// **The thread routes, and polls each handler once before detaching it.** A
+/// request whose handler answers without yielding completes here and costs no hop
+/// at all; one that `await`s becomes a task on the execution facade, so a call
+/// waiting on a database does not hold back the next request of the same channel
+/// — which matters most for a `group`, since the group is exactly the unit that
+/// owns this thread.
 ///
 /// The ports are opened with a bounded retry on the failures that are transient:
 /// a channel is not worth losing to a race with another process.
@@ -109,6 +117,10 @@ pub fn spawn_native_service(
         .map(|dispatcher| (dispatcher.service().id, dispatcher))
         .collect();
     let channel = channel.to_owned();
+    // Captured on the caller's thread — the one inside the runtime under the
+    // `tokio` facade — because the channel thread has no runtime context, and the
+    // handler tasks are spawned from it.
+    let spawner = crate::rt::Spawner::capture();
     let handle = std::thread::spawn(move || {
         // Any port that cannot be opened makes the whole channel useless: log it
         // and stop the thread. A transient failure is retried first — a channel
@@ -131,19 +143,22 @@ pub fn spawn_native_service(
             table.len()
         );
 
-        let mut sink = ResponseSink::new(
-            &channel,
-            &ports.publisher,
-            &ports._response_service,
-            &ports.response_notifier,
-        );
+        // What every call publishes through, shared with the tasks as an `Arc`:
+        // the publisher, the response service and the consumers' notifier.
+        let hub = Arc::new(ResponseHub::new(
+            channel.clone(),
+            ports.publisher,
+            ports._response_service,
+            ports.response_notifier,
+        ));
+
         super::pump::run_receive_loop(
             &channel,
             "request",
             &ports.subscriber,
             &ports.listener,
             || stop.is_cancelled(),
-            |header, payload| handle_request(&channel, &table, &mut sink, header, payload),
+            |header, payload| handle_request(&channel, &table, &hub, &spawner, header, payload),
         );
         log::info!("[transport] channel '{channel}' stopped");
     });
@@ -202,85 +217,83 @@ fn retry_open<T>(
     }
 }
 
-/// Publishes the responses of one channel and wakes the consumers up.
+/// Publishes the responses of one channel, from whatever thread answers.
 ///
-/// This is the transport end of [`ResponseEmitter`]: the generated handlers push
-/// their samples into it, so a response goes from the serializer's scratch
-/// buffer to the shared-memory sample without an intermediate allocation.
-struct ResponseSink<'a> {
-    channel: &'a str,
-    publisher: &'a IoxPublisher,
+/// **Shared by every in-flight call of the channel.** A handler that answers
+/// during its inline poll publishes from the channel's own thread, one that
+/// yielded from a thread of the executor; both go through this hub. The counter
+/// is therefore atomic, and the request being answered is *not* hub state — it
+/// belongs to the per-call [`CallEmitter`].
+///
+/// Publishing used to be handed to a single thread, with an outbox and a wake-up,
+/// because `loan`+`send` on one publisher convoy when several threads call them
+/// at once — measured here at 2.75 µs of mean on one thread against 10.9 µs with
+/// eight, 4.3 % of the calls above 50 µs. That apparatus was removed after
+/// measuring it against this: the hand-off costs more than the convoy it avoids
+/// on a channel whose handlers answer in place, and those are precisely the ones
+/// the inline poll keeps on a single thread anyway. The convoy, when it happens,
+/// is between handlers that *awaited* — where its microseconds disappear next to
+/// the wait they just served.
+struct ResponseHub {
+    channel: String,
+    publisher: IoxPublisher,
     /// Response service, read for its subscriber count before every publication.
-    service: &'a IoxPubSub,
-    notifier: &'a IoxNotifier,
-    /// Header of the request being answered, copied by [`ResponseSink::begin`].
-    request: Option<RpcHeader>,
-    /// Coalescing window of the consumer wake-ups.
-    coalescer: Coalescer,
+    service: IoxPubSub,
+    /// Wakes the consumers' response threads up.
+    notifier: IoxNotifier,
     /// Per-channel monotonic sample counter, stamped into `RpcHeader::seq`.
     ///
-    /// One publisher per channel, drained by this single thread: a plain counter
-    /// is enough and stays monotonic.
-    seq: u64,
-    /// Whether a response was published since the last [`ResponseSink::begin`].
-    published: bool,
+    /// Atomic for the same reason as the coalescer below: one publisher per
+    /// channel, but several tasks may reach it at the same instant.
+    seq: AtomicU64,
+    /// Coalescing window of the consumer wake-ups.
+    coalescer: Coalescer,
 }
 
-impl<'a> ResponseSink<'a> {
+impl ResponseHub {
     fn new(
-        channel: &'a str,
-        publisher: &'a IoxPublisher,
-        service: &'a IoxPubSub,
-        notifier: &'a IoxNotifier,
+        channel: String,
+        publisher: IoxPublisher,
+        service: IoxPubSub,
+        notifier: IoxNotifier,
     ) -> Self {
         Self {
             channel,
             publisher,
             service,
             notifier,
-            request: None,
+            seq: AtomicU64::new(0),
             coalescer: Coalescer::new(),
-            seq: 0,
-            published: false,
         }
     }
 
-    /// Points the sink at the request whose responses are about to be emitted.
-    fn begin(&mut self, request: &RpcHeader) {
-        self.request = Some(*request);
-    }
-
-    /// Wakes the consumers' response threads up, if anything was published.
-    fn finish(&mut self) {
-        if std::mem::take(&mut self.published) && self.coalescer.should_notify() {
-            let _ = self.notifier.notify_with_custom_event_id(EventId::new(0));
+    /// Builds the sink of the responses of **one** call.
+    fn emitter(self: &Arc<Self>, request: &RpcHeader) -> CallEmitter {
+        CallEmitter {
+            hub: Arc::clone(self),
+            request: *request,
         }
     }
-}
 
-impl ResponseEmitter for ResponseSink<'_> {
-    fn emit(&mut self, kind: EventKind, payload: &[u8]) -> bool {
-        let Some(request) = self.request else {
-            log::error!(
-                "[transport] '{}': response emitted outside of a request",
-                self.channel
-            );
-            return false;
-        };
-
-        let header =
-            RpcHeader::response_from(&request, kind, request.service_version).with_seq(self.seq);
-        self.seq = self.seq.wrapping_add(1);
+    /// Publishes one response and wakes the consumers up.
+    ///
+    /// Returns `false` when the sample could not be delivered, which stops the
+    /// producer of that call — the contract of [`ResponseEmitter::emit`].
+    fn publish(&self, kind: EventKind, request: &RpcHeader, payload: &[u8]) -> bool {
+        let header = RpcHeader::response_from(request, kind, request.service_version)
+            .with_seq(self.seq.fetch_add(1, Ordering::Relaxed));
 
         match publish_until_delivered(
-            self.publisher,
-            self.service,
+            &self.publisher,
+            &self.service,
             header,
             payload,
             CONSUMER_WAIT_TIMEOUT,
         ) {
             Ok(()) => {
-                self.published = true;
+                if self.coalescer.should_notify() {
+                    let _ = self.notifier.notify_with_custom_event_id(EventId::new(0));
+                }
                 true
             }
             Err(e) => {
@@ -291,6 +304,22 @@ impl ResponseEmitter for ResponseSink<'_> {
                 false
             }
         }
+    }
+}
+
+/// Sink of the responses of **one** call, owned by the task that serves it.
+///
+/// It carries the request being answered — several calls share the hub, so the
+/// request cannot be hub state — and publishes through it, from the thread the
+/// call happens to be served on.
+struct CallEmitter {
+    hub: Arc<ResponseHub>,
+    request: RpcHeader,
+}
+
+impl ResponseEmitter for CallEmitter {
+    fn emit(&mut self, kind: EventKind, payload: &[u8]) -> bool {
+        self.hub.publish(kind, &self.request, payload)
     }
 }
 
@@ -340,12 +369,17 @@ impl RequestRejection {
     }
 }
 
-/// Routes one request to the dispatcher of its service and publishes the
-/// responses.
+/// Routes one request to the dispatcher of its service, and **spawns** the task
+/// that serves it.
+///
+/// Nothing here runs a handler: the returned future goes to the executor, so this
+/// call returns as soon as the task is queued — which is what keeps the channel's
+/// thread free for the next request.
 fn handle_request(
     channel: &str,
     table: &HashMap<u32, ServiceDispatcher>,
-    sink: &mut ResponseSink<'_>,
+    hub: &Arc<ResponseHub>,
+    spawner: &crate::rt::Spawner,
     header: &RpcHeader,
     payload: &[u8],
 ) {
@@ -357,18 +391,12 @@ fn handle_request(
         return;
     }
 
-    // The sink is pointed at the request before the lookup: every rejection below
-    // answers the caller, including when the target service is unknown. The
-    // handler then pushes its responses into the same sink, and the consumers are
-    // woken once per coalescing window, only if something was published.
-    sink.begin(header);
-
     // A channel hosts several services: the header id selects the dispatcher.
     let Some(dispatcher) = table.get(&header.service_id) else {
         reject(
             channel,
             header,
-            sink,
+            hub,
             RpcError::UnknownService(format!("{:#010x}", header.service_id)),
         );
         return;
@@ -379,38 +407,50 @@ fn handle_request(
     // exactly what changes when either version moves, so a guard that had to
     // decode first would be doing the very operation it protects against.
     if let Some(rejection) = RequestRejection::classify(dispatcher, header) {
-        reject(channel, header, sink, rejection.rpc_error());
+        reject(channel, header, hub, rejection.rpc_error());
         return;
     }
 
-    // An unknown method is answered too: silence would leave the caller waiting
-    // for the transport timeout instead of naming the mistake.
-    if !dispatcher.dispatch(header.method(), header, payload, sink) {
-        reject(
+    // The request is copied into the task, because the task outlives the sample
+    // it came from: a borrow of the received payload could not be held across an
+    // await. It is one copy of a small blob, and the rkyv decode that follows
+    // allocates the arguments anyway.
+    let emitter: OwnedEmitter = Box::new(hub.emitter(header));
+    match dispatcher.dispatch(header.method(), *header, payload.to_vec(), emitter) {
+        // Polled once here before being detached: a handler that answers without
+        // yielding completes on this thread and costs no hop at all — measured at
+        // 240 k req/s with the hop and 313 k without it. One that awaits is
+        // spawned at its first `Pending` and keeps the whole benefit of running as
+        // a task.
+        Some(task) => spawner.run_or_spawn(task),
+        // An unknown method is answered too: silence would leave the caller
+        // waiting for the transport timeout instead of naming the mistake.
+        None => reject(
             channel,
             header,
-            sink,
+            hub,
             RpcError::UnknownMethod(header.method().to_owned()),
-        );
-        return;
+        ),
     }
-
-    sink.finish();
 }
 
 /// Answers a request that cannot be served, and logs the reason.
 ///
 /// The rejection is framed as a bare [`RpcError`], so it needs neither the
 /// service types nor even a registered handler: every request gets an answer.
-fn reject(channel: &str, header: &RpcHeader, sink: &mut ResponseSink<'_>, err: RpcError) {
+///
+/// Published in place rather than spawned as a task: a rejection must be
+/// answered even when the executor is saturated, and this runs on the channel's
+/// own thread, which owns the publisher.
+fn reject(channel: &str, header: &RpcHeader, hub: &Arc<ResponseHub>, err: RpcError) {
     log::warn!(
         "[transport] '{channel}': rejecting '{}': {err}",
         header.method()
     );
-    if !emit_rpc_error(err, sink) {
+    let mut emitter = hub.emitter(header);
+    if !emit_rpc_error(err, &mut emitter) {
         log::error!("[transport] '{channel}': the rejection could not be published");
     }
-    sink.finish();
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +574,7 @@ mod tests {
     use super::*;
     use crate::transport::CollectEmitter;
     use crate::types::ServiceRef;
+    use std::sync::Mutex;
 
     #[test]
     fn a_duplicate_service_id_is_reported_with_the_previous_name() {
@@ -619,32 +660,59 @@ mod tests {
         assert_eq!(attempts, 1, "a cancelled token stops before any retry");
     }
 
+    /// A [`ResponseEmitter`] whose samples survive the task that emitted them.
+    ///
+    /// A handler now owns its emitter, so a test cannot inspect it after the
+    /// fact: it has to be reachable from both sides.
+    #[derive(Clone, Default)]
+    struct SharedCollector(Arc<Mutex<CollectEmitter>>);
+
+    impl SharedCollector {
+        fn take(&self) -> Vec<(EventKind, Vec<u8>)> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+        }
+    }
+
+    impl ResponseEmitter for SharedCollector {
+        fn emit(&mut self, kind: EventKind, payload: &[u8]) -> bool {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .emit(kind, payload)
+        }
+    }
+
     #[test]
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        first.method("echo", |_header, payload, emitter| {
-            emitter.emit(EventKind::Next, payload);
+        first.method("echo", |_header, payload, mut emitter| {
+            Box::pin(async move {
+                emitter.emit(EventKind::Next, &payload);
+            })
         });
         let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
-        second.method("ping", |_header, _payload, _emitter| {});
+        second.method("ping", |_header, _payload, _emitter| Box::pin(async {}));
 
         let table: HashMap<u32, ServiceDispatcher> =
             vec![(7, first), (9, second)].into_iter().collect();
         let header = RpcHeader::request("echo", 7, 1);
 
-        let mut emitter = CollectEmitter::new();
-        assert!(table
+        let sink = SharedCollector::default();
+        let task = table
             .get(&7)
             .unwrap()
-            .dispatch("echo", &header, b"x", &mut emitter));
-        assert_eq!(emitter.take().len(), 1);
+            .dispatch("echo", header, b"x".to_vec(), Box::new(sink.clone()))
+            .expect("the first dispatcher has `echo`");
+        crate::rt::block_on(task);
+        assert_eq!(sink.take().len(), 1);
 
-        // The second dispatcher has no `echo` method: reported, nothing emitted.
-        assert!(!table
+        // The second dispatcher has no `echo` method: no task, nothing emitted.
+        assert!(table
             .get(&9)
             .unwrap()
-            .dispatch("echo", &header, b"x", &mut emitter));
-        assert!(emitter.take().is_empty());
+            .dispatch("echo", header, b"x".to_vec(), Box::new(sink.clone()))
+            .is_none());
+        assert!(sink.take().is_empty());
 
         assert!(!table.contains_key(&11));
     }
@@ -676,16 +744,29 @@ mod tests {
     }
 
     /// Dispatch reports whether the method exists, with a single lookup: that
-    /// boolean is what turns an unknown method into an immediate error.
+    /// absence is what turns an unknown method into an immediate error.
     #[test]
-    fn dispatch_reports_whether_the_method_exists() {
+    fn dispatch_builds_a_task_only_for_a_known_method() {
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        dispatcher.method("echo", |_header, _payload, _emitter| {});
+        dispatcher.method("echo", |_header, _payload, _emitter| Box::pin(async {}));
 
         let header = RpcHeader::request("echo", 7, 1);
-        let mut emitter = CollectEmitter::new();
-        assert!(dispatcher.dispatch("echo", &header, b"x", &mut emitter));
-        assert!(!dispatcher.dispatch("missing", &header, b"x", &mut emitter));
+        assert!(dispatcher
+            .dispatch(
+                "echo",
+                header,
+                b"x".to_vec(),
+                Box::new(CollectEmitter::new())
+            )
+            .is_some());
+        assert!(dispatcher
+            .dispatch(
+                "missing",
+                header,
+                b"x".to_vec(),
+                Box::new(CollectEmitter::new())
+            )
+            .is_none());
     }
 
     /// A peer whose framing differs must be rejected, not dispatched: the rest of

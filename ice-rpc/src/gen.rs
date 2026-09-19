@@ -16,9 +16,9 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
 // ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
-    channel, fmt_correlation_id, next_correlation_id, now_ns, raw_pid_to_u32, service_id_of,
-    unbounded_channel, CallContext, EventKind, NodeId, RpcError, RpcHeader, Sender, ServiceRef,
-    WireEvent, CORRELATION_ID_LEN, METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
+    call_scoped, channel, fmt_correlation_id, next_correlation_id, now_ns, raw_pid_to_u32,
+    service_id_of, unbounded_channel, CallContext, EventKind, NodeId, RpcError, RpcHeader, Sender,
+    ServiceRef, WireEvent, CORRELATION_ID_LEN, METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
 // Canonical terminals behind the inherent `Observable` methods.
@@ -48,8 +48,8 @@ pub use crate::start_http_server;
 // Entry points used by the generated client/server.
 pub use crate::transport::{
     decode_aligned, emit_rpc_error, native_call, observable_to_responses, register_native_service,
-    serialize_and_call, spawn_native_service, start_registered_channels, CollectEmitter,
-    ResponseEmitter, ServiceDispatcher,
+    serialize_and_call, spawn_native_service, start_registered_channels, BoxResponseFuture,
+    CollectEmitter, OwnedEmitter, ResponseEmitter, ServiceDispatcher,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

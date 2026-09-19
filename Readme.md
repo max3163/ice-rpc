@@ -286,9 +286,35 @@ Grouping is what makes the transport cost independent of the number of services:
 | Data segments | 100 | 14 | 2 |
 | Dispatch threads (per process) | 50 | 7 | 1 |
 
-A channel is also a **dispatch bottleneck**: every service of a group is served by
-that single thread. A service needing more than ~50k req/s belongs alone in its
-group (measured ceiling: ~350k req/s per channel *and* thread).
+A channel is also the unit of **dispatch**, and its thread is a **router**: it
+receives the requests and polls each handler once, on that very thread. A handler
+that answers without yielding — a cache lookup, in-process state — completes
+there, exactly as it did when the transport called it inline. One that `await`s is
+detached at its first `Pending` and becomes an independent task on the execution
+facade, so a `query_db` awaiting 100 ms does not hold back the next request of the
+same group — which matters most for a `group`, since the group is exactly what
+owns that thread.
+
+The thread is also the channel's **publisher** — and the only one to publish *in
+place*: a handler that answers during its inline poll publishes from it, one that
+yielded publishes from whatever thread of the executor it resumed on. Measured on
+this transport, `loan`+`send` convoy when several threads call them at once
+(2.75 µs of mean on one thread against 10.9 µs with eight); handing the responses
+to a single publisher thread was tried, measured, and removed, because it costs
+more than the convoy it avoids on a channel whose handlers answer in place. Both
+properties below are measured, and both are the subject of a test:
+
+- `ice-rpc-macros-tests/tests/dispatch_serialization.rs` — a fast call issued while
+  a 400 ms call is in flight answers in ~300 µs, against 292 ms when the thread ran
+  the handler;
+- `ice-rpc-macros-tests/tests/dispatch_load.rs` — `N` concurrent calls that await
+  30 ms each keep a latency of `1.01 × 30 ms` from `N = 1` to `N = 8`, where a
+  channel-wide dispatcher gives `N × 30 ms` (32 req/s whatever the load, against
+  ~250 req/s at 8 clients).
+
+What the single thread still bounds is the routing and publication throughput: a
+service needing more than ~50k req/s belongs alone in its group (measured ceiling:
+~350k req/s per channel *and* thread).
 
 **Why not iceoryx2's `request_response`?** It allocates one channel (and one data
 segment) per request in flight, which caps the throughput far below what the
@@ -362,10 +388,15 @@ One thread per channel:
    and takes the rkyv payload from `&sample[..]`;
 3. it picks the dispatcher registered under `header.service_id` — an unknown id
    is logged and dropped, never mis-routed;
-4. it runs the `ServiceDispatcher` handler, which streams the service
-   `Observable` as rkyv `WireEvent` samples;
-5. it publishes each sample on `{channel}_resp`, copying the request's
-   correlation id into the response header, and notifies the consumer.
+4. it builds the handler's task and polls it **once, here**: a handler that
+   answers without yielding completes on this thread, one that `await`s is
+   detached at its first `Pending` and runs as a task on the execution facade;
+5. each response is published on `{channel}_resp`, with the request's
+   correlation id copied into the response header and a channel-wide `seq`
+   stamped on it, and the consumer is notified. A handler that answered in place
+   publishes from this thread; one that yielded publishes from the thread of the
+   executor it resumed on — `loan`+`send` convoy when several threads publish at
+   once, which is why the ones that can stay on this thread do.
 
 A provider does not start its channel itself: it **registers** its dispatcher
 during `on_init`, and the channel threads start at the end of

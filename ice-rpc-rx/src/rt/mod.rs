@@ -148,6 +148,125 @@ where
     imp::spawn(future)
 }
 
+/// A spawner captured on a thread that **has** a runtime context, usable later
+/// from a thread that has none.
+///
+/// Under the `tokio` facade [`spawn`] requires an active runtime and panics
+/// without one. The transport boots its channel threads with `std::thread` —
+/// they never run inside a runtime — so it captures a [`Spawner`] on the thread
+/// that starts the channel (which is inside the runtime) and moves it into the
+/// channel thread. Under the default facade nothing is captured: the global
+/// executor accepts a spawn from any thread.
+#[derive(Clone, Default)]
+pub struct Spawner {
+    /// Runtime captured by [`Spawner::capture`] (`tokio` facade only).
+    #[cfg(feature = "tokio")]
+    handle: Option<tokio::runtime::Handle>,
+}
+
+impl Spawner {
+    /// Captures the runtime of the calling thread, if it has one.
+    pub fn capture() -> Self {
+        Self {
+            #[cfg(feature = "tokio")]
+            handle: tokio::runtime::Handle::try_current().ok(),
+        }
+    }
+
+    /// Spawns `future`, detached, wherever this spawner was captured from.
+    pub fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        #[cfg(feature = "tokio")]
+        match &self.handle {
+            Some(handle) => {
+                handle.spawn(future);
+            }
+            // A provider booted outside any runtime (a bare `fn main`, an N-API
+            // callback) still needs somewhere to run its calls.
+            None => {
+                fallback_runtime().spawn(future);
+            }
+        }
+        #[cfg(not(feature = "tokio"))]
+        spawn(future);
+    }
+
+    /// Runs `future` on the calling thread when it completes without yielding,
+    /// and hands it to the runtime otherwise.
+    ///
+    /// A future that is ready on its first poll then costs **nothing more** than
+    /// calling it: no queue, no wake-up, no second cache. One that yields is
+    /// spawned at that very `Pending`, so it keeps every benefit of running as a
+    /// task — this is what makes a handler that awaits a database overlap with
+    /// the next request, while a handler that answers from memory is not taxed
+    /// for a hop it does not need.
+    ///
+    /// # Why the first poll may use a waker that does nothing
+    ///
+    /// A wake-up carries no information beyond "poll again": a [`Waker`] is
+    /// opaque and a future can only observe its own readiness by being polled.
+    /// The only requirement is therefore that the task is polled again, which
+    /// [`Spawner::spawn`] guarantees — it schedules an initial poll. A completion
+    /// that fires in the window between the inline poll and that first scheduled
+    /// poll is not lost: it is simply observed by the scheduled poll.
+    ///
+    /// # The calling thread is not a runtime thread
+    ///
+    /// The first poll of a future may touch a runtime resource — a timer started
+    /// before its first `await`, a socket, a `tokio::spawn` of its own — and under
+    /// the `tokio` facade such a call requires a runtime context. The captured
+    /// handle is therefore **entered** around the inline poll, which gives the
+    /// calling thread the context a worker thread would have had. When no runtime
+    /// could be captured there is nothing to enter, and polling here would break
+    /// the future instead of speeding it up: it is spawned instead.
+    ///
+    /// # Blocking
+    ///
+    /// The inline poll runs on the caller's thread, so a future that blocks
+    /// *before* its first `await` blocks that thread. Offloading a blocking body
+    /// stays the caller's decision, through [`blocking_call`].
+    ///
+    /// # Allocation
+    ///
+    /// Takes the future **already boxed**, so that a task which completes inline
+    /// costs no allocation at all: re-boxing a `Pin<Box<dyn Future>>` would add a
+    /// second indirection on the path of every request.
+    ///
+    /// [`Waker`]: std::task::Waker
+    pub fn run_or_spawn(&self, mut task: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+        #[cfg(feature = "tokio")]
+        let _entered = match &self.handle {
+            Some(handle) => handle.enter(),
+            None => {
+                self.spawn(task);
+                return;
+            }
+        };
+
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        if task.as_mut().poll(&mut cx).is_pending() {
+            self.spawn(task);
+        }
+    }
+}
+
+/// Runtime used by [`Spawner`] when no runtime was captured.
+///
+/// Lazily created and process-wide: the alternative is a provider that works
+/// inside `#[ice_rpc::main]` and panics outside it.
+#[cfg(feature = "tokio")]
+fn fallback_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build the fallback tokio runtime for spawned tasks")
+    })
+}
+
 /// Runs a blocking closure on a **dedicated** thread and returns an awaitable
 /// handle.
 ///

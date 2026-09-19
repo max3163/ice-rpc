@@ -82,6 +82,11 @@ impl DatabaseApiServer {
     /// the rkyv request enum from the payload, invokes the local
     /// implementation, and streams the resulting `Observable` through
     /// `observable_to_responses`.
+    ///
+    /// Each handler returns a **task**, which the transport polls once on
+    /// the channel's thread before detaching it: a handler that answers
+    /// without yielding runs on that thread, one that `await`s runs as a
+    /// task and cannot hold back the next request.
     fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
         let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
             <DatabaseApiProxy>::SERVICE,
@@ -92,27 +97,28 @@ impl DatabaseApiServer {
                 .method(
                     "get",
                     move |
-                        header: &ice_rpc::gen::RpcHeader,
-                        payload: &[u8],
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        match ice_rpc::gen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Get { key }) => {
-                                let _ctx_scope = ice_rpc::gen::CallContext::new(
-                                        header,
-                                        "get",
-                                    )
-                                    .enter();
-                                let impl_ref = service_impl.clone();
-                                let stream = ice_rpc::rt::block_on(async move {
-                                    impl_ref.get(key).await
-                                });
-                                ice_rpc::gen::observable_to_responses(stream, emitter);
-                            }
-                            _ => {}
-                        }
+                        header: ice_rpc::gen::RpcHeader,
+                        payload: Vec<u8>,
+                        emitter: ice_rpc::gen::OwnedEmitter,
+                    | -> ice_rpc::gen::BoxResponseFuture {
+                        let ctx = ice_rpc::gen::CallContext::new(&header, "get");
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::gen::call_scoped(
+                            ctx,
+                            async move {
+                                let mut emitter = emitter;
+                                match ice_rpc::gen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(&payload) {
+                                    Ok(DatabaseApiRequest::Get { key }) => {
+                                        let stream = impl_ref.get(key).await;
+                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                            .await;
+                                    }
+                                    _ => {}
+                                }
+                            },
+                        )
                     },
                 );
         }
@@ -122,27 +128,28 @@ impl DatabaseApiServer {
                 .method(
                     "put",
                     move |
-                        header: &ice_rpc::gen::RpcHeader,
-                        payload: &[u8],
-                        emitter: &mut dyn ice_rpc::gen::ResponseEmitter|
-                    {
-                        match ice_rpc::gen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Put { key, value }) => {
-                                let _ctx_scope = ice_rpc::gen::CallContext::new(
-                                        header,
-                                        "put",
-                                    )
-                                    .enter();
-                                let impl_ref = service_impl.clone();
-                                let stream = ice_rpc::rt::block_on(async move {
-                                    impl_ref.put(key, value).await
-                                });
-                                ice_rpc::gen::observable_to_responses(stream, emitter);
-                            }
-                            _ => {}
-                        }
+                        header: ice_rpc::gen::RpcHeader,
+                        payload: Vec<u8>,
+                        emitter: ice_rpc::gen::OwnedEmitter,
+                    | -> ice_rpc::gen::BoxResponseFuture {
+                        let ctx = ice_rpc::gen::CallContext::new(&header, "put");
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::gen::call_scoped(
+                            ctx,
+                            async move {
+                                let mut emitter = emitter;
+                                match ice_rpc::gen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(&payload) {
+                                    Ok(DatabaseApiRequest::Put { key, value }) => {
+                                        let stream = impl_ref.put(key, value).await;
+                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                            .await;
+                                    }
+                                    _ => {}
+                                }
+                            },
+                        )
                     },
                 );
         }

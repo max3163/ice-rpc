@@ -140,6 +140,83 @@ fn bench_response_decoding(c: &mut Criterion) {
     group.finish();
 }
 
+/// The per-poll costs PF-1 targets: what a handler pays at **every** poll of its
+/// task, before anything is cancelled.
+///
+/// These are the numbers that decide whether PF-1 is worth doing, so they are
+/// measured one by one, in nanoseconds. The end-to-end benches cannot settle
+/// this: a 3 % change is below their noise floor (see `pipeline`), and a per-poll
+/// saving of a few nanoseconds disappears entirely in a 3 µs round trip. What the
+/// end-to-end bench will be good for is confirming the absence of a regression.
+///
+/// `poll_cancelled_already_cancelled` is the floor the nominal path should reach:
+/// it is the same call with the flag already set, i.e. the cost of one relaxed
+/// load and a branch. The gap between it and `poll_cancelled_pending` is the
+/// price of the `Mutex` and the waker-list scan on the nominal path — the whole
+/// subject of PF-1.
+fn bench_per_poll(c: &mut Criterion) {
+    use std::task::{Context, Waker};
+
+    let header = ice_rpc::gen::RpcHeader::request("get_user_age", 7, 1);
+    let ctx = ice_rpc::CallContext::new(&header, "get_user_age");
+
+    let token = ice_rpc::CancellationToken::new();
+    let cancelled = ice_rpc::CancellationToken::new();
+    cancelled.cancel();
+
+    let mut group = c.benchmark_group("per_poll");
+
+    // The thread-local swap of `CallContext::enter_ambient`, installed around
+    // every poll of a handler task, plus its restore on drop.
+    group.bench_function("ambient_install_restore", |b| {
+        b.iter(|| {
+            let scope = black_box(ctx).enter_ambient();
+            drop(scope);
+        })
+    });
+
+    // The `Arc` clone that `install_call_cancellation` performs per poll, and the
+    // atomic decrement of its drop.
+    group.bench_function("cancellation_token_clone_drop", |b| {
+        b.iter(|| black_box(token.clone()))
+    });
+
+    // The nominal `poll_cancelled`: a `Mutex` lock and a scan of the waker list,
+    // for a token that is not cancelled.
+    group.bench_function("poll_cancelled_pending", |b| {
+        let mut cx = Context::from_waker(Waker::noop());
+        b.iter(|| black_box(token.poll_cancelled(&mut cx)))
+    });
+
+    // The floor: the same call once the token is cancelled.
+    group.bench_function("poll_cancelled_already_cancelled", |b| {
+        let mut cx = Context::from_waker(Waker::noop());
+        b.iter(|| black_box(cancelled.poll_cancelled(&mut cx)))
+    });
+
+    // What PF-1 brings to the nominal path: the waker the task registered is
+    // cached, so the lock and the waker-list scan are gone. The gap with
+    // `poll_cancelled_pending` above is exactly what the change removes from a
+    // task that polls on every poll.
+    group.bench_function("poll_cancelled_cached_steady_state", |b| {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut registered = None;
+        assert!(
+            token
+                .poll_cancelled_cached(&mut cx, &mut registered)
+                .is_pending(),
+            "the token must not be cancelled"
+        );
+        assert!(
+            registered.is_some(),
+            "the priming poll must have cached the waker"
+        );
+        b.iter(|| black_box(token.poll_cancelled_cached(&mut cx, &mut registered)))
+    });
+
+    group.finish();
+}
+
 fn bench_misc(c: &mut Criterion) {
     let mut group = c.benchmark_group("misc");
 
@@ -169,6 +246,7 @@ criterion_group!(
     benches,
     bench_request_encoding,
     bench_response_decoding,
+    bench_per_poll,
     bench_misc
 );
 criterion_main!(benches);

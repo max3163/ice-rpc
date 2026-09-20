@@ -121,9 +121,9 @@ fn three_values() -> Vec<Event<i32, String>> {
 fn drain(stream: Observable<i32, String>) -> Sample {
     let mut stream = Box::pin(stream);
     let mut events = Vec::new();
-    while let Some(event) =
-        pollster::block_on(poll_fn(|cx| futures_lite::Stream::poll_next(stream.as_mut(), cx)))
-    {
+    while let Some(event) = pollster::block_on(poll_fn(|cx| {
+        futures_lite::Stream::poll_next(stream.as_mut(), cx)
+    })) {
         events.push(event);
     }
     events
@@ -185,10 +185,7 @@ fn map_err_conformance() {
             // `Empty` ne porte pas de charge métier : il doit traverser.
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
         ],
     );
 }
@@ -206,10 +203,7 @@ fn scan_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(3), next(6), complete()],
-            ),
+            (three_values(), vec![next(1), next(3), next(6), complete()]),
         ],
     );
 }
@@ -227,10 +221,7 @@ fn tap_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
         ],
     );
 }
@@ -248,10 +239,7 @@ fn finalize_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
         ],
     );
 }
@@ -292,10 +280,7 @@ fn filter_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(3), complete()]),
         ],
     );
 }
@@ -315,10 +300,7 @@ fn take_conformance() {
             (abrupt_close(), vec![next(1)]),
             // La troisième valeur déclenche le `Complete` synthétisé : elle
             // n'est **pas** émise.
-            (
-                three_values(),
-                vec![next(1), next(2), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), complete()]),
         ],
     );
 }
@@ -337,10 +319,7 @@ fn skip_conformance() {
             (empty_failure(), vec![empty()]),
             // La seule valeur est sautée, la fermeture reste une fermeture.
             (abrupt_close(), vec![]),
-            (
-                three_values(),
-                vec![next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(2), next(3), complete()]),
         ],
     );
 }
@@ -360,10 +339,7 @@ fn first_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1), complete()]),
-            (
-                three_values(),
-                vec![next(1), complete()],
-            ),
+            (three_values(), vec![next(1), complete()]),
         ],
     );
 }
@@ -383,10 +359,7 @@ fn catch_error_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
         ],
     );
 }
@@ -406,10 +379,7 @@ fn take_until_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            (
-                three_values(),
-                vec![next(1), next(2), next(3), complete()],
-            ),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
         ],
     );
 }

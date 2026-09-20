@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
@@ -465,6 +465,20 @@ struct CancellableCall {
     /// Registry entry, released when this future is dropped.
     _guard: InFlightGuard,
     token: CancellationToken,
+    /// The waker this task registered on `token`, kept so that later polls can
+    /// recognise it without asking the token's waker list.
+    ///
+    /// The wrapper polls the token on **every** poll of the handler, and a plain
+    /// `poll_cancelled` takes the token's lock on every call to compare the waker
+    /// with the registered ones. Remembering the waker here turns that comparison
+    /// into a pair of pointer compares: `benches/hot_path.rs` measures 10.6 ns per
+    /// poll for the plain call against 0.73 ns for the cached one.
+    ///
+    /// It holds the **waker**, not a boolean, because the waker of this task
+    /// changes once: [`Spawner::run_or_spawn`](crate::rt::Spawner) polls the task
+    /// inline with a no-op waker before the executor polls it with its own. A
+    /// boolean would keep the no-op registration and lose the remote `Cancel`.
+    registered_waker: Option<Waker>,
     /// `Pin<Box<..>>` is `Unpin`, so this wrapper needs no pin projection.
     task: BoxResponseFuture,
 }
@@ -481,6 +495,7 @@ impl CancellableCall {
         Box::pin(Self {
             _guard: InFlightGuard { registry, cid },
             token,
+            registered_waker: None,
             task,
         })
     }
@@ -508,7 +523,16 @@ impl Future for CancellableCall {
         // The registration is what makes the cancellation immediate. It is polled
         // *after* the task, so a Cancel that fired during that poll is seen here
         // rather than on the next wake-up — the task is dropped at once.
-        if this.token.poll_cancelled(cx).is_ready() {
+        //
+        // `poll_cancelled_cached` rather than `poll_cancelled`: this wrapper polls
+        // the token on every poll, so the lock and the waker-list scan would be
+        // paid once per poll instead of once per *waker* — and once for the
+        // no-op waker of the inline poll, then once for the executor's.
+        if this
+            .token
+            .poll_cancelled_cached(cx, &mut this.registered_waker)
+            .is_ready()
+        {
             return Poll::Ready(());
         }
         Poll::Pending

@@ -99,6 +99,66 @@ impl CancellationToken {
         }
         Poll::Pending
     }
+    /// [`poll_cancelled`](Self::poll_cancelled) for a task that polls this token
+    /// on every poll of its future, and **caches the waker it registered**.
+    ///
+    /// The plain call takes the lock on every poll: it must compare the waker it
+    /// is given with the registered ones, and that comparison needs the list.
+    /// Measured at 10.6 ns per poll, against 0.73 ns for this variant once the
+    /// waker is cached (`benches/hot_path.rs`, group `per_poll`).
+    ///
+    /// `registered` is that cache. It belongs to the caller, travels across polls,
+    /// and is *the waker this task registered*, not a boolean: a boolean would be
+    /// wrong, because a task's waker is **not** stable in this codebase.
+    /// [`Spawner::run_or_spawn`] polls a task once with a no-op waker before
+    /// handing it to the executor, so the first poll of a provider handler
+    /// registers a waker the task never uses again — a boolean would then skip the
+    /// registration that matters, and the `Cancel` would wake nobody. The cached
+    /// comparison makes that case an ordinary one: a different waker replaces the
+    /// cache and is registered.
+    ///
+    /// # Cost model
+    ///
+    /// The lock is paid once per **waker**, not once per poll: at the first poll,
+    /// or when the waker changes. Everything in between is a comparison of two
+    /// pointers. The `Waker::clone` that fills the cache is paid once per waker
+    /// too, and never on the path of a handler that answers during its inline
+    /// poll — that path returns before this call.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut registered = None;
+    /// // ... at every poll of the task:
+    /// if token.poll_cancelled_cached(cx, &mut registered).is_ready() {
+    ///     return Poll::Ready(());
+    /// }
+    /// ```
+    #[inline]
+    #[doc(hidden)]
+    pub fn poll_cancelled_cached(
+        &self,
+        cx: &mut Context<'_>,
+        registered: &mut Option<Waker>,
+    ) -> Poll<()> {
+        // Read first: a cancelled token is ready whatever the registration state.
+        if self.is_cancelled() {
+            return Poll::Ready(());
+        }
+        // The fast path: the waker is the one this task already registered, so
+        // the list cannot tell us anything the flag above did not.
+        if let Some(cached) = registered.as_ref() {
+            if cached.will_wake(cx.waker()) {
+                return Poll::Pending;
+            }
+        }
+        // First poll of this task, or a different waker: the lock is paid here.
+        let ready = self.poll_cancelled(cx);
+        if ready.is_ready() {
+            return ready;
+        }
+        *registered = Some(cx.waker().clone());
+        Poll::Pending
+    }
 }
 
 impl Clone for CancellationToken {
@@ -236,6 +296,87 @@ mod tests {
             "one wake for the task, not one per poll"
         );
         assert!(token.poll_cancelled(&mut cx).is_ready());
+    }
+
+    /// The point of `poll_cancelled_cached`: after the first poll, later polls
+    /// register nothing — and the one registration still wakes the task.
+    #[test]
+    fn poll_cancelled_cached_registers_the_waker_once_and_still_wakes_it() {
+        let token = CancellationToken::new();
+        let counter = Arc::new(CountWakes::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut cx = Context::from_waker(&waker);
+        let mut registered = None;
+
+        for _ in 0..5 {
+            assert!(token
+                .poll_cancelled_cached(&mut cx, &mut registered)
+                .is_pending());
+        }
+        assert!(registered.is_some(), "the first poll must cache the waker");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0, "nothing has fired yet");
+
+        token.cancel();
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            1,
+            "one wake for the task, whatever the number of polls"
+        );
+        assert!(token
+            .poll_cancelled_cached(&mut cx, &mut registered)
+            .is_ready());
+    }
+
+    /// A **changed** waker is registered, and wakes the task that owns it.
+    ///
+    /// This is the case a boolean would lose, and it is not a corner case:
+    /// `Spawner::run_or_spawn` polls a task once with a no-op waker before the
+    /// executor polls it with its own. A token that stopped registering after the
+    /// first poll would then wake nobody, and the remote `Cancel` would be lost —
+    /// which `tests/remote_cancel.rs` catches.
+    #[test]
+    fn poll_cancelled_cached_registers_a_waker_that_replaces_the_cached_one() {
+        let token = CancellationToken::new();
+        let mut registered = None;
+
+        // First poll, with a no-op waker: the inline poll of `run_or_spawn`.
+        let mut inline_cx = Context::from_waker(Waker::noop());
+        assert!(token
+            .poll_cancelled_cached(&mut inline_cx, &mut registered)
+            .is_pending());
+
+        // The task is then polled by the executor, which hands it another waker.
+        let counter = Arc::new(CountWakes::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let mut cx = Context::from_waker(&waker);
+        assert!(token
+            .poll_cancelled_cached(&mut cx, &mut registered)
+            .is_pending());
+
+        token.cancel();
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            1,
+            "the executor waker must have been registered, not the no-op one"
+        );
+    }
+
+    /// A token already cancelled needs no registration at all: nothing is cached,
+    /// and the call is ready on the first poll.
+    #[test]
+    fn poll_cancelled_cached_is_ready_without_registering_when_already_cancelled() {
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut registered = None;
+        assert!(token
+            .poll_cancelled_cached(&mut cx, &mut registered)
+            .is_ready());
+        assert!(
+            registered.is_none(),
+            "a cancelled token has nothing to cache"
+        );
     }
 
     #[test]

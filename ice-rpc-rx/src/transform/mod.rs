@@ -282,6 +282,9 @@ mod transforming;
 mod utility;
 
 #[cfg(test)]
+mod conformance;
+
+#[cfg(test)]
 mod tests;
 
 pub(crate) use combining::StartWith;

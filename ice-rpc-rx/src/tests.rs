@@ -42,6 +42,35 @@ fn observable_error_display() {
     assert!(!empty.is_technical());
 }
 
+/// Garde-fou **délibéré** sur le vocabulaire d'erreur.
+///
+/// Ce `match` n'a pas de wildcard : l'ajout d'un variant à `ObservableError`
+/// casse la compilation ici, à un endroit qui dit pourquoi il existe. Le code de
+/// production n'a plus qu'un seul endroit qui nomme les variants — le hook
+/// `on_terminal` de `MapErr`, le seul opérateur qui touche au canal d'erreur sans
+/// le terminer — et c'est ce test qui garantit qu'on ne l'oubliera pas deux fois.
+///
+/// Avant L5, c'était `MapErr` lui-même qui jouait ce rôle par accident : un
+/// variant ajouté cassait cet opérateur, et lui seul, sans que la règle soit
+/// écrite quelque part.
+#[test]
+fn the_error_vocabulary_is_closed() {
+    fn kind<E>(error: &ObservableError<E>) -> &'static str {
+        match error {
+            ObservableError::Business(_) => "business",
+            ObservableError::Technical(_) => "technical",
+            ObservableError::Empty => "empty",
+        }
+    }
+
+    assert_eq!(kind(&ObservableError::Business(1)), "business");
+    assert_eq!(
+        kind(&ObservableError::<()>::Technical(RpcError::Timeout)),
+        "technical"
+    );
+    assert_eq!(kind(&ObservableError::<()>::Empty), "empty");
+}
+
 // ── RpcError ────────────────────────────────────────────────────────
 
 #[test]

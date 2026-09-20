@@ -45,16 +45,7 @@ fn is_technical<T, E>(event: &Event<T, E>) -> bool {
 
 #[test]
 fn map_filter_take_pipeline() {
-    let (tx, rx) = crate::channel::<i32, String>(6);
-    pollster::block_on(tx.send_next(1)).unwrap();
-    pollster::block_on(tx.send_next(2)).unwrap();
-    pollster::block_on(tx.send_next(3)).unwrap();
-    pollster::block_on(tx.send_next(4)).unwrap();
-    pollster::block_on(tx.send_next(5)).unwrap();
-    pollster::block_on(tx.send_complete()).unwrap();
-    drop(tx);
-
-    let stream = rx.filter(|v| *v % 2 == 1).map(|v| v * 10).take(3);
+    let stream = local(1..6).filter(|v| *v % 2 == 1).map(|v| v * 10).take(3);
 
     let events = pollster::block_on(drain(stream));
     assert_eq!(events.len(), 4);

@@ -50,7 +50,7 @@ fn the_handler_receives_the_request_header() {
         // Exactly what a generated provider handler does: the context is
         // installed around every poll of the task, and the body reads it back
         // through `CallContext::current`.
-        let ctx = CallContext::new(&header, "echo");
+        let ctx = CallContext::new(&header, "CallContextSocle", "echo");
         let captured = Arc::clone(&captured);
         ice_rpc::gen::call_scoped(ctx, async move {
             let ctx = CallContext::current().expect("the ambient context is installed per poll");

@@ -83,7 +83,11 @@ impl CalculatorServer {
                         payload: Vec<u8>,
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(&header, "add");
+                        let ctx = ice_rpc::gen::CallContext::new(
+                            &header,
+                            <CalculatorProxy>::SERVICE_NAME,
+                            "add",
+                        );
                         let impl_ref = service_impl.clone();
                         ice_rpc::gen::call_scoped(
                             ctx,
@@ -196,7 +200,15 @@ impl Calculator for CalculatorProxy {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         let mode = self.mode.read().await;
         match &*mode {
-            CalculatorMode::Provider { local_impl, .. } => local_impl.add(a, b).await,
+            CalculatorMode::Provider { local_impl, .. } => {
+                ice_rpc::gen::local_call_scoped(
+                        <CalculatorProxy>::SERVICE,
+                        <CalculatorProxy>::SERVICE_NAME,
+                        "add",
+                        local_impl.add(a, b),
+                    )
+                    .await
+            }
             CalculatorMode::Consumer { ipc_client } => ipc_client.add(a, b).await,
         }
     }

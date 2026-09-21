@@ -28,12 +28,16 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
   otherwise. Off by default: a plain provider/consumer never calls that code.
 - **Optional call tracing** (`tracing` feature): the provider handler enters one
   `tracing` span per call, carrying the ids the caller propagated (correlation,
-  trace, span, parent) plus the service and the method. The implementation's own
+  trace, span, parent) plus the service **name** and the method. The implementation's own
   `tracing` / `log` events land in that span without it writing a line — and the
   ids are the framework's own, so no OpenTelemetry stack is needed to obtain
-  them. Off by default: a deployment that collects no spans pays neither the
-  dependency nor the span. `examples/tracing-demo.rs` shows both halves across
-  two hops.
+  them. A provider that delegates to another service of its **own process** is
+  traced as well: the delegation gets a span of its own, marked `kind = "local"`,
+  and the callee reads its own identity instead of the caller's — while with the
+  feature off that hop stays the plain in-process call it was, with no context
+  and no allocation. Off by default: a deployment that collects no spans pays
+  neither the dependency nor the span. `examples/tracing-demo.rs` shows both
+  halves across two hops, one transported and one direct.
 
 ## Installation
 

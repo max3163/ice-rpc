@@ -38,7 +38,7 @@ use crate::codegen::{
         gen_nodejs_deserialize_fn, gen_nodejs_native_method, gen_nodejs_serialize_fn,
         NodeJsGenInput, NodeJsMethod,
     },
-    proxy::{gen_proxy, gen_proxy_method, ProxyGenInput},
+    proxy::{gen_proxy, gen_proxy_method, ProxyGenInput, ProxyMethodGenInput},
     server::{gen_native_method, gen_server, ServerGenInput},
 };
 
@@ -137,6 +137,9 @@ fn expand_service_with(
     // registration both read this same constant, so the interface version can
     // neither be dropped nor drift between them.
     let service_ref = quote! { <#proxy_name>::SERVICE };
+    // The logical name travels next to the identity: a span shows it, because the
+    // header only carries the 4-byte hash of the name.
+    let service_name = quote! { <#proxy_name>::SERVICE_NAME };
 
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
@@ -183,14 +186,16 @@ fn expand_service_with(
             nodejs_native_methods.push(gen_nodejs_native_method(proxy_name, fn_name));
         }
 
-        node_methods.push(gen_proxy_method(
+        node_methods.push(gen_proxy_method(&ProxyMethodGenInput {
             fn_name,
-            &arg_names,
-            &arg_types,
-            &method.output_type,
+            arg_names: &arg_names,
+            arg_types: &arg_types,
+            output_type: &method.output_type,
             mode_name,
-            features.nodejs,
-        ));
+            service_ref: &service_ref,
+            service_name: &service_name,
+            nodejs: features.nodejs,
+        }));
 
         // Collects the data for the HttpCallable implementation.
         if features.http {

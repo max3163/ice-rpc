@@ -28,6 +28,7 @@ fn gen_facade_symbols_resolve() {
         init_without_ctrl_c,
         is_pid_alive,
         is_provider,
+        local_call_scoped,
         mark_provider,
         native_call,
         next_correlation_id,

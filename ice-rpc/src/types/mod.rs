@@ -24,7 +24,7 @@ mod node;
 mod wire;
 
 pub use consts::*;
-pub use context::{call_scoped, BoxResponseFuture, CallContext, TraceContext};
+pub use context::{call_scoped, local_call_scoped, BoxResponseFuture, CallContext, TraceContext};
 
 // The transport installs the token of a call around every poll of its task; the
 // accessor itself is public, the installer stays inside the crate.

@@ -149,21 +149,52 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
     }
 }
 
+/// Parameters of one proxy delegation method.
+pub struct ProxyMethodGenInput<'a> {
+    /// The RPC method being delegated to.
+    pub fn_name: &'a Ident,
+    /// Parameter names, in declaration order.
+    pub arg_names: &'a [&'a Ident],
+    /// Parameter types, in declaration order.
+    pub arg_types: &'a [&'a syn::Type],
+    /// The method's declared return type (the `Observable`).
+    pub output_type: &'a syn::Type,
+    /// The generated mode enum (`{Trait}Mode`).
+    pub mode_name: &'a Ident,
+    /// The service identity constant: `<Proxy>::SERVICE`.
+    pub service_ref: &'a TokenStream,
+    /// The service **name** constant: `<Proxy>::SERVICE_NAME`.
+    pub service_name: &'a TokenStream,
+    /// Whether the `ProviderNodeJs` arm belongs to the expansion.
+    pub nodejs: bool,
+}
+
 /// Generates the body of a proxy delegation method.
 ///
-/// In Provider mode, calls the local implementation (in-process).
+/// In Provider mode, calls the local implementation (in-process) through
+/// `ice_rpc::gen::local_call_scoped`: a plain `.await` unless the `tracing`
+/// feature is on, in which case the callee gets its own `CallContext` and a span
+/// parented on the caller's. The `#[cfg]` lives in that helper, never here — this
+/// file is compiled by `ice-rpc-macros`, which does not carry the feature.
+///
 /// In Consumer mode, calls the IPC client.
 /// In ProviderNodeJs mode — only when `nodejs` is set — returns an error: the
 /// calls go through IPC to the channel the bridge registered.
-pub fn gen_proxy_method(
-    fn_name: &Ident,
-    arg_names: &[&Ident],
-    arg_types: &[&syn::Type],
-    output_type: &syn::Type,
-    mode_name: &Ident,
-    nodejs: bool,
-) -> TokenStream {
-    let nodejs_arm = if nodejs {
+pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
+    let ProxyMethodGenInput {
+        fn_name,
+        arg_names,
+        arg_types,
+        output_type,
+        mode_name,
+        service_ref,
+        service_name,
+        nodejs,
+    } = input;
+
+    let method_name_str = fn_name.to_string();
+
+    let nodejs_arm = if *nodejs {
         quote! {
             #mode_name::ProviderNodeJs => {
                 ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
@@ -180,7 +211,15 @@ pub fn gen_proxy_method(
             let mode = self.mode.read().await;
             match &*mode {
                 #mode_name::Provider { local_impl, .. } => {
-                    local_impl.#fn_name(#(#arg_names),*).await
+                    // A direct call carries no wire, so its context is built here
+                    // from the callee's own identity
+                    ice_rpc::gen::local_call_scoped(
+                        #service_ref,
+                        #service_name,
+                        #method_name_str,
+                        local_impl.#fn_name(#(#arg_names),*),
+                    )
+                    .await
                 },
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#fn_name(#(#arg_names),*).await

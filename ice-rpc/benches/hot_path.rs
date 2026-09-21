@@ -158,7 +158,7 @@ fn bench_per_poll(c: &mut Criterion) {
     use std::task::{Context, Waker};
 
     let header = ice_rpc::gen::RpcHeader::request("get_user_age", 7, 1);
-    let ctx = ice_rpc::CallContext::new(&header, "get_user_age");
+    let ctx = ice_rpc::CallContext::new(&header, "Calculator", "get_user_age");
 
     let token = ice_rpc::CancellationToken::new();
     let cancelled = ice_rpc::CancellationToken::new();

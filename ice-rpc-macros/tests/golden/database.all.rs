@@ -101,7 +101,11 @@ impl DatabaseApiServer {
                         payload: Vec<u8>,
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(&header, "get");
+                        let ctx = ice_rpc::gen::CallContext::new(
+                            &header,
+                            <DatabaseApiProxy>::SERVICE_NAME,
+                            "get",
+                        );
                         let impl_ref = service_impl.clone();
                         ice_rpc::gen::call_scoped(
                             ctx,
@@ -151,7 +155,11 @@ impl DatabaseApiServer {
                         payload: Vec<u8>,
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(&header, "put");
+                        let ctx = ice_rpc::gen::CallContext::new(
+                            &header,
+                            <DatabaseApiProxy>::SERVICE_NAME,
+                            "put",
+                        );
                         let impl_ref = service_impl.clone();
                         ice_rpc::gen::call_scoped(
                             ctx,
@@ -277,7 +285,15 @@ impl DatabaseApi for DatabaseApiProxy {
     async fn get(&self, key: String) -> Observable<String, String> {
         let mode = self.mode.read().await;
         match &*mode {
-            DatabaseApiMode::Provider { local_impl, .. } => local_impl.get(key).await,
+            DatabaseApiMode::Provider { local_impl, .. } => {
+                ice_rpc::gen::local_call_scoped(
+                        <DatabaseApiProxy>::SERVICE,
+                        <DatabaseApiProxy>::SERVICE_NAME,
+                        "get",
+                        local_impl.get(key),
+                    )
+                    .await
+            }
             DatabaseApiMode::Consumer { ipc_client } => ipc_client.get(key).await,
             DatabaseApiMode::ProviderNodeJs => {
                 ice_rpc::Observable::from_technical_error(
@@ -293,7 +309,13 @@ impl DatabaseApi for DatabaseApiProxy {
         let mode = self.mode.read().await;
         match &*mode {
             DatabaseApiMode::Provider { local_impl, .. } => {
-                local_impl.put(key, value).await
+                ice_rpc::gen::local_call_scoped(
+                        <DatabaseApiProxy>::SERVICE,
+                        <DatabaseApiProxy>::SERVICE_NAME,
+                        "put",
+                        local_impl.put(key, value),
+                    )
+                    .await
             }
             DatabaseApiMode::Consumer { ipc_client } => ipc_client.put(key, value).await,
             DatabaseApiMode::ProviderNodeJs => {
@@ -332,7 +354,11 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                 payload: Vec<u8>,
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
-                                let ctx = ice_rpc::gen::CallContext::new(&header, "get");
+                                let ctx = ice_rpc::gen::CallContext::new(
+                                    &header,
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "get",
+                                );
                                 ice_rpc::gen::call_scoped(
                                     ctx,
                                     async move {
@@ -402,7 +428,11 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                 payload: Vec<u8>,
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
-                                let ctx = ice_rpc::gen::CallContext::new(&header, "put");
+                                let ctx = ice_rpc::gen::CallContext::new(
+                                    &header,
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "put",
+                                );
                                 ice_rpc::gen::call_scoped(
                                     ctx,
                                     async move {

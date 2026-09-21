@@ -247,8 +247,14 @@ pub fn gen_nodejs_native_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                       emitter: ice_rpc::gen::OwnedEmitter|
                       -> ice_rpc::gen::BoxResponseFuture {
                     // Built before the coroutine: it is copied into the task, and
-                    // the header itself is not needed past this point.
-                    let ctx = ice_rpc::gen::CallContext::new(&header, #method_name_str);
+                    // the header itself is not needed past this point. The service
+                    // name is the constant the proxy declares, so the span shows it
+                    // instead of the 4-byte hash the header carries.
+                    let ctx = ice_rpc::gen::CallContext::new(
+                        &header,
+                        <#proxy_name>::SERVICE_NAME,
+                        #method_name_str,
+                    );
                     // Same wrapper as the native dispatcher: the context is
                     // installed around every poll, so the JS-served method reads it
                     // with `CallContext::current()`, and a call it emits continues

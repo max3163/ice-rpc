@@ -48,8 +48,16 @@ monitoring = ["ice-rpc-macros/monitoring"]
 # Call tracing: the provider handler enters one `tracing` span per call, carrying
 # the ids of the call (correlation, trace, span, parent, service, method), so the
 # implementation's own `tracing` / `log` events are attached to the call without
-# it writing anything. Off by default: a deployment that collects no spans pays
-# neither the dependency nor the span.
+# it writing anything.
+#
+# A **direct** (in-process) call made by a provider to one of its own services is
+# traced too, and marked `kind = "local"` so a collector does not count an
+# in-process delegation as a network hop. That envelope is built only when this
+# feature is on: with it off the delegation is the plain `.await` it always was,
+# with no context, no clock read and no allocation.
+#
+# Off by default: a deployment that collects no spans pays neither the dependency
+# nor the span.
 tracing = ["dep:tracing"]
 # The HTTP gateway: the server, and the `HttpCallable` implementation of every
 # proxy it exposes. That implementation is also the block which keeps
@@ -159,6 +167,13 @@ harness = false
 # resolve: request buffer allocation, payload copy before decoding, clock read.
 [[bench]]
 name = "hot_path"
+harness = false
+
+# Prices the envelope that would give a **direct** (in-process) provider call a
+# `CallContext` and a span, so the decision is taken on numbers. See
+# `plans/spans-appels-internes-provider.md`.
+[[bench]]
+name = "local_call"
 harness = false
 
 # ── Demo applications ───────────────────────────────────────────────

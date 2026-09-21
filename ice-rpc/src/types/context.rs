@@ -40,7 +40,9 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::header::{fmt_correlation_id, next_correlation_id, RpcHeader, CORRELATION_ID_LEN};
+use super::header::{
+    fmt_correlation_id, next_correlation_id, RpcHeader, ServiceRef, CORRELATION_ID_LEN,
+};
 use crate::CancellationToken;
 
 thread_local! {
@@ -159,12 +161,43 @@ fn span_id_of(correlation_id: &[u8; CORRELATION_ID_LEN]) -> u64 {
     u64::from_be_bytes(bytes)
 }
 
+/// Builds the `rpc` span of a call, optionally carrying a `kind` field.
+///
+/// One macro rather than two copies of the field list: the fields are the
+/// contract with the subscriber, and two lists would drift apart. `kind` is
+/// emitted only for the calls that pass it — a transported call has no such
+/// field, so an observer's queries keep meaning what they meant.
+#[cfg(feature = "tracing")]
+macro_rules! rpc_span {
+    ($ctx:expr $(, kind = $kind:expr)?) => {
+        tracing::info_span!(
+            "rpc",
+            $(kind = $kind,)?
+            service = $ctx.service_name,
+            version = $ctx.service_version,
+            method = $ctx.method,
+            corr = ?span_fields::Correlation(&$ctx.correlation_id),
+            trace = ?span_fields::TraceId(&$ctx.trace.trace_id),
+            parent = $ctx.trace.parent_span_id,
+            span = $ctx.span_id,
+            sampled = $ctx.trace.is_sampled(),
+        )
+    };
+}
+
 /// Read-only view of the call being served, built from its request header.
 ///
 /// `Copy`: passing it as the first parameter of every RPC method costs nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallContext {
     correlation_id: [u8; CORRELATION_ID_LEN],
+    /// Logical name of the served service.
+    ///
+    /// Not on the wire: the header carries only its 4-byte hash
+    /// ([`service_id_of`](super::header::service_id_of)), which cannot be inverted.
+    /// The name comes from the generated handler, which knows it as a constant, so
+    /// a span can show `service = "OrderService"` instead of a number.
+    service_name: &'static str,
     service_id: u32,
     service_version: u16,
     method: &'static str,
@@ -177,19 +210,58 @@ pub struct CallContext {
 impl CallContext {
     /// Builds the context of one request.
     ///
-    /// `method` is the name the dispatcher routed on. The generated handler knows
-    /// it at compile time, which is why it can be a `&'static str` rather than a
-    /// slice borrowed from the header.
+    /// `service_name` and `method` are compile-time knowledge of the generated
+    /// handler, which is why they are `&'static str` rather than slices borrowed
+    /// from the header: the wire carries the service **id** (the 4-byte hash of the
+    /// name) and the routed method name, but never the logical name itself.
+    ///
+    /// The identity therefore comes from two places, and they must agree: the id
+    /// and the version from the header, the name from the code that declares the
+    /// service. A mismatch would be a routing bug, not a wire one.
     #[inline]
-    pub fn new(header: &RpcHeader, method: &'static str) -> Self {
+    pub fn new(header: &RpcHeader, service_name: &'static str, method: &'static str) -> Self {
         Self {
             correlation_id: header.correlation_id,
+            service_name,
             service_id: header.service_id,
             service_version: header.service_version,
             method,
             received_at_ns: header.timestamp_ns,
             trace: header.trace(),
             span_id: span_id_of(&header.correlation_id),
+        }
+    }
+
+    /// Builds the context of a **direct** (in-process) call.
+    ///
+    /// A proxy in `Provider` mode calls the local implementation without touching
+    /// the wire: there is no header to mirror, so the correlation id is minted
+    /// here, the service identity is the callee's own ([`ServiceRef`] plus its
+    /// declared name), and the trace continues the ambient one — parenting on the
+    /// span of the call being served — or starts a root when there is none.
+    ///
+    /// `received_at_ns` stays `0` on purpose: nothing was emitted on the wire, so
+    /// there is no emission instant to compare with a local clock — and reading
+    /// that clock would be the most expensive part of the whole envelope
+    /// (measured: 31 ns out of the 49 ns a context costs). `0` is the documented
+    /// value of "not transported"; an `Option` would cost `CallContext` its
+    /// `Copy`, which the per-poll installation relies on.
+    #[inline]
+    pub fn local(service: ServiceRef, service_name: &'static str, method: &'static str) -> Self {
+        let correlation_id = next_correlation_id();
+        let trace = match Self::current() {
+            Some(parent) => parent.child_trace(),
+            None => TraceContext::new_root(),
+        };
+        Self {
+            correlation_id,
+            service_name,
+            service_id: service.id,
+            service_version: service.version,
+            method,
+            received_at_ns: 0,
+            trace,
+            span_id: span_id_of(&correlation_id),
         }
     }
 
@@ -211,6 +283,18 @@ impl CallContext {
     #[inline]
     pub fn service_id(&self) -> u32 {
         self.service_id
+    }
+
+    /// Logical name of the service being served, as `#[service]` declared it.
+    ///
+    /// Carried by the generated code, never by the wire: the header keeps only the
+    /// 4-byte [`service_id_of`](super::header::service_id_of) hash, which no
+    /// observer can invert. This is the name a span and a business log line show —
+    /// the id stays available through [`service_id`](Self::service_id) for the
+    /// observers that key on it.
+    #[inline]
+    pub fn service_name(&self) -> &'static str {
+        self.service_name
     }
 
     /// Interface version the caller asked for.
@@ -311,17 +395,18 @@ impl CallContext {
     /// around every poll — see [`call_scoped`].
     #[cfg(feature = "tracing")]
     pub fn span(&self) -> tracing::Span {
-        tracing::info_span!(
-            "rpc",
-            service = self.service_id,
-            version = self.service_version,
-            method = self.method,
-            corr = ?span_fields::Correlation(&self.correlation_id),
-            trace = ?span_fields::TraceId(&self.trace.trace_id),
-            parent = self.trace.parent_span_id,
-            span = self.span_id,
-            sampled = self.trace.is_sampled(),
-        )
+        rpc_span!(self)
+    }
+
+    /// The span of a **direct** (in-process) call, marked as such.
+    ///
+    /// Same fields as [`CallContext::span`], plus `kind = "local"`: an observer
+    /// that counts hops must not count an in-process delegation as a network
+    /// round trip. The field costs nothing of its own — `tracing` records a field
+    /// only if the subscriber asks for it.
+    #[cfg(feature = "tracing")]
+    fn span_local(&self) -> tracing::Span {
+        rpc_span!(self, kind = "local")
     }
 
     /// Installs this context as the ambient one for the current thread, tracing
@@ -376,6 +461,66 @@ where
         #[cfg(feature = "tracing")]
         span,
     })
+}
+
+/// Serves a **direct** (in-process) call: installs the callee's context and its
+/// span around each poll, or forwards the future untouched when nothing is
+/// collected.
+///
+/// The generated proxy calls the local implementation through this helper in its
+/// `Provider` mode. Unlike [`call_scoped`], the whole envelope is conditioned by
+/// the `tracing` feature, and that is deliberate:
+///
+/// - **off** (the default): `future.await` and nothing else — no correlation id,
+///   no clock read, no thread-local, no allocation. A deployment that collects
+///   nothing keeps paying exactly what it paid before;
+/// - **on**: the callee gets its own [`CallContext`], so [`CallContext::current`]
+///   tells it *its* service and method instead of the caller's, and the span —
+///   parented on the caller's, marked `kind = "local"` — makes the delegation
+///   visible in the trace.
+///
+/// A transported call installs its context unconditionally because the header
+/// carries a protocol contract the monitor, the logs and the outgoing calls rely
+/// on. A direct call has no wire: its context only serves the trace, so the
+/// condition belongs here. It cannot live in the generated code either: `tracing`
+/// is a feature of this crate, and a `#[cfg]` emitted by `#[service]` would be
+/// evaluated in the consumer's crate, which does not carry it.
+///
+/// The context is entered around each poll, never held across an `await`: that is
+/// what keeps several tasks polled on one thread from labelling each other, and
+/// what keeps the returned future `Send`.
+///
+/// `service_name` is the callee's logical name, as `#[service]` declared it: it is
+/// what the span shows, since no header carries it and the id it *does* carry is a
+/// hash no observer can invert.
+pub async fn local_call_scoped<F>(
+    service: ServiceRef,
+    service_name: &'static str,
+    method: &'static str,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    #[cfg(feature = "tracing")]
+    {
+        let ctx = CallContext::local(service, service_name, method);
+        let span = ctx.span_local();
+        let mut future = std::pin::pin!(future);
+        return std::future::poll_fn(move |cx| {
+            let _ambient = ctx.enter_ambient();
+            let _span = span.enter();
+            future.as_mut().poll(cx)
+        })
+        .await;
+    }
+
+    // No collector: there is nothing to analyse, so nothing is built.
+    #[cfg(not(feature = "tracing"))]
+    {
+        let _ = (service, service_name, method);
+        future.await
+    }
 }
 
 /// Future wrapping a handler, installing its context around each poll.
@@ -503,7 +648,7 @@ mod tests {
         let id = service_id_of("Db");
         let header = RpcHeader::request("get_user_age", id, 3);
 
-        let ctx = CallContext::new(&header, "get_user_age");
+        let ctx = CallContext::new(&header, "Db", "get_user_age");
 
         assert_eq!(ctx.correlation_id(), &header.correlation_id);
         assert_eq!(ctx.service_id(), id);
@@ -517,7 +662,7 @@ mod tests {
     #[test]
     fn no_trace_is_present_until_the_wire_carries_one() {
         let header = RpcHeader::request("ping", 7, 1);
-        let ctx = CallContext::new(&header, "ping");
+        let ctx = CallContext::new(&header, "Ping", "ping");
 
         assert!(!ctx.trace().is_present());
         assert!(!ctx.trace().is_sampled());
@@ -526,7 +671,7 @@ mod tests {
     #[test]
     fn a_child_call_continues_the_trace_and_parents_on_our_span() {
         let header = RpcHeader::request("outer", 1, 1).with_trace(TraceContext::new_root());
-        let ctx = CallContext::new(&header, "outer");
+        let ctx = CallContext::new(&header, "Outer", "outer");
         assert!(ctx.trace().is_present());
 
         let out = ctx.child_trace();
@@ -535,7 +680,7 @@ mod tests {
 
         // A second hop keeps the trace and chains a new parent.
         let header = RpcHeader::request("mid", 2, 1).with_trace(out);
-        let ctx = CallContext::new(&header, "mid");
+        let ctx = CallContext::new(&header, "Mid", "mid");
         let out = ctx.child_trace();
         assert_eq!(out.trace_id, header.trace().trace_id);
         assert_eq!(out.parent_span_id, ctx.span_id());
@@ -548,7 +693,7 @@ mod tests {
     #[test]
     fn a_call_outside_any_trace_starts_one() {
         let header = RpcHeader::request("root", 1, 1);
-        let ctx = CallContext::new(&header, "root");
+        let ctx = CallContext::new(&header, "Root", "root");
         assert!(!ctx.trace().is_present());
 
         let out = ctx.child_trace();
@@ -610,7 +755,7 @@ mod tests {
     #[test]
     fn a_context_without_a_transport_wrapper_has_no_token() {
         let header = RpcHeader::request("ping", 7, 1);
-        let task = call_scoped(CallContext::new(&header, "ping"), async {
+        let task = call_scoped(CallContext::new(&header, "Ping", "ping"), async {
             assert!(CallContext::current().is_some(), "the context is installed");
             assert!(
                 CallContext::cancellation().is_none(),
@@ -625,12 +770,12 @@ mod tests {
     fn the_context_is_ambient_only_within_its_scope() {
         assert!(CallContext::current().is_none(), "nothing before entering");
 
-        let outer = CallContext::new(&RpcHeader::request("outer", 1, 1), "outer");
+        let outer = CallContext::new(&RpcHeader::request("outer", 1, 1), "Outer", "outer");
         let _outer_scope = outer.enter();
         assert_eq!(CallContext::current().unwrap().method(), "outer");
 
         {
-            let inner = CallContext::new(&RpcHeader::request("inner", 2, 1), "inner");
+            let inner = CallContext::new(&RpcHeader::request("inner", 2, 1), "Inner", "inner");
             let _inner_scope = inner.enter();
             assert_eq!(CallContext::current().unwrap().method(), "inner");
         }
@@ -700,7 +845,7 @@ mod tests {
 
         tracing::dispatcher::with_default(&dispatch, || {
             let header = RpcHeader::request("ping", 7, 1);
-            let _scope = CallContext::new(&header, "ping").enter();
+            let _scope = CallContext::new(&header, "Ping", "ping").enter();
             assert_eq!(
                 recorder.entered.load(Ordering::Relaxed),
                 1,
@@ -753,7 +898,7 @@ mod tests {
         // is built, not when it is polled.
         tracing::dispatcher::with_default(&dispatch, || {
             let header = RpcHeader::request("ping", 7, 1);
-            let mut task = call_scoped(CallContext::new(&header, "ping"), yields_once());
+            let mut task = call_scoped(CallContext::new(&header, "Ping", "ping"), yields_once());
 
             let waker = futures::task::noop_waker();
             let mut cx = Context::from_waker(&waker);
@@ -811,7 +956,7 @@ mod tests {
         let seen: Arc<Mutex<Seen>> = Arc::default();
 
         let task = |method: &'static str, seen: Arc<Mutex<Seen>>| {
-            let ctx = CallContext::new(&RpcHeader::request(method, 1, 1), method);
+            let ctx = CallContext::new(&RpcHeader::request(method, 1, 1), "Svc", method);
             call_scoped(ctx, async move {
                 let observed = CallContext::current().map(|ctx| ctx.method());
                 seen.lock().unwrap().push((method, observed));
@@ -842,5 +987,99 @@ mod tests {
             ],
             "each poll must observe the context of its own call"
         );
+    }
+
+    /// A direct call is a hop of its own: it names the **callee**, and it reads no
+    /// clock.
+    #[test]
+    fn a_local_context_names_the_callee_and_carries_no_clock() {
+        let ctx = CallContext::local(ServiceRef::new(7, 3), "Leaf", "reserve");
+
+        assert_eq!(
+            ctx.service_id(),
+            7,
+            "the callee's identity, not the caller's"
+        );
+        assert_eq!(ctx.service_version(), 3);
+        assert_eq!(ctx.method(), "reserve");
+        assert_eq!(
+            ctx.received_at_ns(),
+            0,
+            "nothing was emitted on the wire, so there is no emission instant"
+        );
+        assert_eq!(
+            ctx.correlation().len(),
+            36,
+            "a correlation id is still minted: it is what joins a log line to the call"
+        );
+        assert!(
+            ctx.trace().is_present(),
+            "outside any ambient call, a direct call starts a trace"
+        );
+        assert_eq!(ctx.trace().parent_span_id, 0, "a root has no parent");
+    }
+
+    /// The delegation stays in the caller's trace and parents on its span.
+    #[test]
+    fn a_local_context_continues_the_ambient_trace_and_parents_on_it() {
+        let header = RpcHeader::request("place_order", 1, 1).with_trace(TraceContext::new_root());
+        let parent = CallContext::new(&header, "OrderService", "place_order");
+
+        let child = {
+            let _scope = parent.enter_ambient();
+            assert_eq!(
+                CallContext::current(),
+                Some(parent),
+                "inside the scope, the caller is the ambient context"
+            );
+            CallContext::local(ServiceRef::new(7, 1), "Leaf", "reserve")
+        };
+
+        assert_eq!(
+            child.trace().trace_id,
+            parent.trace().trace_id,
+            "same trace"
+        );
+        assert_eq!(
+            child.trace().parent_span_id,
+            parent.span_id(),
+            "the delegation parents on the caller's span"
+        );
+        assert_eq!(
+            CallContext::current(),
+            None,
+            "leaving the scope restores the previous value, which was none"
+        );
+    }
+
+    /// The whole point of the envelope: what is not collected is not built.
+    #[test]
+    fn a_direct_call_is_a_plain_await_unless_the_deployment_collects() {
+        let observed = pollster::block_on(local_call_scoped(
+            ServiceRef::new(7, 3),
+            "Leaf",
+            "reserve",
+            async { CallContext::current() },
+        ));
+
+        #[cfg(feature = "tracing")]
+        {
+            let ctx = observed.expect("with a collector, the callee sees its own context");
+            assert_eq!(ctx.service_id(), 7);
+            assert_eq!(
+                ctx.service_name(),
+                "Leaf",
+                "the declared name travels with the call, for the span and the logs"
+            );
+            assert_eq!(ctx.method(), "reserve");
+        }
+
+        #[cfg(not(feature = "tracing"))]
+        {
+            assert!(
+                observed.is_none(),
+                "with no collector, no context is built and none is installed"
+            );
+        }
     }
 }

@@ -55,14 +55,31 @@
 //! The caller side gets no span of its own on purpose: the ids travel in the
 //! request header, and the span a caller wants around its own work is its own
 //! business.
+//!
+//! # The second hop is a direct call
+//!
+//! [`OrderServiceImpl::place_order`] delegates to a service hosted by the **same
+//! process**, which it resolves through the locator the way any service reaches
+//! another. That call carries no header, so it used to be the one hop a trace
+//! could not see: the leaf read the caller's ids as if they were its own. With
+//! `tracing` on, the generated proxy now gives it its own `CallContext` — the
+//! leaf's service and method — and a span parented on the caller's, marked
+//! `kind = "local"` so an observer does not count it as a network round trip.
+//!
+//! Because the leaf is registered in this process, the locator hands back the
+//! **Provider** proxy and the call stays here. Were it not registered, the locator
+//! would build a `Consumer` proxy and the same call would cross the transport — a
+//! span without `kind = "local"`.
+//!
+//! With `tracing` off, that hop is exactly what it was: a plain in-process call,
+//! no context of its own, no allocation.
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use async_trait::async_trait;
-use ice_rpc::{service, CallContext, Observable};
+use ice_rpc::{service, CallContext, Observable, ServiceInit};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
@@ -118,13 +135,12 @@ impl InventoryService for InventoryServiceImpl {
 }
 
 /// Implementation of the service that calls its dependency.
-struct OrderServiceImpl {
-    /// The leaf, consumed **through the transport**: the header of that call is
-    /// where the trace travels. The locator would have returned the local provider
-    /// proxy of a service registered in this process, which is an in-process call
-    /// with no header — and therefore nothing to propagate.
-    inventory: Arc<InventoryServiceProxy>,
-}
+///
+/// It holds no proxy of its own: it asks the locator for the leaf, the way any
+/// service reaches another. Because the leaf is hosted by this very process, the
+/// locator hands back the **Provider** proxy, so the call stays in-process — the
+/// direct hop this example is about.
+struct OrderServiceImpl;
 
 #[async_trait]
 impl OrderService for OrderServiceImpl {
@@ -134,15 +150,21 @@ impl OrderService for OrderServiceImpl {
         report("OrderService", "place_order");
         log::info!("[order] placing an order for '{item}'");
 
+        // Resolved here, by the locator, rather than threaded in from outside.
+        // This is the difference that matters for the trace: a leaf registered in
+        // *this* process comes back as a `Provider` proxy, so the call below is a
+        // direct, in-process hop — `kind = "local"`. Had it not been registered,
+        // the locator would have built a `Consumer` proxy instead, and the same
+        // call would have crossed the transport.
+        let inventory = ice_rpc::locator()
+            .get::<InventoryServiceProxy>()
+            .await
+            .expect("InventoryService is hosted here, and declared as a dependency");
+
         // The child call. The client reads the ambient context — still installed,
         // the handler has not returned — and parents the outgoing trace on the
         // span of *this* call.
-        let reserved = self
-            .inventory
-            .reserve(item.clone())
-            .await
-            .first_value()
-            .await;
+        let reserved = inventory.reserve(item.clone()).await.first_value().await;
 
         let reservation = match reserved {
             Ok(value) => value,
@@ -154,6 +176,20 @@ impl OrderService for OrderServiceImpl {
 
         log::info!("[order] '{item}' reserved as #{reservation}");
         ice_rpc::of(Receipt { item, reservation })
+    }
+}
+
+/// Declares the hop of this example to the locator.
+///
+/// [`dependencies`](ServiceInit::dependencies) is what puts `InventoryService`
+/// **before** `OrderService` in the topological order of `initialize_all`: the leaf
+/// is initialized first, so the locator has it registered by the time the first
+/// order arrives. Without this line the order would depend on the registration
+/// order, and a call arriving early could silently resolve to a `Consumer` proxy.
+#[async_trait]
+impl ServiceInit for OrderServiceImpl {
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec![InventoryServiceProxy::SERVICE_NAME]
     }
 }
 
@@ -195,14 +231,9 @@ fn init_subscriber() {
 
 /// Hosts the leaf and the service that consumes it.
 async fn run_provider() -> Result<(), Box<dyn std::error::Error>> {
-    // `consume()` builds the consumer side of the leaf's channel, here in the
-    // provider process: the call made by `place_order` therefore crosses the
-    // transport — and its header — exactly as it would across two processes.
-    let inventory = InventoryServiceProxy::consume();
-
     ice_rpc::run_provider!(
         InventoryServiceProxy::provide(InventoryServiceImpl::new()),
-        OrderServiceProxy::provide(OrderServiceImpl { inventory }),
+        OrderServiceProxy::provide_with_init(OrderServiceImpl),
     )
     .await
 }

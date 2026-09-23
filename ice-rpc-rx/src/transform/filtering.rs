@@ -1,8 +1,10 @@
 //! Filtering Observables.
 //!
 //! ReactiveX category: [`filter`](crate::Observable::filter),
-//! [`take`](crate::Observable::take), [`skip`](crate::Observable::skip),
-//! [`first`](crate::Observable::first) and [`first_with`](crate::Observable::first_with).
+//! [`take`](crate::Observable::take),
+//! [`distinct_until_changed`](crate::Observable::distinct_until_changed),
+//! [`skip`](crate::Observable::skip), [`first`](crate::Observable::first) and
+//! [`first_with`](crate::Observable::first_with).
 //!
 //! The poll-based combinator and the `Observable` method that exposes it both
 //! live in this file.
@@ -103,6 +105,54 @@ where
             Poll::Ready(Some(other)) => Poll::Ready(Some(other)),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// See [`Observable::distinct_until_changed`](crate::Observable::distinct_until_changed).
+    pub struct DistinctUntilChanged<S, T, E> {
+        #[pin]
+        stream: S,
+        last: Option<T>,
+        _marker: PhantomData<(T, E)>,
+    }
+}
+
+impl<S, T, E> DistinctUntilChanged<S, T, E> {
+    pub(super) fn new(stream: S) -> Self {
+        Self {
+            stream,
+            last: None,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, T, E> futures_lite::Stream for DistinctUntilChanged<S, T, E>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+    T: PartialEq + Clone,
+{
+    type Item = Event<T, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                Poll::Ready(Some(Event::Next(v))) => {
+                    // Compared against the last *emitted* value, not the whole
+                    // history. An equal value falls through to the next poll of
+                    // the loop — it is dropped, not a reason to end the stream.
+                    if this.last.as_ref() != Some(&v) {
+                        *this.last = Some(v.clone());
+                        return Poll::Ready(Some(Event::Next(v)));
+                    }
+                }
+                Poll::Ready(Some(other)) => return Poll::Ready(Some(other)),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }
@@ -238,6 +288,45 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(Filter::new(self, predicate))
     }
 
+    /// Drops a value equal to the one just emitted (RxJS
+    /// `distinctUntilChanged`).
+    ///
+    /// Equality is tested against the **previous emitted value**, not against the
+    /// whole history — this is `distinctUntilChanged`, not `distinct`. The
+    /// difference matters on a notification or telemetry stream: there a source
+    /// legitimately returns to a value it carried before, and only the immediate
+    /// repeat is the duplicate worth dropping (each one is a payload copied
+    /// through the channel for nothing).
+    ///
+    /// Only `Next` values are compared; a terminal always passes through, so a
+    /// stream that repeats one value forever still ends on the source's own
+    /// `Complete` or `Error`.
+    ///
+    /// `T: Clone` is required because the value is emitted **and** kept as the
+    /// next comparison point.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{from, rt::block_on};
+    ///
+    /// let deduped = block_on(
+    ///     from::<i32, String, _>([1, 1, 2, 2, 1]).distinct_until_changed().collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// assert_eq!(deduped, vec![1, 2, 1]);
+    /// ```
+    ///
+    /// # See also
+    /// [`filter`](Self::filter) also drops values, but on a predicate of your own
+    /// and without remembering what it let through.
+    pub fn distinct_until_changed(self) -> Observable<T, E>
+    where
+        T: PartialEq + Clone + Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(DistinctUntilChanged::new(self))
+    }
+
     /// Forwards at most `n` values, then completes (RxJS `take`).
     ///
     /// The stream ends with `Complete` of `take`'s own making — not with the
@@ -335,3 +424,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(First::new(self, predicate))
     }
 }
+
+#[cfg(test)]
+mod tests;

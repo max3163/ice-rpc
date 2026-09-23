@@ -29,9 +29,10 @@
 //! let first = odds.first_value().await?;
 //! ```
 //!
-//! - [`Observable`] — the operators (`map`, `filter`, `map_err`, `scan`,
-//!   `switch_map`, `take`, `skip`, `first`, `first_with`, `start_with`, `tap`,
-//!   `finalize`, `delay`, `timeout`, `catch_error`, `take_until`) and the
+//! - [`Observable`] — the operators (`map`, `filter`, `distinct_until_changed`,
+//!   `map_err`, `scan`, `switch_map`, `take`, `skip`, `first`, `first_with`,
+//!   `start_with`, `tap`, `finalize`, `delay`, `timeout`, `catch_error`,
+//!   `take_until`) and the
 //!   terminals (`first_value`, `collect`, `for_each`, `subscribe`,
 //!   `subscribe_all`, `next`, `recv`). Every operator is a pull-based
 //!   combinator: no intermediate channel, no spawned task. Each has its own
@@ -50,7 +51,7 @@
 //! | ReactiveX category | Operators |
 //! |---|---|
 //! | Transforming | [`map`](Observable::map), [`map_err`](Observable::map_err), [`scan`](Observable::scan), [`switch_map`](Observable::switch_map) |
-//! | Filtering | [`filter`](Observable::filter), [`take`](Observable::take), [`skip`](Observable::skip), [`first`](Observable::first), [`first_with`](Observable::first_with) |
+//! | Filtering | [`filter`](Observable::filter), [`take`](Observable::take), [`distinct_until_changed`](Observable::distinct_until_changed), [`skip`](Observable::skip), [`first`](Observable::first), [`first_with`](Observable::first_with) |
 //! | Combining | [`start_with`](Observable::start_with) |
 //! | Conditional / Boolean | [`take_until`](Observable::take_until) |
 //! | Error handling | [`catch_error`](Observable::catch_error) |

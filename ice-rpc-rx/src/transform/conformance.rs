@@ -383,3 +383,28 @@ fn take_until_conformance() {
         ],
     );
 }
+
+#[test]
+fn distinct_until_changed_conformance() {
+    assert_matrix(
+        "distinct_until_changed",
+        |stream| stream.distinct_until_changed(),
+        &[
+            (no_event(), vec![]),
+            (one_value(), vec![next(1), complete()]),
+            (completion_only(), vec![complete()]),
+            // Seule une valeur est comparée : aucune erreur n'est rattrapée.
+            (business_failure(), vec![business("boom")]),
+            (technical_failure(), vec![technical()]),
+            (empty_failure(), vec![empty()]),
+            (abrupt_close(), vec![next(1)]),
+            // Les cas canoniques ne portent que des valeurs distinctes, donc
+            // l'opérateur n'y fait rien : celui-ci exerce le dédoublonnage, y
+            // compris un retour à une valeur déjà vue plus tôt.
+            (
+                vec![next(1), next(1), next(2), next(2), next(1), complete()],
+                vec![next(1), next(2), next(1), complete()],
+            ),
+        ],
+    );
+}

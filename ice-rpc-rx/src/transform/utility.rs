@@ -363,3 +363,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(Timeout::new(self, duration))
     }
 }
+
+#[cfg(test)]
+mod tests;

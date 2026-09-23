@@ -356,3 +356,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(SwitchMap::new(self, f))
     }
 }
+
+#[cfg(test)]
+mod tests;

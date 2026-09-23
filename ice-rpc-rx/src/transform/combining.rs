@@ -72,3 +72,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(StartWith::new(self, value))
     }
 }
+
+#[cfg(test)]
+mod tests;

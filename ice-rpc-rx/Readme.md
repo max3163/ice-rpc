@@ -51,7 +51,7 @@ method carries its semantics and a runnable example in the crate documentation.
 | ReactiveX category | Operators |
 |---|---|
 | Transforming | `map`, `map_err`, `scan`, `switch_map` |
-| Filtering | `filter`, `take`, `skip`, `first`, `first_with` |
+| Filtering | `filter`, `take`, `distinct_until_changed`, `skip`, `first`, `first_with` |
 | Combining | `start_with` |
 | Conditional / Boolean | `take_until` |
 | Error handling | `catch_error` |

@@ -87,3 +87,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(TakeUntil::new(self, token.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests;

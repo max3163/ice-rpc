@@ -48,7 +48,7 @@
 //! |---|---|
 //! | Creating | [`of`](crate::of), [`from`](crate::from), [`throw_error`](crate::throw_error), [`channel`](crate::channel), [`Subject`](crate::Subject) |
 //! | Transforming | [`map`](crate::Observable::map), [`map_err`](crate::Observable::map_err), [`scan`](crate::Observable::scan), [`switch_map`](crate::Observable::switch_map) |
-//! | Filtering | [`filter`](crate::Observable::filter), [`take`](crate::Observable::take), [`skip`](crate::Observable::skip), [`first`](crate::Observable::first), [`first_with`](crate::Observable::first_with) |
+//! | Filtering | [`filter`](crate::Observable::filter), [`take`](crate::Observable::take), [`distinct_until_changed`](crate::Observable::distinct_until_changed), [`skip`](crate::Observable::skip), [`first`](crate::Observable::first), [`first_with`](crate::Observable::first_with) |
 //! | Combining | [`start_with`](crate::Observable::start_with) |
 //! | Conditional / Boolean | [`take_until`](crate::Observable::take_until) |
 //! | Error handling | [`catch_error`](crate::Observable::catch_error) |
@@ -64,6 +64,15 @@
 //! combinator struct and the inherent method that exposes it, so a new operator
 //! is added in its category file — or in a new module declared here — never in
 //! this one.
+//!
+//! The tests follow the same rule: each `<category>.rs` ends with
+//! `#[cfg(test)] mod tests;`, so a category's tests live in
+//! `<category>/tests.rs`, next to the code they exercise. The helpers they share
+//! (`local`, `single`, `drain`, `next_event`, `is_technical`) are declared once
+//! in `test_support.rs`. Two things stay at this level on purpose:
+//! `conformance.rs`, which applies the same canonical cases to every operator so
+//! their treatment of the terminals can be compared, and `tests.rs`, which keeps
+//! the pipelines that cross several categories.
 
 // One module per ReactiveX category. Each holds both the poll-based combinator
 // and the inherent method that exposes it on `Observable`, so adding an
@@ -76,6 +85,9 @@ mod filtering;
 mod terminals;
 mod transforming;
 mod utility;
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod conformance;

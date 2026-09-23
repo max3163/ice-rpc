@@ -108,3 +108,6 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(CatchError::new(self, f))
     }
 }
+
+#[cfg(test)]
+mod tests;

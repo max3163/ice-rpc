@@ -80,7 +80,7 @@ http-smol = ["http", "smol", "dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 # The Node.js gateway: the rkyv ↔ `serde_json::Value` converters and the
 # `ProviderNodeJs` mode. A Rust-only deployment never calls them.
-nodejs = ["ice-rpc-macros/nodejs"]
+nodejs = ["ice-rpc-macros/nodejs", "dep:base64"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
 # N-API), not another way of serving the same process.
 full = ["http", "tokio", "http-tokio"]
@@ -106,7 +106,11 @@ thiserror = "2"
 tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-base64 = { workspace = true }
+# Optional, and reachable only through the `nodejs` feature: the only code that
+# names `base64` is the Node.js converter `#[service]` generates for a `Vec<u8>`
+# argument or field. It stays declared with `optional = true` so the `dep:` form
+# in that feature can name it, instead of exposing a `base64` feature of its own.
+base64 = { workspace = true, optional = true }
 # Runtime-agnostic primitives used by the core. The stream layer keeps its own
 # copy of the ones it needs (`ice-rpc-rx`); what is listed here is what the
 # transport, the locator and the HTTP gateway use directly. Deliberately no

@@ -142,7 +142,10 @@ pub fn call_service(
         .map_err(napi::Error::from_reason)
 }
 
-/// Stops the gateway: releases the IPC resources and the Tokio runtime.
+/// Stops the gateway: releases the IPC resources held by the core.
+///
+/// There is no runtime to stop here: [`runtime`] delegates to `ice_rpc::rt`,
+/// whose executor belongs to the core.
 #[napi]
 pub fn shutdown() {
     log::info!("Stopping the gateway...");

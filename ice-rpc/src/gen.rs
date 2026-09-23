@@ -58,6 +58,10 @@ pub use crate::transport::{
 // used to provide now lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
+// The Node.js converters are the only generated code that names `base64`, and
+// they are emitted only under the `nodejs` feature — which enables the
+// dependency, so this re-export follows the same switch.
+#[cfg(feature = "nodejs")]
 pub use base64;
 pub use futures_lite;
 pub use iceoryx2;

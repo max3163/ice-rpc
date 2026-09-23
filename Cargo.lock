@@ -475,13 +475,11 @@ name = "common"
 version = "0.3.1"
 dependencies = [
  "async-trait",
- "base64",
  "ice-rpc",
  "log",
  "rkyv",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

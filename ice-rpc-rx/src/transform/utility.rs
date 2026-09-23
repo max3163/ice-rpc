@@ -3,13 +3,18 @@
 //! ReactiveX category: [`tap`](crate::Observable::tap) (Do),
 //! [`finalize`](crate::Observable::finalize), [`delay`](crate::Observable::delay)
 //! and [`timeout`](crate::Observable::timeout).
+//!
+//! The poll-based combinator and the `Observable` method that exposes it both
+//! live in this file.
 
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::Event;
+use crate::Observable;
 use futures_lite::future::FutureExt;
+use std::time::Duration;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::tap`](crate::Observable::tap).
@@ -218,5 +223,143 @@ where
                 Poll::Pending => Poll::Pending,
             },
         }
+    }
+}
+
+impl<T, E> Observable<T, E> {
+    /// Runs `f` on every value without altering it (RxJS `tap`).
+    ///
+    /// The side effect sees a reference, so the value continues down the pipeline
+    /// untouched — this is for logging and metrics, not for transformation.
+    /// Terminals are not passed to `f`; use
+    /// [`finalize`](Self::finalize) for an end-of-stream hook.
+    ///
+    /// `f` is `Send + 'static`, so it must **own** what it observes: capture an
+    /// `Arc` (as below) or send on a channel. It cannot borrow a local, because a
+    /// pipeline outlives the call that built it.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{from, rt::block_on};
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let seen = Arc::new(Mutex::new(Vec::new()));
+    /// let log = Arc::clone(&seen);
+    /// let values = block_on(
+    ///     from::<i32, String, _>([1, 2])
+    ///         .tap(move |v| log.lock().expect("not poisoned").push(*v))
+    ///         .collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// assert_eq!(values, vec![1, 2]);
+    /// assert_eq!(*seen.lock().expect("not poisoned"), vec![1, 2]);
+    /// ```
+    pub fn tap<F>(self, f: F) -> Observable<T, E>
+    where
+        F: FnMut(&T) + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Tap::new(self, f))
+    }
+
+    /// Runs `f` once when the stream ends, whatever the outcome (RxJS
+    /// `finalize`).
+    ///
+    /// The hook fires on a terminal event (`Complete` or `Error`) or when the
+    /// source is exhausted. It does **not** fire when the pipeline is dropped
+    /// before it ends: a dropped [`Subscription`](crate::Subscription), or an
+    /// `Observable` nobody consumes, skips it. When the end must be observable in
+    /// that case too, make it explicit with
+    /// [`take_until`](Self::take_until) or [`timeout`](Self::timeout), whose
+    /// cancellation is a terminal event.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{from, rt::block_on};
+    /// use std::sync::{
+    ///     atomic::{AtomicUsize, Ordering},
+    ///     Arc,
+    /// };
+    ///
+    /// let runs = Arc::new(AtomicUsize::new(0));
+    /// let counter = Arc::clone(&runs);
+    /// let values = block_on(
+    ///     from::<i32, String, _>([1, 2])
+    ///         .finalize(move || {
+    ///             counter.fetch_add(1, Ordering::SeqCst);
+    ///         })
+    ///         .collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// assert_eq!(values, vec![1, 2]);
+    /// assert_eq!(runs.load(Ordering::SeqCst), 1);
+    /// ```
+    pub fn finalize<F>(self, f: F) -> Observable<T, E>
+    where
+        F: FnOnce() + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Finalize::new(self, f))
+    }
+
+    /// Delays every event — values **and** terminals — by `duration` (RxJS
+    /// `delay`).
+    ///
+    /// Events are held one at a time and released after the delay, so a burst is
+    /// spread out instead of being replayed at once: the source is read again
+    /// only once the previous event has been released. The first event starts the
+    /// timer.
+    ///
+    /// Needs the execution facade: it sleeps through [`rt::sleep`](crate::rt::sleep),
+    /// so one of the three execution modes must be enabled.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use ice_rpc_rx::{from, rt::block_on, Observable};
+    /// use std::time::Duration;
+    ///
+    /// let paced: Observable<i32, String> =
+    ///     from([1, 2, 3]).delay(Duration::from_millis(100));
+    /// let values = block_on(paced.collect()).expect("the stream completes cleanly");
+    /// assert_eq!(values, vec![1, 2, 3]);
+    /// ```
+    pub fn delay(self, duration: Duration) -> Observable<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Delay::new(self, duration))
+    }
+
+    /// Emits a technical [`RpcError::Timeout`](crate::RpcError::Timeout) if no
+    /// event arrives within `duration` (RxJS `timeout`).
+    ///
+    /// This is a **silence watchdog**, not a total-duration bound: the deadline is
+    /// reset after every event, including the first one, so a stream that keeps
+    /// producing is never cut short no matter how long it lives. That is the
+    /// failure a fixed overall deadline would miss.
+    ///
+    /// The error is technical on purpose — a timeout means the peer or the
+    /// transport stopped answering, not that the service said "no" — so
+    /// [`catch_error`](Self::catch_error) does not swallow it. Needs the
+    /// execution facade: it sleeps through [`rt::sleep`](crate::rt::sleep).
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use ice_rpc_rx::{from, rt::block_on, Observable};
+    /// use std::time::Duration;
+    ///
+    /// let guarded: Observable<i32, String> = from([1]).timeout(Duration::from_secs(5));
+    /// let values = block_on(guarded.collect()).expect("the value arrives at once");
+    /// assert_eq!(values, vec![1]);
+    /// ```
+    pub fn timeout(self, duration: Duration) -> Observable<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(Timeout::new(self, duration))
     }
 }

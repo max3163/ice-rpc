@@ -1,12 +1,16 @@
 //! Combining Observables.
 //!
 //! ReactiveX category: [`start_with`](crate::Observable::start_with) (operator).
+//!
+//! The poll-based combinator and the `Observable` method that exposes it both
+//! live in this file.
 
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::Event;
+use crate::Observable;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::start_with`](crate::Observable::start_with).
@@ -40,5 +44,31 @@ where
             return Poll::Ready(Some(Event::Next(value)));
         }
         futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
+    }
+}
+
+impl<T, E> Observable<T, E> {
+    /// Emits `value` before anything the source emits (RxJS `startWith`).
+    ///
+    /// The prefix is a single `Next(value)`, delivered before the source is
+    /// polled even once. Useful to give a stream a known initial state — a
+    /// header, a zero, the current cache — without inspecting the source.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{from, rt::block_on};
+    ///
+    /// let with_header = block_on(
+    ///     from::<i32, String, _>([1, 2]).start_with(0).collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// assert_eq!(with_header, vec![0, 1, 2]);
+    /// ```
+    pub fn start_with(self, value: T) -> Observable<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        Observable::from_stream(StartWith::new(self, value))
     }
 }

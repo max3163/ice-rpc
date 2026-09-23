@@ -203,6 +203,12 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
 - the `timeout` and `take_until` operators bound the response wait and cancel a stream;
+- the full ReactiveX set is available, all as inherent methods: transforming
+  (`map`, `map_err`, `scan`, `switch_map`), filtering (`filter`, `take`, `skip`,
+  `first`, `first_with`), combining (`start_with`), conditional (`take_until`),
+  error handling (`catch_error`) and utility (`tap`, `finalize`, `delay`). Each
+  method documents its semantics and ships a runnable example — see the
+  `Observable` API documentation;
 - dropping a response stream whose call is still in flight **cancels the call on
   the provider**: the handler's future is dropped, so the work stops instead of
   running on for a caller that no longer listens. A call whose terminal event was

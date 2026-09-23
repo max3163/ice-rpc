@@ -51,9 +51,12 @@ thiserror = "2"
 log = { workspace = true }
 # Poll-based combinators: every operator wraps its source as a boxed
 # `futures_lite::Stream`, so there is no intermediate channel and no task.
-futures = "0.3"
 futures-lite = "2"
 pin-project-lite = "0.2"
+# Oneshot channel of the execution facade (`rt::oneshot`). The `futures` facade
+# is deliberately absent: this runtime-agnostic, dependency-free crate replaces
+# it, and the eight crates `futures` compiles for the one primitive.
+oneshot = { version = "0.2", features = ["async", "std"] }
 # Channels and locks of the stream layer (`Subject`, the multicast primitive).
 # Both are runtime-free: no I/O, no reactor, no runtime context.
 async-channel = "2"

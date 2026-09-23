@@ -93,6 +93,14 @@ jobs:
           for forbidden in tokio smol async-io; do
             assert_absent rt-threads "$forbidden"
           done
+          # No `futures` facade in any mode: the only primitive the core needed
+          # from it (the oneshot channel behind `rt::oneshot`) now comes from the
+          # runtime-agnostic, dependency-free `oneshot` crate. Only napi — and
+          # therefore the Node.js gateway, which this job excludes — still pulls
+          # `futures` in.
+          for mode in tokio smol rt-threads; do
+            assert_absent "$mode" futures
+          done
           echo "each mode carries exactly one runtime"
 
       # The `tracing` feature adds a dependency and a span per provider call,

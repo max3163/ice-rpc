@@ -54,10 +54,11 @@ pub use crate::transport::{
 };
 
 // ── Dependency re-exports used by the generated code ────────────────
+// No `futures` here: the codegen never named it, and the oneshot channel it
+// used to provide now lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
 pub use base64;
-pub use futures;
 pub use futures_lite;
 pub use iceoryx2;
 pub use log;

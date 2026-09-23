@@ -12,9 +12,9 @@ use std::thread::JoinHandle;
 use iceoryx2::prelude::*;
 
 use super::bridge::{emit_rpc_error, OwnedEmitter, ResponseEmitter, ServiceDispatcher};
-use super::client::publish_until_delivered;
 use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
+use super::publish::publish_until_delivered;
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
     IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, OPEN_RETRY_ATTEMPTS,

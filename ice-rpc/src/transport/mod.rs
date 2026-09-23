@@ -19,6 +19,7 @@ mod client;
 mod monitor;
 mod notify;
 mod open;
+mod publish;
 mod pump;
 mod server;
 mod tuning;

@@ -900,8 +900,7 @@ mod tests {
             let header = RpcHeader::request("ping", 7, 1);
             let mut task = call_scoped(CallContext::new(&header, "Ping", "ping"), yields_once());
 
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
+            let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(task.as_mut().poll(&mut cx).is_pending());
             assert!(task.as_mut().poll(&mut cx).is_ready());
         });
@@ -969,8 +968,7 @@ mod tests {
         let mut first = std::pin::pin!(task("first", Arc::clone(&seen)));
         let mut second = std::pin::pin!(task("second", Arc::clone(&seen)));
 
-        let waker = futures::task::noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
 
         assert!(first.as_mut().poll(&mut cx).is_pending());
         assert!(second.as_mut().poll(&mut cx).is_pending());

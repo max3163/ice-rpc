@@ -542,8 +542,28 @@ pub fn test_block_on<F: Future>(future: F) -> F::Output {
 }
 
 /// Runtime-agnostic oneshot channel.
+///
+/// `futures-lite` carries no channel of its own, and pulling the `futures`
+/// facade in for the one primitive would compile eight crates — the
+/// runtime-agnostic `oneshot` crate needs none.
+///
+/// Upstream splits the receiving end in two: its `Receiver` is only
+/// `IntoFuture`, because it also offers a blocking `recv` meant for OS threads,
+/// and the `Future` is `AsyncReceiver`. The facade hands the latter out under
+/// the historical name, so `channel()` still yields a receiver an executor can
+/// poll directly and `timeout(.., rx).await` keeps working unchanged.
 pub mod oneshot {
-    pub use futures::channel::oneshot::{channel, Canceled, Receiver, Sender};
+    /// Creates a oneshot channel whose receiving end is directly a future.
+    pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        ::oneshot::async_channel::<T>()
+    }
+
+    /// The receiving half, as a future (upstream `AsyncReceiver`).
+    pub use ::oneshot::AsyncReceiver as Receiver;
+    /// Error returned when the sending half is dropped before it sends.
+    pub use ::oneshot::RecvError as Canceled;
+    /// The sending half.
+    pub use ::oneshot::Sender;
 }
 
 #[cfg(test)]
@@ -606,7 +626,7 @@ mod tests {
     #[test]
     fn timeout_returns_elapsed_on_deadline() {
         let result = test_block_on(timeout(Duration::from_millis(10), async {
-            futures::future::pending::<()>().await;
+            futures_lite::future::pending::<()>().await;
         }));
         assert_eq!(result, Err(Elapsed));
     }

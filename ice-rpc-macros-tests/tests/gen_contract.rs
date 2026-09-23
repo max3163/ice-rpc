@@ -76,7 +76,6 @@ fn gen_facade_symbols_resolve() {
 fn gen_dependency_reexports_resolve() {
     let _ = core::any::type_name::<ice_rpc::gen::async_channel::Sender<u8>>();
     let _ = core::any::type_name::<ice_rpc::gen::async_lock::Mutex<u8>>();
-    let _ = core::any::type_name::<ice_rpc::gen::futures::channel::oneshot::Sender<u8>>();
     let _ = core::any::type_name::<ice_rpc::gen::futures_lite::future::Pending<()>>();
     let _ = core::any::type_name::<ice_rpc::gen::iceoryx2::config::Config>();
     let _ = core::any::type_name::<ice_rpc::gen::log::Level>();

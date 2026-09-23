@@ -52,11 +52,11 @@ method carries its semantics and a runnable example in the crate documentation.
 |---|---|
 | Transforming | `map`, `map_err`, `scan`, `switch_map` |
 | Filtering | `filter`, `take`, `distinct_until_changed`, `skip`, `first`, `first_with` |
-| Combining | `start_with` |
+| Combining | `merge`, `start_with` |
 | Conditional / Boolean | `take_until` |
 | Error handling | `catch_error` |
 | Utility | `tap`, `finalize`, `delay`, `timeout` |
-| Terminals (they end the chain) | `collect`, `first_value`, `for_each`, `subscribe`, `subscribe_all`, `next`, `recv` |
+| Terminals (they end the chain) | `collect`, `first_value`, `last_value`, `for_each`, `subscribe`, `subscribe_all`, `next`, `recv` |
 
 Two rules hold for every operator. It is **pull-based and lazy**: it only wraps
 its source in a boxed stream, so there is no intermediate channel and no spawned

@@ -340,11 +340,11 @@ impl<T, E> Observable<T, E> {
     ///
     /// let values = block_on(
     ///     from::<i32, String, _>([1, 2])
-    ///         .switch_map(|v| of::<i32, String>(v * 10))
+    ///         .switch_map(|v| of::<String, String>(format!("value: {}", v)))
     ///         .collect(),
     /// )
     /// .expect("the stream completes cleanly");
-    /// assert_eq!(values, vec![10, 20]);
+    /// assert_eq!(values, vec!["value: 1", "value: 2"]);
     /// ```
     pub fn switch_map<F, U>(self, f: F) -> Observable<U, E>
     where

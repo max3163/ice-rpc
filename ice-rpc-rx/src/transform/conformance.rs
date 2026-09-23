@@ -385,6 +385,34 @@ fn take_until_conformance() {
 }
 
 #[test]
+fn merge_conformance() {
+    // Le second flux est inline, donc toujours prêt : l'entrelacement du
+    // round-robin est déterministe et la matrice peut le figer. C'est aussi ce
+    // qui montre qu'un `Complete` de la source gauche ne termine pas le flux.
+    assert_matrix(
+        "merge",
+        |stream| stream.merge(crate::from::<i32, String, _>([9])),
+        &[
+            (no_event(), vec![next(9), complete()]),
+            (one_value(), vec![next(1), next(9), complete()]),
+            (completion_only(), vec![next(9), complete()]),
+            // Une erreur, d'où qu'elle vienne, termine le merge : la seconde
+            // source n'est jamais lue.
+            (business_failure(), vec![business("boom")]),
+            (technical_failure(), vec![technical()]),
+            (empty_failure(), vec![empty()]),
+            // Une fermeture sans terminal est lue comme une fin propre, et le
+            // merge n'émet qu'un seul `Complete`.
+            (abrupt_close(), vec![next(1), next(9), complete()]),
+            (
+                three_values(),
+                vec![next(1), next(9), next(2), next(3), complete()],
+            ),
+        ],
+    );
+}
+
+#[test]
 fn distinct_until_changed_conformance() {
     assert_matrix(
         "distinct_until_changed",

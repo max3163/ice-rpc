@@ -235,6 +235,28 @@ impl<T, E> Observable<T, E> {
         first_event(self).await
     }
 
+    /// Awaits the **last** emitted value of the observable.
+    ///
+    /// `Next(v)`… `Complete` → `Ok(last)`, `Error(e)` → `Err(e)`, and
+    /// `Err(ObservableError::Empty)` when the stream carries no value at all.
+    ///
+    /// Drains the stream instead of buffering it: one slot is held, not one
+    /// value per event, so a long response costs the same as a short one. The
+    /// counterpart of [`first_value`](Self::first_value); the canonical
+    /// implementation lives in [`last_event`].
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{from, rt::block_on};
+    ///
+    /// let last = block_on(from::<i32, String, _>([1, 2, 3]).last_value())
+    ///     .expect("the stream ends with a value");
+    /// assert_eq!(last, 3);
+    /// ```
+    pub async fn last_value(self) -> Result<T, ObservableError<E>> {
+        last_event(self).await
+    }
+
     /// Collects every emitted value into a `Vec`.
     ///
     /// The observable is consumed until `Complete` (or until it is closed). On a
@@ -266,6 +288,39 @@ where
         Some(Event::Next(v)) => Ok(v),
         Some(Event::Error(e)) => Err(e),
         Some(Event::Complete) | None => Err(ObservableError::Empty),
+    }
+}
+
+/// Awaits the last event of any stream of [`Event`].
+///
+/// This is the **single** implementation behind [`Observable::last_value`];
+/// living in a free function lets the generated code and the operators reuse it
+/// on a raw `futures_lite::Stream`.
+///
+/// Reachable as `ice_rpc::gen::last_event`.
+#[doc(hidden)]
+pub async fn last_event<S, T, E>(stream: S) -> Result<T, ObservableError<E>>
+where
+    S: futures_lite::Stream<Item = Event<T, E>>,
+{
+    let mut stream = std::pin::pin!(stream);
+    let mut last = None;
+    loop {
+        match futures_lite::future::poll_fn(|cx| {
+            futures_lite::Stream::poll_next(stream.as_mut(), cx)
+        })
+        .await
+        {
+            Some(Event::Next(v)) => last = Some(v),
+            // A terminal error wins even when a value was already read: the
+            // stream failed. `collect` behaves the same way — it discards what
+            // it gathered — and returning the last value here would report a
+            // failure as a success.
+            Some(Event::Error(e)) => return Err(e),
+            // `Empty` is the artefact for "ended carrying nothing", the same
+            // answer `first_event` gives, so the two terminals stay symmetric.
+            Some(Event::Complete) | None => return last.ok_or(ObservableError::Empty),
+        }
     }
 }
 
@@ -442,5 +497,94 @@ mod tests {
             answered.load(Ordering::Relaxed),
             "the call was answered before the drop"
         );
+    }
+
+    /// Keeps the last value of a finite stream.
+    #[test]
+    fn last_value_keeps_the_final_value() {
+        let last = crate::rt::block_on(crate::from::<i32, String, _>([1, 2, 3]).last_value());
+
+        assert_eq!(last.expect("the stream ends with a value"), 3);
+    }
+
+    /// A stream that carries no value at all reports `Empty`, exactly like
+    /// `first_value` — and it **returns**: `None` must end the read, never send
+    /// the loop round again.
+    #[test]
+    fn last_value_is_empty_without_any_value() {
+        let last = crate::rt::block_on(crate::from::<i32, String, _>([]).last_value());
+
+        assert!(matches!(last, Err(ObservableError::Empty)));
+    }
+
+    /// The realistic trigger of the same case: a pipeline that dropped every
+    /// value ends on its exhausted source and must still return.
+    #[test]
+    fn last_value_is_empty_when_a_pipeline_dropped_everything() {
+        let last = crate::rt::block_on(
+            crate::from::<i32, String, _>([1, 2, 3])
+                .filter(|_| false)
+                .last_value(),
+        );
+
+        assert!(matches!(last, Err(ObservableError::Empty)));
+    }
+
+    /// An error raised **after** values is not swallowed: returning the last
+    /// value would report a failed stream as a successful one.
+    #[test]
+    fn last_value_forwards_an_error_raised_after_values() {
+        let stream = Observable::from_events([
+            Event::Next(1),
+            Event::Next(2),
+            Event::Error(ObservableError::Business("boom".to_owned())),
+        ]);
+
+        let last = crate::rt::block_on(stream.last_value());
+
+        assert!(matches!(last, Err(ObservableError::Business(e)) if e == "boom"));
+    }
+
+    /// A technical error terminates the stream the same way, values or not.
+    #[test]
+    fn last_value_forwards_a_technical_error() {
+        let stream = Observable::<i32, String>::from_technical_error(RpcError::Timeout);
+
+        let last = crate::rt::block_on(stream.last_value());
+
+        assert!(matches!(
+            last,
+            Err(ObservableError::Technical(RpcError::Timeout))
+        ));
+    }
+
+    /// A channel source is the path a real response takes: the read must work
+    /// through the queue and not only through the inline shortcut.
+    #[test]
+    fn last_value_reads_through_a_channel_source() {
+        let (tx, rx) = unbounded_channel::<i32, String>();
+
+        tx.try_send_event(Event::Next(1)).expect("unbounded");
+        tx.try_send_event(Event::Next(2)).expect("unbounded");
+        tx.try_send_event(Event::Complete).expect("unbounded");
+        drop(tx);
+
+        let last = crate::rt::block_on(rx.last_value());
+
+        assert_eq!(last.expect("the stream ends with a value"), 2);
+    }
+
+    /// A source that closes without a terminal is read like a `Complete`, which
+    /// is the answer `first_event` gives: the two terminals stay symmetric.
+    #[test]
+    fn last_value_treats_an_abrupt_close_like_a_completion() {
+        let (tx, rx) = unbounded_channel::<i32, String>();
+
+        tx.try_send_event(Event::Next(7)).expect("unbounded");
+        drop(tx);
+
+        let last = crate::rt::block_on(rx.last_value());
+
+        assert_eq!(last.expect("the value read before the close is kept"), 7);
     }
 }

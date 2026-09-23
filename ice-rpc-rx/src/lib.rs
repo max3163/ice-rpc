@@ -31,9 +31,9 @@
 //!
 //! - [`Observable`] — the operators (`map`, `filter`, `distinct_until_changed`,
 //!   `map_err`, `scan`, `switch_map`, `take`, `skip`, `first`, `first_with`,
-//!   `start_with`, `tap`, `finalize`, `delay`, `timeout`, `catch_error`,
+//!   `merge`, `start_with`, `tap`, `finalize`, `delay`, `timeout`, `catch_error`,
 //!   `take_until`) and the
-//!   terminals (`first_value`, `collect`, `for_each`, `subscribe`,
+//!   terminals (`first_value`, `last_value`, `collect`, `for_each`, `subscribe`,
 //!   `subscribe_all`, `next`, `recv`). Every operator is a pull-based
 //!   combinator: no intermediate channel, no spawned task. Each has its own
 //!   reference, with a runnable example, on [`Observable`].
@@ -52,11 +52,11 @@
 //! |---|---|
 //! | Transforming | [`map`](Observable::map), [`map_err`](Observable::map_err), [`scan`](Observable::scan), [`switch_map`](Observable::switch_map) |
 //! | Filtering | [`filter`](Observable::filter), [`take`](Observable::take), [`distinct_until_changed`](Observable::distinct_until_changed), [`skip`](Observable::skip), [`first`](Observable::first), [`first_with`](Observable::first_with) |
-//! | Combining | [`start_with`](Observable::start_with) |
+//! | Combining | [`merge`](Observable::merge), [`start_with`](Observable::start_with) |
 //! | Conditional / Boolean | [`take_until`](Observable::take_until) |
 //! | Error handling | [`catch_error`](Observable::catch_error) |
 //! | Utility | [`tap`](Observable::tap), [`finalize`](Observable::finalize), [`delay`](Observable::delay), [`timeout`](Observable::timeout) |
-//! | Terminals (they end the chain) | [`collect`](Observable::collect), [`first_value`](Observable::first_value), [`for_each`](Observable::for_each), [`subscribe`](Observable::subscribe), [`subscribe_all`](Observable::subscribe_all), [`next`](Observable::next), [`recv`](Observable::recv) |
+//! | Terminals (they end the chain) | [`collect`](Observable::collect), [`first_value`](Observable::first_value), [`last_value`](Observable::last_value), [`for_each`](Observable::for_each), [`subscribe`](Observable::subscribe), [`subscribe_all`](Observable::subscribe_all), [`next`](Observable::next), [`recv`](Observable::recv) |
 //!
 //! Two rules hold for every operator: it is **pull-based and lazy** (it only
 //! wraps its source in a boxed stream — no intermediate channel, no spawned
@@ -95,7 +95,7 @@ pub use creation::{from, of, throw_error};
 pub use error::RpcError;
 pub use event::{Event, ObservableError, Sender};
 pub use rt::CancellationToken;
-pub use stream::{channel, collect_values, first_event, unbounded_channel, Observable};
+pub use stream::{channel, collect_values, first_event, last_event, unbounded_channel, Observable};
 pub use subject::Subject;
 pub use subscribe::Subscription;
 

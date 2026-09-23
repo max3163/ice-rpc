@@ -202,11 +202,13 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
 - `first_value() -> Result<T, ObservableError<E>>` (`Empty` when the stream completes
   without a value);
 - `collect() -> Result<Vec<T>, ObservableError<E>>`;
+- `last_value() -> Result<T, ObservableError<E>>` (the counterpart of `first_value`, with
+  the same `Empty` shape and one slot held instead of the whole sequence);
 - the `timeout` and `take_until` operators bound the response wait and cancel a stream;
 - the full ReactiveX set is available, all as inherent methods: transforming
   (`map`, `map_err`, `scan`, `switch_map`), filtering (`filter`, `take`,
   `distinct_until_changed`, `skip`, `first`, `first_with`), combining
-  (`start_with`), conditional (`take_until`),
+  (`merge`, `start_with`), conditional (`take_until`),
   error handling (`catch_error`) and utility (`tap`, `finalize`, `delay`). Each
   method documents its semantics and ships a runnable example — see the
   `Observable` API documentation;

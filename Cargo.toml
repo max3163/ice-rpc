@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 # True floor driven by the dependency tree, not by the local toolchain:
 # `iceoryx2` 0.10 requires 1.89, the library crates only need older features
 # (`std::mem::offset_of!` is 1.77, `u64::div_ceil` is 1.73, `OnceLock` is 1.70).

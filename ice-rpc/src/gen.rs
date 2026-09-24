@@ -17,9 +17,9 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 // ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
     call_scoped, channel, fmt_correlation_id, local_call_scoped, next_correlation_id, now_ns,
-    raw_pid_to_u32, service_id_of, unbounded_channel, CallContext, EventKind, NodeId, RpcError,
-    RpcHeader, Sender, ServiceRef, WireEvent, CORRELATION_ID_LEN, METHOD_NAME_LEN,
-    PROTOCOL_VERSION, SERVICE_NAME_LEN,
+    parse_correlation_id, raw_pid_to_u32, service_id_of, unbounded_channel, CallContext, EventKind,
+    NodeId, RpcError, RpcHeader, Sender, ServiceRef, WireEvent, CORRELATION_ID_LEN,
+    METHOD_NAME_LEN, PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
 // Canonical terminals behind the inherent `Observable` methods.
@@ -27,10 +27,23 @@ pub use crate::types::{collect_values, first_event};
 
 // ── Service traits implemented by the generated code ────────────────
 // `ServiceInit` stays public: it is the only one a developer implements.
-pub use crate::service_traits::{HttpCallable, ServiceConsumer, ServiceLifecycle, ServiceNamed};
+pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed};
+
+// ── The JSON contract, both sides ────────────────────────────────────
+// One view per service: the macro implements the caller side and calls the host
+// side, which registers itself once with `set_json_dispatcher`.
+pub use crate::json::{
+    dispatch_json, json_dispatcher, read_json, set_json_dispatcher, JsonCallError, JsonCallEvent,
+    JsonCallStream, JsonDispatcher, JsonInvoker, JsonOutcome, JsonResult, ReadMode,
+    JSON_CALL_TIMEOUT,
+};
 
 // ── Bootstrap / configuration ───────────────────────────────────────
 pub use crate::config::setup_iceoryx2_global_config;
+
+// ── Diagnostics ─────────────────────────────────────────────────────
+// The gateway's `version()` reports this instead of a hand-written literal.
+pub use crate::VERSION;
 
 // ── Lifecycle ───────────────────────────────────────────────────────
 // Escape hatch for contexts the macros cannot cover (N-API gateway, tests).
@@ -58,13 +71,20 @@ pub use crate::transport::{
 // used to provide now lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
-// The Node.js converters are the only generated code that names `base64`, and
-// they are emitted only under the `nodejs` feature — which enables the
-// dependency, so this re-export follows the same switch.
-#[cfg(feature = "nodejs")]
+// The JSON converters are the only generated code that names `base64`, and they
+// are emitted only under the `json` feature — which enables the dependency, so
+// this re-export follows the same switch.
+#[cfg(feature = "json")]
 pub use base64;
 pub use futures_lite;
+// The link-time registration surface the generated decoders use. The whole crate
+// is re-exported, not just its attribute: the expansion names `linkme` itself
+// (`#[linkme(crate = …)]`, the private type-check module), so the generated code
+// must be able to reach it without the service crate depending on it. Gated by
+// the same feature that emits the decoders.
 pub use iceoryx2;
+#[cfg(feature = "monitoring")]
+pub use linkme;
 pub use log;
 pub use rkyv;
 pub use serde_json;

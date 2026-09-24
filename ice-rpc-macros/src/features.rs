@@ -23,10 +23,11 @@ pub struct Features {
     /// The `{Trait}Decoder` and the generated `Display` implementation used by an
     /// out-of-band observer.
     pub monitoring: bool,
-    /// The rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode
+    /// The rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode
     /// used by the Node.js gateway.
-    pub nodejs: bool,
-    /// The `HttpCallable` implementation used by the HTTP gateway.
+    pub json: bool,
+    /// The JSON view (`impl JsonInvoker`) used by the HTTP gateway — the same
+    /// block the `json` feature emits, so the two transports share it.
     pub http: bool,
 }
 
@@ -37,7 +38,7 @@ impl Features {
     pub const fn from_cfg() -> Self {
         Self {
             monitoring: cfg!(feature = "monitoring"),
-            nodejs: cfg!(feature = "nodejs"),
+            json: cfg!(feature = "json"),
             http: cfg!(feature = "http"),
         }
     }
@@ -50,8 +51,8 @@ impl fmt::Display for Features {
         if self.monitoring {
             names.push("monitoring");
         }
-        if self.nodejs {
-            names.push("nodejs");
+        if self.json {
+            names.push("json");
         }
         if self.http {
             names.push("http");
@@ -71,23 +72,23 @@ mod tests {
     fn the_name_of_a_set_lists_its_blocks_in_a_stable_order() {
         let none = Features {
             monitoring: false,
-            nodejs: false,
+            json: false,
             http: false,
         };
         let all = Features {
             monitoring: true,
-            nodejs: true,
+            json: true,
             http: true,
         };
-        let nodejs_only = Features {
+        let json_only = Features {
             monitoring: false,
-            nodejs: true,
+            json: true,
             http: false,
         };
 
         assert_eq!(none.to_string(), "none");
-        assert_eq!(all.to_string(), "monitoring.nodejs.http");
-        assert_eq!(nodejs_only.to_string(), "nodejs");
+        assert_eq!(all.to_string(), "monitoring.json.http");
+        assert_eq!(json_only.to_string(), "json");
     }
 
     /// The only link between the Cargo features and the expansion: if this one
@@ -96,7 +97,7 @@ mod tests {
     fn from_cfg_matches_the_features_the_build_enabled() {
         let features = Features::from_cfg();
         assert_eq!(features.monitoring, cfg!(feature = "monitoring"));
-        assert_eq!(features.nodejs, cfg!(feature = "nodejs"));
+        assert_eq!(features.json, cfg!(feature = "json"));
         assert_eq!(features.http, cfg!(feature = "http"));
     }
 }

@@ -1,26 +1,54 @@
 {
   "name": "gateway-nodejs",
   "version": "0.3.2",
-  "description": "NAPI-RS gateway for the ice-rpc communication library",
+  "description": "NAPI-RS gateway exposing ice-rpc services to Node.js: the business logic stays in JavaScript, the IPC transport stays in Rust",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/max3163/ice-rpc.git",
+    "directory": "gateway_nodejs"
+  },
+  "keywords": [
+    "ice-rpc",
+    "iceoryx2",
+    "ipc",
+    "napi",
+    "rpc",
+    "shared-memory",
+    "zero-copy"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node",
+    "Readme.md",
+    "LICENSE"
+  ],
   "napi": {
     "binaryName": "gateway-nodejs",
     "targets": [
-     "x86_64-unknown-linux-gnu",
-     "x86_64-pc-windows-msvc",
-     "x86_64-apple-darwin",
-     "aarch64-apple-darwin",
-     "x86_64-unknown-linux-musl",
-     "aarch64-unknown-linux-musl"
-   ]
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
+    ]
   },
   "scripts": {
     "artifacts": "napi artifacts",
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "universal": "napi universal",
-    "version": "napi version"
+    "version": "napi version",
+    "test": "node --test test/contract.test.mjs",
+    "test:e2e": "node test/e2e-roundtrip.mjs",
+    "bench": "node test/bench-bridge.mjs"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.8.6"

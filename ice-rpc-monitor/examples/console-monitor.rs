@@ -7,7 +7,8 @@
 //!
 //! Decoding works because the observer is linked against the **same service
 //! contract** as the providers and consumers (`common`, here): each `#[service]`
-//! generates a `{Service}Decoder`, `common::decoders()` registers them all, and
+//! generates a `{Service}Decoder` and submits it into the link-time registry,
+//! `Decoders::linked()` collects them with no list to maintain, and
 //! the monitor renders every payload with the `Display` implementation of the
 //! service types, falling back to their `Debug` implementation when they have
 //! none.
@@ -36,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{decoders as common_decoders, DatabaseError, DatabaseServiceRequest};
+use common::{DatabaseError, DatabaseServiceRequest};
 use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher, ServiceRef};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
@@ -45,7 +46,7 @@ use ice_rpc_monitor::config::{Config, Mode};
 use ice_rpc_monitor::console::{self, LiveConsole};
 use ice_rpc_monitor::metrics::Metrics;
 use ice_rpc_monitor::traces::TraceFormat;
-use ice_rpc_monitor::Monitor;
+use ice_rpc_monitor::{Decoders, Monitor};
 
 /// Logical name of the service the standalone demo hosts.
 const DEMO_SERVICE: &str = "DatabaseService";
@@ -114,9 +115,10 @@ impl Options {
 
         let mut config = Config::from_args(&forwarded)?;
 
-        // The observer is linked against `common`: register every generated
-        // decoder so the payloads are rendered in clear text.
-        config.decoders = Arc::new(common_decoders());
+        // The observer is linked against `common`, so the decoders that crate
+        // declares are in this binary: `Decoders::linked()` collects every one of
+        // them, and the payloads are rendered in clear text.
+        config.decoders = Arc::new(Decoders::linked());
 
         config.console_live = live;
         if detail {

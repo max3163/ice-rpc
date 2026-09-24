@@ -1,7 +1,7 @@
 //! Key-value context service shared between services.
 //!
 //! Stores metadata, environment variables and session tokens.
-//! Implemented in Node.js through the `ProviderNodeJs` mode of the ice-rpc Proxy.
+//! Implemented in Node.js through the `ProviderJson` mode of the ice-rpc Proxy.
 
 use ice_rpc::{service, Observable};
 use rkyv::{Archive, Deserialize, Serialize};

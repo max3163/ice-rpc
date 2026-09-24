@@ -32,26 +32,25 @@ use crate::codegen::{
         ClientMethodGenInput,
     },
     decoder::{gen_decoder, DecoderGenInput, DecoderMethod},
-    http::{gen_http_callable_impl, HttpGenInput, HttpMethodData},
-    lifecycle::{gen_lifecycle, LifecycleGenInput},
-    nodejs::{
-        gen_nodejs_deserialize_fn, gen_nodejs_native_method, gen_nodejs_serialize_fn,
-        NodeJsGenInput, NodeJsMethod,
+    json::{
+        gen_json_invoker_impl, gen_json_provider_from_request_fn,
+        gen_json_provider_from_response_fn, gen_json_provider_method, JsonGenInput, JsonMethod,
     },
+    lifecycle::{gen_lifecycle, LifecycleGenInput},
     proxy::{gen_proxy, gen_proxy_method, ProxyGenInput, ProxyMethodGenInput},
     server::{gen_native_method, gen_server, ServerGenInput},
 };
 
-/// The Node.js view of the model's methods.
+/// The JSON view of the model's methods.
 ///
 /// A narrow projection of [`ServiceModel`], **not** a second reading of the
-/// trait: the Node.js converters need the same names and the same types as
+/// trait: the JSON converters need the same names and the same types as
 /// everybody else, so re-deriving them could only let the two disagree.
-fn nodejs_methods(model: &ServiceModel) -> Vec<NodeJsMethod> {
+fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
     model
         .methods
         .iter()
-        .map(|method| NodeJsMethod {
+        .map(|method| JsonMethod {
             fn_name: method.fn_name.clone(),
             var_name: method.var_name.clone(),
             arg_names: method.arg_names.clone(),
@@ -75,12 +74,13 @@ fn nodejs_methods(model: &ServiceModel) -> Vec<NodeJsMethod> {
 /// - The `{Trait}Client` struct (IPC consumer)
 /// - The `{Trait}Server` struct (IPC provider)
 /// - The `{Trait}Proxy` struct (Provider/Consumer smart node, plus the
-///   `ProviderNodeJs` mode when the `nodejs` feature is on)
+///   `ProviderJson` mode when the `json` feature is on)
 /// - The `ServiceLifecycle`, `ServiceInit`, `ServiceNamed` implementations
 /// - The optional blocks its features ask for: the observer decoder
-///   (`monitoring`), the Node.js converters and `ProviderNodeJs` mode
-///   (`nodejs`), and the `HttpCallable` implementation (`http`). They follow the
-///   Cargo features of this crate, read in one place (`Features::from_cfg`).
+///   (`monitoring`), the Node.js converters and `ProviderJson` mode (`json`),
+///   and the JSON view (`impl JsonInvoker`) every JSON transport dispatches to
+///   (`json` or `http`). They follow the Cargo features of this crate, read in
+///   one place (`Features::from_cfg`).
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_service_with(attr.into(), item.into(), Features::from_cfg()).into()
@@ -144,9 +144,8 @@ fn expand_service_with(
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
     let mut server_native_methods = Vec::new();
-    let mut nodejs_native_methods = Vec::new();
+    let mut json_provider_methods = Vec::new();
     let mut node_methods = Vec::new();
-    let mut http_methods_data: Vec<HttpMethodData> = Vec::new();
     let mut decoder_methods: Vec<DecoderMethod> = Vec::new();
 
     // One pass over the model. The discriminant is the position in the trait, so
@@ -182,8 +181,8 @@ fn expand_service_with(
             req_enum_name,
         ));
 
-        if features.nodejs {
-            nodejs_native_methods.push(gen_nodejs_native_method(proxy_name, fn_name));
+        if features.json {
+            json_provider_methods.push(gen_json_provider_method(proxy_name, fn_name));
         }
 
         node_methods.push(gen_proxy_method(&ProxyMethodGenInput {
@@ -194,17 +193,8 @@ fn expand_service_with(
             mode_name,
             service_ref: &service_ref,
             service_name: &service_name,
-            nodejs: features.nodejs,
+            json_provider: features.json,
         }));
-
-        // Collects the data for the HttpCallable implementation.
-        if features.http {
-            http_methods_data.push(HttpMethodData {
-                fn_name: fn_name.clone(),
-                arg_names: method.arg_names.clone(),
-                arg_types: method.arg_types.clone(),
-            });
-        }
 
         // Collects the data for the generated decoder (`Display` + decoder).
         if features.monitoring {
@@ -244,7 +234,7 @@ fn expand_service_with(
         init_default_name,
         logical_name_lit: &logical_name_lit,
         node_methods: &node_methods,
-        nodejs: features.nodejs,
+        json_provider: features.json,
     };
     let proxy_output = gen_proxy(&proxy_input);
 
@@ -256,40 +246,38 @@ fn expand_service_with(
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
         service_ref: &service_ref,
-        nodejs: features.nodejs,
-        nodejs_native_methods: &nodejs_native_methods,
+        json_provider: features.json,
+        json_provider_methods: &json_provider_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
     // The three optional blocks. Their inputs are built in every configuration —
     // that is what consumes the vectors filled above — and only the generator
     // call is skipped, so nothing here can drift into "declared but unused".
-    let nodejs_methods: Vec<NodeJsMethod> = nodejs_methods(&model);
-    let nodejs_input = NodeJsGenInput {
+    let json_methods: Vec<JsonMethod> = json_methods(&model);
+    let json_input = JsonGenInput {
         visibility,
         proxy_name,
         req_enum_name,
-        methods: nodejs_methods,
+        methods: json_methods,
     };
-    let (nodejs_deserialize, nodejs_serialize) = if features.nodejs {
+    // The provider-side converters belong to the JSON *host* path only: it is the
+    // one that turns an rkyv request into a JSON value, so they follow `json`.
+    let (json_provider_from_request, json_provider_from_response) = if features.json {
         (
-            gen_nodejs_deserialize_fn(&nodejs_input),
-            gen_nodejs_serialize_fn(&nodejs_input),
+            gen_json_provider_from_request_fn(&json_input),
+            gen_json_provider_from_response_fn(&json_input),
         )
     } else {
         (quote! {}, quote! {})
     };
 
-    // The `HttpCallable` implementation the HTTP gateway dispatches to. It is
-    // also the block that keeps `serde_json`'s conversion machinery in the
-    // binary, so a deployment that never speaks HTTP should not carry it.
-    let http_input = HttpGenInput {
-        proxy_name: proxy_name.to_owned(),
-        logical_name: logical_name_lit.to_string(),
-        http_methods: http_methods_data,
-    };
-    let http_callable_impl = if features.http {
-        gen_http_callable_impl(&http_input)
+    // **One** JSON view per service, whatever the JSON transport: the Node.js
+    // gateway and the HTTP gateway both consume it, so neither carries generated
+    // code of its own and the two cannot drift apart. The reading policy travels
+    // as an argument, which is what keeps a single match table.
+    let json_invoker = if features.json || features.http {
+        gen_json_invoker_impl(&json_input)
     } else {
         quote! {}
     };
@@ -301,6 +289,7 @@ fn expand_service_with(
         let decoder_name = Ident::new(&format!("{trait_name}Decoder"), trait_name.span());
         let decoder_input = DecoderGenInput {
             visibility,
+            trait_name,
             req_enum_name,
             decoder_name: &decoder_name,
             logical_name_lit: logical_name_lit.as_str(),
@@ -343,10 +332,9 @@ fn expand_service_with(
 
         #lifecycle_output
 
-        #nodejs_deserialize
-        #nodejs_serialize
-
-        #http_callable_impl
+        #json_provider_from_request
+        #json_provider_from_response
+        #json_invoker
 
         #decoder_output
 

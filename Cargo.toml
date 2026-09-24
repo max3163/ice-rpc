@@ -99,5 +99,8 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
+# Distributed slices: one `#[used]` static per service, assembled by the linker.
+# Used only by the `monitoring` decoder registry, and with no transitive dependency.
+linkme = "0.3"
 tokio = { version = "1.30", features = ["full"] }
 toml = "1"

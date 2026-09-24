@@ -1,4 +1,4 @@
-//! Codegen: `{Trait}Proxy` struct with Provider, Consumer, ProviderNodeJs modes.
+//! Codegen: `{Trait}Proxy` struct with Provider, Consumer, ProviderJson modes.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,13 +14,13 @@ pub struct ProxyGenInput<'a> {
     pub init_default_name: &'a Ident,
     pub logical_name_lit: &'a str,
     pub node_methods: &'a [TokenStream],
-    /// Whether the `ProviderNodeJs` mode and its constructor belong to the
-    /// expansion (the `nodejs` feature).
-    pub nodejs: bool,
+    /// Whether the `ProviderJson` mode and its constructor belong to the
+    /// expansion (the `json` feature).
+    pub json_provider: bool,
 }
 
 /// Generates the `{Trait}Proxy` (smart node) with its Provider, Consumer
-/// and ProviderNodeJs modes, as well as the constructors.
+/// and ProviderJson modes, as well as the constructors.
 pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
     let ProxyGenInput {
         trait_name,
@@ -31,33 +31,33 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         init_default_name,
         logical_name_lit,
         node_methods,
-        nodejs,
+        json_provider,
     } = input;
 
     // The Node.js mode is a whole variant and constructor, not a flag: without
     // the feature the proxy must not advertise a mode it cannot serve.
-    let nodejs_variant = if *nodejs {
-        quote! { ProviderNodeJs, }
+    let json_variant = if *json_provider {
+        quote! { ProviderJson, }
     } else {
         quote! {}
     };
 
     // The variant and the constructor are unused in a crate that does not link
     // the bridge, and the proxy is `pub`: nothing else silences them.
-    let nodejs_allow = if *nodejs {
+    let json_allow = if *json_provider {
         quote! { #[allow(dead_code)] }
     } else {
         quote! {}
     };
 
-    let provide_nodejs = if *nodejs {
+    let provide_json = if *json_provider {
         quote! {
-            /// Builds the proxy of the `ProviderNodeJs` mode: the Node.js host
+            /// Builds the proxy of the `ProviderJson` mode: the Node.js host
             /// implements the methods, and each call is bridged to it over IPC.
-            #visibility fn provide_nodejs() -> std::sync::Arc<Self> {
+            #visibility fn provide_json() -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderNodeJs),
+                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderJson),
                 })
             }
         }
@@ -71,7 +71,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         #[async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
-        #nodejs_allow
+        #json_allow
         #visibility enum #mode_name {
             Provider {
                 local_impl:     std::sync::Arc<dyn #trait_name>,
@@ -79,7 +79,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 server_started: bool,
             },
             Consumer { ipc_client: std::sync::Arc<#client_name> },
-            #nodejs_variant
+            #json_variant
         }
 
         #visibility struct #proxy_name {
@@ -87,7 +87,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             deps: Vec<&'static str>,
         }
 
-        #nodejs_allow
+        #json_allow
         impl #proxy_name {
             /// Logical name of the service, injected by the `#[service]` macro.
             pub const SERVICE_NAME: &'static str = #logical_name_lit;
@@ -133,7 +133,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 })
             }
 
-            #provide_nodejs
+            #provide_json
         }
 
         #[async_trait::async_trait]
@@ -165,8 +165,8 @@ pub struct ProxyMethodGenInput<'a> {
     pub service_ref: &'a TokenStream,
     /// The service **name** constant: `<Proxy>::SERVICE_NAME`.
     pub service_name: &'a TokenStream,
-    /// Whether the `ProviderNodeJs` arm belongs to the expansion.
-    pub nodejs: bool,
+    /// Whether the `ProviderJson` arm belongs to the expansion.
+    pub json_provider: bool,
 }
 
 /// Generates the body of a proxy delegation method.
@@ -178,7 +178,7 @@ pub struct ProxyMethodGenInput<'a> {
 /// file is compiled by `ice-rpc-macros`, which does not carry the feature.
 ///
 /// In Consumer mode, calls the IPC client.
-/// In ProviderNodeJs mode — only when `nodejs` is set — returns an error: the
+/// In ProviderJson mode — only when `json_provider` is set — returns an error: the
 /// calls go through IPC to the channel the bridge registered.
 pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
     let ProxyMethodGenInput {
@@ -189,16 +189,16 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
         mode_name,
         service_ref,
         service_name,
-        nodejs,
+        json_provider,
     } = input;
 
     let method_name_str = fn_name.to_string();
 
-    let nodejs_arm = if *nodejs {
+    let json_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderNodeJs => {
+            #mode_name::ProviderJson => {
                 ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
-                    "ProviderNodeJs: direct calls are not supported — use IPC".into()
+                    "ProviderJson: direct calls are not supported — use IPC".into()
                 ))
             }
         }
@@ -224,7 +224,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#fn_name(#(#arg_names),*).await
                 }
-                #nodejs_arm
+                #json_arm
             }
         }
     }

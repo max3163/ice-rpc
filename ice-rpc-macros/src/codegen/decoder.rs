@@ -9,11 +9,13 @@
 //!   implement more than `Debug` (already required by the generated request
 //!   enum);
 //! - a `{Trait}Decoder` implementing `ice_rpc::monitor::ServiceDecoder`, which
-//!   decodes the request enum and the `WireEvent` response of each method.
+//!   decodes the request enum and the `WireEvent` response of each method,
+//!   followed by one link-time registration into
+//!   `ice_rpc::monitor::DECODERS`.
 //!
-//! An observer linked against the service definitions registers these decoders
-//! (usually through a crate-level inventory) and can then print every observed
-//! message in clear text instead of raw rkyv bytes.
+//! The registration is what lets an observer list nothing: the linker collects
+//! one entry per `#[service]` linked into the binary, and
+//! `Decoders::linked()` turns them into the registry.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -39,6 +41,8 @@ pub struct DecoderMethod {
 pub struct DecoderGenInput<'a> {
     /// Visibility inherited from the trait.
     pub visibility: &'a Visibility,
+    /// Name of the annotated trait (`DatabaseService`).
+    pub trait_name: &'a Ident,
     /// Name of the generated request enum (`{Trait}Request`).
     pub req_enum_name: &'a Ident,
     /// Name of the generated decoder (`{Trait}Decoder`).
@@ -53,11 +57,24 @@ pub struct DecoderGenInput<'a> {
 pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
     let DecoderGenInput {
         visibility,
+        trait_name,
         req_enum_name,
         decoder_name,
         logical_name_lit,
         methods,
     } = input;
+
+    // One static per service. Its name follows the **trait**, not the logical
+    // name: two declarations of the same logical name must keep reporting that
+    // collision through the one symbol meant for it, instead of adding a second
+    // confusing "defined multiple times" on an internal registration.
+    let registration_name = Ident::new(
+        &format!(
+            "__ICE_RPC_DECODER_{}",
+            trait_name.to_string().to_uppercase()
+        ),
+        proc_macro2::Span::call_site(),
+    );
 
     let mut display_arms = Vec::new();
     let mut request_arms = Vec::new();
@@ -135,14 +152,30 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
             /// Logical name of the service this decoder handles.
             pub const SERVICE_NAME: &'static str = #logical_name_lit;
 
+            /// Builds this decoder, shared by the link-time registration and by
+            /// [`Self::register`] so both hand out the same decoder type.
+            pub fn build() -> ::std::sync::Arc<dyn ice_rpc::monitor::ServiceDecoder> {
+                ::std::sync::Arc::new(Self)
+            }
+
             /// Registers this decoder into an observer registry.
             pub fn register(decoders: &mut ice_rpc::monitor::Decoders) {
-                decoders.register(
-                    ice_rpc::gen::service_id_of(Self::SERVICE_NAME),
-                    ::std::sync::Arc::new(Self),
-                );
+                decoders.register(ice_rpc::gen::service_id_of(Self::SERVICE_NAME), Self::build());
             }
         }
+
+        // Nothing refers to this static by name: the linker collects every entry
+        // of `DECODERS` into one slice, which is the whole point. `linkme` builds
+        // its symbols from its own crate path, so the generated code hands it the
+        // facade's re-export — the service crate does not depend on `linkme`.
+        #[allow(dead_code)]
+        #[ice_rpc::gen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
+        #[linkme(crate = ice_rpc::gen::linkme)]
+        static #registration_name: ice_rpc::monitor::DecoderRegistration =
+            ice_rpc::monitor::DecoderRegistration {
+                service_name: #logical_name_lit,
+                build: #decoder_name::build,
+            };
 
         impl ice_rpc::monitor::ServiceDecoder for #decoder_name {
             fn request(

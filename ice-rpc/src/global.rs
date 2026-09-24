@@ -24,7 +24,7 @@
 //! | Liveness poller started | `node_liveness`, [`Global`] | — | first watcher registration | every registration | never |
 //! | IPC cleanup resources | `shutdown`, [`Locked`] | — | `register_ipc_cleanup` | `clear_ipc_cleanup` | at shutdown |
 //! | Service locator | `locator`, [`Global`] | — | first `locator()` call | everywhere | never |
-//! | Node.js dispatch pointer | `nodejs_dispatch`, [`Global`] | — | gateway startup | ProviderNodeJs dispatch | never |
+//! | JSON host pointer | `json`, [`Global`] | — | gateway startup | JSON dispatch | never |
 //! | Notification clock origin | `transport::notify`, [`Global`] | — | first notification | every coalescing check | never |
 //!
 //! Two raw styles remain on purpose, because they carry no locking policy:

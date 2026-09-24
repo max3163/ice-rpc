@@ -15,7 +15,9 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
-use ice_rpc::gen::{decode_aligned, serde_json, EventKind, WireEvent};
+use ice_rpc::gen::{
+    decode_aligned, serde_json, EventKind, JsonCallError, JsonInvoker, ReadMode, WireEvent,
+};
 use ice_rpc::{Observable, ServiceInit};
 use ice_rpc_macros::service;
 
@@ -159,11 +161,74 @@ fn an_unusable_response_does_not_convert() {
     assert!(ConverterApiProxy::serialize_response_from_value("nope", value).is_none());
 }
 
-/// The proxy of the Node.js mode is the entry point the gateway registers; it
-/// must exist and expose the service name, without a Node.js runtime.
+/// The proxy of the JSON provider mode is the entry point the gateway registers;
+/// it must exist and expose the service name, without a Node.js runtime.
 #[test]
-fn the_nodejs_mode_proxy_is_registrable() {
-    let proxy = ConverterApiProxy::provide_nodejs();
+fn the_json_provider_mode_proxy_is_registrable() {
+    let proxy = ConverterApiProxy::provide_json();
     assert_eq!(ConverterApiProxy::SERVICE_NAME, "ConverterDemo");
     let _: &dyn ServiceInit = &*proxy;
+}
+
+/// The single JSON view `gateway_nodejs` drives, exercised with no Node.js host
+/// and no provider.
+///
+/// Built on a `ProviderJson` proxy on purpose: that mode answers without
+/// touching the bus, so the contract can be checked in isolation.
+///
+/// What this pins is exactly what the hand-written table used to get wrong: the
+/// served surface is the **declaration**, so a method that exists is served and a
+/// name that is not declared is not. The reading mode travels as an argument, so
+/// one table answers both entry points.
+#[test]
+fn the_generated_json_view_follows_the_declaration() {
+    let proxy = ConverterApiProxy::provide_json();
+
+    // A name that is not declared is reported as "no such method" (`None`), not
+    // as a failure: the gateway turns that into `E_UNKNOWN_METHOD`.
+    let unknown = ice_rpc::rt::test_block_on(proxy.invoke_json(
+        "nope",
+        serde_json::json!({}),
+        ReadMode::First,
+    ));
+    assert!(unknown.is_none(), "an undeclared method must map to None");
+
+    // Reading every value follows the same rule, from the same table.
+    let unknown =
+        ice_rpc::rt::test_block_on(proxy.invoke_json("nope", serde_json::json!({}), ReadMode::All));
+    assert!(
+        unknown.is_none(),
+        "an undeclared method must map to None when every value is read too"
+    );
+
+    // Arguments that do not fit the declaration are refused as `InvalidArgs`,
+    // and the message names the offending parameter. Decoding happens before the
+    // call, so this never reaches the bus.
+    let bad = ice_rpc::rt::test_block_on(proxy.invoke_json(
+        "echo",
+        serde_json::json!({"text": "hello", "count": "not-a-number"}),
+        ReadMode::First,
+    ));
+    match bad.expect("a declared method must answer Some") {
+        Err(JsonCallError::InvalidArgs(message)) => {
+            assert!(
+                message.contains("count"),
+                "the message must name the field: {message}"
+            );
+        }
+        other => panic!("invalid arguments must be reported as InvalidArgs: {other:?}"),
+    }
+
+    // A declared method is served even when the call itself cannot succeed here:
+    // that is the difference the old table could not express, since an
+    // undeclared-but-real method was indistinguishable from a typo.
+    let declared = ice_rpc::rt::test_block_on(proxy.invoke_json(
+        "upload",
+        serde_json::json!("AQIDBA=="),
+        ReadMode::First,
+    ));
+    assert!(
+        declared.is_some(),
+        "'upload' is declared and must be served"
+    );
 }

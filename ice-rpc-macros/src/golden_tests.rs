@@ -52,21 +52,21 @@ use crate::features::Features;
 /// The smallest expansion: no optional block at all.
 const NONE: Features = Features {
     monitoring: false,
-    nodejs: false,
+    json: false,
     http: false,
 };
 
 /// The observer decoder alone, which is what the `monitoring` feature asks for.
 const MONITORING: Features = Features {
     monitoring: true,
-    nodejs: false,
+    json: false,
     http: false,
 };
 
 /// Every optional block.
 const ALL: Features = Features {
     monitoring: true,
-    nodejs: true,
+    json: true,
     http: true,
 };
 
@@ -91,7 +91,7 @@ fn golden_dir() -> PathBuf {
 /// The golden file of one pinned set.
 ///
 /// The name spells the set out (`none` has no suffix); the `Display` of [`ALL`]
-/// would otherwise give `<base>.monitoring.nodejs.http.rs`.
+/// would otherwise give `<base>.monitoring.json.http.rs`.
 fn golden_file(base: &str, label: &str) -> String {
     match label {
         "none" => format!("{base}.rs"),
@@ -200,11 +200,11 @@ fn a_service_with_a_name_a_version_and_a_group_is_pinned_in_every_feature_set() 
 #[test]
 fn every_optional_block_follows_its_own_flag() {
     for monitoring in [false, true] {
-        for nodejs in [false, true] {
+        for json in [false, true] {
             for http in [false, true] {
                 let features = Features {
                     monitoring,
-                    nodejs,
+                    json,
                     http,
                 };
                 let rendered = render(features, quote! {}, CALCULATOR());
@@ -216,20 +216,21 @@ fn every_optional_block_follows_its_own_flag() {
                 );
                 assert_eq!(
                     rendered.contains("deserialize_request_to_value"),
-                    nodejs,
-                    "the Node.js converters must follow `nodejs`, in {features}"
-                );
-                assert_eq!(
-                    rendered.contains("HttpCallable for CalculatorProxy"),
-                    http,
-                    "the HttpCallable implementation must follow `http`, in {features}"
+                    json,
+                    "the Node.js converters must follow `json`, in {features}"
                 );
                 // The Node.js mode is a whole variant and constructor, not only a
                 // pair of converters.
                 assert_eq!(
-                    rendered.contains("fn provide_nodejs"),
-                    nodejs,
-                    "`provide_nodejs` must follow `nodejs`, in {features}"
+                    rendered.contains("fn provide_json"),
+                    json,
+                    "`provide_json` must follow `json`, in {features}"
+                );
+                // One JSON view per service, whichever JSON feature asked for it.
+                assert_eq!(
+                    rendered.contains("impl ice_rpc::gen::JsonInvoker"),
+                    json || http,
+                    "the JsonInvoker implementation must follow `json` or `http`, in {features}"
                 );
             }
         }

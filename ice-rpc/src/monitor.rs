@@ -8,11 +8,12 @@
 //!
 //! The observer is linked against the **same service definitions** as the
 //! providers and consumers, so it can also decode the payloads. Each `#[service]`
-//! trait generates a `{Trait}Decoder` implementing [`ServiceDecoder`]; register
-//! them in a [`Decoders`] registry, then the monitor renders every message with
-//! the [`Display`](std::fmt::Display) implementation of the service types, or
-//! with their [`Debug`](std::fmt::Debug) implementation when they have none
-//! (see [`render_value!`]).
+//! trait generates a `{Trait}Decoder` implementing [`ServiceDecoder`] and, with
+//! the `monitoring` feature, submits it into the `DECODERS` slice at link time.
+//! `Decoders::linked()` reads that slice back, so an observer lists no service:
+//! it renders every message with the [`Display`](std::fmt::Display)
+//! implementation of the service types, or with their [`Debug`](std::fmt::Debug)
+//! implementation when they have none (see [`render_value!`]).
 //!
 //! # Two concerns, two modules
 //!
@@ -33,6 +34,13 @@ pub use crate::transport::{decode_aligned, discover_channels, Direction, Directi
 pub use decode::{
     decode_request, decode_response, decode_response_unit, ClosureDecoder, Decoders, ServiceDecoder,
 };
+
+// The link-time registration surface: `#[service]` submits one entry per service
+// into `DECODERS` when the `monitoring` feature is on, and `Decoders::linked()`
+// reads the slice back. Both names are that feature's, so they are re-exported
+// under the same condition.
+#[cfg(feature = "monitoring")]
+pub use decode::{DecoderRegistration, DECODERS};
 pub use inventory::{
     iceoryx2_layout, list_nodes, list_services, Iceoryx2Layout, NodeHealth, NodeInfo, ServiceInfo,
     ServiceRole,

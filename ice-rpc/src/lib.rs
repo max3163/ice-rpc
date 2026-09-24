@@ -120,7 +120,7 @@
 //!   `await`s is detached at its first `Pending` and runs as a task on the
 //!   execution facade, so a slow call never holds back the next request of the
 //!   same channel
-//! - **Proxy** : unified entry point supporting 3 modes (Provider / Consumer / ProviderNodeJs)
+//! - **Proxy** : unified entry point supporting 3 modes (Provider / Consumer / ProviderJson)
 //!
 //! ## Main modules
 //!
@@ -155,9 +155,12 @@ use crate::global::Global;
 #[doc(hidden)]
 pub mod gen;
 
-/// Node.js bridge: dynamic dispatch for the ProviderNodeJs mode.
-#[doc(hidden)]
-pub mod nodejs_dispatch;
+/// The JSON contract of a service, in both directions.
+///
+/// One [`JsonInvoker`](json::JsonInvoker) per service (the caller side, generated
+/// by `#[service]`) and one [`JsonDispatcher`](json::JsonDispatcher) per process
+/// (the host side, registered by the gateway).
+pub mod json;
 
 /// Publish/subscribe transport (one channel per service, correlated by id).
 #[doc(hidden)]
@@ -316,6 +319,14 @@ impl Drop for ShutdownGuard {
     }
 }
 
+/// The `ice-rpc` version this build was compiled from.
+///
+/// Sourced from the crate's own `CARGO_PKG_VERSION`, so a diagnostics surface
+/// can never drift from the manifest the way a hand-written literal does.
+/// `iceoryx2` exposes no equivalent symbol, which is why the gateway reports
+/// this version plus the protocol version instead of inventing a bus version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Returns the global [`ServiceLocator`].
 ///
 /// Short alias of [`ServiceLocator::global()`] to reduce verbosity
@@ -420,7 +431,7 @@ pub async fn start_http_server(
     port: u16,
     factories: std::collections::HashMap<
         &'static str,
-        fn() -> std::sync::Arc<dyn service_traits::HttpCallable>,
+        fn() -> std::sync::Arc<dyn json::JsonInvoker>,
     >,
 ) {
     http_gateway::start_http_server(port, factories).await;
@@ -447,12 +458,12 @@ macro_rules! start_http_gateway {
     ($port:expr, $($proxy:ty),+ $(,)?) => {{
         let mut __map: std::collections::HashMap<
             &'static str,
-            fn() -> std::sync::Arc<dyn ice_rpc::gen::HttpCallable>,
+            fn() -> std::sync::Arc<dyn ice_rpc::gen::JsonInvoker>,
         > = std::collections::HashMap::new();
         $(
             __map.insert(
                 <$proxy>::SERVICE_NAME,
-                || <$proxy>::consume() as std::sync::Arc<dyn ice_rpc::gen::HttpCallable>,
+                || <$proxy>::consume() as std::sync::Arc<dyn ice_rpc::gen::JsonInvoker>,
             );
         )+
         ice_rpc::start_http_server($port, __map)

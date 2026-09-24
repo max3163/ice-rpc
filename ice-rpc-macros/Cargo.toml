@@ -23,14 +23,14 @@ workspace = true
 monitoring = []
 
 # Opt-in: additionally generate the rkyv ↔ `serde_json::Value` converters and the
-# `ProviderNodeJs` mode of the proxy. Only the Node.js gateway calls them, so a
-# Rust-only deployment should not carry them (`ice-rpc`'s `nodejs` feature
-# forwards this one).
-nodejs = []
+# `ProviderJson` mode of the proxy. Only a JSON host calls them (the Node.js
+# gateway today), so a Rust-only deployment should not carry them (`ice-rpc`'s
+# `json` feature forwards this one).
+json = []
 
-# Opt-in: additionally generate the `HttpCallable` implementation the HTTP
-# gateway dispatches to. It is the block that keeps `serde_json`'s conversion
-# machinery in a binary which never speaks HTTP, so it follows the same feature
+# Opt-in: additionally generate the JSON view (`impl JsonInvoker`) every JSON
+# transport dispatches to. It is the block that keeps `serde_json`'s conversion
+# machinery in a binary which never speaks JSON, so it follows the same feature
 # (`ice-rpc`'s `http` feature forwards this one).
 http = []
 

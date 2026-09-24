@@ -14,7 +14,7 @@ build happens to enable:
 |---|---|---|
 | none | `<base>.rs` | the client, server, proxy, lifecycle — nothing optional |
 | `monitoring` | `<base>.monitoring.rs` | the above, plus the `{Trait}Decoder` and the generated `Display` |
-| everything | `<base>.all.rs` | the above, plus the Node.js converters and the `HttpCallable` implementation |
+| everything | `<base>.all.rs` | the above, plus the Node.js provider converters and the `JsonInvoker` implementation |
 
 The three sets cover each optional block at least once, and the blocks are
 independent. The eight combinations are checked separately, by assertion, in

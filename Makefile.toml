@@ -523,7 +523,7 @@ args = ["clippy", "-p", "ice-rpc-rx", "--all-targets"]
 # =============================================================================
 
 [tasks.provider-context-nodejs]
-description = "Run the Node.js ContextService provider (ProviderNodeJs mode)"
+description = "Run the Node.js ContextService provider (ProviderJson mode)"
 command = "${NODE}"
 args = ["gateway_nodejs/examples/provider-context.js"]
 
@@ -550,9 +550,34 @@ command = "cargo"
 args = ["test", "--workspace"]
 
 [tasks.test-gateway]
-description = "Run the gateway tests"
+description = "Run the gateway tests: the Rust units and the addon's surface"
+dependencies = ["test-gateway-rust", "gateway-test"]
+
+[tasks.test-gateway-rust]
+description = "Run the gateway Rust unit tests"
 command = "cargo"
 args = ["test", "--package", "gateway-nodejs"]
+
+[tasks.gateway-test]
+description = "Check the addon's surface (builds it first; no bus, no spawn)"
+dependencies = ["build-gateway-debug"]
+command = "npm"
+args = ["test"]
+cwd = "${GATEWAY_DIR}"
+
+[tasks.gateway-e2e]
+description = "Two-process round trip through the IPC bus (builds the addon first)"
+dependencies = ["build-gateway-debug"]
+command = "npm"
+args = ["run", "test:e2e"]
+cwd = "${GATEWAY_DIR}"
+
+[tasks.gateway-bench]
+description = "Latency and throughput of a served call (builds the addon first)"
+dependencies = ["build-gateway-debug"]
+command = "npm"
+args = ["run", "bench"]
+cwd = "${GATEWAY_DIR}"
 
 [tasks.test-all]
 description = "Run all tests"

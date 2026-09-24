@@ -231,6 +231,30 @@ impl Decoders {
         self.services.is_empty()
     }
 
+    /// Builds the registry from **every** decoder linked into this binary.
+    ///
+    /// This is the registry an observer wants, and the one no hand-written list
+    /// can keep honest: a service declared with `#[service]` in a linked crate is
+    /// in it, and a service that is not linked is not part of the binary at all.
+    ///
+    /// # The one caveat
+    /// A crate whose items are never referenced can be dropped by the linker,
+    /// registrations included, and the registry would then be *silently* empty.
+    /// An observer that only watches another crate's services therefore has to
+    /// reference it once — `use common as _;`, or the accessor that crate
+    /// documents — which is also what keeps the link honest.
+    #[cfg(feature = "monitoring")]
+    pub fn linked() -> Self {
+        let mut decoders = Self::new();
+        for registration in DECODERS {
+            decoders.register(
+                crate::types::service_id_of(registration.service_name),
+                (registration.build)(),
+            );
+        }
+        decoders
+    }
+
     /// Renders a request payload; `None` without a decoder or on a decode failure.
     pub fn request(&self, service_id: u32, method: &str, payload: &[u8]) -> Option<String> {
         self.services.get(&service_id)?.request(method, payload)
@@ -249,6 +273,40 @@ impl fmt::Debug for Decoders {
             .finish()
     }
 }
+/// One decoder a `#[service]` expansion submits **at link time**.
+///
+/// The macro fills one of these per service, and the linker collects them into a
+/// section read back by [`Decoders::linked`]. That is what removes the list an
+/// observer used to maintain: the services it can render are exactly the ones
+/// whose crates are linked into its binary.
+#[cfg(feature = "monitoring")]
+pub struct DecoderRegistration {
+    /// Logical name of the service, as declared to `#[service]`.
+    pub service_name: &'static str,
+    /// Builds the decoder. A `fn` pointer, so the submitted value is a constant.
+    pub build: fn() -> Arc<dyn ServiceDecoder>,
+}
+
+#[cfg(feature = "monitoring")]
+impl DecoderRegistration {
+    /// Builds one registration, in the `const` expression `linkme` requires.
+    pub const fn new(service_name: &'static str, build: fn() -> Arc<dyn ServiceDecoder>) -> Self {
+        Self {
+            service_name,
+            build,
+        }
+    }
+}
+
+/// Every decoder linked into this binary.
+///
+/// `#[service]` appends one entry per service when the `monitoring` feature is
+/// on, and the linker assembles the slice. The order across crates is **not**
+/// specified, so a consumer that needs a stable order sorts on
+/// [`DecoderRegistration::service_name`].
+#[cfg(feature = "monitoring")]
+#[linkme::distributed_slice]
+pub static DECODERS: [DecoderRegistration] = [..];
 
 #[cfg(test)]
 mod tests {

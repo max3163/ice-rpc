@@ -11,8 +11,9 @@
 //!
 //! In the default **stats** mode the rkyv payload is never read, so the observer
 //! stays ignorant of the service types and does not touch the hot path. In
-//! **detail** mode the payloads are decoded through the [`Decoders`] registry —
-//! built from the shared service contract, e.g. `common::decoders()` — and
+//! **detail** mode the payloads are decoded through the [`Decoders`] registry,
+//! built from the shared service contract with no list to maintain
+//! (`Decoders::linked()` reads every decoder linked into the binary), and
 //! rendered with each type's [`Display`](std::fmt::Display) implementation, or
 //! with its [`Debug`](std::fmt::Debug) implementation when it has none.
 //!

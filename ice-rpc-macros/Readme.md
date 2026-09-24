@@ -17,34 +17,47 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 - `DatabaseServiceRequest` — rkyv-serializable enum (one variant per method);
 - `DatabaseServiceClient` — IPC client with an atomic `NodeId` cache and automatic reconnection;
 - `DatabaseServiceServer` — IPC server with a dispatch channel;
-- `DatabaseServiceProxy` — smart proxy supporting `Provider`, `Consumer` and `ProviderNodeJs` modes;
+- `DatabaseServiceProxy` — smart proxy supporting `Provider`, `Consumer` and `ProviderJson` modes;
 - `DatabaseServiceMode` — the mode enum;
 - `ServiceLifecycle`, `ServiceNamed` and `ServiceInit` implementations.
-- With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`
-  and `DatabaseServiceDecoder` (see below); every argument and response value is
+- With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`,
+  `DatabaseServiceDecoder` and one **link-time registration** of it into
+  `ice_rpc::monitor::DECODERS` (see below); every argument and response value is
   rendered with its own `Display` implementation when it has one, with its
   `Debug` implementation otherwise;
-- With the `nodejs` feature only: the rkyv ↔ `serde_json::Value` converters
+- With the `json` feature only: the rkyv ↔ `serde_json::Value` converters
   (`deserialize_request_to_value`, `serialize_response_from_value`), the
-  `ProviderNodeJs` mode of the proxy and its `provide_nodejs()` constructor;
-- With the `http` feature only: `impl ice_rpc::gen::HttpCallable for
-  DatabaseServiceProxy`, the entry point the HTTP gateway dispatches to.
+  `ProviderJson` mode of the proxy and its `provide_json()` constructor;
+- With the `json` **or** `http` feature: `impl ice_rpc::gen::JsonInvoker for
+  DatabaseServiceProxy` — the single JSON view every JSON transport dispatches
+  to. The reading mode (`ReadMode::First` / `ReadMode::All`) is an argument of
+  `invoke_json`, so one match table serves the single-value and the streaming
+  entry points alike, and one inherent helper per method (`json_view_of_{method}`)
+  carries the decoding the table would otherwise repeat.
 
 ## Features
 
 | Feature | Default | Effect |
 |---|---|---|
-| `monitoring` | off | Also generate `impl Display for {Trait}Request` and the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`]. It is the only part that adds code a provider/consumer never calls, so a plain provider/consumer must not carry it. Method arguments and return types only have to be `Debug` — the requirement the generated request enum already imposes: `Display` is preferred when the type provides it, `Debug` is the fallback. `ice-rpc` re-exports it as the `monitoring` feature. |
-| `nodejs` | off | Also generate the rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode. Only the Node.js bridge calls them, so a Rust-only deployment must not carry them: they are about half of the generated code of a service. `gateway_nodejs` asks for them through `common`'s `napi` feature, which enables `ice-rpc/nodejs`. |
-| `http` | off | Also generate the `HttpCallable` implementation the HTTP gateway dispatches to. It is also the block that keeps `serde_json`'s conversion machinery in a binary, so it follows `ice-rpc`'s `http` feature, which the gateway already needs. |
+| `monitoring` | off | Also generate `impl Display for {Trait}Request`, the `{Trait}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`], and its registration into [`ice_rpc::monitor::DECODERS`] — a `linkme` distributed slice the linker assembles, so an observer lists nothing and calls `Decoders::linked()`. It is the only part that adds code a provider/consumer never calls, so a plain provider/consumer must not carry it. Method arguments and return types only have to be `Debug` — the requirement the generated request enum already imposes: `Display` is preferred when the type provides it, `Debug` is the fallback. `ice-rpc` re-exports it as the `monitoring` feature. |
+| `json` | off | Also generate the rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode. Only a JSON host calls them, so a Rust-only deployment must not carry them: they are about half of the generated code of a service. `gateway_nodejs` asks for them through `common`'s `napi` feature, which enables `ice-rpc/json`. |
+| `http` | off | Also generate the JSON view (`impl JsonInvoker`) the HTTP gateway dispatches to — the same one the `json` feature emits, so the two transports cannot drift apart. It is also the block that keeps `serde_json`'s conversion machinery in a binary, so it follows `ice-rpc`'s `http` feature, which the gateway already needs. |
 
 Three independent switches, read in exactly one place: `Features::from_cfg`. Every
 generator receives the set as a value, so a build that asks for nothing generates
 nothing optional — and a test can expand a trait in any combination without
 depending on the features of the build it runs in.
 
-An out-of-band observer built with `monitoring` registers the generated decoders
-to render the observed messages in clear text instead of raw bytes.
+**Always enable them through `ice-rpc`, never on this crate directly** (`ice-rpc/json`,
+`ice-rpc/monitoring`): `Features::from_cfg` reads the features of the build that
+compiles *this* crate, which is the one `ice-rpc`'s own features select. Asking a
+service crate for `ice-rpc-macros/monitoring` while `ice-rpc` was built without it
+produces an expansion calling into a runtime that is not there.
+
+An out-of-band observer built with `monitoring` therefore lists nothing: the
+decoders of every service **linked into its binary** are already in the slice, and
+`ice_rpc::monitor::Decoders::linked()` reads them back to render the observed
+messages in clear text instead of raw bytes.
 
 ## Usage
 

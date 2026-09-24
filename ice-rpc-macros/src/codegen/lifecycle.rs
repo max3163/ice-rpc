@@ -16,13 +16,13 @@ pub struct LifecycleGenInput<'a> {
     pub group_lit: &'a str,
     /// Expression of the shared [`ServiceRef`] of the service (id + version).
     pub service_ref: &'a TokenStream,
-    /// Whether the `ProviderNodeJs` branch belongs to the expansion (the
-    /// `nodejs` feature).
-    pub nodejs: bool,
+    /// Whether the `ProviderJson` branch belongs to the expansion (the
+    /// `json` feature).
+    pub json_provider: bool,
     /// One native `ServiceDispatcher::method(...)` registration per RPC method,
-    /// used by the `ProviderNodeJs` mode to bridge calls to the Node.js host.
-    /// Empty when `nodejs` is unset.
-    pub nodejs_native_methods: &'a [TokenStream],
+    /// used by the `ProviderJson` mode to bridge calls to the Node.js host.
+    /// Empty when `json_provider` is unset.
+    pub json_provider_methods: &'a [TokenStream],
 }
 
 /// Generates the [`ServiceLifecycle`](ice_rpc), `ServiceInit` and
@@ -36,20 +36,20 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         logical_name_lit,
         group_lit,
         service_ref,
-        nodejs,
-        nodejs_native_methods,
+        json_provider,
+        json_provider_methods,
     } = input;
 
-    // Without the feature the enum has no `ProviderNodeJs` variant, so the branch
+    // Without the feature the enum has no `ProviderJson` variant, so the branch
     // cannot exist — a `match` arm on a variant that is not declared does not
     // compile.
-    let nodejs_arm = if *nodejs {
+    let json_provider_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderNodeJs => {
+            #mode_name::ProviderJson => {
                 // The Node.js host implements the methods: each RPC method
                 // is bridged to the injected dispatch callback.
                 let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
-                #(#nodejs_native_methods)*
+                #(#json_provider_methods)*
                 // Registered on the channel: the channel thread starts
                 // once every provider of the process is registered.
                 if let Err(e) = ice_rpc::gen::register_native_service(
@@ -64,7 +64,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                     return false;
                 }
                 ::log::info!(
-                    "[{}] NodeJS provider registered on channel '{}'.",
+                    "[{}] JSON provider registered on channel '{}'.",
                     #logical_name_lit,
                     #group_lit
                 );
@@ -81,7 +81,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             async fn init(&self) -> bool {
                 let mut mode = self.mode.write().await;
                 match &mut *mode {
-                    #nodejs_arm
+                    #json_provider_arm
                     #mode_name::Provider { local_impl, init_hook, server_started } => {
                         if !*server_started {
                             if !init_hook.on_init().await {

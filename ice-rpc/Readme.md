@@ -10,17 +10,20 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
 - **Service discovery** with a registry per node and dependency-aware topological initialization.
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
-- **Three proxy modes**: `Provider`, `Consumer`, `ProviderNodeJs` — the last one
-  only when the `nodejs` feature is on.
+- **Three proxy modes**: `Provider`, `Consumer`, `ProviderJson` — the last one
+  only when the `json` feature is on.
 - **Optional HTTP gateway** (`http` plus one `http-*` adapter) built on trillium.
   `http-tokio` runs the server on the application's tokio runtime; the
   `trillium-smol` adapters run it on the executor trillium embeds, while the
-  ice-rpc tasks stay on the executor of the selected mode. The feature also generates the `HttpCallable` implementation of every proxy, which is what
-  keeps `serde_json`'s conversion code out of a binary that never speaks HTTP.
-- **Optional Node.js gateway** (`nodejs` feature): `#[service]` also generates the
-  rkyv ↔ `serde_json::Value` converters and the `ProviderNodeJs` mode the
-  `gateway_nodejs` bridge calls. Off by default: a Rust-only deployment does not
-  carry them, and they are about half of the generated code of a service.
+  ice-rpc tasks stay on the executor of the selected mode. The feature also
+  generates the JSON view of every proxy (`impl JsonInvoker`) — the same one the
+  `json` feature emits, so the two transports cannot drift apart — which is also
+  what keeps `serde_json`'s conversion code out of a binary that never speaks JSON.
+- **Optional JSON host surface** (`json` feature): `#[service]` also generates the
+  rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode a JSON host
+  dispatches to — the `gateway_nodejs` bridge today. Off by default: a Rust-only
+  deployment does not carry them, and they are about half of the generated code
+  of a service.
 - **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also
   generates a `{Service}Decoder` (and `Display` on the request enum) so an
   external observer renders the observed payloads in clear text — with each
@@ -181,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `ObservableError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
 | `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
 | `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
-| `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderNodeJs`). |
+| `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderJson`). |
 
 Internal concepts (`NodeId`, `WireEvent`, the transport entry points, …) are
 exposed through the doc-hidden `ice_rpc::gen` module and used by

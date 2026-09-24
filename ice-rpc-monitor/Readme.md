@@ -41,29 +41,33 @@ client or provider. Building the service definitions with the `monitoring`
 feature of `ice-rpc` makes `#[service]` also generate, per service:
 
 - `impl Display for {Service}Request`;
-- a `{Service}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`].
+- a `{Service}Decoder` implementing [`ice_rpc::monitor::ServiceDecoder`];
+- one **link-time registration** into `ice_rpc::monitor::DECODERS`, a `linkme`
+  distributed slice the linker assembles.
 
 Each rendered value uses its own `Display` implementation when it has one, and
 falls back to its `Debug` implementation otherwise: `Debug` is the only
 formatting requirement a service type has to meet.
 
-A crate that declares services (here `common`) can then expose an inventory:
-
-```rust
-// `common`, with the `monitoring` feature.
-pub fn decoders() -> ice_rpc::monitor::Decoders { /* register every {Service}Decoder */ }
-```
-
-and the observer registers it before running:
+The observer then lists nothing: it reads the slice back.
 
 ```rust
 let mut config = ice_rpc_monitor::config::Config::default();
-config.decoders = std::sync::Arc::new(common::decoders());
+config.decoders = std::sync::Arc::new(ice_rpc::monitor::Decoders::linked());
 ```
 
+The services it renders are exactly the ones whose crates are linked into the
+binary — a service that is not linked is not part of the process at all, which is
+what a hand-written list could not promise (it had already lost one). The one
+rule: an rlib nothing references is not linked, so an observer that watches
+another crate must reference it once (`use common as _;`, or any type of it). No
+registration, no constructor call, no startup cost: the entries are `const`
+values read in place.
+
 Decoding is opt-in on purpose: without the `monitoring` feature a plain
-provider/consumer carries no decoder at all. Without a registered decoder for a
-service, its messages are shown as `<N bytes, no decoder>`.
+provider/consumer carries no decoder at all — and neither the slice nor the code
+it points to. Without a decoder for a service, its messages are shown as
+`<N bytes, no decoder>`.
 
 ## What it produces
 

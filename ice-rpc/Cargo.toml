@@ -21,7 +21,7 @@ workspace = true
 # Deliberately not `all-features = true`: the execution modes are mutually
 # exclusive (`tokio` + `smol` is a compile error, see `ice-rpc-rx::rt`), so the
 # documented build picks one full mode and the adapter that belongs to it.
-features = ["tokio", "http-tokio", "monitoring", "nodejs", "tracing"]
+features = ["tokio", "http-tokio", "monitoring", "json", "tracing"]
 
 [features]
 # One full execution mode per host runtime, plus a fallback for a deployment
@@ -44,7 +44,7 @@ smol = ["ice-rpc-rx/smol"]
 # provider/consumer never calls that code. Rendering prefers a type's `Display`
 # and falls back to its `Debug`, so a service type carries no formatting
 # requirement of its own.
-monitoring = ["ice-rpc-macros/monitoring"]
+monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # Call tracing: the provider handler enters one `tracing` span per call, carrying
 # the ids of the call (correlation, trace, span, parent, service, method), so the
 # implementation's own `tracing` / `log` events are attached to the call without
@@ -59,7 +59,7 @@ monitoring = ["ice-rpc-macros/monitoring"]
 # Off by default: a deployment that collects no spans pays neither the dependency
 # nor the span.
 tracing = ["dep:tracing"]
-# The HTTP gateway: the server, and the `HttpCallable` implementation of every
+# The HTTP gateway: the server, and the `JsonInvoker` implementation of every
 # proxy it exposes. That implementation is also the block which keeps
 # `serde_json`'s conversion code in a binary, so it follows the same switch as
 # the gateway: enabling one enables the other.
@@ -78,9 +78,10 @@ http = ["dep:trillium", "ice-rpc-macros/http"]
 http-threads = ["http", "rt-threads", "dep:trillium-smol"]
 http-smol = ["http", "smol", "dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
-# The Node.js gateway: the rkyv ↔ `serde_json::Value` converters and the
-# `ProviderNodeJs` mode. A Rust-only deployment never calls them.
-nodejs = ["ice-rpc-macros/nodejs", "dep:base64"]
+# The JSON host surface: the rkyv ↔ `serde_json::Value` converters and the
+# `ProviderJson` mode any JSON host dispatches to — the Node.js gateway today.
+# A Rust-only deployment never calls them.
+json = ["ice-rpc-macros/json", "dep:base64"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
 # N-API), not another way of serving the same process.
 full = ["http", "tokio", "http-tokio"]
@@ -106,11 +107,14 @@ thiserror = "2"
 tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Optional, and reachable only through the `nodejs` feature: the only code that
-# names `base64` is the Node.js converter `#[service]` generates for a `Vec<u8>`
+# Optional, and reachable only through the `json` feature: the only code that
+# names `base64` is the JSON converter `#[service]` generates for a `Vec<u8>`
 # argument or field. It stays declared with `optional = true` so the `dep:` form
 # in that feature can name it, instead of exposing a `base64` feature of its own.
 base64 = { workspace = true, optional = true }
+# Pulled by the `monitoring` feature only: it is the linker-section machinery the
+# generated decoder registrations are collected through.
+linkme = { workspace = true, optional = true }
 # Runtime-agnostic primitives used by the core. The stream layer keeps its own
 # copy of the ones it needs (`ice-rpc-rx`); what is listed here is what the
 # transport, the locator and the HTTP gateway use directly. Deliberately no

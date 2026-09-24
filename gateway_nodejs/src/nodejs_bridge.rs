@@ -1,83 +1,169 @@
-//! Singleton Node.js bridge for JS ↔ Rust communication via N-API.
+//! The JS ↔ Rust bridge for one gateway process.
 //!
-//! Receives the IPC calls through the handlers registered by the generated
-//! code (`#[service]` macro), forwards them to the Node.js callback as native
-//! JS objects (zero-copy via N-API serde-json), and sends the responses back to the IPC bus.
+//! A `#[service]` proxy in `ProviderJson` mode receives an IPC request on the
+//! transport dispatch thread, converts it to a native JS value (serde-json, no
+//! `JSON.parse` round trip) and hands it to the single JS dispatcher through a
+//! ThreadsafeFunction. The dispatcher answers asynchronously, either with
+//! [`emit`](NodeJsBridge::emit_event) for an intermediate event or with
+//! [`resolve`](NodeJsBridge::resolve) for the terminal one, which closes the
+//! call.
 //!
 //! # Flow
-//! IPC (rkyv) → handler → deserialize → Value → call_async() → JS
-//! JS → resolve() → Value → serialize → rkyv → IPC
+//!
+//! ```text
+//! IPC (rkyv) -> generated handler -> deserialize -> Value -> start_call() -> JS
+//! JS -> emit()/resolve() -> Value -> serialize -> rkyv -> IPC (one sample per event)
+//! ```
+//!
+//! The bridge holds no global: the gateway owns one instance
+//! ([`crate::state`]) and hands out `Arc`s, so the pending table disappears with
+//! the gateway instead of surviving a `shutdown`.
 
+use crate::error::{GatewayError, GatewayErrorCode};
+use ice_rpc::json::{JsonCallStream, JsonDispatcher};
 use napi::bindgen_prelude::{Function, Unknown};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-type CorrelationId = [u8; 16];
+/// A correlation id: 16 bytes, rendered as a UUID-like hex string in JS.
+pub type CorrelationId = [u8; 16];
 
-struct PendingCall {
-    sender: ice_rpc::rt::oneshot::Sender<serde_json::Value>,
-    deadline: std::time::Instant,
-}
+/// Maximum number of calls waiting for their first JS event at the same time.
+///
+/// A JS dispatcher that never answers would otherwise grow the table without
+/// bound. Reaching the limit is reported as `E_PENDING_LIMIT` rather than
+/// silently dropping the oldest call, which would strand its caller.
+pub const MAX_PENDING_CALLS: usize = 4096;
 
 /// Typed JS callback for the Node.js dispatcher.
 ///
-/// Receives an object `{ correlationId, service, method, args }` where `args`
-/// is a native JS object (not a JSON string). After processing, the JS code
-/// must call [`resolve_nodejs_call`](crate::lib::resolve_nodejs_call).
-pub type NodeJsCallback = ThreadsafeFunction<serde_json::Value>;
+/// Built with `callee_handled::<true>()`, so JavaScript receives `(err, call)`
+/// where `call` is `{ correlationId, service, method, args }` and `args` is a
+/// native JS value.
+pub type NodeJsCallback = ThreadsafeFunction<Value>;
 
-static BRIDGE: std::sync::OnceLock<NodeJsBridge> = std::sync::OnceLock::new();
+type PendingSender = ice_rpc::gen::async_channel::Sender<Value>;
 
-/// Singleton bridge for JS ↔ Rust communication.
-pub struct NodeJsBridge {
-    callback: NodeJsCallback,
-    pending: Mutex<HashMap<CorrelationId, PendingCall>>,
+/// Bookkeeping of the calls JavaScript has not closed yet.
+///
+/// Kept separate from the ThreadsafeFunction so the admission rules (bounded
+/// table, no duplicate id, one sender per call) are unit-testable without a JS
+/// engine.
+#[derive(Default)]
+pub(crate) struct PendingCalls {
+    entries: HashMap<CorrelationId, PendingSender>,
 }
 
-impl NodeJsBridge {
-    /// Returns the global instance of the bridge.
+impl PendingCalls {
+    /// Admits a new call.
     ///
-    /// # Panics
-    /// If the bridge has not been initialized via [`init`](Self::init).
-    pub fn global() -> &'static Self {
-        BRIDGE
-            .get()
-            .expect("NodeJsBridge not initialized — call NodeJsBridge::init() first")
-    }
-
-    /// Initializes the bridge with the JS callback.
-    pub fn init(js_func: Function<'_, serde_json::Value, Unknown<'static>>) -> napi::Result<()> {
-        let tsfn: NodeJsCallback = js_func
-            .build_threadsafe_function::<serde_json::Value>()
-            .callee_handled::<true>()
-            .build()?;
-
-        let bridge = NodeJsBridge {
-            callback: tsfn,
-            pending: Mutex::new(HashMap::new()),
-        };
-
-        BRIDGE
-            .set(bridge)
-            .map_err(|_| napi::Error::from_reason("NodeJsBridge already initialized"))?;
-
-        log::info!("NodeJsBridge initialized (JS callback registered).");
+    /// # Errors
+    /// `E_PENDING_LIMIT` when the table is full, `E_DUPLICATE_CID` when this id
+    /// is already open.
+    pub(crate) fn insert(
+        &mut self,
+        cid: CorrelationId,
+        sender: PendingSender,
+    ) -> Result<(), GatewayError> {
+        if self.entries.len() >= MAX_PENDING_CALLS {
+            return Err(GatewayError::new(
+                GatewayErrorCode::PendingLimit,
+                format!("{MAX_PENDING_CALLS} calls already await a JavaScript answer"),
+            ));
+        }
+        if self.entries.contains_key(&cid) {
+            return Err(GatewayError::new(
+                GatewayErrorCode::DuplicateCid,
+                format!(
+                    "correlation id '{}' is already in flight",
+                    ice_rpc::gen::fmt_correlation_id(&cid)
+                ),
+            ));
+        }
+        self.entries.insert(cid, sender);
         Ok(())
     }
 
-    /// Calls the JS with the request data and waits for the response.
+    /// Borrows the sender of an open call, without closing it.
+    pub(crate) fn sender(&self, cid: &CorrelationId) -> Option<PendingSender> {
+        self.entries.get(cid).cloned()
+    }
+
+    /// Removes the entry for `cid`, handing its sender back to the caller.
     ///
-    /// Uses the runtime-agnostic oneshot channel and the 30s timeout
-    /// provided by `ice_rpc::rt`.
-    pub async fn call_async(
+    /// Dropping that sender is what closes the call: the generated handler stops
+    /// reading events and the transport answers.
+    pub(crate) fn take(&mut self, cid: &CorrelationId) -> Option<PendingSender> {
+        self.entries.remove(cid)
+    }
+
+    /// Number of calls currently open.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// The bridge of one gateway: one JS dispatcher, one table of open calls.
+pub struct NodeJsBridge {
+    callback: NodeJsCallback,
+    pending: Mutex<PendingCalls>,
+}
+
+impl NodeJsBridge {
+    /// Wraps the JS dispatcher in a ThreadsafeFunction.
+    ///
+    /// # Errors
+    /// Propagates the N-API failure when the function cannot be made
+    /// thread-safe (e.g. the JS runtime is shutting down).
+    pub fn new(js_func: Function<'_, Value, Unknown<'static>>) -> napi::Result<Self> {
+        let callback: NodeJsCallback = js_func
+            .build_threadsafe_function::<Value>()
+            .callee_handled::<true>()
+            .build()?;
+
+        Ok(Self {
+            callback,
+            pending: Mutex::new(PendingCalls::default()),
+        })
+    }
+
+    /// Locks the pending table, recovering from a poisoned mutex.
+    ///
+    /// `panic = "abort"` would turn a poisoning `expect` into a process abort,
+    /// and a bridge that cannot be read is worse than a bridge read in an
+    /// unknown-but-consistent state.
+    fn pending(&self) -> MutexGuard<'_, PendingCalls> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Hands a call to the JS dispatcher and returns the stream of its events.
+    ///
+    /// Does **not** wait: the events arrive later, through [`Self::emit_event`]
+    /// and [`Self::resolve`]. The generated handler reads them and emits one
+    /// wire sample per event, which is what makes a multi-value `Observable`
+    /// servable from JavaScript. The deadline for the *first* event lives in
+    /// `ice_rpc::json::JSON_CALL_TIMEOUT`.
+    ///
+    /// Runs on the transport dispatch thread (the caller is the generated
+    /// `ProviderJson` handler), never on the Node.js main thread.
+    ///
+    /// # Errors
+    /// `E_PENDING_LIMIT`, `E_DUPLICATE_CID`, or `E_CALLBACK` when the dispatcher
+    /// cannot be reached.
+    pub fn start_call(
         &self,
         cid: CorrelationId,
         service: &str,
         method: &str,
-        args: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let (tx, rx) = ice_rpc::rt::oneshot::channel::<serde_json::Value>();
+        args: Value,
+    ) -> Result<JsonCallStream, GatewayError> {
+        let (stream, sender) = JsonCallStream::channel();
+        self.pending().insert(cid, sender)?;
 
         let call_data = serde_json::json!({
             "correlationId": ice_rpc::gen::fmt_correlation_id(&cid),
@@ -86,148 +172,158 @@ impl NodeJsBridge {
             "args": args,
         });
 
-        self.pending.lock().expect("pending lock poisoning").insert(
-            cid,
-            PendingCall {
-                sender: tx,
-                deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
-            },
-        );
-
         let status = self
             .callback
             .call(Ok(call_data), ThreadsafeFunctionCallMode::NonBlocking);
         if status != napi::Status::Ok {
-            self.pending
-                .lock()
-                .expect("pending lock poisoning")
-                .remove(&cid);
-            return Err(format!("Failed to call the JS callback: {:?}", status));
+            self.pending().take(&cid);
+            return Err(GatewayError::new(
+                GatewayErrorCode::Callback,
+                format!("the JS dispatcher is not reachable ({status:?})"),
+            ));
         }
 
-        match ice_rpc::rt::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(_)) => {
-                self.pending
-                    .lock()
-                    .expect("pending lock poisoning")
-                    .remove(&cid);
-                Err("JS bridge: response channel closed (JS crash?)".into())
-            }
-            Err(_) => {
-                self.pending
-                    .lock()
-                    .expect("pending lock poisoning")
-                    .remove(&cid);
-                Err("JS bridge: timeout (30s) — the JS callback did not respond".into())
-            }
-        }
+        Ok(stream)
     }
 
-    /// Resolves a pending call through its hexadecimal correlation_id.
-    pub fn resolve(&self, correlation_id_hex: &str, result: serde_json::Value) -> bool {
-        let cid = match parse_correlation_id_hex(correlation_id_hex) {
-            Some(c) => c,
-            None => {
-                log::warn!(
-                    "resolve: invalid correlation_id hex '{}'",
-                    correlation_id_hex
-                );
-                return false;
-            }
-        };
-
+    /// Pushes one intermediate event, keeping the call open.
+    ///
+    /// # Errors
+    /// `E_INVALID_CID`, `E_UNKNOWN_CID`, or `E_CALLBACK` when the call was
+    /// already closed.
+    pub fn emit_event(&self, correlation_id_hex: &str, event: Value) -> Result<(), GatewayError> {
+        let cid = parse_cid(correlation_id_hex)?;
         let sender = self
-            .pending
-            .lock()
-            .expect("pending lock poisoning")
-            .remove(&cid)
-            .map(|p| p.sender);
-
-        match sender {
-            Some(tx) => {
-                let _ = tx.send(result);
-                true
-            }
-            None => {
-                log::warn!(
-                    "resolve: correlation_id '{}' not found (expired or nonexistent)",
-                    correlation_id_hex
-                );
-                false
-            }
-        }
-    }
-
-    /// Cleans up the calls whose deadline has expired.
-    #[allow(dead_code)]
-    pub fn cleanup_expired(&self) {
-        let now = std::time::Instant::now();
-        if let Ok(mut map) = self.pending.lock() {
-            map.retain(|_, call| call.deadline > now);
-        }
-    }
-}
-
-/// Resolves a pending call (called from [`lib.rs`] via N-API).
-pub fn resolve_call(correlation_id_hex: String, result: serde_json::Value) -> bool {
-    NodeJsBridge::global().resolve(&correlation_id_hex, result)
-}
-
-/// Parses a correlation_id in UUID-like hexadecimal format.
-fn parse_correlation_id_hex(hex: &str) -> Option<CorrelationId> {
-    if hex.len() != 36 {
-        return None;
-    }
-    let bytes: Vec<u8> = hex
-        .chars()
-        .filter(|c| *c != '-')
-        .collect::<Vec<char>>()
-        .chunks(2)
-        .filter_map(|chunk| {
-            let s: String = chunk.iter().collect();
-            u8::from_str_radix(&s, 16).ok()
+            .pending()
+            .sender(&cid)
+            .ok_or_else(|| unknown_cid(correlation_id_hex))?;
+        sender.try_send(event).map_err(|_| {
+            GatewayError::new(
+                GatewayErrorCode::Callback,
+                "the call was closed while pushing an event",
+            )
         })
-        .collect();
-
-    if bytes.len() != 16 {
-        return None;
     }
 
-    let mut cid = [0u8; 16];
-    cid.copy_from_slice(&bytes);
-    Some(cid)
+    /// Answers a pending call with its terminal event and closes it.
+    ///
+    /// # Errors
+    /// `E_INVALID_CID`, `E_UNKNOWN_CID` when no call matches it (already
+    /// answered or expired).
+    pub fn resolve(&self, correlation_id_hex: &str, event: Value) -> Result<(), GatewayError> {
+        let cid = parse_cid(correlation_id_hex)?;
+        let sender = self
+            .pending()
+            .take(&cid)
+            .ok_or_else(|| unknown_cid(correlation_id_hex))?;
+        // Best effort: a closed receiver only means the caller already gave up
+        // (deadline), which is not the answering side's problem.
+        let _ = sender.try_send(event);
+        Ok(())
+    }
+}
+
+/// The bridge, seen by the generated JSON dispatcher.
+///
+/// Registered once, at startup, with
+/// [`ice_rpc::json::set_json_dispatcher`]. The **running** bridge is
+/// read from the state on every call, so a restart swaps it without
+/// re-registering — and a dispatcher that outlives its gateway reports the state
+/// error instead of touching a bridge that is gone.
+pub(crate) struct GatewayJsonDispatcher;
+
+#[async_trait::async_trait]
+impl JsonDispatcher for GatewayJsonDispatcher {
+    async fn dispatch_json(
+        &self,
+        cid: CorrelationId,
+        service: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<JsonCallStream, String> {
+        let bridge = crate::state::bridge().map_err(|error| error.rendered())?;
+        bridge
+            .start_call(cid, service, method, args)
+            .map_err(|error| error.rendered())
+    }
+}
+
+/// Parses a correlation id, reporting the failure with its own code.
+fn parse_cid(correlation_id_hex: &str) -> Result<CorrelationId, GatewayError> {
+    ice_rpc::gen::parse_correlation_id(correlation_id_hex).ok_or_else(|| {
+        GatewayError::new(
+            GatewayErrorCode::InvalidCid,
+            format!("'{correlation_id_hex}' is not a hexadecimal correlation id"),
+        )
+    })
+}
+
+/// Builds the `E_UNKNOWN_CID` failure.
+fn unknown_cid(correlation_id_hex: &str) -> GatewayError {
+    GatewayError::new(
+        GatewayErrorCode::UnknownCid,
+        format!("no pending call for '{correlation_id_hex}' (expired or already answered)"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_valid_correlation_id() {
-        let hex = "deadbeef-cafe-babe-0011-223344556677";
-        let cid = parse_correlation_id_hex(hex).unwrap();
-        assert_eq!(cid[0], 0xDE);
-        assert_eq!(cid[1], 0xAD);
-        assert_eq!(cid[15], 0x77);
+    fn sender() -> PendingSender {
+        let (tx, rx) = ice_rpc::gen::async_channel::unbounded::<Value>();
+        // The receiver is kept alive by leaking it: `insert` only needs a live
+        // sender, and a dropped receiver would turn every send into a no-op.
+        Box::leak(Box::new(rx));
+        tx
     }
 
     #[test]
-    fn parse_invalid_length() {
-        assert!(parse_correlation_id_hex("too-short").is_none());
-        assert!(parse_correlation_id_hex("").is_none());
+    fn a_call_is_admitted_then_closed_once() {
+        let mut pending = PendingCalls::default();
+        let cid = [7u8; 16];
+        pending.insert(cid, sender()).expect("fresh id is admitted");
+        assert_eq!(pending.len(), 1);
+
+        // Borrowing keeps the call open: that is what `emitNodejsEvent` does.
+        assert!(pending.sender(&cid).is_some());
+        assert_eq!(pending.len(), 1);
+
+        assert!(pending.take(&cid).is_some());
+        assert!(pending.take(&cid).is_none(), "a call closes only once");
+        assert_eq!(pending.len(), 0);
     }
 
     #[test]
-    fn parse_invalid_hex() {
-        assert!(parse_correlation_id_hex("gggggggg-gggg-gggg-gggg-gggggggggggg").is_none());
+    fn a_duplicate_correlation_id_is_refused() {
+        let mut pending = PendingCalls::default();
+        let cid = [9u8; 16];
+        pending.insert(cid, sender()).expect("first is admitted");
+        let error = pending
+            .insert(cid, sender())
+            .expect_err("the duplicate must be refused");
+        assert_eq!(error.code(), GatewayErrorCode::DuplicateCid);
+        assert_eq!(pending.len(), 1, "the refused insert changed nothing");
     }
 
     #[test]
-    fn roundtrip_correlation_id() {
-        let cid_orig = ice_rpc::gen::next_correlation_id();
-        let hex = ice_rpc::gen::fmt_correlation_id(&cid_orig);
-        let cid_parsed = parse_correlation_id_hex(&hex).unwrap();
-        assert_eq!(cid_orig, cid_parsed);
+    fn the_table_is_bounded() {
+        let mut pending = PendingCalls::default();
+        for index in 0..MAX_PENDING_CALLS {
+            let mut cid = [0u8; 16];
+            cid[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            pending.insert(cid, sender()).expect("below the limit");
+        }
+        let error = pending
+            .insert([0xffu8; 16], sender())
+            .expect_err("the limit must be enforced");
+        assert_eq!(error.code(), GatewayErrorCode::PendingLimit);
+        assert_eq!(pending.len(), MAX_PENDING_CALLS);
+    }
+
+    #[test]
+    fn a_malformed_correlation_id_is_an_invalid_cid() {
+        let error = parse_cid("not-a-correlation-id").expect_err("malformed id");
+        assert_eq!(error.code(), GatewayErrorCode::InvalidCid);
     }
 }

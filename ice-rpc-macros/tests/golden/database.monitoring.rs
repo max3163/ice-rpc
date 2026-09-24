@@ -385,15 +385,25 @@ pub struct DatabaseApiDecoder;
 impl DatabaseApiDecoder {
     /// Logical name of the service this decoder handles.
     pub const SERVICE_NAME: &'static str = "Database";
+    /// Builds this decoder, shared by the link-time registration and by
+    /// [`Self::register`] so both hand out the same decoder type.
+    pub fn build() -> ::std::sync::Arc<dyn ice_rpc::monitor::ServiceDecoder> {
+        ::std::sync::Arc::new(Self)
+    }
     /// Registers this decoder into an observer registry.
     pub fn register(decoders: &mut ice_rpc::monitor::Decoders) {
         decoders
-            .register(
-                ice_rpc::gen::service_id_of(Self::SERVICE_NAME),
-                ::std::sync::Arc::new(Self),
-            );
+            .register(ice_rpc::gen::service_id_of(Self::SERVICE_NAME), Self::build());
     }
 }
+#[allow(missing_docs)]
+#[allow(dead_code)]
+#[ice_rpc::gen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
+#[linkme(crate = ice_rpc::gen::linkme)]
+static __ICE_RPC_DECODER_DATABASEAPI: ice_rpc::monitor::DecoderRegistration = ice_rpc::monitor::DecoderRegistration {
+    service_name: "Database",
+    build: DatabaseApiDecoder::build,
+};
 #[allow(missing_docs)]
 impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
     fn request(

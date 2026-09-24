@@ -362,6 +362,50 @@ pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
          {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"
     )
 }
+/// Parses a UUID-like hexadecimal correlation id.
+///
+/// Accepts both forms a JavaScript caller may hold: the 36-character dashed
+/// form produced by [`fmt_correlation_id`] and the 32-character undashed one.
+/// Performs a single pass and allocates nothing, so it is usable on the hot
+/// path of the Node.js bridge. Returns `None` on any other length, on a
+/// misplaced dash and on a non-hexadecimal digit -- a partially parsed id is
+/// never returned.
+pub fn parse_correlation_id(text: &str) -> Option<[u8; CORRELATION_ID_LEN]> {
+    let bytes = text.as_bytes();
+    let undashed_len = CORRELATION_ID_LEN * 2;
+    let dashed = if bytes.len() == undashed_len {
+        false
+    } else if bytes.len() == undashed_len + 4 {
+        true
+    } else {
+        return None;
+    };
+
+    let mut out = [0u8; CORRELATION_ID_LEN];
+    let mut nibbles = 0usize;
+    for (index, byte) in bytes.iter().enumerate() {
+        if dashed && matches!(index, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return None;
+            }
+            continue;
+        }
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        if nibbles.is_multiple_of(2) {
+            out[nibbles / 2] = digit << 4;
+        } else {
+            out[nibbles / 2] |= digit;
+        }
+        nibbles += 1;
+    }
+
+    (nibbles == CORRELATION_ID_LEN * 2).then_some(out)
+}
 
 #[cfg(test)]
 mod tests {
@@ -549,5 +593,48 @@ mod tests {
         assert_eq!(cancel.seq, 0);
         assert_eq!(cancel.with_seq(9).seq, 9);
         assert!(cancel.timestamp_ns >= request.timestamp_ns);
+    }
+}
+
+#[cfg(test)]
+mod correlation_id_parsing {
+    use super::*;
+
+    #[test]
+    fn roundtrips_the_formatted_form() {
+        let cid = next_correlation_id();
+        let text = fmt_correlation_id(&cid);
+        assert_eq!(text.len(), 36);
+        assert_eq!(parse_correlation_id(&text), Some(cid));
+    }
+
+    #[test]
+    fn accepts_the_undashed_form() {
+        let cid = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x00, 0x11,
+            0x22, 0x33,
+        ];
+        assert_eq!(
+            parse_correlation_id("deadbeef0123456789abcdef00112233"),
+            Some(cid)
+        );
+    }
+
+    #[test]
+    fn accepts_uppercase_hex() {
+        let lower = parse_correlation_id("deadbeef-cafe-babe-0011-223344556677");
+        let upper = parse_correlation_id("DEADBEEF-CAFE-BABE-0011-223344556677");
+        assert!(lower.is_some());
+        assert_eq!(lower, upper);
+    }
+
+    #[test]
+    fn rejects_bad_lengths_digits_and_dash_positions() {
+        assert!(parse_correlation_id("").is_none());
+        assert!(parse_correlation_id("deadbeef").is_none());
+        assert!(parse_correlation_id("deadbeef-cafe-babe-0011-22334455667").is_none());
+        assert!(parse_correlation_id("gggggggg-gggg-gggg-gggg-gggggggggggg").is_none());
+        // 36 bytes, but the dashes do not sit at 8/13/18/23.
+        assert!(parse_correlation_id("deadbeef-cafe-bab-e0011-223344556677").is_none());
     }
 }

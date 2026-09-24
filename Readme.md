@@ -143,7 +143,7 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── sync.rs                 ← Poisoning-tolerant lock helper
 │   ├── config.rs               ← iceoryx2 root-path / TOML configuration
 │   ├── gen.rs                  ← Internal facade for the generated code (doc-hidden)
-│   └── nodejs_dispatch.rs      ← Node.js bridge injection point (N-API)
+│   └── json.rs                 ← the JSON contract: caller side + host side
 │
 ice-rpc-macros/                 ← Procedural macros crate
 ├── src/
@@ -152,10 +152,10 @@ ice-rpc-macros/                 ← Procedural macros crate
 │       ├── helpers.rs          ← g_variant_name(), extract_rpc_result_types()
 │       ├── client.rs           ← {Trait}Client : rkyv request → native_call
 │       ├── server.rs           ← {Trait}Server : per-method ServiceDispatcher
-│       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderNodeJs modes
+│       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderJson modes
 │       ├── lifecycle.rs        ← ServiceLifecycle/ServiceInit/ServiceNamed
 │       │                          (+ spawn_native_service for the provider)
-│       └── nodejs.rs           ← rkyv↔serde_json::Value converters (NodeJS mode)
+│       └── json.rs             ← The JSON view: rkyv↔Value converters and JsonInvoker
 │
 common/                         ← Example service definitions (not shipped)
 │   └── src/
@@ -164,14 +164,15 @@ common/                         ← Example service definitions (not shipped)
 │       ├── context.rs          ← ContextService
 │       ├── database.rs         ← DatabaseService
 │       └── http.rs             ← HttpService
-gateway_nodejs/                 ← NAPI-RS gateway : NodeJsBridge singleton + generated proxies
+gateway_nodejs/                 ← NAPI-RS gateway : one bridge + the generated JSON views
 │   ├── build.rs                ← N-API build script
 │   └── src/
-│       ├── lib.rs              ← Entry point : init(callback), shutdown()
-│       ├── nodejs_bridge.rs    ← Generic agnostic bridge (Value ↔ native JS via NAPI)
-│       ├── services.rs         ← Provider registration via with_nodejs_providers!
-│       ├── consumer.rs         ← Consumer helpers
-│       └── runtime.rs          ← Tokio runtime
+│       ├── lib.rs              ← N-API surface : registerService/init/callService/…
+│       ├── state.rs            ← Lifecycle (Idle/Configured/Running), replayable
+│       ├── error.rs            ← Stable error codes, rendered as message prefixes
+│       ├── nodejs_bridge.rs    ← The bridge : ThreadsafeFunction + pending calls table
+│       ├── services.rs         ← The gateway's own list of maintained services
+│       └── consumer.rs         ← Consumer helpers (JsonInvoker dispatch)
 ```
 
 ### 2.1. Code generation modules (codegen/)
@@ -181,10 +182,9 @@ gateway_nodejs/                 ← NAPI-RS gateway : NodeJsBridge singleton + g
 | `helpers.rs` | `g_variant_name` (snake→Pascal), `extract_rpc_result_types` |
 | `client.rs` | Generates `{Trait}Client` : serializes the rkyv request and calls `native_call(service, method, payload)`, returning the streamed responses as an `Observable` |
 | `server.rs` | Generates `{Trait}Server` : one `ServiceDispatcher::method(...)` registration per RPC method, each decoding the rkyv request and streaming `observable_to_responses(observable)` |
-| `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_nodejs` constructors, Provider/Consumer/ProviderNodeJs delegation |
-| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderNodeJs bridge |
-| `http.rs` | Generates `impl HttpCallable` for each Proxy : dynamic method dispatch → RPC call, JSON deserialization → Rust types, result serialization → `{"status":"ok","data":...}` |
-| `nodejs.rs` | Generates `deserialize_request_to_value()` and `serialize_response_from_value()` : per-method rkyv ↔ `serde_json::Value` converters, used by the NodeJS bridge |
+| `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_json` constructors, Provider/Consumer/ProviderJson delegation |
+| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderJson bridge |
+| `json.rs` | Generates the JSON view of a service, and names no transport : the per-method rkyv ↔ `serde_json::Value` converters the host side needs, plus `impl JsonInvoker` — one match table for every method, with the reading mode (`First` / `All`) as an argument. Both the HTTP gateway and the Node.js bridge dispatch to that same view. |
 
 ---
 
@@ -221,7 +221,7 @@ pub trait DatabaseService: Send + Sync + 'static {
 │  │  DatabaseServiceServer    ← IPC server (ServiceDispatcher)  │ │
 │  │  DatabaseServiceProxy     ← Smart Proxy (3 modes)           │ │
 │  │  DatabaseServiceMode      ← Provider | Consumer |           │ │
-│  │                                ProviderNodeJs               │ │
+│  │                                ProviderJson               │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────────────────┐ │
@@ -243,7 +243,7 @@ pub trait DatabaseService: Send + Sync + 'static {
 | `DatabaseServiceClient` | IPC client : serializes the request and calls the transport |
 | `DatabaseServiceServer` | IPC server : routes a decoded request to its handler |
 | `DatabaseServiceProxy` | Single entry point (Smart Proxy Node, 3 modes) |
-| `DatabaseServiceMode` | `Provider` / `Consumer` / `ProviderNodeJs` enum |
+| `DatabaseServiceMode` | `Provider` / `Consumer` / `ProviderJson` enum |
 
 ### 3.2. Optional parameters
 
@@ -563,7 +563,7 @@ addressing is entirely static. What remains is **liveness**:
 │    provide(impl)          → simple Provider (default ServiceInit)    │
 │    provide_with_init(impl)→ Provider with custom init hook           │
 │    consume()              → pure Consumer (IPC only)                 │
-│    provide_nodejs()       → NodeJS Provider (generic JS bridge)      │
+│    provide_json()       → NodeJS Provider (generic JS bridge)      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -582,10 +582,10 @@ impl DatabaseService for DatabaseServiceProxy {
                 // Remote call through the publish/subscribe transport
                 ipc_client.get_user_age(name).await
             }
-            Mode::ProviderNodeJs => {
+            Mode::ProviderJson => {
                 // Calls arrive over IPC and are bridged to the JS host
                 ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
-                    "ProviderNodeJs: direct calls are not supported — use IPC".into()
+                    "ProviderJson: direct calls are not supported — use IPC".into()
                 ))
             }
         }
@@ -593,20 +593,23 @@ impl DatabaseService for DatabaseServiceProxy {
 }
 ```
 
-### 7.3. ProviderNodeJs lifecycle
+### 7.3. ProviderJson lifecycle
 
-In ProviderNodeJs mode, `ServiceLifecycle::init()` starts a transport service whose
+In ProviderJson mode, `ServiceLifecycle::init()` starts a transport service whose
 dispatcher bridges each RPC method to the JS host:
 
 1. `deserialize_request_to_value(method, payload)` decodes the rkyv request into a
    `serde_json::Value`;
-2. `ice_rpc::nodejs_dispatch::call()` invokes the JS callback (blocking until the
-   JS side resolves the call);
-3. `serialize_response_from_value(method, value)` encodes the JS result back into
-   a rkyv `WireEvent` sample.
+2. `ice_rpc::json::dispatch_json(…)` hands it to the registered
+   `JsonDispatcher` and returns the stream of its events — each event becomes its
+   own wire sample, so a method may answer several values;
+3. `serialize_response_from_value(method, value)` encodes each event back into a
+   rkyv `WireEvent` sample.
 
-`ice_rpc::nodejs_dispatch` is a **function pointer** injected by `gateway_nodejs`
-at startup, avoiding a circular `common` → `gateway_nodejs` dependency.
+`ice_rpc::json` holds an `Arc<dyn JsonDispatcher>` registered at startup
+by the JSON host (`gateway_nodejs` calls `set_json_dispatcher`), which avoids a
+circular `common` → `gateway_nodejs` dependency and lets any other host — a Rust
+test today, a future WASM bridge — implement that same trait.
 
 ---
 
@@ -787,148 +790,84 @@ for the automated validation (clean shutdown vs `SIGKILL`).
 
 ---
 
-## 12. NodeJS Gateway (NAPI-RS bridge)
+## 12. Node.js gateway (NAPI-RS bridge)
 
-### 12.1. Architecture
+The gateway lets a Node.js process **provide** and **consume** ice-rpc services:
+the business logic is JavaScript, the IPC transport stays Rust. A service
+declared with `#[service]` is not implemented in Rust at all — the generated
+`ProviderJson` proxy bridges every incoming call to a single JavaScript
+dispatcher, and the generated consumer entry points let JavaScript call any other
+ice-rpc service of the machine.
 
-The gateway exposes the ice-rpc services to Node.js via NAPI-RS. It implements the Proxy **mode 3 (ProviderNodeJs)** : the business logic is in JavaScript, the generated Rust code bridges the IPC bus and the NodeJS runtime.
+The full contract — signatures, argument convention, event envelope, error codes,
+lifecycle — is in [`docs/nodejs-gateway-api-v2.md`](docs/nodejs-gateway-api-v2.md),
+and the user-facing guide is [`gateway_nodejs/Readme.md`](gateway_nodejs/Readme.md).
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    NODEJS GATEWAY — ARCHITECTURE                          │
-│                                                                          │
-│  ┌─────────────────────┐        ┌──────────────────────────────────┐     │
-│  │   Node.js           │        │   Rust process (gateway_nodejs) │     │
-│  │                     │        │                                  │     │
-│  │  const gw =         │  NAPI  │  init(callback)                  │     │
-│  │    require(...);    │◄──────►│  ┌────────────────────────────┐  │     │
-│  │                     │        │  │ NodeJsBridge (SINGLETON)   │  │     │
-│  │  gw.init(           │        │  │                            │  │     │
-│  │    (call) => {      │        │  │ callback: ThreadsafeFn     │  │     │
-│  │      // process     │        │  │ pending: HashMap<cid, Tx>  │  │     │
-│  │      return         │        │  └──────────┬─────────────────┘  │     │
-│  │        result;      │        │             │                    │     │
-│  │    }                │        │  ┌──────────▼─────────────────┐  │     │
-│  │  );                 │        │  │ Services (generated by     │  │     │
-│  │                     │        │  │ #[service])                │  │     │
-│  │  // The services    │        │  │                            │  │     │
-│  │  // are called      │        │  │ DatabaseServiceProxy       │  │     │
-│  │  // via IPC by      │        │  │   .provide_nodejs()        │  │     │
-│  │  // other Nodes     │        │  │ ConfigServiceProxy         │  │     │
-│  │                     │        │  │   .provide_nodejs()        │  │     │
-│  └─────────────────────┘        │  │ HttpServiceProxy           │  │     │
-│                                  │  │   .provide_nodejs()       │  │     │
-│                                  │  └───────────────────────────┘  │     │
-│                                  └─────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+### 12.1. Flow of an incoming IPC call
 
-### 12.2. Flow of an IPC call → NodeJS
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│            FLOW OF AN IPC CALL TO NODEJS (ProviderNodeJs mode)            │
-│                                                                          │
-│  Consumer (another Node)                 Gateway NodeJS                  │
-│  ═════════════════════                 ══════════════                    │
-│                                                                          │
-│  publish on "DatabaseService_req"                                        │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 1. The transport dispatch thread receives the request            │    │
-│  │    → decode cid, method = "get_user_age", payload                │    │
-│  │    → the ServiceDispatcher routes the method to the JS bridge    │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 2. Generated converter (macro)                                    │    │
-│  │    a. rkyv::from_bytes(payload) → DatabaseServiceRequest         │    │
-│  │    b. deserialize_request_to_value(method, bytes)                │    │
-│  │       → serde_json::Value { "name": "Alice" }                    │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 3. NodeJsBridge::call_and_wait()                                 │    │
-│  │    → tsfn.call({                                                 │    │
-│  │         correlationId: "deadbeef-...",                            │    │
-│  │         service: "DatabaseService",                               │    │
-│  │         method: "get_user_age",                                   │    │
-│  │         args: { name: "Alice" }   ← native JS object, not JSON!  │    │
-│  │      })                                                          │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 4. NodeJS callback                                               │    │
-│  │    async (call) => {                                             │    │
-│  │      const age = await db.getUserAge(call.args.name);            │    │
-│  │      gw.resolveNodeJsCall(call.correlationId, {                  │    │
-│  │        type: "next",                                             │    │
-│  │        data: { age: 30 }                                         │    │
-│  │      });                                                         │    │
-│  │    }                                                             │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 5. NodeJsBridge::resolve()                                       │    │
-│  │    → oneshot::Sender → unblocks call_and_wait()                  │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│         │                                                                 │
-│         ▼                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │ 6. Handler (continuation)                                        │    │
-│  │    c. serialize_response_from_value(method, result)              │    │
-│  │       → rkyv::to_bytes(WireEvent::Next(30))                      │    │
-│  │    d. publish cid ++ bytes on "DatabaseService_resp"             │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Consumer in another process
+    participant T as Transport dispatch thread
+    participant G as generated ProviderJson handler
+    participant B as NodeJsBridge
+    participant J as JavaScript dispatcher
+    C->>T: publish on DatabaseService_req
+    T->>G: route by method
+    G->>G: rkyv request to serde_json::Value
+    G->>B: start_call cid service method args
+    B->>J: ThreadsafeFunction call
+    J->>J: business logic, then emits its events
+    J->>B: emitNodejsEvent cid event
+    B-->>G: one event per call
+    G->>T: one wire sample per event
+    J->>B: resolveNodejsCall cid terminal event
+    B-->>G: the call is closed
+    G->>T: rkyv WireEvent samples
+    T->>C: publish on DatabaseService_resp
 ```
 
-### 12.3. Node.js API
+### 12.2. Node.js API
 
 ```javascript
-const gw = require('gateway-nodejs');
+const gateway = require('gateway-nodejs');
 
-// 1. Initialization with a single callback for ALL services
-gw.init((call) => {
-    // call = { correlationId, service, method, args }
-    // args is a native JS object (no JSON.parse needed!)
+// 1. Register only the services THIS process provides.
+gateway.registerService('ContextService');
+
+// 2. One dispatcher for every service. The signature is (err, call).
+gateway.init((err, call) => {
+    if (err) return;
     const { correlationId, service, method, args } = call;
-
-    // Business processing...
-    const result = processCall(service, method, args);
-
-    // Send the response back
-    gw.resolveNodeJsCall(correlationId, {
-        type: "next",      // "next" | "complete" | "error"
-        data: result
-    });
+    // args is a native JS value: no JSON.parse anywhere.
+    gateway.resolveNodejsCall(correlationId, { type: 'next', data: store.get(args) });
 });
 
-// 2. The services are automatically announced on the IPC bus
-//    (ConfigService, DatabaseService, HttpService)
+// 3. Consume: the proxy is created on demand, nothing to declare.
+const age = await gateway.callService('DatabaseService', 'get_user_age', 'Alice');
+const values = await gateway.callServiceStream('NotificationService', 'watch', 3);
 
-// 3. Clean shutdown
-gw.shutdown();
+// 4. Clean shutdown releases the IPC resources.
+await gateway.shutdown();
 ```
 
-### 12.4. Key points
+A method that streams several values answers one call with several events:
+`emitNodejsEvent` for each intermediate one, `resolveNodejsCall` for the terminal
+one, which also closes the call.
+
+### 12.3. Key points
 
 | Characteristic | Description |
 |---|---|
-| **Single bridge** | A single `NodeJsBridge` singleton for all services |
-| **Zero-copy JS** | No `JSON.parse()`/`JSON.stringify()` — NAPI serde-json converts `Value` ↔ native JS object automatically |
-| **Single callback** | A single JS callback `(call) => void` to dispatch to the business handlers |
-| **Typed conversion** | The macro generates `deserialize_request_to_value()` and `serialize_response_from_value()` per service |
-| **No direct iceoryx2** | `gateway_nodejs` does not depend on `iceoryx2` — everything goes through `ice-rpc` |
-| **Always available** | The NodeJS bridge code is generated unconditionally — no `napi` feature needed |
-| **Inverted dispatch** | `ice_rpc::nodejs_dispatch` is a function pointer injected by `gateway_nodejs` at `init()` |
-
----
+| **Single bridge** | One `NodeJsBridge` per gateway, owning the calls JavaScript has not closed yet |
+| **Zero-copy JS** | No `JSON.parse`/`JSON.stringify`: NAPI serde-json converts `Value` and native JS objects |
+| **Single callback** | One JS dispatcher `(err, call)` for every service and method |
+| **Generated surface** | `#[service]` emits the provider converters **and** the consumer entry points, so neither can drift from the declaration |
+| **No direct iceoryx2** | `gateway_nodejs` never depends on `iceoryx2`: everything goes through `ice-rpc` |
+| **Non-blocking calls** | `callService` and `callServiceStream` run on the libuv thread pool; the Node.js event loop is never blocked |
+| **Stable codes** | Every failure starts with a documented code (`E_NO_PROVIDER`, `E_TIMEOUT`, `E_BUSINESS`, …) |
+| **Bounded waits** | The transport thread waits for the first event at most 30 s, and the pending table is capped |
+| **Two-process consumption** | A process cannot consume a service it provides: the locator returns the registered provider proxy |
 
 ## 13. HTTP REST gateway
 
@@ -964,31 +903,20 @@ The HTTP REST gateway is a built-in HTTP server based on [trillium](https://gith
 │                             │                                            │
 │                             ▼                                            │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │                 HttpGatewayState (lazy cache)                      │  │
+│  │                HttpGatewayState (lazy cache)                       │  │
 │  │                                                                    │  │
-│  │  Arc<RwLock<HashMap<String, Arc<dyn HttpCallable>>>>              │  │
-│  │                                                                    │  │
-│  │  Fast-path : cache.read() → hit → immediate return                 │  │
-│  │  Slow-path : ServiceLocator::get::<T>() → consume_proxy()          │  │
-│  │              → cache.write().entry().or_insert_with()              │  │
+│  │  cache : HashMap<String, Arc<dyn JsonInvoker>>                     │  │
+│  │  Fast-path : cache hit -> immediate return                         │  │
+│  │  Slow-path : factory() -> consume() -> cache entry                 │  │
 │  └──────────────────────────────────┬─────────────────────────────────┘  │
 │                                     │                                    │
 │                                     ▼                                    │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │              HttpCallable Proxy (generated by macro)               │  │
+│  │            JsonInvoker (generated once by the macro)               │  │
 │  │                                                                    │  │
-│  │  http_invoke(method, params) → match method {                      │  │
-│  │      "get_user_age" => {                                           │  │
-│  │          let name: String = serde_json::from_value(params)?;       │  │
-│  │          let mut rx = self.get_user_age(name).await;               │  │
-│  │          match rx.recv().await {                                    │  │
-│  │              Event::Next(val) => json!({"status":"ok","data":val}) │  │
-│  │              Event::Error(e)  => json!({"status":"error",...})     │  │
-│  │              Event::Complete   => json!({"status":"ok"})           │  │
-│  │          }                                                         │  │
-│  │      }                                                             │  │
-│  │      _ => Err("Unknown method")                                    │  │
-│  │  }                                                                 │  │
+│  │  invoke_json(method, args, ReadMode::First) -> one match table     │  │
+│  │      "get_user_age" => read_json(self.get_user_age(name).await, read)│  │
+│  │      _              => None                   (-> HTTP 404)        │  │
 │  └────────────────────────────────────────────────────────────────────┘  │
 │                                     │                                    │
 │                                     ▼                                    │
@@ -999,26 +927,41 @@ The HTTP REST gateway is a built-in HTTP server based on [trillium](https://gith
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 13.2. The `HttpCallable` trait
+### 13.2. The `JsonInvoker` trait
 
-The [`HttpCallable`](ice-rpc/src/service_traits.rs:39) trait is the contract between the HTTP gateway and the ice-rpc proxies. It allows the dynamic invocation of an RPC method from JSON parameters :
+The [`JsonInvoker`](ice-rpc/src/json.rs:87) trait is the contract between a JSON transport and the ice-rpc proxies. It allows the dynamic invocation of an RPC method from JSON parameters :
 
 ```rust
 #[async_trait::async_trait]
-pub trait HttpCallable: Send + Sync {
+pub trait JsonInvoker: Send + Sync {
     /// Logical name of the service.
     fn service_name(&self) -> &'static str;
 
-    /// Invokes an RPC method dynamically from JSON parameters.
-    async fn http_invoke(
+    /// Invokes one method with JSON arguments.
+    ///
+    /// `None` when the service has no such method, so a caller can tell a typo
+    /// from a call that failed.
+    async fn invoke_json(
         &self,
         method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String>;
+        args: serde_json::Value,
+        read: ReadMode,
+    ) -> Option<Result<JsonOutcome, JsonCallError>>;
 }
 ```
 
-This trait is **implemented automatically** by the `#[service]` macro on each Proxy type (via the [`ice-rpc-macros/src/codegen/http.rs`](ice-rpc-macros/src/codegen/http.rs:1) module). The user never needs to implement it manually.
+`ReadMode` says how much of the call is read: `First` (the first value — the only
+mode able to serve an endless stream) or `All` (every value, waiting for the
+terminal event). It travels as an **argument**, not as a second entry point, which
+is what keeps a single match table per service; and it is why `JsonOutcome::Nothing`
+exists — a service may legitimately complete without emitting any value, which a
+bare `null` could not be told apart from a real `null` payload.
+
+This trait is **implemented automatically** by the `#[service]` macro on each Proxy
+type (via the [`ice-rpc-macros/src/codegen/json.rs`](ice-rpc-macros/src/codegen/json.rs:1)
+module), **once per service**, whatever the JSON transport. The user never needs to
+implement it manually — and neither does a gateway: the HTTP gateway and the
+Node.js bridge both dispatch to this single view, so the two cannot drift apart.
 
 ### 13.3. URL and response format
 
@@ -1104,58 +1047,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - The shutdown is graceful : the trillium server stops cleanly via [`global_cancel_token()`](ice-rpc/src/lib.rs)
 - The logs display example URLs at startup
 
-### 13.7. Code generation — `impl HttpCallable`
+### 13.7. Code generation — `impl JsonInvoker`
 
-The [`#[service]`](ice-rpc-macros/src/codegen/http.rs:1) procedural macro automatically generates the [`HttpCallable`](ice-rpc/src/service_traits.rs:39) implementation for each Proxy. The generated code performs :
+The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro generates the [`JsonInvoker`](ice-rpc/src/json.rs:87) implementation for each Proxy. It is emitted **once per service**, for `json` or `http`, and it names no transport. The generated code performs :
 
 1. **Match on the method name** → branches to the corresponding RPC method
-2. **JSON deserialization** → conversion of the parameters to the expected Rust types
+2. **JSON deserialization** → conversion of the parameters to the expected Rust types, reported as `JsonCallError::InvalidArgs` when they do not fit
 3. **RPC call** → call of the method on the proxy (local or IPC depending on the mode)
-4. **Result serialization** → conversion of the `Event<T,E>` into `{"status":"ok","data":...}` or `{"status":"error","error":"..."}`
+4. **Reading** → `ice_rpc::gen::read_json(call, read)`: the one helper carrying the `First` / `All` policy and mapping a business failure onto `JsonCallError::Business`
 
-```
 ┌──────────────────────────────────────────────────────────────────┐
-│            HttpCallable GENERATION BY THE MACRO                   │
+│            JsonInvoker GENERATION BY THE MACRO                   │
 │                                                                  │
-│  #[service("DatabaseService")]                                    │
-│  pub trait DatabaseService {                                      │
-│      async fn get_user_age(&self, name: String)                   │
-│          -> Observable<i32, DatabaseError>;                       │
-│      async fn get_person(&self, nom: String, prenom: String)      │
-│          -> Observable<Person, DatabaseError>;                    │
-│  }                                                                │
+│  #[service("DatabaseService")]                                   │
+│  pub trait DatabaseService {                                     │
+│      async fn get_user_age(&self, name: String)                  │
+│          -> Observable<i32, DatabaseError>;                      │
+│      async fn get_person(&self, nom: String, prenom: String)     │
+│          -> Observable<Person, DatabaseError>;                   │
+│  }                                                               │
 │                         │                                         │
 │                         ▼                                         │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │ Generated impl for DatabaseServiceProxy                    │  │
-│  │                                                            │  │
-│  │ impl HttpCallable for DatabaseServiceProxy {               │  │
-│  │     fn service_name() -> "DatabaseService"                 │  │
-│  │                                                            │  │
-│  │     async fn http_invoke(method, params) {                 │  │
-│  │         match method {                                     │  │
-│  │             "get_user_age" => {                            │  │
-│  │                 let name: String = from_value(params)?;    │  │
-│  │                 let mut rx = self.get_user_age(name).await;│  │
-│  │                 match rx.recv().await {                    │  │
-│  │                     Next(val)  => json!({"status":"ok",    │  │
-│  │                                         "data": val})      │  │
-│  │                     Error(e)   => json!({"status":"error", │  │
-│  │                                         "error": e})       │  │
-│  │                     Complete    => json!({"status":"ok"})  │  │
-│  │                 }                                          │  │
-│  │             }                                              │  │
-│  │             "get_person" => {                              │  │
-│  │                 // multi-params : per-field extraction     │  │
-│  │                 let nom: String = from_value(params["nom"])│  │
-│  │                 let prenom: String = from_value(params["prenom"])│
-│  │                 ...                                        │  │
-│  │             }                                              │  │
-│  │             _ => Err("Unknown method '...'")               │  │
-│  │         }                                                  │  │
-│  │     }                                                      │  │
-│  │ }                                                          │  │
-│  └────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ Generated impl for DatabaseServiceProxy                      │  │
+│  │                                                              │  │
+│  │ impl JsonInvoker for DatabaseServiceProxy {                  │  │
+│  │     fn service_name() -> "DatabaseService"                   │  │
+│  │                                                              │  │
+│  │     async fn invoke_json(method, args, read) {               │  │
+│  │         match method {                                       │  │
+│  │             "get_user_age" => {                              │  │
+│  │                 let name: String = from_value(args)?;        │  │
+│  │                 // one line: the policy lives in read_json   │  │
+│  │                 read_json(self.get_user_age(name).await, read)│  │
+│  │             }                                                │  │
+│  │             "get_person" => {                                │  │
+│  │                 // multi-params : per-field extraction       │  │
+│  │                 let nom: String = from_value(args["nom"])    │  │
+│  │                 let prenom: String = from_value(args["prenom"])│  │
+│  │                 ...                                          │  │
+│  │             }                                                │  │
+│  │             _ => None   // no such method: gateway 404       │  │
+│  │         }                                                    │  │
+│  │     }                                                        │  │
+│  │ }                                                            │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1361,10 +1298,12 @@ Two capture modes, because reading the payload is not free:
 | `detail` | yes (decoded) | debugging at moderate throughput: the message content |
 
 Decoding is opt-in: building the service definitions with the `monitoring`
-feature makes `#[service]` generate a `{Service}Decoder` per service, which the
-observer registers (e.g. `common::decoders()`) to render each message with the
-`Display` implementation of the service types, or with their `Debug`
-implementation when they have none. See
+feature makes `#[service]` generate a `{Service}Decoder` per service and submit
+it into a link-time registry (`ice_rpc::monitor::DECODERS`), which
+`Decoders::linked()` reads back to render each message with the `Display`
+implementation of the service types, or with their `Debug` implementation when
+they have none. The observer maintains no list: the services it can decode are
+the ones linked into its binary. See
 [`ice-rpc-monitor`](ice-rpc-monitor/Readme.md#decoding-the-messages).
 
 Beyond the bus traffic, the observer also inventories the **health of the

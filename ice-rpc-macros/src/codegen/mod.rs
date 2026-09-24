@@ -6,8 +6,7 @@ pub mod client;
 #[cfg_attr(not(feature = "monitoring"), allow(dead_code))]
 pub mod decoder;
 pub mod helpers;
-pub mod http;
+pub mod json;
 pub mod lifecycle;
-pub mod nodejs;
 pub mod proxy;
 pub mod server;

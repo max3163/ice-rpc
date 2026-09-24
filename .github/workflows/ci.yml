@@ -27,18 +27,18 @@ jobs:
         run: cargo fmt --all -- --check
 
       # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
-      # `tokio,http-tokio,nodejs` covers the tokio execution mode, the HTTP
-      # gateway on its tokio adapter and the Node.js codegen. `nodejs` matters
+      # `tokio,http-tokio,json` covers the tokio execution mode, the HTTP
+      # gateway on its tokio adapter and the JSON host codegen. `json` matters
       # here precisely because the gateway is excluded: it is the only consumer
       # of the generated converters, so without it that code would not be
       # compiled anywhere in this job.
       # `http-tokio` rather than `http`: the gateway needs one adapter per mode,
       # and the manifest refuses to pick one on its own.
       - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,nodejs,tracing
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,json,tracing
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,nodejs,tracing -- -D warnings
+        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,json,tracing -- -D warnings
 
       # The default workspace run exercises the `rt-threads` mode, the fallback
       # facade (an `async-executor` instance on OS threads, `futures-timer` for
@@ -134,3 +134,56 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The Node.js gateway needs the N-API/Node toolchain, so the job above
+  # excludes it. This one builds the addon and runs both halves of its contract:
+  # the Rust units, the addon's surface with no bus, and a real round trip
+  # carried by the IPC bus between two processes.
+  gateway:
+    name: Node.js gateway (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13'
+          cache: npm
+          cache-dependency-path: gateway_nodejs/package-lock.json
+
+      # `npm ci` needs the committed lockfile, which is why it is no longer
+      # gitignored: without it a fresh clone cannot build the addon at all.
+      - name: Install the addon build tooling
+        run: npm ci
+        working-directory: gateway_nodejs
+
+      - name: Build the addon
+        run: npm run build:debug
+        working-directory: gateway_nodejs
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy -p gateway-nodejs --all-targets -- -D warnings
+
+      - name: Rust unit tests
+        run: cargo test -p gateway-nodejs
+
+      - name: Addon surface checks
+        run: npm test
+        working-directory: gateway_nodejs
+
+      - name: Two-process round trip
+        run: npm run test:e2e
+        working-directory: gateway_nodejs

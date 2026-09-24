@@ -50,8 +50,21 @@
 //!
 //! ```json
 //! {"status":"ok","data":{...}}
-//! {"status":"error","error":"error message"}
+//! {"status":"ok"}                       // the service emitted no value
+//! {"status":"error","error":"message"}
 //! ```
+//!
+//! | Case | HTTP status |
+//! |---|---|
+//! | the call succeeded | `200` |
+//! | the service emitted no value | `200`, without `data` |
+//! | invalid arguments, or a business error | `400` |
+//! | the transport failed | `502` |
+//! | unknown service, or unknown method | `404` |
+//! | another HTTP verb | `405` |
+//!
+//! Only the reading of **one** value is exposed: a browser cannot consume an
+//! endless stream, and waiting for every value would buffer it in memory.
 
 // trillium is built on one runtime adapter at a time, and the manifest
 // deliberately does not choose: `http` alone deciding the runtime of the gateway
@@ -66,38 +79,42 @@ compile_error!(
      `http-smol` (smol) or `http-threads` (the default mode)."
 );
 
-use crate::service_traits::HttpCallable;
+use crate::json::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
 use async_lock::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use trillium::{Conn, Handler, Method};
 
-/// Factory creating an [`HttpCallable`] proxy.
-type HttpCallableFactory = fn() -> Arc<dyn HttpCallable>;
+/// Factory creating the JSON view of a service.
+///
+/// The generated `consume()` constructor answers without a provider, so the
+/// service is exposed from startup and a missing provider is reported per call
+/// instead of making the whole route disappear.
+type JsonInvokerFactory = fn() -> Arc<dyn JsonInvoker>;
 
 /// Shared state of the HTTP gateway.
 ///
-/// Contains the cache of [`HttpCallable`] proxies indexed by service name.
-/// Proxies are created lazily on the first call and reused afterwards.
+/// Contains the cache of the JSON views indexed by service name. They are
+/// created lazily on the first call and reused afterwards.
 #[derive(Clone)]
 struct HttpGatewayState {
-    /// HTTP proxy factories (logical name → factory).
-    factories: Arc<HashMap<&'static str, HttpCallableFactory>>,
-    /// HTTP proxy cache (name → proxy).
-    cache: Arc<RwLock<HashMap<String, Arc<dyn HttpCallable>>>>,
+    /// JSON view factories (logical name → factory).
+    factories: Arc<HashMap<&'static str, JsonInvokerFactory>>,
+    /// JSON view cache (name → invoker).
+    cache: Arc<RwLock<HashMap<String, Arc<dyn JsonInvoker>>>>,
 }
 
 impl HttpGatewayState {
-    fn new(factories: HashMap<&'static str, HttpCallableFactory>) -> Self {
+    fn new(factories: HashMap<&'static str, JsonInvokerFactory>) -> Self {
         Self {
             factories: Arc::new(factories),
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Retrieves or creates an [`HttpCallable`] proxy for the requested service.
-    async fn get_or_create(&self, service_name: &str) -> Option<Arc<dyn HttpCallable>> {
+    /// Retrieves or creates the JSON view of the requested service.
+    async fn get_or_create(&self, service_name: &str) -> Option<Arc<dyn JsonInvoker>> {
         // Fast-path: already in the cache.
         {
             let cache = self.cache.read().await;
@@ -325,7 +342,10 @@ fn parse_scalar(s: &str) -> Value {
     Value::String(s.to_string())
 }
 
-/// Calls the service through the [`HttpCallable`] proxy and formats the HTTP response.
+/// Calls the service through its JSON view and formats the HTTP response.
+///
+/// **One** value is read (`ReadMode::First`): a browser cannot consume an endless
+/// stream, and waiting for every value would buffer it in memory.
 async fn invoke_service(
     state: &HttpGatewayState,
     service: &str,
@@ -345,45 +365,54 @@ async fn invoke_service(
         );
     }
 
-    // Resolves the proxy.
-    let proxy = match state.get_or_create(service).await {
-        Some(p) => p,
-        None => {
-            return json_response(
-                conn,
-                404,
-                serde_json::json!({
-                    "status": "error",
-                    "error": format!("Unknown service '{}'. Make sure this service is exposed via start_http_gateway!.", service)
-                }),
-            );
-        }
+    // Resolves the JSON view of the service.
+    let Some(invoker) = state.get_or_create(service).await else {
+        return json_response(
+            conn,
+            404,
+            serde_json::json!({
+                "status": "error",
+                "error": format!("Unknown service '{}'. Make sure this service is exposed via start_http_gateway!.", service)
+            }),
+        );
     };
 
-    // RPC call through the HTTP proxy.
-    match proxy.http_invoke(method, params).await {
-        Ok(result) => json_response(conn, 200, result),
-        Err(err) => {
-            // Determines whether it is an "unknown method" error (404) or another (400).
-            if err.contains("Unknown method") {
-                json_response(
-                    conn,
-                    404,
-                    serde_json::json!({
-                        "status": "error",
-                        "error": format!("Unknown method '{}' for service '{}'", method, service)
-                    }),
-                )
-            } else {
-                json_response(
-                    conn,
-                    400,
-                    serde_json::json!({
-                        "status": "error",
-                        "error": err
-                    }),
-                )
-            }
+    // `None` is "this service has no such method", answered without touching the
+    // bus: the route is wrong, not the call.
+    let Some(result) = invoker.invoke_json(method, params, ReadMode::First).await else {
+        return json_response(
+            conn,
+            404,
+            serde_json::json!({
+                "status": "error",
+                "error": format!("Unknown method '{}' for service '{}'", method, service)
+            }),
+        );
+    };
+
+    match result {
+        Ok(JsonOutcome::Value(data)) => json_response(
+            conn,
+            200,
+            serde_json::json!({ "status": "ok", "data": data }),
+        ),
+        // A service may complete without emitting anything: a legitimate answer,
+        // reported without `data` rather than as a failure.
+        Ok(JsonOutcome::Nothing) => json_response(conn, 200, serde_json::json!({ "status": "ok" })),
+        Err(error) => {
+            // A transport failure is not the caller's mistake, so it is the only
+            // one that is not reported as a bad request.
+            let (status, message) = match error {
+                JsonCallError::InvalidArgs(message) | JsonCallError::Business(message) => {
+                    (400, message)
+                }
+                JsonCallError::Transport(message) => (502, message),
+            };
+            json_response(
+                conn,
+                status,
+                serde_json::json!({ "status": "error", "error": message }),
+            )
         }
     }
 }
@@ -437,7 +466,7 @@ fn is_origin_allowed(origin: &str) -> bool {
 /// (Ctrl+C or [`global_cancel_token`](crate::global_cancel_token)).
 pub async fn start_http_server(
     port: u16,
-    factories: HashMap<&'static str, fn() -> Arc<dyn HttpCallable>>,
+    factories: HashMap<&'static str, fn() -> Arc<dyn JsonInvoker>>,
 ) {
     let handler = HttpGateway {
         state: HttpGatewayState::new(factories),

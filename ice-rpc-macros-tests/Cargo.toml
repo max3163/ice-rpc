@@ -16,13 +16,13 @@ workspace = true
 # CI's workspace build enables the feature anyway through `ice-rpc-monitor`
 # (feature unification), so pinning it makes isolated runs match CI.
 #
-# `nodejs` is requested for the same reason, plus one of its own: the converters
+# `json` is requested for the same reason, plus one of its own: the converters
 # it generates are what the Node.js gateway calls, and until this test existed
 # nothing executed them — they were only type-checked. It has no dependency of
 # its own, unlike `http` + an adapter, which would pull the whole HTTP stack into
-# every workspace test run; `HttpCallable` stays covered by CI's
+# every workspace test run; the `JsonInvoker` block is covered by CI's
 # `--features tokio,http-tokio` job and by the gateway.
-ice-rpc = { path = "../ice-rpc", features = ["monitoring", "nodejs"] }
+ice-rpc = { path = "../ice-rpc", features = ["monitoring", "json"] }
 ice-rpc-macros = { path = "../ice-rpc-macros" }
 async-trait = { workspace = true }
 # The generated code serializes the request arguments to JSON (HTTP and Node.js

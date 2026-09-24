@@ -160,7 +160,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.13'
+          node-version: '22.23'
           cache: npm
           cache-dependency-path: gateway_nodejs/package-lock.json
 

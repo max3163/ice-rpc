@@ -149,6 +149,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The napi CLI guards its artifact directory with a filesystem
+      # reconciliation mechanism that renames `.swp` metadata files. Windows
+      # Defender's real-time scan can touch one between its creation and the
+      # rename, which leaves the lock held and times the build out after 120 s
+      # (`Timed out ... waiting for filesystem reconciliation lock`). Excluding
+      # the workspace from the scan removes that interference.
+      - name: Exclude the workspace from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

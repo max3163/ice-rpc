@@ -22,7 +22,12 @@ pre-release-replacements = [
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3", default-features = false, features = ["napi4", "napi8", "serde-json", "compat-mode"] }
+# `dyn-symbols` resolves the `napi_*` symbols at load time instead of link time.
+# A cdylib tolerates the unresolved references, but the `cargo test` executable
+# does not: without it, linking the unit-test binary fails on Linux with
+# `undefined symbol: napi_release_threadsafe_function`. It is a default feature
+# of `napi`, so it must be named explicitly because `default-features` is off.
+napi = { version = "3", default-features = false, features = ["napi4", "napi8", "serde-json", "compat-mode", "dyn-symbols"] }
 napi-derive = "3"
 log = { workspace = true }
 serde = { workspace = true }

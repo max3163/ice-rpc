@@ -41,7 +41,6 @@ fn node_death_is_detected() {
 /// Child role: create an iceoryx2 Node like a provider does, then hold it
 /// until the parent kills the process.
 fn child_provider_until_killed() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
     let _node = NodeBuilder::new().create::<Service>().expect("create node");
     announce_ready();
     loop {
@@ -52,7 +51,6 @@ fn child_provider_until_killed() {
 /// Child role: create an iceoryx2 Node, then drop it (the clean shutdown the
 /// watcher must detect).
 fn child_provider_clean_shutdown() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
     let node = NodeBuilder::new().create::<Service>().expect("create node");
     announce_ready();
     // Give the parent time to register its watcher and observe the node alive.
@@ -82,8 +80,6 @@ fn root_string() -> String {
 /// `clean == true` lets the child exit by itself; otherwise it is killed with
 /// `SIGKILL` (`Child::kill`).
 fn run_scenario(clean: bool) -> Duration {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let exe = std::env::current_exe().expect("current_exe");
     let mut cmd = Command::new(exe);
     cmd.args(["--exact", TEST_NAME, "--nocapture"])

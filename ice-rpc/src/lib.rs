@@ -368,14 +368,6 @@ pub(crate) fn waitset_signal_handling_mode() -> iceoryx2::prelude::SignalHandlin
     resolve_signal_handling_mode(SIGNAL_HANDLING_ENABLED.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Performs the one-time process bootstrap (iceoryx2 global configuration).
-///
-/// Idempotent: calling it several times has no effect after the first call.
-fn ensure_initialized() {
-    static CONFIG: Global<()> = Global::new();
-    CONFIG.get_or_init(config::setup_iceoryx2_global_config);
-}
-
 /// Initializes the framework and returns the RAII shutdown guard.
 ///
 /// Configures iceoryx2 and enables the native signal handling of the `WaitSet`
@@ -393,7 +385,6 @@ fn ensure_initialized() {
 #[doc(hidden)]
 #[must_use = "the guard cancels the ice-rpc tokens when dropped; bind it for the process lifetime"]
 pub fn init() -> ShutdownGuard {
-    ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     ShutdownGuard::new()
 }
@@ -411,7 +402,6 @@ pub fn init() -> ShutdownGuard {
 #[doc(hidden)]
 #[must_use = "the guard cancels the ice-rpc tokens when dropped; bind it for the host lifetime"]
 pub fn init_without_ctrl_c() -> ShutdownGuard {
-    ensure_initialized();
     SIGNAL_HANDLING_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
     ShutdownGuard::new()
 }
@@ -511,11 +501,9 @@ where
 pub async fn run_provider_inner(
     services: Vec<Box<dyn _ProviderService>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Defensive and idempotent: the bootstrap is normally performed by
-    // `#[ice_rpc::main]`, which also owns the shutdown. Enabling signal handling
-    // here guarantees the `WaitSet`s created below report SIGINT/SIGTERM even if
-    // the macro was bypassed (e.g. after `init_without_ctrl_c()`).
-    ensure_initialized();
+    // Defensive and idempotent: enabling signal handling here guarantees the
+    // `WaitSet`s created below report SIGINT/SIGTERM even if the macro was
+    // bypassed (e.g. after `init_without_ctrl_c()`).
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Reap what previous runs left behind, before creating any service: a provider
@@ -555,7 +543,7 @@ pub async fn run_provider_inner(
 ///     env_logger::init();
 ///     // `#[ice_rpc::main]` owns init + shutdown; `run_provider!` starts them.
 ///     ice_rpc::run_provider!(
-///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.toml")),
+///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.json")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
 ///     ).await
 /// }
@@ -568,7 +556,7 @@ pub async fn run_provider_inner(
 ///     env_logger::init();
 ///     // DatabaseServiceImpl calls ConfigService via get()
 ///     ice_rpc::run_provider!(
-///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.toml")),
+///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.json")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
 ///     ).await
 /// }

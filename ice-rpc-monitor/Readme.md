@@ -168,8 +168,9 @@ cargo run -p ice-rpc-monitor -- \
     --trace-sample-rate 100 --trace-file traces.ndjson
 ```
 
-Run it from the workspace root so it shares the generated
-`config/iceoryx2.toml` (the root path) with the observed processes.
+Run it from the same directory as the observed processes so they resolve the
+same iceoryx2 configuration (the root path), or provide the same
+`./config/iceoryx2.toml`.
 
 ## Console example
 

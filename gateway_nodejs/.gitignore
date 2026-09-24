@@ -9,9 +9,8 @@ index.js
 index.d.ts
 *.node
 
-# iceoryx2 global configuration, written at runtime next to the current
-# directory by `ice_rpc::gen::setup_iceoryx2_global_config()`; it embeds a
-# machine-specific root-path and must never be committed.
+# iceoryx2 configuration an application may provide next to the current
+# directory; it embeds a machine-specific root-path and must never be committed.
 config/iceoryx2.toml
 
 # `package-lock.json` is deliberately NOT ignored: `cargo release` rewrites its

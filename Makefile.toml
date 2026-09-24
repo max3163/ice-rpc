@@ -34,8 +34,8 @@ BASH = "bash"
 # in `ice-rpc/Cargo.toml`):
 #   - the demo apps            -> `tokio`
 #   - `provider-app` + gateway -> `tokio http-tokio`
-# Always run from the workspace root so the generated `config/iceoryx2.toml` is
-# shared by the provider and the consumer.
+# Run the provider and the consumer from the same directory so iceoryx2 resolves
+# the same root path for both.
 EXAMPLES_CRATE = "ice-rpc"
 EXAMPLES_FEATURES = "tokio"
 # Defaults for the generic `example` / `example-release` runners.
@@ -372,8 +372,8 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 # MONITORING (ice-rpc-monitor)
 #
 # The out-of-band observer attaches to the channels a provider/consumer already
-# exposes. Always run it from the workspace root so it shares the generated
-# `config/iceoryx2.toml` with the observed processes.
+# exposes. Run it from the same directory as the observed processes so they
+# resolve the same iceoryx2 root path.
 #
 #   cargo make monitoring            # console stats of every discovered channel
 #   cargo make monitoring-detail     # + decoded request/response of every call

@@ -36,8 +36,6 @@ struct Observed {
 /// A hand-built dispatcher, as the transport uses one.
 #[test]
 fn the_handler_receives_the_request_header() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("CallContextSocle{}", std::process::id());
     let service_id = service_id_of(&channel);
     let stop = CancellationToken::new();

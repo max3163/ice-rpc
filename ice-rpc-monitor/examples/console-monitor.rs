@@ -26,9 +26,9 @@
 //! ```
 //!
 //! Everything is printed on stdout: the stats as `===== ... =====` blocks, the
-//! messages (`--detail`) as one `[msg] ...` line each. Run it from the workspace
-//! root so it shares the generated `config/iceoryx2.toml` with the observed
-//! processes.
+//! messages (`--detail`) as one `[msg] ...` line each. Run it from the same
+//! directory as the observed processes so they resolve the same iceoryx2
+//! configuration (the root path).
 
 #![allow(clippy::unwrap_used)] // an example is allowed to panic
 
@@ -293,9 +293,6 @@ fn main() {
             std::process::exit(2);
         }
     };
-
-    // The observer and the observed processes must share the same iceoryx2 domain.
-    ice_rpc::gen::setup_iceoryx2_global_config();
 
     // Bridge the process termination signal (Ctrl+C) to the shutdown flag.
     let cancel = Arc::new(AtomicBool::new(false));

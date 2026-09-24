@@ -89,7 +89,6 @@ fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHa
 #[test]
 fn the_observer_reconstructs_the_traffic_from_the_headers() {
     let _ = env_logger::builder().is_test(false).try_init();
-    ice_rpc::gen::setup_iceoryx2_global_config();
 
     let channel = format!("MonitorE2E{}", std::process::id());
     let (service_id, stop, server) = start_provider(&channel);
@@ -176,8 +175,6 @@ fn the_observer_reconstructs_the_traffic_from_the_headers() {
 /// Detail mode must capture the payload, correlated through the same id.
 #[test]
 fn the_detail_mode_captures_the_payloads() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("MonitorDetail{}", std::process::id());
     let (service_id, stop, server) = start_provider(&channel);
 
@@ -266,8 +263,6 @@ fn the_detail_mode_captures_the_payloads() {
 /// Stats mode must never read the payload: no payload field is emitted.
 #[test]
 fn the_stats_mode_never_emits_payloads() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("MonitorStats{}", std::process::id());
     let (service_id, stop, server) = start_provider(&channel);
 
@@ -334,8 +329,6 @@ fn the_stats_mode_never_emits_payloads() {
 /// earlier calls are simply out of scope.
 #[test]
 fn a_late_observer_catches_the_following_traffic() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("MonitorLate{}", std::process::id());
     let (service_id, stop, server) = start_provider(&channel);
 
@@ -404,8 +397,6 @@ fn a_late_observer_catches_the_following_traffic() {
 /// retry until the service appears, then observe the traffic that follows.
 #[test]
 fn an_observer_started_before_the_provider_attaches_once_it_appears() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("MonitorEarly{}", std::process::id());
 
     // The observer starts first: nothing to attach to yet.
@@ -457,8 +448,6 @@ fn an_observer_started_before_the_provider_attaches_once_it_appears() {
 /// the per-channel capacity, without ever reporting a live node as dead.
 #[test]
 fn the_observer_publishes_the_network_inventory() {
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let channel = format!("MonitorHealth{}", std::process::id());
     let (_service_id, stop, server) = start_provider(&channel);
 

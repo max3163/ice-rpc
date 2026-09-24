@@ -1,382 +1,57 @@
-//! iceoryx2 configuration — root-path, TOML file, global setup.
+//! iceoryx2 configuration used by the transport.
 //!
-//! Builds and applies the iceoryx2 configuration before any IPC operation.
+//! `ice-rpc` does not own the iceoryx2 configuration and never writes a config
+//! file. The effective configuration is the one iceoryx2 resolves itself, via
+//! [`Config::global_config`]: `./config/iceoryx2.toml` first, then the user
+//! config directory, then the global config directory, and finally the
+//! compiled-in default when none exists.
 //!
-//! The root-path resolution order is:
-//! 1. `ICE_RPC_ROOT_PATH` environment variable (explicit override);
-//! 2. platform default: `%APPDATA%\ice-rpc\iceoryx2` on Windows,
-//!    `$XDG_DATA_HOME/ice-rpc/iceoryx2` or `~/.local/share/ice-rpc/iceoryx2` on Unix;
-//! 3. iceoryx2 default when no path can be determined.
+//! An application that needs a shared, non-default root-path provides that file
+//! once; every process then discovers the same configuration, so peers agree on
+//! the shared-memory domain without `ice-rpc` acting as a configuration owner.
+//!
+//! The only adjustments applied locally are the dead-node cleanup flags: they
+//! change the reaping policy, never which entities are visible on the bus.
 
-use iceoryx2::prelude::SemanticString;
+use iceoryx2::config::Config;
 
-/// Resolves the iceoryx2 root-path from the environment or a platform default.
-fn default_root_path() -> Option<std::path::PathBuf> {
-    if let Ok(explicit) = std::env::var("ICE_RPC_ROOT_PATH") {
-        if !explicit.trim().is_empty() {
-            return Some(std::path::PathBuf::from(explicit));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        let appdata = std::env::var("APPDATA").ok()?;
-        Some(
-            std::path::PathBuf::from(appdata)
-                .join("ice-rpc")
-                .join("iceoryx2"),
-        )
-    }
-
-    #[cfg(not(windows))]
-    {
-        let base = std::env::var("XDG_DATA_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|_| {
-                std::env::var("HOME")
-                    .map(|home| std::path::PathBuf::from(home).join(".local").join("share"))
-            })
-            .unwrap_or_else(|_| std::env::temp_dir());
-        Some(base.join("ice-rpc").join("iceoryx2"))
-    }
-}
-
-/// Builds the iceoryx2 configuration with the resolved root-path.
+/// Returns the iceoryx2 configuration the transport uses.
 ///
-/// # Returns
-/// The ready-to-use iceoryx2 [`Config`](iceoryx2::config::Config).
-pub(crate) fn build_iceoryx2_config() -> iceoryx2::config::Config {
-    let Some(root) = default_root_path() else {
-        log::warn!("[ice-rpc] no root-path available (APPDATA unset): using iceoryx2 default.");
-        return iceoryx2::config::Config::default();
-    };
-
-    if let Err(e) = std::fs::create_dir_all(&root) {
-        log::error!(
-            "[ice-rpc] Failed to create '{}': {e} - default root-path.",
-            root.display()
-        );
-        return iceoryx2::config::Config::default();
-    }
-
-    let _ = std::fs::create_dir_all(root.join("shm"));
-
-    let root_str = root.to_string_lossy();
-    let iox_path = match iceoryx2_bb_system_types::path::Path::new(root_str.as_bytes()) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("[ice-rpc] invalid root-path '{root_str}': {e:?} - default used.");
-            return iceoryx2::config::Config::default();
-        }
-    };
-
-    let mut cfg = iceoryx2::config::Config::default();
-    cfg.global.set_root_path(&iox_path);
-
-    cfg.global.node.cleanup_dead_nodes_on_creation = true;
-    cfg.global.node.cleanup_dead_nodes_on_destruction = false;
-    cfg.global.service.cleanup_dead_nodes_on_open = false;
-
-    cfg
-}
-
-/// Configures the GLOBAL iceoryx2 configuration before any other operation.
-///
-/// Must be called at the very beginning of `main()`, even before
-/// [`ServiceLocator::global()`](crate::ServiceLocator::global).
-///
-/// 1. Creates a TOML file `./config/iceoryx2.toml` with the custom root-path.
-/// 2. Applies the configuration via `Config::setup_global_config_from_file()`.
-pub fn setup_iceoryx2_global_config() {
-    let config = build_iceoryx2_config();
-
-    let config_file_path = match write_config_toml(&config) {
-        Some(path) => path,
-        None => return,
-    };
-
-    apply_global_config(&config_file_path);
-}
-
-/// Serializes the configuration to TOML and writes it to `./config/iceoryx2.toml`
-/// if the file does not already exist.
-///
-/// Builds the absolute path via `std::env::current_dir()` to avoid the Windows
-/// UNC prefix `\\?\` that `FilePath` rejects.
-///
-/// # Returns
-/// The absolute path of the file, or `None` on error.
-fn write_config_toml(config: &iceoryx2::config::Config) -> Option<std::path::PathBuf> {
-    let config_dir = std::path::Path::new("config");
-    if let Err(e) = std::fs::create_dir_all(config_dir) {
-        log::error!(
-            "[ice-rpc] ERROR: failed to create directory '{}': {e}",
-            config_dir.display()
-        );
-        return None;
-    }
-
-    let file_path = config_dir.join("iceoryx2.toml");
-
-    // The file embeds a machine-specific root-path: validate it and regenerate
-    // on mismatch (e.g. a POSIX path reused on Windows).
-    if file_path.exists() {
-        let expected_root =
-            String::from_utf8_lossy(config.global.root_path().as_bytes()).to_string();
-        if existing_config_root_path(&file_path).as_deref() == Some(expected_root.as_str()) {
-            let abs_path = match std::env::current_dir() {
-                Ok(cwd) => cwd.join(&file_path),
-                Err(e) => {
-                    log::error!("[ice-rpc] ERROR: current_dir(): {e}");
-                    return None;
-                }
-            };
-            return Some(abs_path);
-        }
-        log::warn!(
-            "[ice-rpc] '{}' records a root-path for another platform: regenerating.",
-            file_path.display()
-        );
-    }
-
-    let toml_content = match toml::to_string_pretty(config) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("[ice-rpc] ERROR: TOML serialization failed: {e}");
-            return None;
-        }
-    };
-
-    if let Err(e) = std::fs::write(&file_path, &toml_content) {
-        log::error!("[ice-rpc] ERROR: writing '{}': {e}", file_path.display());
-        return None;
-    }
-
-    let abs_path = match std::env::current_dir() {
-        Ok(cwd) => cwd.join(&file_path),
-        Err(e) => {
-            log::error!("[ice-rpc] ERROR: current_dir(): {e}");
-            return None;
-        }
-    };
-
-    Some(abs_path)
-}
-
-/// Reads the `global.root-path` recorded in an existing generated TOML config.
-///
-/// Returns `None` when the file cannot be read or parsed, so the caller
-/// regenerates it.
-fn existing_config_root_path(path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let value: toml::Value = toml::from_str(&content).ok()?;
-    value
-        .get("global")?
-        .get("root-path")?
-        .as_str()
-        .map(str::to_owned)
-}
-
-/// Applies the global iceoryx2 configuration from the TOML file.
-///
-/// Converts `\` into `/` in the path for compatibility with
-/// `iceoryx2_bb_system_types::FilePath`.
-fn apply_global_config(config_file_path: &std::path::Path) {
-    let path_str_raw = config_file_path.to_string_lossy();
-    let path_str_fwd = path_str_raw.replace('\\', "/");
-
-    let iox_file_path =
-        match iceoryx2_bb_system_types::file_path::FilePath::new(path_str_fwd.as_bytes()) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("[ice-rpc] ERROR: invalid FilePath '{path_str_fwd}': {e:?}");
-                log::warn!("[ice-rpc] iceoryx2 will use the default root-path!");
-                return;
-            }
-        };
-
-    match iceoryx2::config::Config::setup_global_config_from_file(&iox_file_path) {
-        Ok(global_cfg) => {
-            let root = String::from_utf8_lossy(global_cfg.global.root_path().as_bytes());
-            log::info!("[ice-rpc] Global configuration loaded from '{path_str_fwd}'");
-            log::info!("[ice-rpc] verified global root-path: {root}");
-        }
-        Err(e) => {
-            log::error!("[ice-rpc] ERROR loading global config: {e:?}");
-            log::warn!("[ice-rpc] iceoryx2 will use the default root-path!");
-        }
-    }
+/// Starts from the effective global configuration, so the root-path — the
+/// shared-memory domain every peer must agree on — is whatever the application
+/// provided or iceoryx2's default, then adjusts the dead-node cleanup policy:
+/// `ice-rpc` reaps dead nodes explicitly through
+/// [`cleanup_dead_nodes`](crate::transport::cleanup_dead_nodes) instead of
+/// letting iceoryx2 do it implicitly on every open or drop.
+pub(crate) fn build_iceoryx2_config() -> Config {
+    let mut config = Config::global_config().clone();
+    config.global.node.cleanup_dead_nodes_on_creation = true;
+    config.global.node.cleanup_dead_nodes_on_destruction = false;
+    config.global.service.cleanup_dead_nodes_on_open = false;
+    config
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Serializes tests that mutate process-global state (current directory,
-    /// environment variables) which would otherwise race when run in parallel.
-    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use iceoryx2::prelude::SemanticString;
 
     #[test]
-    fn build_config_has_expected_structure() {
-        let cfg = build_iceoryx2_config();
-        // The config is built without panicking; the flags depend on the defaults.
-        let _ = cfg;
-    }
-
-    #[test]
-    fn build_config_returns_default_when_appdata_unset() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Save APPDATA, remove it, check the fallback, restore.
-        let saved = std::env::var("APPDATA").ok();
-        std::env::remove_var("APPDATA");
-
-        let cfg = build_iceoryx2_config();
-
-        // Restore
-        if let Some(val) = saved {
-            std::env::set_var("APPDATA", val);
-        }
-
-        // Without APPDATA, we must still obtain a valid Config (no panic).
-        let _ = cfg;
-    }
-
-    #[test]
-    fn write_config_toml_creates_file_when_missing() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Uses a temporary directory for the test.
-        let tmp = std::env::temp_dir().join("ice_rpc_test_config");
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        let original_dir = std::env::current_dir().ok();
-
-        // Create and cd into the temporary directory
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-
-        // Clean the file if it already exists
-        let config_file = tmp.join("config").join("iceoryx2.toml");
-        let _ = std::fs::remove_file(&config_file);
-        let _ = std::fs::remove_dir(tmp.join("config"));
-
+    fn build_config_inherits_the_global_root_path() {
         let config = build_iceoryx2_config();
-        let result = write_config_toml(&config);
-
-        // Restore the current directory
-        if let Some(dir) = original_dir {
-            let _ = std::env::set_current_dir(&dir);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        assert!(result.is_some(), "write_config_toml must succeed");
-        let path = result.unwrap();
-        assert!(path.ends_with("iceoryx2.toml"));
-    }
-
-    #[test]
-    fn write_config_toml_keeps_file_with_matching_root_path() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = std::env::temp_dir().join("ice_rpc_test_config_keep");
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        let original_dir = std::env::current_dir().ok();
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-
-        let config = build_iceoryx2_config();
-        let config_dir = tmp.join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let config_file = config_dir.join("iceoryx2.toml");
-        // A file whose root-path already matches this platform must be kept as-is.
-        let content = toml::to_string_pretty(&config).unwrap();
-        std::fs::write(&config_file, &content).unwrap();
-
-        let result = write_config_toml(&config);
-
-        if let Some(dir) = original_dir {
-            let _ = std::env::set_current_dir(&dir);
-        }
-
-        let after = std::fs::read_to_string(&config_file).unwrap();
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        assert!(
-            result.is_some(),
-            "must return the path when the file exists"
-        );
-        assert_eq!(after, content, "a matching config must not be rewritten");
-    }
-
-    #[test]
-    fn write_config_toml_regenerates_stale_root_path() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = std::env::temp_dir().join("ice_rpc_test_config_stale");
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        let original_dir = std::env::current_dir().ok();
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
-
-        let config = build_iceoryx2_config();
-        let expected_root =
-            String::from_utf8_lossy(config.global.root_path().as_bytes()).to_string();
-
-        let config_dir = tmp.join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let config_file = config_dir.join("iceoryx2.toml");
-        // Simulate a config generated on another OS (POSIX root-path on Windows).
-        std::fs::write(
-            &config_file,
-            "[global]\nroot-path = \"/home/max/.local/share/ice-rpc/iceoryx2\"\n",
-        )
-        .unwrap();
-
-        let result = write_config_toml(&config);
-
-        if let Some(dir) = original_dir {
-            let _ = std::env::set_current_dir(&dir);
-        }
-
-        let recorded = existing_config_root_path(&config_file);
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        assert!(result.is_some());
+        // The root-path is the shared-memory domain. Rewriting it here would let
+        // two processes pick different domains and silently stop seeing each
+        // other, which is exactly what `ice-rpc` must not do.
         assert_eq!(
-            recorded.as_deref(),
-            Some(expected_root.as_str()),
-            "a stale root-path must be regenerated for the current platform"
+            config.global.root_path().as_bytes(),
+            Config::global_config().global.root_path().as_bytes()
         );
     }
 
     #[test]
-    fn existing_config_root_path_reads_recorded_value() {
-        let tmp = std::env::temp_dir().join("ice_rpc_test_config_read");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let file = tmp.join("iceoryx2.toml");
-
-        std::fs::write(&file, "[global]\nroot-path = \"/tmp/ice-rpc\"\n").unwrap();
-        assert_eq!(
-            existing_config_root_path(&file).as_deref(),
-            Some("/tmp/ice-rpc")
-        );
-
-        // Content without a root-path must yield None so the caller regenerates.
-        std::fs::write(&file, "# no root-path here\n").unwrap();
-        assert_eq!(existing_config_root_path(&file), None);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn apply_global_config_path_slash_conversion() {
-        // Tests that Windows backslashes are converted to forward slashes.
-        let path_with_backslashes = std::path::Path::new(r"C:\Users\test\config\iceoryx2.toml");
-        let path_str = path_with_backslashes.to_string_lossy();
-        let converted = path_str.replace('\\', "/");
-        assert!(!converted.contains('\\'), "backslashes must be converted");
-        assert!(converted.contains('/'), "must contain forward slashes");
+    fn build_config_disables_implicit_dead_node_cleanup() {
+        let config = build_iceoryx2_config();
+        assert!(!config.global.node.cleanup_dead_nodes_on_destruction);
+        assert!(!config.global.service.cleanup_dead_nodes_on_open);
     }
 }

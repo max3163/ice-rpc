@@ -47,7 +47,6 @@ smol = ["dep:smol"]
 # the transport serializes it as-is when it rejects a call, and the transport
 # cannot reach a type it does not depend on.
 rkyv = { workspace = true }
-thiserror = "2"
 log = { workspace = true }
 # Poll-based combinators: every operator wraps its source as a boxed
 # `futures_lite::Stream`, so there is no intermediate channel and no task.

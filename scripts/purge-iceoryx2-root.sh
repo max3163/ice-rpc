@@ -39,19 +39,31 @@ set -euo pipefail
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    ROOT="${APPDATA:-$HOME/AppData/Roaming}/ice-rpc/iceoryx2"
+    DEFAULT_ROOT="C:/Temp/iceoryx2"
     # Not `%TEMP%`: the PAL hardcodes its own directory and ignores the
     # environment, so pointing this at `%TEMP%` would clean the wrong place.
     SHM_DIR="C:/Temp"
     ;;
   *)
-    ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/ice-rpc/iceoryx2"
+    DEFAULT_ROOT="/tmp/iceoryx2"
     SHM_DIR="/tmp"
     ;;
 esac
 
-# %APPDATA% carries backslashes; one separator everywhere keeps the printed path
-# copy-pasteable and the commands below unambiguous.
+# iceoryx2 resolves its root path itself, preferring `./config/iceoryx2.toml`:
+# an application-provided configuration overrides the compiled-in default, so
+# read it back rather than assuming the default.
+ROOT="$DEFAULT_ROOT"
+if [ -f "config/iceoryx2.toml" ]; then
+  RECORDED="$(awk -F'=' '/^[[:space:]]*root-path[[:space:]]*=/ { print $2; exit }' config/iceoryx2.toml |
+    sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" -e "s/^[\"']//" -e "s/[\"']$//")"
+  if [ -n "$RECORDED" ]; then
+    ROOT="$RECORDED"
+  fi
+fi
+
+# A recorded root path may carry backslashes; one separator everywhere keeps the
+# printed path copy-pasteable and the commands below unambiguous.
 ROOT="${ROOT//\\//}"
 SHM_DIR="${SHM_DIR//\\//}"
 

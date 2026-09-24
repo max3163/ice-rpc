@@ -38,9 +38,6 @@ pub use crate::json::{
     JSON_CALL_TIMEOUT,
 };
 
-// ── Bootstrap / configuration ───────────────────────────────────────
-pub use crate::config::setup_iceoryx2_global_config;
-
 // ── Diagnostics ─────────────────────────────────────────────────────
 // The gateway's `version()` reports this instead of a hand-written literal.
 pub use crate::VERSION;

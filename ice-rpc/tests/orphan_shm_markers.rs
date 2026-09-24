@@ -96,7 +96,6 @@ fn wait_until_swept(orphans: &[String], timeout: Duration) -> bool {
 /// Child role: create an event service, then hold it until the parent kills the
 /// process — no destructor ever runs.
 fn child_creates_event_and_waits() -> ! {
-    ice_rpc::gen::setup_iceoryx2_global_config();
     let node = ice_rpc::gen::iceoryx2::node::NodeBuilder::new()
         .create::<Service>()
         .expect("create node");
@@ -156,8 +155,6 @@ fn a_killed_process_leaves_shm_markers_that_a_provider_start_reaps() {
     if std::env::var(CHILD_ENV).is_ok() {
         child_creates_event_and_waits();
     }
-
-    ice_rpc::gen::setup_iceoryx2_global_config();
 
     let before = markers();
     let mut child = spawn_child();

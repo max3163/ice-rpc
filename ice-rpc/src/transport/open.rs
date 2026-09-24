@@ -38,9 +38,9 @@ pub(super) enum OpenMode {
 const REMEDY: &str = "the iceoryx2 state on this machine was created by another build of this \
                       service (wire format, buffer sizes or port limits changed), or a process was \
                       killed while it held it. Once no process still runs the previous build, \
-                      remove the iceoryx2 root path: %APPDATA%\\ice-rpc\\iceoryx2 on Windows, \
-                      $XDG_DATA_HOME/ice-rpc/iceoryx2 (or ~/.local/share/ice-rpc/iceoryx2) \
-                      elsewhere";
+                      remove the iceoryx2 root path (the `root-path` of the effective \
+                      `iceoryx2.toml`, or iceoryx2's default: C:\\Temp\\iceoryx2 on Windows, \
+                      /tmp/iceoryx2 elsewhere)";
 
 /// Opens the pub/sub service of one direction of `channel`.
 ///

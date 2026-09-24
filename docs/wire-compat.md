@@ -193,8 +193,8 @@ cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
 
    | What | OS | Path |
    |---|---|---|
-   | Root path: configuration, service registry, segments | Windows | `%APPDATA%\ice-rpc\iceoryx2` |
-   | | Linux and macOS | `$XDG_DATA_HOME/ice-rpc/iceoryx2`, or `~/.local/share/ice-rpc/iceoryx2` |
+   | Root path: configuration, service registry, segments | Windows | `C:\Temp\iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml` |
+   | | Linux and macOS | `/tmp/iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml` |
    | Shared-memory markers (`iox2_*.shm_state`) | Windows | `C:\Temp` |
    | | Linux and macOS | `/tmp` |
 

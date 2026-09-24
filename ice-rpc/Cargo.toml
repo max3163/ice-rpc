@@ -11,7 +11,8 @@ documentation = "https://docs.rs/ice-rpc"
 keywords = ["rpc", "ipc", "zerocopy", "iceoryx", "rkyv"]
 categories = ["network-programming", "concurrency"]
 readme = "Readme.md"
-# The runtime-generated iceoryx2 config must not be shipped (machine-specific).
+# An application-provided iceoryx2 config may sit here during local development;
+# it is machine-specific and must not be shipped.
 exclude = ["config/iceoryx2.toml"]
 
 [lints]
@@ -102,8 +103,6 @@ iceoryx2-bb-container = "0.10.0"
 iceoryx2-bb-posix = "0.10.0"
 rkyv = { workspace = true }
 async-trait = { workspace = true }
-toml = { workspace = true }
-thiserror = "2"
 tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

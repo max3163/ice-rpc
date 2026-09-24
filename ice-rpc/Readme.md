@@ -318,11 +318,16 @@ Services are then reachable through `/{service}/{method}`.
 
 ## Configuration
 
-The iceoryx2 root path is resolved in this order:
+`ice-rpc` does not own the iceoryx2 configuration and never writes a config
+file: the effective configuration is the one iceoryx2 resolves itself. iceoryx2
+looks for `./config/iceoryx2.toml` first, then the user config directory, then
+the global config directory, and falls back to its compiled-in default when none
+exists.
 
-1. `ICE_RPC_ROOT_PATH` environment variable (explicit override);
-2. `%APPDATA%\ice-rpc\iceoryx2` on Windows, `$XDG_DATA_HOME/ice-rpc/iceoryx2` (or `~/.local/share/ice-rpc/iceoryx2`) on Unix;
-3. iceoryx2 default.
+Two processes communicate only if they agree on the root path (the shared-memory
+domain). Provide a `./config/iceoryx2.toml` — or a user/global one — when the
+default is not what you want; every peer that discovers the same file shares the
+domain. A partial file is enough: iceoryx2 merges it over its defaults.
 
 ## License
 

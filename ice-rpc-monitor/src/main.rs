@@ -41,10 +41,6 @@ fn main() {
         }
     };
 
-    // Share the iceoryx2 root path with the observed processes, so the observer
-    // and the services live in the same shared-memory domain.
-    ice_rpc::gen::setup_iceoryx2_global_config();
-
     let live_requested = config.console_live;
     let channels = config.channels.len();
 

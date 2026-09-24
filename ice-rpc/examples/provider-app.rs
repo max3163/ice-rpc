@@ -91,16 +91,16 @@ impl ServiceInit for ConfigServiceImpl {
             }
         };
 
-        let toml_value: toml::Value = match toml::from_str(&content) {
+        let json_value: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[ConfigService] Invalid TOML file: {}", e);
+                log::error!("[ConfigService] Invalid JSON file: {}", e);
                 return false;
             }
         };
 
         let mut store = self.store.write().await;
-        flatten_toml("", &toml_value, &mut store);
+        flatten_json("", &json_value, &mut store);
 
         log::info!("[ConfigService] {} key(s) loaded in memory.", store.len());
         for (k, v) in store.iter() {
@@ -110,23 +110,25 @@ impl ServiceInit for ConfigServiceImpl {
     }
 }
 
-fn flatten_toml(prefix: &str, value: &toml::Value, out: &mut HashMap<String, String>) {
+fn flatten_json(prefix: &str, value: &serde_json::Value, out: &mut HashMap<String, String>) {
     match value {
-        toml::Value::Table(table) => {
-            for (k, v) in table {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
                 let key = if prefix.is_empty() {
                     k.clone()
                 } else {
                     format!("{}.{}", prefix, k)
                 };
-                flatten_toml(&key, v, out);
+                flatten_json(&key, v, out);
             }
         }
+        // A JSON string is the value itself; anything else (number, boolean)
+        // keeps its JSON rendering, so `max_pool` reads back as `10`.
+        serde_json::Value::String(s) => {
+            out.insert(prefix.to_string(), s.clone());
+        }
         other => {
-            out.insert(
-                prefix.to_string(),
-                other.to_string().trim_matches('"').to_string(),
-            );
+            out.insert(prefix.to_string(), other.to_string());
         }
     }
 }
@@ -378,7 +380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/config.toml"
+            "/examples/config.json"
         ))),
         HttpServiceProxy::provide_with_init(HttpServiceImpl::new(100 * 1024 * 1024)),
         NotificationServiceProxy::provide(NotificationServiceImpl),

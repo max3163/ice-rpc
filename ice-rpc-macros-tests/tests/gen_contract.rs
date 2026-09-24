@@ -41,7 +41,6 @@ fn gen_facade_symbols_resolve() {
         registry_cancel_token,
         run_provider_inner,
         service_id_of,
-        setup_iceoryx2_global_config,
         shutdown_and_release,
         spawn_native_service,
         start_registered_channels,

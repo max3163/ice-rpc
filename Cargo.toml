@@ -103,4 +103,3 @@ base64 = "0.23"
 # Used only by the `monitoring` decoder registry, and with no transitive dependency.
 linkme = "0.3"
 tokio = { version = "1.30", features = ["full"] }
-toml = "1"

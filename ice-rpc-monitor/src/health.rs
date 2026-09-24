@@ -280,7 +280,6 @@ mod tests {
 
     #[test]
     fn a_scan_reports_nodes_and_services() {
-        ice_rpc::gen::setup_iceoryx2_global_config();
         let mut scanner = Scanner::new(Duration::from_millis(1), false);
         scanner.refresh();
         let snapshot = scanner.snapshot();

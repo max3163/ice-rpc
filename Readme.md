@@ -141,7 +141,8 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   │                              initialization order)
 │   ├── shutdown.rs             ← Registry of the blocking IPC threads (clean stop)
 │   ├── sync.rs                 ← Poisoning-tolerant lock helper
-│   ├── config.rs               ← iceoryx2 root-path / TOML configuration
+│   ├── config.rs               ← iceoryx2 effective configuration (inherits the
+│   │                              global one resolved by iceoryx2)
 │   ├── gen.rs                  ← Internal facade for the generated code (doc-hidden)
 │   └── json.rs                 ← the JSON contract: caller side + host side
 │
@@ -1100,18 +1101,15 @@ The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro genera
 
 ## 14. iceoryx2 configuration
 
-```rust
-// At the beginning of main(), before any IPC operation :
-ice_rpc::gen::setup_iceoryx2_global_config();
-```
+`ice-rpc` does not configure iceoryx2 and never writes a config file. It reads
+the configuration iceoryx2 resolves itself (`Config::global_config()`):
+`./config/iceoryx2.toml` first, then the user config directory, then the global
+config directory, and finally the compiled-in default.
 
-`#[ice_rpc::main]` and `run_provider!` call it for you. This function :
-
-1. resolves the root path (`ICE_RPC_ROOT_PATH`, else `%APPDATA%\ice-rpc\iceoryx2` on
-   Windows / `$XDG_DATA_HOME/ice-rpc/iceoryx2` on Unix);
-2. writes `./config/iceoryx2.toml`;
-3. calls `Config::setup_global_config_from_file()` to force iceoryx2 to use this
-   configuration.
+An application that needs a shared, non-default root path provides that TOML
+file once; every process that discovers it then shares the same shared-memory
+domain. `ice-rpc` only overrides the dead-node cleanup policy locally, which
+changes the reaping behaviour but never which entities are visible on the bus.
 
 The `shm/` directory is created automatically by iceoryx2 for its shared-memory resources.
 

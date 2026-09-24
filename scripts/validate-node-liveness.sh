@@ -25,8 +25,14 @@ rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH"
 rm -rf "$ICE_ROOT"
 mkdir -p "$ICE_ROOT"
-export ICE_RPC_ROOT_PATH="$ICE_ROOT"
 cd "$SCRATCH"
+# iceoryx2 discovers `./config/iceoryx2.toml` relative to its working directory,
+# so a config here pins every process started below to the throwaway root.
+mkdir -p config
+cat >config/iceoryx2.toml <<EOF
+[global]
+root-path = "$ICE_ROOT"
+EOF
 
 PROVIDER_PID=""
 cleanup() {

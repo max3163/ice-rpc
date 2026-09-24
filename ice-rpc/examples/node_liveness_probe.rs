@@ -24,12 +24,6 @@ use std::time::{Duration, Instant};
 use ice_rpc::gen::raw_pid_to_u32;
 use iceoryx2::prelude::*;
 
-fn setup() {
-    // Installs the same global iceoryx2 config (root path) that ice-rpc uses,
-    // so `Node::list(Config::global_config(), ..)` sees the same nodes.
-    ice_rpc::gen::setup_iceoryx2_global_config();
-}
-
 fn label<S: Service>(state: &NodeState<S>) -> &'static str {
     match state {
         NodeState::Alive(_) => "Alive",
@@ -57,14 +51,12 @@ fn scan() -> Vec<(u32, &'static str)> {
 }
 
 fn list_cmd() {
-    setup();
     for (pid, state) in scan() {
         println!("{pid} {state}");
     }
 }
 
 fn watch_cmd(target: u32) {
-    setup();
     let start = Instant::now();
     loop {
         let snapshot = scan();
@@ -82,8 +74,6 @@ fn watch_cmd(target: u32) {
 }
 
 fn bench_cmd(iters: usize) {
-    setup();
-
     let t0 = Instant::now();
     for _ in 0..iters {
         let _ = scan();
@@ -105,8 +95,6 @@ fn print_pid_and_hold(hold: Option<u64>) {
 }
 
 fn provider_cmd(hold: Option<u64>) {
-    setup();
-
     // A locally owned Node: dropping it *is* the clean shutdown, so this
     // isolates the monitoring semantics (clean removal vs crash).
     let node = NodeBuilder::new()

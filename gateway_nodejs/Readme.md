@@ -182,12 +182,13 @@ limit.
 
 ## Configuration
 
-The gateway does not configure iceoryx2 itself: `ice-rpc` does, at the first
-`init`. The root path is resolved from `ICE_RPC_ROOT_PATH`, else from the
-platform default, and the effective configuration is written to
-`./config/iceoryx2.toml` **relative to the current directory** — which is why
-that file is gitignored. Two processes must agree on the root path, which they do
-as long as they run on the same machine with the same environment.
+Neither the gateway nor `ice-rpc` writes an iceoryx2 configuration file: the
+effective configuration is the one iceoryx2 resolves itself, looking for
+`./config/iceoryx2.toml` (relative to the current directory), then the user
+config directory, then the global one, and falling back to its compiled-in
+default. Two processes must agree on the root path to communicate; provide the
+same `./config/iceoryx2.toml` — or run on the same machine with the same default —
+so they do.
 
 ## Tests and benchmark
 

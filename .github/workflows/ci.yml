@@ -166,8 +166,10 @@ jobs:
 
       # `npm ci` needs the committed lockfile, which is why it is no longer
       # gitignored: without it a fresh clone cannot build the addon at all.
+      # `--no-audit --no-fund` keeps the install to what it needs: the audit is
+      # a registry round trip a CI run does not act on.
       - name: Install the addon build tooling
-        run: npm ci
+        run: npm ci --no-audit --no-fund
         working-directory: gateway_nodejs
 
       - name: Build the addon

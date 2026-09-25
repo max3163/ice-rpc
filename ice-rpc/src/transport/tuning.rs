@@ -20,6 +20,7 @@
 //! | Setting | Value | Why |
 //! |---|---|---|
 //! | `PAYLOAD_ALIGNMENT` | 16 | the alignment `rkyv::to_bytes` produces, so a sample decodes in place |
+//! | `REQUEST_SCRATCH_CAPACITY` | 256 bytes | starting size of the per-thread request buffer; rkyv grows it when a request is larger |
 //! | `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its oldest pending sample, losing a request that is never answered; disabled, `send()` reports `0` delivered and the publisher retries, turning the overflow into backpressure |
 //! | `WAITSET_DEADLINE` | 1 ms | bounds the cost of a missed notification |
 //! | `IDLE_SPINS` | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet` |
@@ -34,8 +35,17 @@ pub(super) const RESPONSE_NOTIFY_SUFFIX: &str = "_resp_notify";
 pub const DEFAULT_MAX_SLICE_LEN: usize = 256;
 
 /// Payload alignment requested from iceoryx2, the alignment `rkyv::to_bytes`
-/// produces, so a sample is decodable in place.
+/// produces, so a sample is decodable in place. It is also the alignment every
+/// buffer that holds an encoded request uses, so the payload stays aligned when
+/// it is written.
 pub(super) const PAYLOAD_ALIGNMENT: usize = 16;
+
+/// Initial capacity of the per-thread request-encoding buffer, in bytes.
+///
+/// A starting size, not a limit: rkyv grows the buffer when a request is larger.
+/// 256 covers the common small request, so the hot path allocates once per
+/// **thread** instead of once per call.
+pub(super) const REQUEST_SCRATCH_CAPACITY: usize = 256;
 
 /// How long a call waits for the provider to be connected before failing.
 ///
@@ -92,6 +102,7 @@ mod tests {
     #[test]
     fn tuning_values_match_the_documented_table() {
         assert_eq!(DEFAULT_MAX_SLICE_LEN, 256);
+        assert_eq!(REQUEST_SCRATCH_CAPACITY, 256);
         assert_eq!(WAITSET_DEADLINE, Duration::from_millis(1));
         assert_eq!(IDLE_SPINS, 2_000);
     }

@@ -15,8 +15,8 @@ use super::open::{open_event_service, open_service, OpenMode};
 use super::publish::{publish_until_delivered, try_publish};
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
-    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    IoxSubscriber, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
+    REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::sync::lock;
@@ -402,8 +402,9 @@ thread_local! {
     /// locked scratch measured 20 to 45 times slower than a local one in
     /// `benches/concurrency.rs` — the same reason the response path keeps its
     /// buffer local to one stream.
-    static REQUEST_SCRATCH: RefCell<AlignedVec<16>> =
-        RefCell::new(AlignedVec::<16>::with_capacity(256));
+    static REQUEST_SCRATCH: RefCell<AlignedVec<{ PAYLOAD_ALIGNMENT }>> = RefCell::new(
+        AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY),
+    );
 }
 
 /// Serializes `request` into the thread's buffer and publishes it as a call.
@@ -447,12 +448,16 @@ where
         // the framework — finds the buffer taken and allocates its own, rather
         // than panicking on a borrowed cell.
         let mut buffer = match cell.try_borrow_mut() {
-            Ok(mut guard) => std::mem::replace(&mut *guard, AlignedVec::<16>::with_capacity(0)),
-            Err(_) => AlignedVec::<16>::with_capacity(256),
+            Ok(mut guard) => std::mem::replace(
+                &mut *guard,
+                AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(0),
+            ),
+            Err(_) => AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY),
         };
         buffer.clear();
 
-        let encoded: Result<AlignedVec<16>, rkyv::rancor::Error> = to_bytes_in(request, buffer);
+        let encoded: Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error> =
+            to_bytes_in(request, buffer);
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(e) => {

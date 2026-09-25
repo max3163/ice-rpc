@@ -7,6 +7,7 @@ use std::task::{Context, Poll};
 use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
+use super::{PAYLOAD_ALIGNMENT, REQUEST_SCRATCH_CAPACITY};
 use crate::types::{Event, EventKind, Observable, RpcError, RpcHeader, ServiceRef, WireEvent};
 
 /// Sink of the encoded responses of one RPC method.
@@ -167,7 +168,7 @@ where
         >,
     >,
 {
-    let mut scratch = AlignedVec::<16>::with_capacity(256);
+    let mut scratch = AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY);
     // Pinned on the stack: `Observable` is not `Unpin`, and this costs no
     // allocation on the response path.
     let mut stream = std::pin::pin!(WireFolding::new(observable));
@@ -188,7 +189,10 @@ where
 
         // Two framings: a bare `RpcError` for a technical error, the service's
         // `WireEvent<T, E>` for everything else.
-        let framed: (EventKind, Result<AlignedVec<16>, rkyv::rancor::Error>) = match &wire {
+        let framed: (
+            EventKind,
+            Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error>,
+        ) = match &wire {
             WireEvent::RpcError(err) => (EventKind::RpcError, to_bytes_in(err, scratch)),
             _ => (wire.kind(), to_bytes_in(&wire, scratch)),
         };
@@ -292,8 +296,9 @@ impl ServiceDispatcher {
 /// about the service types, and the provider cannot name them at all for a
 /// method it does not have, so a generic framing could not answer those calls.
 pub fn emit_rpc_error(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool {
-    let scratch = AlignedVec::<16>::with_capacity(256);
-    let encoded: Result<AlignedVec<16>, rkyv::rancor::Error> = to_bytes_in(&err, scratch);
+    let scratch = AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY);
+    let encoded: Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error> =
+        to_bytes_in(&err, scratch);
     match encoded {
         Ok(bytes) => emitter.emit(EventKind::RpcError, &bytes),
         Err(e) => {

@@ -1,8 +1,9 @@
 [package]
 name = "gateway-nodejs"
 version.workspace = true
-# The workspace floor (1.89, imposed by iceoryx2 0.10) already covers the 1.88
-# the napi family needs, so no local override is required anymore.
+# The workspace floor (1.97, imposed by `trillium-http` 1.7.2 through the optional
+# `http` features) already covers the 1.88 the napi family needs, so no local
+# override is required.
 rust-version.workspace = true
 edition = "2021"
 description = "Node.js napi gateway for ice-rpc"

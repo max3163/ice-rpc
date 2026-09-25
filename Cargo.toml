@@ -13,13 +13,20 @@ resolver = "2"
 [workspace.package]
 version = "0.3.2"
 # True floor driven by the dependency tree, not by the local toolchain:
-# `iceoryx2` 0.10 requires 1.89, the library crates only need older features
-# (`std::mem::offset_of!` is 1.77, `u64::div_ceil` is 1.73, `OnceLock` is 1.70).
-# The napi family pulled in by `gateway_nodejs` needs 1.88, below this floor, so
-# that crate inherits the workspace value unchanged. Keeping the value as low as
-# the dependencies allow is what lets `cargo` pick an MSRV-aware dependency
-# resolution and keeps `rust-version` a *contract*, not a pin.
-rust-version = "1.89"
+# `trillium-http` 1.7.2 — reached only through the optional `http` features —
+# calls `usize::bit_width`, stable since 1.97, and declares **no** `rust-version`
+# of its own, so cargo's MSRV-aware resolution cannot see it: only a build run on
+# the floor catches it. Below that, `sysinfo` 0.39 (the optional
+# `process-metrics` feature of `ice-rpc-monitor`) needs 1.95, `iceoryx2` 0.10
+# needs 1.89, and the library crates themselves only need older features
+# (`std::mem::offset_of!` is 1.77, `u64::div_ceil` is 1.73, `OnceLock` is 1.70);
+# the napi family pulled in by `gateway_nodejs` needs 1.88. Keeping the value as
+# low as the dependencies allow is what lets `cargo` pick an MSRV-aware
+# dependency resolution and keeps `rust-version` a *contract*, not a pin — a
+# contract the `msrv` CI job verifies by installing exactly the declared version
+# and building the optional features with it. Both drifts named above were found
+# that way, by a build, not by reading manifests.
+rust-version = "1.97"
 
 [workspace.lints.rust]
 # An `unsafe fn` must wrap its own operations in an explicit `unsafe` block.

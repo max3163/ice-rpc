@@ -110,6 +110,64 @@ jobs:
       # features on purpose, so it does not cover this either.
       - name: Test (ice-rpc, tracing feature)
         run: cargo test -p ice-rpc --features tracing --lib
+      - name: Check (ice-rpc, optional features, one mode at a time)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p ice-rpc --all-targets --no-default-features --features tokio,http-tokio,monitoring,json,tracing
+          cargo check -p ice-rpc --all-targets --no-default-features --features smol,http-smol,monitoring,json
+          cargo check -p ice-rpc --all-targets --no-default-features --features http-threads,monitoring,json
+
+      - name: Check (ice-rpc-monitor, process-metrics feature)
+        run: cargo check -p ice-rpc-monitor --all-targets --features process-metrics
+
+      - name: Check (common, optional features)
+        run: cargo check -p common --all-targets --features napi,monitoring,http --features ice-rpc/http-threads
+  msrv:
+    name: MSRV (declared rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the declared MSRV
+        id: msrv
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^rust-version/ {print $2; exit}' Cargo.toml)"
+          test -n "$version"
+          echo "declared rust-version: $version"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain (MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The default build first: `rt-threads` for `ice-rpc`, the plain bus
+      # observer for `ice-rpc-monitor`. This is what a user who names no feature
+      # at all compiles, so it is the floor that matters most.
+      - name: Check (workspace, default features)
+        run: cargo check --workspace --exclude gateway-nodejs --all-targets
+
+      # Then the optional surface — the part nothing ever built on a floor, and
+      # the part that actually decides what the floor is.
+      - name: Check (ice-rpc, optional features, one mode at a time)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p ice-rpc --all-targets --no-default-features --features tokio,http-tokio,monitoring,json,tracing
+          cargo check -p ice-rpc --all-targets --no-default-features --features smol,http-smol,monitoring,json
+          cargo check -p ice-rpc --all-targets --no-default-features --features http-threads,monitoring,json
+
+      - name: Check (ice-rpc-monitor, process-metrics feature)
+        run: cargo check -p ice-rpc-monitor --all-targets --features process-metrics
+
+      - name: Check (common, optional features)
+        run: cargo check -p common --all-targets --features napi,monitoring,http --features ice-rpc/http-threads
 
   coverage:
     name: Coverage (Ubuntu)

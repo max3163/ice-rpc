@@ -154,7 +154,10 @@ Platform notes:
   and the console prints `shared : n/a`. The per-process RSS remains available
   and includes the mapped pages.
 - **Process metrics** need the `process-metrics` feature (`sysinfo`) and are off
-  by default, so a plain bus observer pays nothing.
+  by default, so a plain bus observer pays nothing. `sysinfo` 0.39 is also what
+  sets the workspace `rust-version` at **1.95** — the HTTP gateway's
+  `trillium-http` taking it to **1.97**; a build without either stays on the
+  **1.89** of `iceoryx2`.
 
 ## Usage
 

@@ -47,7 +47,10 @@ flowchart LR
 
 ## Requirements
 
-- Rust **1.89** or newer (the workspace floor, imposed by `iceoryx2` 0.10).
+- Rust **1.97** or newer (the workspace floor: the optional `http` features pull
+  `trillium-http` 1.7.2, which calls `usize::bit_width` — stable since 1.97 —
+  without declaring a `rust-version` of its own. The addon itself only needs the
+  **1.88** of the napi family).
 - Node.js **22.13** or newer — `@napi-rs/cli` requires it, and the addon is built
   with `napi4`/`napi8`.
 

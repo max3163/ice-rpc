@@ -1,0 +1,19 @@
+# Baseline iceoryx2 configuration for this package (its tests and examples).
+#
+# ice-rpc pins no service limit: publishers, subscribers, nodes, subscriber buffer
+# size and loaned samples all come from here, so the deployment owns them. iceoryx2
+# resolves this file relative to the process working directory — for `cargo test`
+# and `cargo run` from this package, that is `ice-rpc/`, hence `config/iceoryx2.toml`.
+#
+# iceoryx2's compiled-in defaults are conservative — `max-publishers = 2`,
+# `max-subscribers = 8`, `subscriber-max-buffer-size = 2`,
+# `publisher-max-loaned-samples = 2` — and cannot sustain a shared channel under
+# concurrency. The values below restore the ones ice-rpc used to pin. See
+# `Readme.md`, section "Configuration".
+
+[defaults.publish-subscribe]
+max-publishers = 16
+max-subscribers = 16
+max-nodes = 32
+subscriber-max-buffer-size = 1024
+publisher-max-loaned-samples = 1024

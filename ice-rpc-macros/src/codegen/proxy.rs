@@ -13,6 +13,11 @@ pub struct ProxyGenInput<'a> {
     pub mode_name: &'a Ident,
     pub init_default_name: &'a Ident,
     pub logical_name_lit: &'a str,
+    /// Channel the service belongs to (the `group` of `#[service]`).
+    pub group_lit: &'a str,
+    /// Expression of the initial slice length of the channel's publishers
+    /// (`#[service(max_slice_len = N)]`, or the runtime default).
+    pub max_slice_len: &'a TokenStream,
     pub node_methods: &'a [TokenStream],
     /// Whether the `ProviderJson` mode and its constructor belong to the
     /// expansion (the `json` feature).
@@ -30,6 +35,8 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         mode_name,
         init_default_name,
         logical_name_lit,
+        group_lit,
+        max_slice_len,
         node_methods,
         json_provider,
     } = input;
@@ -125,6 +132,10 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             }
 
             #visibility fn consume() -> std::sync::Arc<Self> {
+                // The channel's publishers are sized from this declaration; being
+                // a property of the channel, it is recorded once here rather than
+                // carried by every call.
+                ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 std::sync::Arc::new(Self {
                     deps: vec![],
                     mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Consumer {

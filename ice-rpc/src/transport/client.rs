@@ -15,8 +15,8 @@ use super::open::{open_event_service, open_service, OpenMode};
 use super::publish::{publish_until_delivered, try_publish};
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
-    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    IoxSubscriber, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
+    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::sync::lock;
@@ -200,10 +200,14 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         OpenMode::CreateOrOpen,
     )?;
 
+    // The slice length was declared by the service for this channel, before its
+    // ports were opened (see `declare_channel_max_slice_len`); every other
+    // publisher setting, the loaned-sample count included, comes from the
+    // iceoryx2 configuration.
+    let max_slice_len = super::channel_max_slice_len(channel);
     let publisher = request_service
         .publisher_builder()
-        .initial_max_slice_len(MAX_SLICE_LEN)
-        .max_loaned_samples(MAX_LOANED_SAMPLES)
+        .initial_max_slice_len(max_slice_len)
         .create()
         .map_err(|e| transport_error("request publisher", e))?;
     let request_notifier = request_notify

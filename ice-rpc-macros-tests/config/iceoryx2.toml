@@ -1,0 +1,13 @@
+# Baseline iceoryx2 configuration for this package's integration tests.
+#
+# Kept in sync by hand with `ice-rpc/config/iceoryx2.toml`: iceoryx2 resolves the
+# file relative to the *process* working directory, and `cargo test -p
+# ice-rpc-macros-tests` runs the test binaries from this package, so the config
+# cannot be shared across the workspace. See `ice-rpc/Readme.md`, "Configuration".
+
+[defaults.publish-subscribe]
+max-publishers = 16
+max-subscribers = 16
+max-nodes = 32
+subscriber-max-buffer-size = 1024
+publisher-max-loaned-samples = 1024

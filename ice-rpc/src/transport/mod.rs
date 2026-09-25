@@ -6,12 +6,13 @@
 //! bytes as payload. A subscribe port cannot be attached to a `WaitSet`, so each
 //! side also owns an event service used as a wake-up signal.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc_threadsafe;
 
-use crate::global::Global;
+use crate::global::{Global, Locked};
 use crate::types::{RpcError, RpcHeader};
 
 mod bridge;
@@ -36,12 +37,50 @@ pub use server::{register_native_service, spawn_native_service, start_registered
 // The transport reads its tunables through these names, so `tuning.rs` stays the
 // only place where a value is defined and documented.
 use tuning::{
-    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, MAX_LOANED_SAMPLES, MAX_NODES, MAX_PUBLISHERS,
-    MAX_SLICE_LEN, MAX_SUBSCRIBERS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT,
+    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT,
     PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX,
     REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, SIGNAL_CHECK_SAMPLES,
-    SUBSCRIBER_BUFFER, WAITSET_DEADLINE,
+    WAITSET_DEADLINE,
 };
+
+// The generated code names this default when `#[service]` omits `max_slice_len`,
+// and the direct entry points (`native_call`, `spawn_native_service`) fall back to
+// it. Re-exported so the value is defined in `tuning.rs` alone.
+pub use tuning::DEFAULT_MAX_SLICE_LEN;
+
+/// Declared initial slice length of the channels this process opens, by channel.
+fn max_slice_len_registry() -> &'static Locked<HashMap<String, usize>> {
+    static REGISTRY: Locked<HashMap<String, usize>> = Locked::new();
+    &REGISTRY
+}
+
+/// Declares the initial slice length of `channel`'s publishers.
+///
+/// The generated provider and consumer call this once, before the channel's ports
+/// are opened — the value is a property of the **channel**, not of a call, so it
+/// does not travel through the call path. The first declaration wins; a later,
+/// different one is logged and ignored.
+pub fn declare_channel_max_slice_len(channel: &str, max_slice_len: usize) {
+    max_slice_len_registry().with(|registry| {
+        if let Some(&declared) = registry.get(channel) {
+            if declared != max_slice_len {
+                log::warn!(
+                    "[transport] channel '{channel}': max_slice_len {max_slice_len} ignored, \
+                     already declared as {declared}"
+                );
+            }
+            return;
+        }
+        registry.insert(channel.to_owned(), max_slice_len);
+    });
+}
+
+/// The initial slice length of `channel`'s publishers, read when its ports open.
+pub(super) fn channel_max_slice_len(channel: &str) -> usize {
+    max_slice_len_registry()
+        .with(|registry| registry.get(channel).copied())
+        .unwrap_or(DEFAULT_MAX_SLICE_LEN)
+}
 
 /// Concrete iceoryx2 service flavour used by the transport.
 type Iox = ipc_threadsafe::Service;

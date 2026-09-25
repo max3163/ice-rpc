@@ -28,6 +28,10 @@ use crate::{METHOD_NAME_LEN, SERVICE_NAME_LEN};
 ///   it owns one request channel, one response channel and one dispatch thread,
 ///   and the samples are routed by the service id carried in the header.
 ///   Defaults to the service name, i.e. one channel per service.
+/// - `#[service(..., max_slice_len = 4096)]` → the initial slice length of the
+///   channel's publishers, in payload elements. It is a property of the
+///   **channel**, so every service of a group must declare the same value; when
+///   omitted, the runtime default (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
 /// - `#[service("MyService", version = 2, group = "db")]` → all.
 #[derive(Debug)]
 pub struct ServiceAttr {
@@ -37,6 +41,8 @@ pub struct ServiceAttr {
     pub group: Option<String>,
     /// Service interface version carried in the RPC header.
     pub service_version: u16,
+    /// Initial slice length of the channel's publishers, when declared.
+    pub max_slice_len: Option<usize>,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -44,12 +50,14 @@ impl syn::parse::Parse for ServiceAttr {
         let mut logical_name: Option<String> = None;
         let mut group: Option<String> = None;
         let mut service_version: u16 = 1;
+        let mut max_slice_len: Option<usize> = None;
 
         if input.is_empty() {
             return Ok(Self {
                 logical_name,
                 group,
                 service_version,
+                max_slice_len,
             });
         }
 
@@ -67,6 +75,19 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
+                } else if ident == "max_slice_len" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    let value = lit.base10_parse::<usize>()?;
+                    // A slice of 0 elements cannot carry an RPC payload, and
+                    // iceoryx2 refuses it: reject it here rather than at runtime.
+                    if value == 0 {
+                        return Err(syn::Error::new(
+                            lit.span(),
+                            "max_slice_len must be greater than 0",
+                        ));
+                    }
+                    max_slice_len = Some(value);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -85,6 +106,7 @@ impl syn::parse::Parse for ServiceAttr {
             logical_name,
             group,
             service_version,
+            max_slice_len,
         })
     }
 }
@@ -202,6 +224,8 @@ pub struct ServiceModel {
     pub group: String,
     /// Service interface version carried in the RPC header.
     pub service_version: u16,
+    /// Initial slice length of the channel's publishers, when declared.
+    pub max_slice_len: Option<usize>,
     /// `{Trait}Request`.
     pub req_enum_name: Ident,
     /// `{Trait}Client`.
@@ -257,6 +281,7 @@ impl ServiceModel {
             logical_name,
             group,
             service_version: attr.service_version,
+            max_slice_len: attr.max_slice_len,
             req_enum_name: Ident::new(&format!("{trait_name}Request"), trait_name.span()),
             client_name: Ident::new(&format!("{trait_name}Client"), trait_name.span()),
             server_name: Ident::new(&format!("{trait_name}Server"), trait_name.span()),

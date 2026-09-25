@@ -14,6 +14,9 @@ pub struct LifecycleGenInput<'a> {
     pub logical_name_lit: &'a str,
     /// Channel the service is registered on (the `group` of `#[service]`).
     pub group_lit: &'a str,
+    /// Expression of the initial slice length of the channel's publishers
+    /// (`#[service(max_slice_len = N)]`, or the runtime default).
+    pub max_slice_len: &'a TokenStream,
     /// Expression of the shared [`ServiceRef`] of the service (id + version).
     pub service_ref: &'a TokenStream,
     /// Whether the `ProviderJson` branch belongs to the expansion (the
@@ -35,6 +38,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         mode_name,
         logical_name_lit,
         group_lit,
+        max_slice_len,
         service_ref,
         json_provider,
         json_provider_methods,
@@ -52,6 +56,9 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                 #(#json_provider_methods)*
                 // Registered on the channel: the channel thread starts
                 // once every provider of the process is registered.
+                // The channel's publishers are sized from this declaration; being
+                // a property of the channel, it is recorded once here.
+                ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 if let Err(e) = ice_rpc::gen::register_native_service(
                     #group_lit,
                     #logical_name_lit,
@@ -93,6 +100,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             // Registered on the channel; the channel thread starts
                             // in `initialize_all`, once every provider registered.
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
+                            ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                             if let Err(e) = ice_rpc::gen::register_native_service(
                                 #group_lit,
                                 #logical_name_lit,

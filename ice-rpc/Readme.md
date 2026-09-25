@@ -329,6 +329,56 @@ domain). Provide a `./config/iceoryx2.toml` — or a user/global one — when th
 default is not what you want; every peer that discovers the same file shares the
 domain. A partial file is enough: iceoryx2 merges it over its defaults.
 
+### Every participant must share the same configuration
+
+The service limits — publishers, subscribers, nodes, subscriber buffer size and
+loaned samples — are **not** hard-coded by `ice-rpc`: they come from the iceoryx2
+configuration, so the deployment owns them. This widens the coherence rule above:
+**all participants of a channel must resolve the same iceoryx2 configuration.**
+When they do not, `ice-rpc` reports a protocol mismatch that names the two cases
+— a divergent configuration, or leftover state from a killed process — each with
+its own remedy.
+
+The same **protocol version** is required; the same **build** is not. A consumer
+and a provider built from different revisions interoperate as long as they speak
+the same protocol version and resolve the same configuration, which is what lets
+one side be upgraded before the other.
+
+iceoryx2's compiled-in defaults are conservative (`max-publishers = 2`,
+`max-subscribers = 8`, `subscriber-max-buffer-size = 2`, …). When no
+configuration file is present they apply, so ship a baseline that restores the
+values `ice-rpc` used to pin. It must sit in `./config/iceoryx2.toml` relative to
+the **working directory of each process** — iceoryx2 resolves it from there, so
+`cargo test` and `cargo run` look in the package directory, not the workspace
+root. This workspace ships one for its own tests and examples under
+`ice-rpc/config/` and `ice-rpc-macros-tests/config/`:
+
+```toml
+[defaults.publish-subscribe]
+max-publishers = 16
+max-subscribers = 16
+max-nodes = 32
+subscriber-max-buffer-size = 1024
+publisher-max-loaned-samples = 1024
+```
+
+### Slice length
+
+The one publisher setting iceoryx2 does not expose in its configuration is the
+initial slice length, and its builder default is `1` — with the default
+`publisher-allocation-strategy = "static"` that is a hard cap, so a 1-element
+slice cannot carry an RPC payload. It is therefore declared by the service, per
+channel:
+
+```rust,ignore
+#[service("DatabaseService", group = "db", max_slice_len = 4096)]
+```
+
+Every service of a group must declare the same `max_slice_len`; an omitted value
+falls back to `DEFAULT_MAX_SLICE_LEN` (256). Setting
+`publisher-allocation-strategy = "power-of-two"` in the configuration lets a
+publisher grow past that initial size instead of refusing the sample.
+
 ## License
 
 Apache-2.0

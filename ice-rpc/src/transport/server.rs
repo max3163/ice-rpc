@@ -17,9 +17,8 @@ use super::open::{open_event_service, open_service, OpenMode};
 use super::publish::publish_until_delivered;
 use super::{
     shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, MAX_LOANED_SAMPLES, MAX_SLICE_LEN, OPEN_RETRY_ATTEMPTS,
-    OPEN_RETRY_SLEEP, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
-    RESPONSE_SUFFIX,
+    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP,
+    REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::sync::lock;
@@ -50,6 +49,7 @@ pub(super) struct ChannelPorts {
 
 /// Opens every port of one channel, provider side.
 pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError> {
+    let max_slice_len = super::channel_max_slice_len(channel);
     let node = shared_node()?;
     let request_service = open_service(&node, channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)?;
     let response_service = open_service(&node, channel, RESPONSE_SUFFIX, OpenMode::CreateOrOpen)?;
@@ -74,10 +74,13 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
         .listener_builder()
         .create()
         .map_err(|e| transport_error("request listener", e))?;
+    // The slice length was declared by the service for this channel, before its
+    // ports were opened (see `declare_channel_max_slice_len`); every other
+    // publisher setting, the loaned-sample count included, comes from the
+    // iceoryx2 configuration.
     let publisher = response_service
         .publisher_builder()
-        .initial_max_slice_len(MAX_SLICE_LEN)
-        .max_loaned_samples(MAX_LOANED_SAMPLES)
+        .initial_max_slice_len(max_slice_len)
         .create()
         .map_err(|e| transport_error("response publisher", e))?;
     let response_notifier = response_notify

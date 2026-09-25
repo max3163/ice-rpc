@@ -189,6 +189,10 @@ impl CalculatorProxy {
         })
     }
     pub fn consume() -> std::sync::Arc<Self> {
+        ice_rpc::gen::declare_channel_max_slice_len(
+            "calculator",
+            ice_rpc::gen::DEFAULT_MAX_SLICE_LEN,
+        );
         std::sync::Arc::new(Self {
             deps: vec![],
             mode: ice_rpc::gen::async_lock::RwLock::new(CalculatorMode::Consumer {
@@ -340,6 +344,10 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                             },
                         );
                 }
+                ice_rpc::gen::declare_channel_max_slice_len(
+                    "calculator",
+                    ice_rpc::gen::DEFAULT_MAX_SLICE_LEN,
+                );
                 if let Err(e) = ice_rpc::gen::register_native_service(
                     "calculator",
                     "calculator",
@@ -366,6 +374,10 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                     }
                     let dispatcher = CalculatorServer::new(local_impl.clone())
                         .native_dispatcher();
+                    ice_rpc::gen::declare_channel_max_slice_len(
+                        "calculator",
+                        ice_rpc::gen::DEFAULT_MAX_SLICE_LEN,
+                    );
                     if let Err(e) = ice_rpc::gen::register_native_service(
                         "calculator",
                         "calculator",

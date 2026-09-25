@@ -1,18 +1,26 @@
-//! Every tunable value of the transport, in one place.
+//! The values the transport truly owns, in one place.
 //!
-//! The table below mirrors section 4.5 of the `Readme.md`. Keeping the values
-//! here, next to their justification, is what makes the memory budget of a
-//! channel readable: a reader no longer has to grep half a dozen modules to
-//! reconstruct it.
+//! Two families live here:
+//!
+//! - the **protocol invariants** (`PAYLOAD_ALIGNMENT`, `enable_safe_overflow`):
+//!   changing one is a wire-protocol change and requires bumping
+//!   [`PROTOCOL_VERSION`](crate::types::consts::PROTOCOL_VERSION), so they are
+//!   compiled in and never exposed;
+//! - the **runtime tuning** (`WAITSET_DEADLINE`, `IDLE_SPINS`, ...): invisible to
+//!   a peer, so a process may adjust them on its own.
+//!
+//! The service limits one might expect here — publishers, subscribers, nodes,
+//! subscriber buffer size, slice length and loaned samples — are deliberately
+//! **absent**. They are deployment policy, not implementation choices: every
+//! participant inherits them from the iceoryx2 configuration it resolves. The one
+//! exception is the slice length, which iceoryx2 0.10 does not expose in its
+//! configuration and whose builder default is `1`; the developer declares it per
+//! channel with `#[service(max_slice_len = N)]`, see [`DEFAULT_MAX_SLICE_LEN`].
 //!
 //! | Setting | Value | Why |
 //! |---|---|---|
-//! | `SUBSCRIBER_BUFFER` | 1 024 | one term of the memory budget of a channel |
+//! | `PAYLOAD_ALIGNMENT` | 16 | the alignment `rkyv::to_bytes` produces, so a sample decodes in place |
 //! | `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its oldest pending sample, losing a request that is never answered; disabled, `send()` reports `0` delivered and the publisher retries, turning the overflow into backpressure |
-//! | `MAX_SLICE_LEN` | 256 | `slice` memory per sample; larger payloads grow the segment |
-//! | `MAX_LOANED_SAMPLES` | 1 024 | sizes the data segment of a publisher: ~400 KB, against ~6.5 MB at the iceoryx2 default, untenable with dozens of services |
-//! | `MAX_PUBLISHERS` / `MAX_SUBSCRIBERS` | 16 | a channel is shared: every consuming process publishes on it, every provider subscribes to it |
-//! | `MAX_NODES` | 32 | processes that can open the same channel at once |
 //! | `WAITSET_DEADLINE` | 1 ms | bounds the cost of a missed notification |
 //! | `IDLE_SPINS` | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet` |
 
@@ -23,24 +31,7 @@ pub(super) const REQUEST_SUFFIX: &str = "_req";
 pub(super) const RESPONSE_SUFFIX: &str = "_resp";
 pub(super) const REQUEST_NOTIFY_SUFFIX: &str = "_req_notify";
 pub(super) const RESPONSE_NOTIFY_SUFFIX: &str = "_resp_notify";
-
-/// Samples a subscriber can buffer before backpressure is reported.
-pub(super) const SUBSCRIBER_BUFFER: usize = 1024;
-
-/// Publishers accepted on one channel: one per process that sends on it.
-pub(super) const MAX_PUBLISHERS: usize = 16;
-
-/// Subscribers accepted on one channel: one per process and per channel.
-pub(super) const MAX_SUBSCRIBERS: usize = 16;
-
-/// Processes that can open the same channel at once.
-pub(super) const MAX_NODES: usize = 32;
-
-/// Samples a publisher can keep loaned at once; sizes its data segment.
-pub(super) const MAX_LOANED_SAMPLES: usize = 1024;
-
-/// Initial slice length of a sample; large payloads grow the segment on demand.
-pub(super) const MAX_SLICE_LEN: usize = 256;
+pub const DEFAULT_MAX_SLICE_LEN: usize = 256;
 
 /// Payload alignment requested from iceoryx2, the alignment `rkyv::to_bytes`
 /// produces, so a sample is decodable in place.
@@ -100,12 +91,7 @@ mod tests {
     /// change of tuning cannot slip through without updating the table.
     #[test]
     fn tuning_values_match_the_documented_table() {
-        assert_eq!(SUBSCRIBER_BUFFER, 1024);
-        assert_eq!(MAX_LOANED_SAMPLES, 1024);
-        assert_eq!(MAX_SLICE_LEN, 256);
-        assert_eq!(MAX_PUBLISHERS, 16);
-        assert_eq!(MAX_SUBSCRIBERS, 16);
-        assert_eq!(MAX_NODES, 32);
+        assert_eq!(DEFAULT_MAX_SLICE_LEN, 256);
         assert_eq!(WAITSET_DEADLINE, Duration::from_millis(1));
         assert_eq!(IDLE_SPINS, 2_000);
     }

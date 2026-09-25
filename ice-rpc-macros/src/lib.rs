@@ -66,7 +66,12 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version` and `group`.
+/// `"LogicalName"`, `version`, `group` and `max_slice_len`.
+///
+/// `max_slice_len` sizes the initial slice of the channel's publishers. It is a
+/// property of the **channel** (the `group`), so every service of a group must
+/// declare the same value; when omitted, the runtime default
+/// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
 ///
 /// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
 /// as supertraits, and generates:
@@ -125,6 +130,14 @@ fn expand_service_with(
     let logical_name_lit = model.logical_name.clone();
     let group_lit = model.group.clone();
     let service_version = model.service_version;
+
+    // The slice length of the channel's publishers. The default lives in
+    // `ice-rpc` (`DEFAULT_MAX_SLICE_LEN`), so the value is declared once and the
+    // two crates cannot drift apart.
+    let max_slice_len = match model.max_slice_len {
+        Some(value) => quote! { #value },
+        None => quote! { ice_rpc::gen::DEFAULT_MAX_SLICE_LEN },
+    };
 
     let req_enum_name = &model.req_enum_name;
     let client_name = &model.client_name;
@@ -233,6 +246,8 @@ fn expand_service_with(
         mode_name,
         init_default_name,
         logical_name_lit: &logical_name_lit,
+        group_lit: &group_lit,
+        max_slice_len: &max_slice_len,
         node_methods: &node_methods,
         json_provider: features.json,
     };
@@ -245,6 +260,7 @@ fn expand_service_with(
         mode_name,
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
+        max_slice_len: &max_slice_len,
         service_ref: &service_ref,
         json_provider: features.json,
         json_provider_methods: &json_provider_methods,

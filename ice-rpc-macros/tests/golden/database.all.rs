@@ -263,6 +263,7 @@ impl DatabaseApiProxy {
         })
     }
     pub fn consume() -> std::sync::Arc<Self> {
+        ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
         std::sync::Arc::new(Self {
             deps: vec![],
             mode: ice_rpc::gen::async_lock::RwLock::new(DatabaseApiMode::Consumer {
@@ -529,6 +530,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                             },
                         );
                 }
+                ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
                 if let Err(e) = ice_rpc::gen::register_native_service(
                     "db",
                     "Database",
@@ -552,6 +554,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                     }
                     let dispatcher = DatabaseApiServer::new(local_impl.clone())
                         .native_dispatcher();
+                    ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
                     if let Err(e) = ice_rpc::gen::register_native_service(
                         "db",
                         "Database",

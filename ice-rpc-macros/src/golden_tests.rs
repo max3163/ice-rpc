@@ -186,7 +186,7 @@ fn a_service_with_a_name_a_version_and_a_group_is_pinned_in_every_feature_set() 
             label,
             features,
             "database",
-            quote! { "Database", version = 2, group = "db" },
+            quote! { "Database", version = 2, group = "db", max_slice_len = 4096 },
             item.clone(),
         );
     }

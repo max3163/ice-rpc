@@ -241,7 +241,7 @@ Every variant the enum declares, in declaration order:
 | `Timeout` | deadline exceeded | yes |
 | `Cancelled` | cancelled by a global shutdown (SIGINT/SIGTERM or programmatic), a `take_until` token or a `timeout`; a remote Cancel published by a consumer that abandoned the call is handled by the provider and stays silent | no |
 | `Internal` | unexpected internal error / invariant violation | no |
-| `ProtocolMismatch` | the service already on the bus was created by another build, or by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no |
+| `ProtocolMismatch` | the service on the bus was recorded with a different configuration — a peer resolving another `iceoryx2.toml`, or another build — or its state was left behind by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no |
 
 Four names that appeared in an earlier version of this table — `DiscoveryError`,
 `ProviderUnavailable`, `ServiceNotFound`, `PayloadTooLarge` — have **no** variant.

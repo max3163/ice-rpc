@@ -2,26 +2,36 @@
 
 This document is the canonical version of the hint that
 [`scripts/bench-load.sh`](../scripts/bench-load.sh) already prints when a provider
-dies at startup, and of the remedy carried by `RpcError::ProtocolMismatch`.
+dies at startup, and of the two remedies carried by `RpcError::ProtocolMismatch`.
 
 ## Why a service can refuse to open
 
 iceoryx2 records the **static configuration** of a service when it is created, and
 refuses to open it later if a process asks for a different one. For an ice-rpc
-channel, that configuration includes:
+channel, that configuration mixes two families — settings compiled into the
+library, and settings the deployment provides:
 
-| Recorded setting | Changed by |
-|---|---|
-| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 120 bytes today) |
-| payload alignment | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs) |
-| payload type | the `Payload` generic of the service definition |
-| safe overflow | the `enable_safe_overflow(false)` of the request and response services |
-| buffer sizes, port limits, node limit | `SUBSCRIBER_BUFFER`, `MAX_PUBLISHERS`, `MAX_SUBSCRIBERS`, `MAX_NODES`, `MAX_LOANED_SAMPLES` |
+| Recorded setting | Changed by | Family |
+|---|---|---|
+| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 120 bytes today) | compiled in |
+| payload alignment | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs) | compiled in |
+| payload type | the `Payload` generic of the service definition | compiled in |
+| safe overflow | the `enable_safe_overflow(false)` of the request and response services | compiled in |
+| buffer sizes, port limits, node limit | the `[defaults.publish-subscribe]` of the iceoryx2 configuration: `max-publishers`, `max-subscribers`, `max-nodes`, `subscriber-max-buffer-size`, `publisher-max-loaned-samples` | configuration |
+
+The compiled-in family is a **protocol** property: changing one of those requires
+bumping `PROTOCOL_VERSION` and rebuilding every participant together. The
+configuration family is a **deployment** property: `ice-rpc` pins none of it, so
+each process opens the service with whatever it resolves — which is why all
+participants of a channel must resolve the same `iceoryx2.toml` (see the
+`Configuration` section of the [`ice-rpc` Readme](../ice-rpc/Readme.md)).
 
 Two facts follow:
 
-- **Every process on a machine must be rebuilt together** after such a change. A
-  binary from before the change and a binary from after it cannot share a channel;
+- **Every process on a machine must be rebuilt together** after a change of the
+  compiled-in family; for the configuration family it is enough that they all
+  resolve the same values. Otherwise a binary from before the change and a binary
+  from after it cannot share a channel;
 - a process killed while it held a service (`SIGKILL`, a crash, a debugger stop)
   leaves its files behind. iceoryx2 then reports the service as corrupted, or —
   in the worst case — tries to remove a file whose shared memory is gone and
@@ -31,19 +41,33 @@ Two facts follow:
 
 `ice_rpc::RpcError::ProtocolMismatch` — not a transport error, and deliberately
 **not retryable**: no amount of retrying resolves it. Its message names the
-iceoryx2 variant and the remedy below, so the log of a failing startup is enough
-to act:
+iceoryx2 variant and the matching remedy, so the log of a failing startup is
+enough to act. There are **two** remedies, and confusing them sends the reader to
+a purge that cannot help — the same divergent configuration comes back on the
+next start.
+
+A configuration mismatch: the peers do not resolve the same configuration.
+
+```
+RPC error: incompatible service on the bus: open service: IncompatibleTypes.
+the iceoryx2 configuration resolved by this process differs from the one recorded
+when the service was created: payload alignment, overflow behavior, buffer sizes
+or port limits. Every participant of this channel must resolve the same iceoryx2
+configuration (notably its `[defaults.publish-subscribe]`) and speak the same
+protocol version
+```
+
+Leftover state: a process was killed while it held the service.
 
 ```
 RPC error: incompatible service on the bus: open service: ServiceInCorruptedState.
-the iceoryx2 state on this machine was created by another build of this service
-(wire format, buffer sizes or port limits changed), or a process was killed while
-it held it. Once no process still runs the previous build, remove the iceoryx2
-root path: ...
+the iceoryx2 state on this machine was left behind by a process that was killed
+while it held this service. Once no process still runs, remove the iceoryx2 root
+path: ...
 ```
 
 The classification lives in [`transport/open.rs`](../ice-rpc/src/transport/open.rs),
-which is also where the remedy text is written once.
+which is also where the two remedy texts are written once.
 
 ## A different failure: an interface version mismatch
 
@@ -145,7 +169,9 @@ growing by one run per kill.
 
 The manual procedure below remains the answer when the state cannot be explained
 by a dead process: a service whose *recorded configuration* differs from the
-requested one — another build — is not a dead node, so no cleanup removes it.
+requested one — another build, or a peer that resolves a different `iceoryx2.toml`
+— is not a dead node, so no cleanup removes it. Align the configuration first;
+only leftover state calls for the purge.
 
 ## The call context and its trace ids
 
@@ -164,7 +190,7 @@ Three consequences worth keeping in mind:
 
 - adding fields to `RpcHeader` changes its **size**, and that size is part of what
   iceoryx2 validates when a service is opened: every process on the machine must
-  be rebuilt together, exactly like the other recorded settings above;
+  be rebuilt together, exactly like the other compiled-in settings above;
 - the header is capped by iceoryx2's `user_header`, so the room for the trace
   context was found by reducing `METHOD_NAME_LEN` from 64 to 32 — the header did
   not grow, it shrank (128 → 120 bytes);
@@ -208,7 +234,10 @@ cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
    scripts/purge-iceoryx2-root.sh          # dry run: paths, file counts, sizes
    scripts/purge-iceoryx2-root.sh --yes    # remove them
    ```
-3. **Rebuild everything** and restart the provider first, then the consumers.
+3. **Align the configuration, or rebuild.** A configuration mismatch is fixed by
+   making every participant resolve the same `iceoryx2.toml`; a compiled-in
+   protocol change needs every participant rebuilt. Either way, restart the
+   provider first, then the consumers.
 
 ## The other half of the state: the shared-memory markers
 

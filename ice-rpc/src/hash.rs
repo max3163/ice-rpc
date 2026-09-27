@@ -146,4 +146,104 @@ mod tests {
         assert_eq!(id.hash_one(7u32), 7u64);
         assert_eq!(id.hash_one(u32::MAX), u64::from(u32::MAX));
     }
+
+    #[test]
+    fn fx_chunks_its_bytes_eight_at_a_time() {
+        // One long write and two word-sized ones must land on the same hash.
+        let mut whole = FxHasher::default();
+        whole.write(b"12345678ABCDEFGH");
+        let mut split = FxHasher::default();
+        split.write(b"12345678");
+        split.write(b"ABCDEFGH");
+        assert_eq!(whole.finish(), split.finish());
+    }
+
+    #[test]
+    fn fx_zero_pads_a_short_tail() {
+        let mut tail = FxHasher::default();
+        tail.write(b"abc");
+        // The tail is padded with zeros, so the padded form hashes identically.
+        let mut padded = FxHasher::default();
+        padded.write(b"abc\0\0\0\0\0");
+        assert_eq!(tail.finish(), padded.finish());
+    }
+
+    #[test]
+    fn fx_integer_writes_match_their_byte_form() {
+        let mut from_u32 = FxHasher::default();
+        from_u32.write_u32(0x0102_0304);
+        let mut from_bytes = FxHasher::default();
+        from_bytes.write(&0x0102_0304u32.to_le_bytes());
+        assert_eq!(from_u32.finish(), from_bytes.finish());
+
+        let mut narrow = FxHasher::default();
+        narrow.write_u8(0xAB);
+        let mut wide = FxHasher::default();
+        wide.write_u32(0xAB);
+        assert_eq!(narrow.finish(), wide.finish());
+
+        let mut word = FxHasher::default();
+        word.write_u64(0xDEAD_BEEF);
+        let mut sized = FxHasher::default();
+        sized.write_usize(0xDEAD_BEEF);
+        assert_eq!(word.finish(), sized.finish());
+    }
+
+    #[test]
+    fn the_fx_finish_avalanches_the_state() {
+        let mut hasher = FxHasher::default();
+        hasher.write_u64(1);
+        // Without the final mix, consecutive keys keep nearly constant high bits
+        // and collapse the table (see the doc comment on `finish`).
+        assert_ne!(hasher.finish(), hasher.hash);
+    }
+
+    #[test]
+    fn consecutive_correlation_ids_do_not_collide() {
+        // A correlation id is `pid ++ counter`: keys differing only in their low
+        // bytes, which is exactly the shape that used to collapse the table.
+        let fx = BuildHasherDefault::<FxHasher>::default();
+        let mut hashes = std::collections::HashSet::new();
+        for counter in 0..1024u64 {
+            let mut key = [0u8; 16];
+            key[..8].copy_from_slice(&4_242u64.to_be_bytes());
+            key[8..].copy_from_slice(&counter.to_be_bytes());
+            hashes.insert(fx.hash_one(key));
+        }
+        assert_eq!(
+            hashes.len(),
+            1024,
+            "every consecutive id maps to its own hash"
+        );
+    }
+
+    #[test]
+    fn the_identity_hasher_ignores_byte_writes() {
+        let mut hasher = IdentityHasher::default();
+        // `write` is unreachable for the `u32` keys `IdMap` stores, and must not
+        // corrupt the state if it is ever reached.
+        hasher.write(b"ignored");
+        assert_eq!(hasher.finish(), 0);
+
+        hasher.write_u32(9);
+        assert_eq!(hasher.finish(), 9);
+        hasher.write(b"still ignored");
+        assert_eq!(
+            hasher.finish(),
+            9,
+            "a byte write must not disturb the value"
+        );
+    }
+
+    #[test]
+    fn the_transport_maps_round_trip_their_keys() {
+        let mut fast: FastMap<[u8; 16], u32> = FastMap::default();
+        fast.insert([7u8; 16], 42);
+        assert_eq!(fast.get(&[7u8; 16]), Some(&42));
+        assert_eq!(fast.get(&[8u8; 16]), None);
+
+        let mut ids: IdMap<u32, u32> = IdMap::default();
+        ids.insert(3, 9);
+        assert_eq!(ids.get(&3), Some(&9));
+    }
 }

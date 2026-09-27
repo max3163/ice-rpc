@@ -647,6 +647,19 @@ mod tests {
         crate::rt::test_block_on(shutdown_and_release());
     }
 
+    // ── ShutdownGuard::shutdown ──────────────────────────────────────
+
+    #[test]
+    fn the_guard_shuts_down_once() {
+        let guard = ShutdownGuard::new();
+        // The first call performs the shutdown...
+        crate::rt::test_block_on(guard.shutdown());
+        // ...the second is a no-op, and `Drop` then does nothing either (the flag
+        // is already set), so the node is never released twice.
+        crate::rt::test_block_on(guard.shutdown());
+        drop(guard);
+    }
+
     // ── signal handling ──────────────────────────────────────────────
 
     #[test]
@@ -663,5 +676,51 @@ mod tests {
             resolve_signal_handling_mode(false),
             SignalHandlingMode::Disabled
         );
+    }
+
+    /// Serialises the tests that read or write the process-wide signal flag.
+    fn signal_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        &LOCK
+    }
+
+    #[test]
+    fn the_process_handles_signals_by_default() {
+        use iceoryx2::prelude::SignalHandlingMode;
+
+        let _guard = signal_lock().lock().unwrap_or_else(|e| e.into_inner());
+        // The flag is enabled unless `init_without_ctrl_c` was called: a plain
+        // `init` must let iceoryx2 report SIGINT/SIGTERM to the WaitSet loops.
+        assert_eq!(
+            waitset_signal_handling_mode(),
+            SignalHandlingMode::HandleTerminationRequests
+        );
+    }
+
+    #[test]
+    fn the_initializers_choose_who_handles_the_signals() {
+        use iceoryx2::prelude::SignalHandlingMode;
+        use std::sync::atomic::Ordering;
+
+        let _guard = signal_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        // `init` gives the signals back to iceoryx2, even after a host had taken
+        // them — which is what makes running it twice harmless.
+        SIGNAL_HANDLING_ENABLED.store(false, Ordering::Relaxed);
+        let guard = init();
+        assert_eq!(
+            waitset_signal_handling_mode(),
+            SignalHandlingMode::HandleTerminationRequests
+        );
+        drop(guard);
+
+        // `init_without_ctrl_c` leaves the disposition to the host (the Node.js
+        // gateway installs its own handler).
+        let guard = init_without_ctrl_c();
+        assert_eq!(waitset_signal_handling_mode(), SignalHandlingMode::Disabled);
+        drop(guard);
+
+        // Restore the state this process started with, for the other tests.
+        SIGNAL_HANDLING_ENABLED.store(true, Ordering::Relaxed);
     }
 }

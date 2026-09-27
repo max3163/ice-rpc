@@ -204,7 +204,235 @@ fn topological_order(names: &[&'static str], deps: &[Vec<&'static str>]) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::topological_order;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// The locator is a process-global singleton: its tests must not interleave,
+    /// or one test's registrations would land in another's counts.
+    fn locator_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
+
+    /// What a mock provider remembers: how it answers, and who observed it.
+    struct MockState {
+        init_result: bool,
+        dependencies: Vec<&'static str>,
+        init_calls: Arc<AtomicUsize>,
+        init_order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Default for MockState {
+        fn default() -> Self {
+            Self {
+                init_result: true,
+                dependencies: Vec::new(),
+                init_calls: Arc::new(AtomicUsize::new(0)),
+                init_order: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    /// Declares a provider mock. `SERVICE_NAME` is a constant, so two names need
+    /// two types; every instance shares the same [`MockState`] shape.
+    macro_rules! provider_mock {
+        ($name:ident, $service:literal) => {
+            struct $name(MockState);
+
+            impl ServiceNamed for $name {
+                const SERVICE_NAME: &'static str = $service;
+            }
+
+            #[async_trait::async_trait]
+            impl ServiceInit for $name {
+                fn dependencies(&self) -> Vec<&'static str> {
+                    self.0.dependencies.clone()
+                }
+            }
+
+            #[async_trait::async_trait]
+            impl ServiceLifecycle for $name {
+                async fn init(&self) -> bool {
+                    self.0.init_calls.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut order) = self.0.init_order.lock() {
+                        order.push($service);
+                    }
+                    self.0.init_result
+                }
+            }
+        };
+    }
+
+    // A provider that is also its own consumer: `get::<T>` must hand back the
+    // registered instance without ever building a proxy.
+    provider_mock!(EchoService, "LocatorEcho");
+
+    static ECHO_PROXY_CREATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    impl ServiceConsumer for EchoService {
+        fn consume_proxy() -> Arc<Self> {
+            ECHO_PROXY_CREATIONS.fetch_add(1, Ordering::Relaxed);
+            Arc::new(EchoService(MockState::default()))
+        }
+    }
+
+    // A consumer-only service: `get::<T>` must build it lazily, once.
+    static CONFIG_PROXY_CREATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    struct ConfigService;
+
+    impl ServiceNamed for ConfigService {
+        const SERVICE_NAME: &'static str = "LocatorConfig";
+    }
+
+    impl ServiceConsumer for ConfigService {
+        fn consume_proxy() -> Arc<Self> {
+            CONFIG_PROXY_CREATIONS.fetch_add(1, Ordering::Relaxed);
+            Arc::new(ConfigService)
+        }
+    }
+
+    // A name shared by a provider and an unrelated consumer type.
+    provider_mock!(NamesakeProvider, "LocatorNamesake");
+
+    struct NamesakeConsumer;
+
+    impl ServiceNamed for NamesakeConsumer {
+        const SERVICE_NAME: &'static str = "LocatorNamesake";
+    }
+
+    impl ServiceConsumer for NamesakeConsumer {
+        fn consume_proxy() -> Arc<Self> {
+            Arc::new(NamesakeConsumer)
+        }
+    }
+
+    provider_mock!(FirstService, "LocatorFirst");
+    provider_mock!(SecondService, "LocatorSecond");
+    provider_mock!(BrokenService, "LocatorBroken");
+
+    #[test]
+    fn a_registered_provider_is_handed_back_without_a_proxy() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+
+        let state = MockState {
+            init_result: true,
+            ..MockState::default()
+        };
+        let init_calls = state.init_calls.clone();
+        let provider = Arc::new(EchoService(state));
+
+        let before = locator.service_count();
+        pollster::block_on(locator.register(provider.clone()));
+
+        assert_eq!(locator.service_count(), before + 1);
+        assert!(locator.service_names().contains(&"LocatorEcho"));
+
+        // Fast-path 1: the registered provider, by type.
+        let fetched = pollster::block_on(locator.get::<EchoService>())
+            .expect("a registered provider is returned");
+        assert!(
+            Arc::ptr_eq(&fetched, &provider),
+            "the very same instance must come back"
+        );
+        assert_eq!(
+            ECHO_PROXY_CREATIONS.load(Ordering::Relaxed),
+            0,
+            "the registered path must not build a proxy"
+        );
+        assert_eq!(
+            init_calls.load(Ordering::Relaxed),
+            0,
+            "registering a service runs no initialization hook"
+        );
+    }
+
+    #[test]
+    fn an_unregistered_service_is_built_once_and_cached() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+
+        // Slow path: the proxy is built, then cached (fast-path 2 answers next).
+        let first = pollster::block_on(locator.get::<ConfigService>()).expect("a proxy is built");
+        let second = pollster::block_on(locator.get::<ConfigService>()).expect("the cache answers");
+
+        assert!(Arc::ptr_eq(&first, &second), "the cached proxy is reused");
+        assert_eq!(first.service_name(), "LocatorConfig");
+        assert_eq!(CONFIG_PROXY_CREATIONS.load(Ordering::Relaxed), 1);
+        // A lazily built proxy is not a registered provider.
+        assert!(!locator.service_names().contains(&"LocatorConfig"));
+    }
+
+    #[test]
+    fn a_name_registered_under_another_type_is_not_returned() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+        pollster::block_on(locator.register(Arc::new(NamesakeProvider(MockState::default()))));
+
+        // The name is registered, but the entry holds another concrete type: the
+        // lookup reports nothing rather than handing back a foreign instance.
+        assert!(pollster::block_on(locator.get::<NamesakeConsumer>()).is_none());
+    }
+
+    #[test]
+    fn initialize_all_orders_dependencies_and_reports_a_failure() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+
+        let init_order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let second = Arc::new(SecondService(MockState {
+            init_order: init_order.clone(),
+            ..MockState::default()
+        }));
+        // `First` depends on `Second`, registered first: the sort must reorder.
+        let first = Arc::new(FirstService(MockState {
+            dependencies: vec!["LocatorSecond"],
+            init_order: init_order.clone(),
+            ..MockState::default()
+        }));
+        pollster::block_on(locator.register(first.clone()));
+        pollster::block_on(locator.register(second.clone()));
+
+        pollster::block_on(locator.initialize_all()).expect("every service initializes");
+
+        let recorded = init_order.lock().expect("init order").clone();
+        let first_at = recorded
+            .iter()
+            .position(|name| *name == "LocatorFirst")
+            .expect("First was initialized");
+        let second_at = recorded
+            .iter()
+            .position(|name| *name == "LocatorSecond")
+            .expect("Second was initialized");
+        assert!(
+            second_at < first_at,
+            "a dependency must initialize first: {recorded:?}"
+        );
+        assert_eq!(first.0.init_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(second.0.init_calls.load(Ordering::Relaxed), 1);
+
+        // A provider that refuses to initialize aborts the pass, and names itself.
+        let broken = Arc::new(BrokenService(MockState {
+            init_result: false,
+            ..MockState::default()
+        }));
+        pollster::block_on(locator.register(broken));
+        let error = pollster::block_on(locator.initialize_all()).expect_err("the pass fails");
+        assert!(error.contains("LocatorBroken"), "{error}");
+    }
+
+    #[test]
+    fn shutdown_handles_are_registered_on_the_locator() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+        // Both registrations complete immediately, so a later `release_node` (from
+        // another test) joins them without blocking.
+        locator.register_shutdown_handle(crate::rt::spawn_blocking(|| {}));
+        locator.register_shutdown_thread(std::thread::spawn(|| {}));
+    }
 
     #[test]
     fn dependencies_come_first() {
@@ -243,5 +471,27 @@ mod tests {
         let names = ["C", "B", "A"];
         let deps = [vec!["B"], vec!["A"], vec![]];
         assert_eq!(topological_order(&names, &deps), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn a_dependency_registered_by_another_process_is_external() {
+        // Only `First` is local; its dependency belongs to another process and
+        // must never hold the pass up.
+        let names = ["LocatorFirst"];
+        let deps = [vec!["LocatorSecond"]];
+        assert_eq!(topological_order(&names, &deps), vec![0]);
+    }
+
+    #[test]
+    fn a_self_dependency_is_a_cycle() {
+        let names = ["A"];
+        let deps = [vec!["A"]];
+        // The fallback returns the remaining indices rather than looping forever.
+        assert_eq!(topological_order(&names, &deps), vec![0]);
+    }
+
+    #[test]
+    fn an_empty_registry_orders_nothing() {
+        assert!(topological_order(&[], &[]).is_empty());
     }
 }

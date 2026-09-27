@@ -164,4 +164,33 @@ mod tests {
         let count = pollster::block_on(registry.join_all());
         assert_eq!(count, 1);
     }
+
+    /// The process-lifetime resources are released **by being dropped**: dropping
+    /// an iceoryx2 port is what unlinks the shared memory behind it, so a
+    /// registered resource that is merely forgotten would leak its segment.
+    #[test]
+    fn the_registered_ipc_resources_are_dropped_by_the_cleanup() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct Marker(Arc<AtomicBool>);
+
+        impl Drop for Marker {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        register_ipc_cleanup(Box::new(Marker(Arc::clone(&dropped))));
+        clear_ipc_cleanup();
+
+        assert!(
+            dropped.load(Ordering::Relaxed),
+            "the cleanup must drop what was registered with it"
+        );
+
+        // Clearing an empty registry is not an error either.
+        clear_ipc_cleanup();
+    }
 }

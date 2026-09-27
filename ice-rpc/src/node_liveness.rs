@@ -295,4 +295,21 @@ mod tests {
             poll_interval_ms()
         );
     }
+
+    /// The native scan is what turns absence into evidence, so a successful scan
+    /// must be distinguishable from a failed one.
+    #[test]
+    fn the_alive_scan_reports_a_result() {
+        // The set may legitimately be empty on a quiet machine; `None` would mean
+        // `Node::list` failed, and callers must never read that as "nobody lives".
+        assert!(alive_pids().is_some(), "the node scan must not fail");
+    }
+
+    /// A pid no process can own is conclusively gone, not merely absent.
+    #[test]
+    fn an_unknown_pid_is_confirmed_dead() {
+        // Absence from the node list means the node disappeared (clean shutdown or
+        // crash) — `Dead` and "not found" both count as gone.
+        assert!(is_confirmed_dead(u32::MAX - 3));
+    }
 }

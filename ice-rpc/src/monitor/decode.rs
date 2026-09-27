@@ -523,4 +523,97 @@ mod tests {
         );
         assert_eq!(decoders.request(9, "echo", b"hi"), None);
     }
+
+    #[test]
+    fn every_response_kind_decodes_to_its_own_text() {
+        use crate::types::{RpcError, WireEvent};
+
+        let render = |payload: &[u8]| {
+            decode_response::<Reply, String>(payload, |v| render_value!(v), |e| render_value!(e))
+        };
+
+        // `Complete` carries no value: the terminal kind names itself.
+        let complete = encode(&WireEvent::<Reply, String>::Complete);
+        assert_eq!(render(&complete).as_deref(), Some("complete"));
+
+        // `CompleteWith` is the last value of a stream, rendered like a `Next`.
+        let complete_with = encode(&WireEvent::<Reply, String>::CompleteWith(Reply {
+            value: 3,
+        }));
+        assert_eq!(render(&complete_with).as_deref(), Some("value=3"));
+
+        let error = encode(&WireEvent::<Reply, String>::Error(String::from("nope")));
+        assert_eq!(render(&error).as_deref(), Some("error: nope"));
+
+        // A transport-level rejection is rendered without the service types.
+        let rpc_error = encode(&WireEvent::<Reply, String>::RpcError(
+            RpcError::TransportError(String::from("boom")),
+        ));
+        let rendered = render(&rpc_error).expect("an RpcError decodes");
+        assert!(rendered.starts_with("rpc error: "), "{rendered}");
+    }
+
+    #[test]
+    fn the_unit_response_decodes_every_kind() {
+        use crate::types::{RpcError, WireEvent};
+
+        let render = |payload: &[u8]| decode_response_unit::<String>(payload, |e| render_value!(e));
+
+        // `()` carries nothing worth rendering, so both value kinds print `()`.
+        let next = encode(&WireEvent::<(), String>::Next(()));
+        assert_eq!(render(&next).as_deref(), Some("()"));
+
+        let complete_with = encode(&WireEvent::<(), String>::CompleteWith(()));
+        assert_eq!(render(&complete_with).as_deref(), Some("()"));
+
+        let complete = encode(&WireEvent::<(), String>::Complete);
+        assert_eq!(render(&complete).as_deref(), Some("complete"));
+
+        let error = encode(&WireEvent::<(), String>::Error(String::from("bad")));
+        assert_eq!(render(&error).as_deref(), Some("error: bad"));
+
+        let rpc_error = encode(&WireEvent::<(), String>::RpcError(
+            RpcError::TransportError(String::from("x")),
+        ));
+        let rendered = render(&rpc_error).expect("an RpcError decodes");
+        assert!(rendered.starts_with("rpc error: "), "{rendered}");
+    }
+
+    #[test]
+    fn the_registry_reports_its_size_and_resolves_method_names() {
+        let mut decoders = Decoders::new();
+        assert!(decoders.is_empty());
+        assert_eq!(decoders.len(), 0);
+        // An unknown service has no decoder: neither direction decodes, and no
+        // method name can be resolved.
+        assert_eq!(decoders.request(1, "m", b""), None);
+        assert_eq!(decoders.response(1, "m", b""), None);
+        assert_eq!(decoders.method_name(1, 0), None);
+
+        decoders.register(
+            7,
+            Arc::new(ClosureDecoder::new(|_, _| None, |_, _| None).with_method("echo")),
+        );
+        assert_eq!(decoders.len(), 1);
+        assert!(!decoders.is_empty());
+        // The name is resolvable from the id the wire actually carries.
+        assert_eq!(
+            decoders.method_name(7, crate::types::method_id_of("echo")),
+            Some("echo")
+        );
+        // An id the decoder was never told about stays unknown.
+        assert_eq!(decoders.method_name(7, 0xDEAD_BEEF), None);
+
+        // A decoder that declares no name keeps the default `None`.
+        decoders.register(8, Arc::new(ClosureDecoder::new(|_, _| None, |_, _| None)));
+        assert_eq!(decoders.method_name(8, 0), None);
+
+        // Re-registering a service replaces its decoder instead of adding one.
+        decoders.register(7, Arc::new(ClosureDecoder::new(|_, _| None, |_, _| None)));
+        assert_eq!(decoders.len(), 2, "a service id maps to a single decoder");
+
+        let debug = format!("{decoders:?}");
+        assert!(debug.starts_with("Decoders"), "{debug}");
+        assert!(debug.contains("services"), "{debug}");
+    }
 }

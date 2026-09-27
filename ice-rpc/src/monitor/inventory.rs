@@ -255,4 +255,32 @@ mod tests {
         assert!(!layout.prefix.is_empty());
         assert!(layout.data_segment_suffix.starts_with('.'));
     }
+
+    #[test]
+    fn the_node_inventory_scans_without_failing() {
+        // A quiet machine legitimately lists no node: what matters is that the
+        // scan reports a result instead of degrading to "no node at all".
+        assert!(list_nodes().is_some(), "the native node scan must not fail");
+    }
+
+    #[test]
+    fn the_service_inventory_scans_without_failing() {
+        let services = list_services().expect("the service scan must not fail");
+        // Whatever the machine runs, every entry carries a role and a pattern.
+        for service in &services {
+            assert!(
+                matches!(
+                    service.role,
+                    ServiceRole::Request
+                        | ServiceRole::Response
+                        | ServiceRole::RequestNotify
+                        | ServiceRole::ResponseNotify
+                        | ServiceRole::Other
+                ),
+                "{:?} has an unknown role",
+                service
+            );
+            assert!(!service.pattern.is_empty(), "{service:?} has no pattern");
+        }
+    }
 }

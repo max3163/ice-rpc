@@ -116,3 +116,42 @@ pub(super) fn try_publish(
         .map_err(|e| transport_error("send sample", e))?;
     Ok(delivered > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::open::{open_service, OpenMode};
+    use super::super::{shared_node, DEFAULT_MAX_SLICE_LEN, REQUEST_SUFFIX};
+    use super::*;
+
+    /// `try_publish` answers "did anyone take it?", and both answers matter:
+    /// `false` is the ordinary "no subscriber yet" case that the retrying caller
+    /// turns into a wait, never into a failure.
+    ///
+    /// The channel belongs to this test, so it appears and disappears with it.
+    #[test]
+    fn try_publish_reports_whether_anyone_received_the_sample() {
+        let node = shared_node().expect("the process node");
+        let channel = format!("UnitPublish{}", std::process::id());
+        let service = open_service(&node, &channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)
+            .expect("the channel is created");
+        // The builder default is one byte, so the declared slice length has to be
+        // requested explicitly — exactly what the consumer port does.
+        let publisher = service
+            .publisher_builder()
+            .initial_max_slice_len(DEFAULT_MAX_SLICE_LEN)
+            .create()
+            .expect("a publisher");
+        let header = RpcHeader::default();
+
+        // Nobody is attached: the sample is not delivered, which is not an error.
+        assert!(!try_publish(&publisher, header, b"data").expect("publish a sample"));
+
+        // A zero-length payload still travels as a sample: it is the placeholder
+        // byte that makes this branch different from the one above.
+        assert!(!try_publish(&publisher, header, b"").expect("publish an empty sample"));
+
+        // A subscriber takes it, so the same call now reports a delivery.
+        let _subscriber = service.subscriber_builder().create().expect("a subscriber");
+        assert!(try_publish(&publisher, header, b"data").expect("publish a sample"));
+    }
+}

@@ -348,4 +348,68 @@ mod tests {
             "{transient:?}"
         );
     }
+
+    /// The open-or-create dispatch must route each cause to its own classifier,
+    /// whichever half of the pair iceoryx2 reported.
+    #[test]
+    fn the_open_or_create_event_error_is_dispatched_by_cause() {
+        let opened = event_error(EventOpenOrCreateError::EventOpenError(
+            EventOpenError::DoesNotExist,
+        ));
+        assert!(matches!(&opened, RpcError::TransportError(_)), "{opened:?}");
+
+        let created = event_error(EventOpenOrCreateError::EventCreateError(
+            EventCreateError::ServiceInCorruptedState,
+        ));
+        assert!(
+            matches!(&created, RpcError::ProtocolMismatch(_)),
+            "{created:?}"
+        );
+        assert!(created.to_string().contains("root path"), "{created}");
+
+        let flux = event_error(EventOpenOrCreateError::SystemInFlux);
+        assert!(matches!(&flux, RpcError::TransportError(_)), "{flux:?}");
+        assert!(flux.is_retryable(), "a concurrent create is transient");
+    }
+
+    /// Creating a service never reports a configuration mismatch — the creator
+    /// defines the configuration — so only leftover state is a protocol mismatch
+    /// and everything else stays a transport failure.
+    #[test]
+    fn a_creation_failure_only_blames_the_peers_for_stale_state() {
+        let stale = pub_sub_create_error(
+            "create service",
+            PublishSubscribeCreateError::ServiceInCorruptedState,
+        );
+        assert!(matches!(&stale, RpcError::ProtocolMismatch(_)), "{stale:?}");
+        assert!(stale.to_string().contains("root path"), "{stale}");
+
+        let transient = pub_sub_create_error(
+            "create service",
+            PublishSubscribeCreateError::InsufficientPermissions,
+        );
+        assert!(
+            matches!(&transient, RpcError::TransportError(_)),
+            "{transient:?}"
+        );
+
+        // The event side has the same split.
+        let event_stale =
+            event_create_error("create event", EventCreateError::ServiceInCorruptedState);
+        assert!(
+            matches!(&event_stale, RpcError::ProtocolMismatch(_)),
+            "{event_stale:?}"
+        );
+        assert!(
+            event_stale.to_string().contains("root path"),
+            "{event_stale}"
+        );
+
+        let event_transient =
+            event_create_error("create event", EventCreateError::InsufficientPermissions);
+        assert!(
+            matches!(&event_transient, RpcError::TransportError(_)),
+            "{event_transient:?}"
+        );
+    }
 }

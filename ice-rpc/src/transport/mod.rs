@@ -266,4 +266,56 @@ mod tests {
         let decoded = decode_aligned::<Sample>(&bytes).expect("in-place decode");
         assert_eq!(decoded, value);
     }
+
+    #[test]
+    fn a_channel_declares_its_slice_length_once() {
+        // The registry is process-wide: the names are unique to this test.
+        declare_channel_max_slice_len("UnitTestSliceDeclared", 4096);
+        assert_eq!(channel_max_slice_len("UnitTestSliceDeclared"), 4096);
+
+        // The first declaration wins: a later, different value is ignored rather
+        // than silently changing the slice length under the running publishers.
+        declare_channel_max_slice_len("UnitTestSliceDeclared", 8192);
+        assert_eq!(channel_max_slice_len("UnitTestSliceDeclared"), 4096);
+
+        // Re-declaring the same value is not a conflict either.
+        declare_channel_max_slice_len("UnitTestSliceDeclared", 4096);
+        assert_eq!(channel_max_slice_len("UnitTestSliceDeclared"), 4096);
+    }
+
+    #[test]
+    fn an_undeclared_channel_falls_back_to_the_default_slice_length() {
+        assert_eq!(
+            channel_max_slice_len("UnitTestSliceNeverDeclared"),
+            DEFAULT_MAX_SLICE_LEN
+        );
+    }
+
+    #[test]
+    fn a_transport_error_carries_its_context_and_cause() {
+        match transport_error("open service", "boom") {
+            RpcError::TransportError(message) => {
+                assert!(message.starts_with("open service: "), "{message}");
+                assert!(message.contains("boom"), "{message}");
+            }
+            other => panic!("expected a transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_shared_node_is_created_once_for_the_process() {
+        let first = shared_node().expect("the node is created on first use");
+        let second = shared_node().expect("the second call reuses it");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "one iceoryx2 node per process, whatever the number of channels"
+        );
+    }
+
+    #[test]
+    fn releasing_the_process_ports_is_safe_when_none_was_opened() {
+        // Best-effort by contract: it reports what it dropped, and nothing here
+        // depends on the number.
+        let _ = release_process_ports();
+    }
 }

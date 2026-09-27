@@ -68,3 +68,37 @@ impl std::fmt::Display for NodeId {
         write!(f, "node-{}", self.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_current_node_is_this_process() {
+        assert_eq!(NodeId::current().0, std::process::id());
+        // The pid is read once and cached for the life of the process.
+        assert_eq!(cached_pid(), cached_pid());
+    }
+
+    #[test]
+    fn a_node_id_renders_with_its_prefix() {
+        assert_eq!(NodeId(7).to_string(), "node-7");
+        assert_eq!(NodeId(0).to_string(), "node-0");
+    }
+
+    #[test]
+    fn only_representable_pids_survive_the_conversion() {
+        assert_eq!(raw_pid_to_u32(42u32), 42);
+        assert_eq!(raw_pid_to_u32(0u32), 0);
+        // An anomalous raw `pid_t` must not wrap into a plausible-looking node id.
+        assert_eq!(raw_pid_to_u32(-1i32), 0);
+        assert_eq!(raw_pid_to_u32(i64::from(i32::MIN)), 0);
+        assert_eq!(raw_pid_to_u32(u64::MAX), 0);
+    }
+
+    #[test]
+    fn a_missing_process_id_is_reported_as_zero() {
+        // A custom iceoryx2 id generator may not provide a pid at all.
+        assert_eq!(node_pid_to_u32::<()>(Err(())), 0);
+    }
+}

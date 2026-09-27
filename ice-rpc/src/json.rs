@@ -367,4 +367,120 @@ mod tests {
             "a dropped sender ends the stream"
         );
     }
+
+    /// A stream of `i32` values, ending as the given events say.
+    fn values(
+        events: impl IntoIterator<Item = crate::Event<i32, String>>,
+    ) -> crate::Observable<i32, String> {
+        crate::Observable::from_events(events)
+    }
+
+    #[test]
+    fn first_mode_reads_only_the_first_value() {
+        let stream = values([
+            crate::Event::Next(1),
+            crate::Event::Next(2),
+            crate::Event::Complete,
+        ]);
+        let outcome = crate::rt::test_block_on(read_json(stream, ReadMode::First)).expect("ok");
+        assert_eq!(outcome, JsonOutcome::Value(serde_json::json!(1)));
+    }
+
+    #[test]
+    fn all_mode_collects_every_value_in_order() {
+        let stream = values([
+            crate::Event::Next(1),
+            crate::Event::Next(2),
+            crate::Event::Next(3),
+            crate::Event::Complete,
+        ]);
+        let outcome = crate::rt::test_block_on(read_json(stream, ReadMode::All)).expect("ok");
+        assert_eq!(outcome, JsonOutcome::Value(serde_json::json!([1, 2, 3])));
+    }
+
+    #[test]
+    fn a_completion_without_any_value_is_not_a_failure() {
+        // `First` has to tell "the service emitted nothing" from a `null` payload;
+        // `All` simply produces the empty array.
+        let nothing =
+            crate::rt::test_block_on(read_json(values([crate::Event::Complete]), ReadMode::First))
+                .expect("an empty completion is legitimate");
+        assert_eq!(nothing, JsonOutcome::Nothing);
+
+        let all =
+            crate::rt::test_block_on(read_json(values([crate::Event::Complete]), ReadMode::All))
+                .expect("an empty stream is legitimate");
+        assert_eq!(all, JsonOutcome::Value(serde_json::json!([])));
+    }
+
+    #[test]
+    fn a_business_error_maps_to_a_business_failure_in_both_modes() {
+        // No `Next` before the error: in `First` mode a leading value would be
+        // read and returned before the failure is ever seen.
+        let error = |mode| {
+            let stream = values([crate::Event::Error(crate::ObservableError::Business(
+                String::from("denied"),
+            ))]);
+            crate::rt::test_block_on(read_json(stream, mode))
+        };
+
+        assert_eq!(
+            error(ReadMode::First),
+            Err(JsonCallError::Business(String::from("denied")))
+        );
+        assert_eq!(
+            error(ReadMode::All),
+            Err(JsonCallError::Business(String::from("denied")))
+        );
+    }
+
+    #[test]
+    fn a_technical_error_maps_to_a_transport_failure_in_both_modes() {
+        let error = |mode| {
+            let stream = values([crate::Event::Error(crate::ObservableError::Technical(
+                crate::RpcError::TransportError(String::from("link down")),
+            ))]);
+            crate::rt::test_block_on(read_json(stream, mode))
+        };
+
+        for mode in [ReadMode::First, ReadMode::All] {
+            match error(mode) {
+                Err(JsonCallError::Transport(message)) => {
+                    assert!(message.contains("link down"), "{message}");
+                }
+                other => panic!("expected a transport failure, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_value_json_cannot_represent_is_a_transport_failure() {
+        use std::collections::HashMap;
+
+        // JSON object keys are strings: a byte-string key cannot be represented,
+        // so this value fails to serialize. The failure must surface as a call
+        // error, not a panic.
+        let failing = || {
+            crate::Observable::<HashMap<Vec<u8>, i32>, String>::from_events([
+                crate::Event::Next(HashMap::from([(vec![1, 2, 3], 2)])),
+                crate::Event::Complete,
+            ])
+        };
+
+        let first = crate::rt::test_block_on(read_json(failing(), ReadMode::First))
+            .expect_err("the value cannot be serialized");
+        assert!(
+            matches!(&first, JsonCallError::Transport(message)
+                if message.contains("failed to serialize the response")),
+            "{first:?}"
+        );
+
+        let all = crate::rt::test_block_on(read_json(failing(), ReadMode::All))
+            .expect_err("the value cannot be serialized");
+        assert!(
+            matches!(&all, JsonCallError::Transport(message)
+                if message.contains("failed to serialize a value")),
+            "{all:?}"
+        );
+    }
 }

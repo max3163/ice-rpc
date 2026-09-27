@@ -143,4 +143,19 @@ mod tests {
         MAP.with(|map| map.insert(3, 3));
         assert_eq!(MAP.with(|map| map.len()), 2);
     }
+
+    #[test]
+    fn the_default_constructors_build_an_empty_cell() {
+        let global: Global<u8> = Global::default();
+        assert_eq!(global.get(), None, "nothing is built before first use");
+        assert_eq!(*global.get_or_init(|| 7), 7);
+
+        let locked: Locked<Vec<u8>> = Locked::default();
+        assert!(
+            locked.with(|values| values.is_empty()),
+            "the guarded value starts as its `Default`"
+        );
+        locked.with(|values| values.push(1));
+        assert_eq!(locked.with(|values| values.clone()), vec![1]);
+    }
 }

@@ -32,8 +32,31 @@ use crate::{Event, Observable, ObservableError};
 ///
 /// Once terminated every later event is **ignored**, and a new subscriber
 /// immediately observes the replayed terminal state.
+///
+/// # Concurrency
+///
+/// Two locks, and the state lock is **never** held across an `await`:
+///
+/// - `state` is held only for short, non-`await`ing critical sections
+///   (snapshot, replay bookkeeping, registration);
+/// - `emit` serializes **every** broadcast and every subscription, so a
+///   subscriber observes the events in exactly the order the subject emitted
+///   them. It is the lock held while the sends are awaited.
+///
+/// Because broadcasts are serialized, one that waits on a slow subscriber also
+/// delays the next broadcast or subscription — that is the backpressure of a
+/// bounded multicast, not a lock defect: `state` is free at that moment.
+///
+/// # Sharing
+///
+/// `Subject` is deliberately **not** `Clone`: a cloned handle would silently
+/// share the replay buffer and the terminal state. A subject shared across
+/// tasks is held as `Arc<Subject<T, E>>`, which makes that sharing explicit.
 pub struct Subject<T, E> {
+    /// Short-lived critical sections only; never held across an `await`.
     state: std::sync::Arc<async_lock::Mutex<State<T, E>>>,
+    /// Serializes broadcasts and subscriptions; held across the sends.
+    emit: std::sync::Arc<async_lock::Mutex<()>>,
 }
 
 struct State<T, E> {
@@ -54,10 +77,24 @@ impl<T, E> State<T, E> {
 
     /// Drops the subscribers whose channel is already closed, so the list never
     /// grows with dead receivers.
-    fn prune(&mut self, dead: Vec<usize>) {
-        // Remove from the end so earlier indices stay valid.
-        for index in dead.into_iter().rev() {
-            self.subscribers.remove(index);
+    ///
+    /// Keyed on `Sender::is_closed` rather than on the index of a failed send:
+    /// the sends happen outside the lock, so the list may have changed by then.
+    fn retain_live(&mut self) {
+        self.subscribers.retain(|tx| !tx.is_closed());
+    }
+
+    /// The event a late subscriber observes after the replayed values.
+    fn terminal_event(&self) -> Option<Event<T, E>>
+    where
+        E: Clone,
+    {
+        if let Some(error) = &self.error {
+            Some(Event::Error(error.clone()))
+        } else if self.completed {
+            Some(Event::Complete)
+        } else {
+            None
         }
     }
 }
@@ -97,6 +134,7 @@ impl<T, E> Subject<T, E> {
                 error: None,
                 subscribers: Vec::new(),
             })),
+            emit: std::sync::Arc::new(async_lock::Mutex::new(())),
         }
     }
 
@@ -115,20 +153,32 @@ impl<T, E> Subject<T, E> {
         T: Clone,
         E: Clone,
     {
-        let (tx, rx) = crate::channel::<T, E>(crate::MULTICAST_CHANNEL_CAPACITY);
+        // Held for the whole call: no broadcast can slip between the snapshot
+        // below and the registration at the end, so a late subscriber never
+        // misses the value the replay promised it.
+        let _emit = self.emit.lock().await;
+
+        // Snapshot under a short lock — no `await` while `state` is held.
+        let (replayed, terminal) = {
+            let state = self.state.lock().await;
+            (state.replay.clone(), state.terminal_event())
+        };
+
+        // Room for the whole replay plus the terminal event: both are pushed
+        // before the consumer starts polling, so the channel must hold them
+        // without blocking. `replay(n)` above the multicast capacity used to
+        // deadlock here, waiting on a full channel nobody was draining yet.
+        let capacity = crate::MULTICAST_CHANNEL_CAPACITY.max(replayed.len() + 1);
+        let (tx, rx) = crate::channel::<T, E>(capacity);
+        for value in replayed {
+            let _ = tx.send_next(value).await;
+        }
+        if let Some(event) = terminal {
+            let _ = tx.send_event(event).await;
+        }
+
         {
             let mut state = self.state.lock().await;
-            // Replay the snapshot first, then register the subscriber so that no
-            // live event can slip in-between.
-            for value in &state.replay {
-                let _ = tx.send_next(value.clone()).await;
-            }
-            if let Some(error) = &state.error {
-                let _ = tx.send_event(Event::Error(error.clone())).await;
-            }
-            if state.completed {
-                let _ = tx.send_complete().await;
-            }
             // A terminated subject never emits again: registering would only
             // leave a sender that is never used.
             if !state.is_terminated() {
@@ -150,23 +200,26 @@ impl<T, E> Subject<T, E> {
     where
         T: Clone,
     {
-        let mut state = self.state.lock().await;
-        if state.is_terminated() {
-            return;
-        }
-        if state.capacity > 0 {
-            if state.replay.len() == state.capacity {
-                state.replay.pop_front();
+        let _emit = self.emit.lock().await;
+        let subscribers = {
+            let mut state = self.state.lock().await;
+            if state.is_terminated() {
+                return;
             }
-            state.replay.push_back(value.clone());
-        }
-        let mut dead = Vec::new();
-        for (index, tx) in state.subscribers.iter().enumerate() {
-            if tx.send_next(value.clone()).await.is_err() {
-                dead.push(index);
+            if state.capacity > 0 {
+                if state.replay.len() == state.capacity {
+                    state.replay.pop_front();
+                }
+                state.replay.push_back(value.clone());
             }
+            state.retain_live();
+            state.subscribers.clone()
+        };
+        // The sends happen outside `state`: a slow subscriber no longer blocks
+        // `subscribe`, `complete` or any other state access.
+        for tx in &subscribers {
+            let _ = tx.send_next(value.clone()).await;
         }
-        state.prune(dead);
     }
 
     /// Ends the stream for all current (and future) subscribers.
@@ -176,18 +229,19 @@ impl<T, E> Subject<T, E> {
     /// subject.complete().await;
     /// ```
     pub async fn complete(&self) {
-        let mut state = self.state.lock().await;
-        if state.is_terminated() {
-            return;
-        }
-        state.completed = true;
-        let mut dead = Vec::new();
-        for (index, tx) in state.subscribers.iter().enumerate() {
-            if tx.send_complete().await.is_err() {
-                dead.push(index);
+        let _emit = self.emit.lock().await;
+        let subscribers = {
+            let mut state = self.state.lock().await;
+            if state.is_terminated() {
+                return;
             }
+            state.completed = true;
+            state.retain_live();
+            state.subscribers.clone()
+        };
+        for tx in &subscribers {
+            let _ = tx.send_complete().await;
         }
-        state.prune(dead);
     }
 
     /// Emits a terminal **business** error to all current (and future)
@@ -204,19 +258,20 @@ impl<T, E> Subject<T, E> {
     where
         E: Clone,
     {
-        let mut state = self.state.lock().await;
-        if state.is_terminated() {
-            return;
-        }
-        let error = ObservableError::Business(err.clone());
-        state.error = Some(error.clone());
-        let mut dead = Vec::new();
-        for (index, tx) in state.subscribers.iter().enumerate() {
-            if tx.send_event(Event::Error(error.clone())).await.is_err() {
-                dead.push(index);
+        let _emit = self.emit.lock().await;
+        let (error, subscribers) = {
+            let mut state = self.state.lock().await;
+            if state.is_terminated() {
+                return;
             }
+            let error = ObservableError::Business(err);
+            state.error = Some(error.clone());
+            state.retain_live();
+            (error, state.subscribers.clone())
+        };
+        for tx in &subscribers {
+            let _ = tx.send_event(Event::Error(error.clone())).await;
         }
-        state.prune(dead);
     }
 }
 
@@ -378,5 +433,77 @@ mod tests {
             pollster::block_on(rx.recv()).unwrap(),
             Event::Complete
         ));
+    }
+
+    /// The replay is pushed before the consumer starts polling: a replay larger
+    /// than the multicast capacity used to fill the channel and deadlock
+    /// `subscribe`, which held the state lock while waiting for room nobody
+    /// would free.
+    #[test]
+    fn a_replay_larger_than_the_multicast_capacity_does_not_deadlock() {
+        let subject = Subject::<u32, String>::replay(20);
+        for value in 0..20u32 {
+            pollster::block_on(subject.next(value));
+        }
+
+        // The whole replay must fit in the channel: subscribing cannot suspend
+        // waiting for room nobody drains yet. `poll_once` yields `None` when the
+        // future is not ready on its first poll — the old deadlock, asserted
+        // without any timer, so it holds under the `tokio` facade too.
+        let mut rx = pollster::block_on(futures_lite::future::poll_once(subject.subscribe()))
+            .expect("subscribe must complete on its first poll");
+
+        for expected in 0..20u32 {
+            assert_eq!(
+                pollster::block_on(rx.recv()).unwrap(),
+                Event::Next(expected)
+            );
+        }
+    }
+
+    /// The state lock must stay free while a broadcast waits on a slow
+    /// subscriber: holding it across the send is what used to deadlock
+    /// `subscribe`.
+    #[test]
+    fn the_state_lock_is_free_while_a_broadcast_waits_on_a_slow_subscriber() {
+        use std::sync::Arc;
+
+        let subject = Arc::new(Subject::<u32, String>::new());
+        // Never drained: its bounded channel fills up in a moment.
+        let slow = pollster::block_on(subject.subscribe());
+
+        pollster::block_on(async {
+            for value in 0..crate::MULTICAST_CHANNEL_CAPACITY as u32 {
+                subject.next(value).await;
+            }
+        });
+
+        // The channel is now full: this send parks, holding `emit`.
+        let producer = Arc::clone(&subject);
+        std::thread::spawn(move || pollster::block_on(producer.next(999)));
+
+        assert!(
+            wait_for_emit_to_be_held(&subject),
+            "the broadcast never parked on the full channel"
+        );
+        assert!(
+            subject.state.try_lock().is_some(),
+            "the state lock must stay free while a broadcast waits on a subscriber"
+        );
+
+        // Closing the subscriber releases the parked send.
+        drop(slow);
+    }
+
+    /// Waits (bounded) until the subject holds its `emit` lock, i.e. a
+    /// broadcast is inside its sends.
+    fn wait_for_emit_to_be_held(subject: &Subject<u32, String>) -> bool {
+        for _ in 0..400 {
+            if subject.emit.try_lock().is_none() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
     }
 }

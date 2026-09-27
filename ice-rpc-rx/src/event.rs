@@ -206,4 +206,13 @@ impl<T, E> Sender<T, E> {
     ) -> Result<(), async_channel::TrySendError<Event<T, E>>> {
         self.inner.try_send(event)
     }
+
+    /// Returns `true` once the receiving end is gone.
+    ///
+    /// A multicast relay uses it to drop the subscribers that stopped
+    /// listening, instead of keeping a sender that can deliver nothing.
+    #[inline]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
 }

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Pre-commit hook: format the workspace with `cargo fmt --all` and re-stage the
+# Rust files that were staged, so a commit can never fail the CI "Format check"
+# step (`cargo fmt --all -- --check`).
+#
+# Enable it once per clone:
+#     git config core.hooksPath .githooks      # or: scripts/install-git-hooks.sh
+#
+# Behaviour:
+#   - does nothing when no Rust file is staged;
+#   - skips (with a notice) when `cargo` is not on the PATH;
+#   - re-stages **only** the files that were already staged, so an unrelated
+#     unstaged edit is never swept into the commit.
+#
+# The golden fixtures under `ice-rpc-macros/tests/golden/` are data, not targets:
+# `cargo fmt` never touches them (see their README).
+
+set -eu
+
+# Nothing to format when no Rust file is staged (added, copied, modified, renamed).
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+[ -n "$staged" ] || exit 0
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: cargo not found on PATH, skipping 'cargo fmt'" >&2
+    exit 0
+fi
+
+echo "pre-commit: cargo fmt --all"
+cargo fmt --all
+
+# rustfmt rewrote the staged files on disk: re-stage exactly those, so the commit
+# carries the formatted content without pulling in unrelated working-tree edits.
+printf '%s\n' "$staged" | while IFS= read -r file; do
+    [ -f "$file" ] && git add -- "$file"
+done

@@ -1215,6 +1215,26 @@ cargo run -p ice-rpc --example remote_cancel --features tokio -- consumer
 
 ---
 
+## Development
+
+### Git hooks
+
+The repository ships a versioned pre-commit hook in `.githooks/` that runs
+`cargo fmt --all` and re-stages the reformatted Rust files, so a commit cannot
+fail the CI *Format check* step (`cargo fmt --all -- --check`). Enable it **once
+per clone**:
+
+```bash
+scripts/install-git-hooks.sh
+```
+
+which only runs `git config core.hooksPath .githooks`. The hook is inert when no
+Rust file is staged, and it re-stages **only** the files that were already staged,
+so an unstaged edit is never swept into the commit. Undo with
+`git config --unset core.hooksPath`.
+
+---
+
 ## Release (version bump)
 
 The project version lives in a single place: the `[workspace.package]` section of the root `Cargo.toml`. Every Rust crate inherits it through `version.workspace = true`, and the `ice-rpc` → `ice-rpc-macros` dependency version is shared via `[workspace.dependencies]`. The Node.js gateway version (`gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`) is kept in sync by `cargo release` through `pre-release-replacements`.

@@ -81,7 +81,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
             log::info!("-> {}", $label);
             let t_send = Instant::now();
             let stream = $query;
-            let result = stream.take_until(cancel).first_value().await;
+            let result = stream.take_until_token(cancel).first_value().await;
             match result {
                 Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");
@@ -234,7 +234,7 @@ async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
             log::info!("-> {}", $label);
             let t_send = Instant::now();
             let stream = $query;
-            let result = stream.take_until(cancel).first_value().await;
+            let result = stream.take_until_token(cancel).first_value().await;
             match result {
                 Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {
                     log::info!("   (cancelled by Ctrl+C)");

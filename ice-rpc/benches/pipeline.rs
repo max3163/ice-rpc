@@ -149,7 +149,12 @@ fn bench_operators(c: &mut Criterion) {
     // A token that is never cancelled: the operator is measured on its watch,
     // not on its reaction.
     let token = ice_rpc::CancellationToken::new();
-    bench_operator!(group, "take_until", |s| s.take_until(&token), SOURCE_SUM);
+    bench_operator!(
+        group,
+        "take_until_token",
+        |s| s.take_until_token(&token),
+        SOURCE_SUM
+    );
 
     group.finish();
 }

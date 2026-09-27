@@ -15,7 +15,7 @@ use crate::{Event, ObservableError, Sender};
 /// stream had delivered a terminal event.
 ///
 /// The transport registers the release of its response handler here: an
-/// abandoned call (`timeout`, `take_until`, a dropped stream) must not leave the
+/// abandoned call (`timeout`, `take_until_token`, a dropped stream) must not leave the
 /// handler registered for the rest of the process lifetime.
 ///
 /// The flag is what tells an **abandoned** call from an **answered** one, and it
@@ -142,7 +142,7 @@ impl<T, E> Observable<T, E> {
     /// cancel the call remotely when nobody was listening anymore. The action
     /// receives **whether a terminal event had been delivered** through this
     /// stream: `true` means the call was answered, `false` that it was abandoned
-    /// — an unread response, a `take_until` that fired, a `timeout` that elapsed.
+    /// — an unread response, a `take_until_token` that fired, a `timeout` that elapsed.
     ///
     /// The action fires exactly when the **last** owner of the stream is dropped:
     /// every operator moves its source into its own wrapper, so a pipeline keeps

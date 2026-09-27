@@ -391,12 +391,33 @@ fn catch_error_conformance() {
 }
 
 #[test]
-fn take_until_conformance() {
+fn take_until_token_conformance() {
     // Un token jamais annulé : le cas annulé est couvert par `super::tests`.
     let token = crate::CancellationToken::new();
     assert_matrix(
+        "take_until_token",
+        move |stream| stream.take_until_token(&token),
+        &[
+            (no_event(), vec![]),
+            (one_value(), vec![next(1), complete()]),
+            (completion_only(), vec![complete()]),
+            (business_failure(), vec![business("boom")]),
+            (technical_failure(), vec![technical()]),
+            (empty_failure(), vec![empty()]),
+            (abrupt_close(), vec![next(1)]),
+            (three_values(), vec![next(1), next(2), next(3), complete()]),
+        ],
+    );
+}
+
+/// A notifier that never fires reduces `take_until` to a pass-through, so its
+/// canonical row is the identity. The notifier *firing* needs an asynchronous
+/// notifier, covered on channels in `conditional::tests`.
+#[test]
+fn take_until_conformance() {
+    assert_matrix(
         "take_until",
-        move |stream| stream.take_until(&token),
+        |stream| stream.take_until(crate::Observable::<(), String>::from_events([])),
         &[
             (no_event(), vec![]),
             (one_value(), vec![next(1), complete()]),

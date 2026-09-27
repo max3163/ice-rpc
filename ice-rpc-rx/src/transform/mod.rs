@@ -27,7 +27,8 @@
 //!   [`take`](crate::Observable::take),
 //!   [`first`](crate::Observable::first),
 //!   [`timeout`](crate::Observable::timeout),
-//!   [`take_until`](crate::Observable::take_until)).
+//!   [`take_until`](crate::Observable::take_until),
+//!   [`take_until_token`](crate::Observable::take_until_token)).
 //!
 //! # The two error channels
 //!
@@ -48,7 +49,7 @@
 //! | Transforming | [`map`](crate::Observable::map), [`map_err`](crate::Observable::map_err), [`scan`](crate::Observable::scan), [`switch_map`](crate::Observable::switch_map) |
 //! | Filtering | [`filter`](crate::Observable::filter), [`take`](crate::Observable::take), [`distinct_until_changed`](crate::Observable::distinct_until_changed), [`skip`](crate::Observable::skip), [`first`](crate::Observable::first), [`first_with`](crate::Observable::first_with) |
 //! | Combining | [`merge`](crate::Observable::merge), [`start_with`](crate::Observable::start_with) |
-//! | Conditional / Boolean | [`take_until`](crate::Observable::take_until) |
+//! | Conditional / Boolean | [`take_until`](crate::Observable::take_until), [`take_until_token`](crate::Observable::take_until_token) |
 //! | Error handling | [`catch_error`](crate::Observable::catch_error) |
 //! | Utility | [`tap`](crate::Observable::tap), [`finalize`](crate::Observable::finalize), [`delay`](crate::Observable::delay), [`timeout`](crate::Observable::timeout) |
 //! | Terminals (they end the chain) | [`collect`](crate::Observable::collect), [`first_value`](crate::Observable::first_value), [`last_value`](crate::Observable::last_value), [`for_each`](crate::Observable::for_each), [`subscribe`](crate::Observable::subscribe), [`subscribe_all`](crate::Observable::subscribe_all), [`next`](crate::Observable::next), [`recv`](crate::Observable::recv) |

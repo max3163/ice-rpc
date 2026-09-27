@@ -55,8 +55,8 @@ fn release_handler(ports: &ConsumerPorts, cid: &[u8; CORRELATION_ID_LEN]) -> boo
 ///
 /// Published by the drop of a response stream whose call is **still in flight**,
 /// and only then: a call already closed by a terminal event has nothing left to
-/// cancel. This is what turns a local abandonment (`timeout`, `take_until`, a
-/// dropped stream) into a remote one, instead of leaving a query, a report or a
+/// cancel. This is what turns a local abandonment (`timeout`, `take_until_token`,
+/// a dropped stream) into a remote one, instead of leaving a query, a report or a
 /// scan running for a consumer that stopped listening.
 ///
 /// Three properties, all deliberate:
@@ -382,7 +382,7 @@ where
     }
 
     // The call owns its handler: dropping the response stream releases it, so an
-    // abandoned call (`timeout`, `take_until`, a dropped stream) cannot leave an
+    // abandoned call (`timeout`, `take_until_token`, a dropped stream) cannot leave an
     // entry behind for the rest of the process lifetime.
     //
     // The same drop is the cancellation point. Two conditions must hold, and both

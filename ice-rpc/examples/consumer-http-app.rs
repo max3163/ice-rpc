@@ -111,7 +111,7 @@ async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usiz
     let t_send = Instant::now();
 
     let stream = http.send_request(request).await;
-    let result = stream.take_until(cancel).first_value().await;
+    let result = stream.take_until_token(cancel).first_value().await;
 
     match result {
         Err(ObservableError::Technical(ice_rpc::RpcError::Cancelled)) => {

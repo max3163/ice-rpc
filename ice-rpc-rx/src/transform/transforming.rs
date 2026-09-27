@@ -386,7 +386,8 @@ impl<T, E> Observable<T, E> {
     /// Because the last inner is awaited, a projection that returns a long-lived
     /// stream — a notification or a state feed — keeps the pipeline alive for as
     /// long as that stream lives. Bound it with [`take`](Self::take),
-    /// [`take_until`](Self::take_until) or [`timeout`](Self::timeout). To keep
+    /// [`take_until_token`](Self::take_until_token) or
+    /// [`timeout`](Self::timeout). To keep
     /// every projection instead of only the latest one, [`merge`](Self::merge)
     /// them.
     ///

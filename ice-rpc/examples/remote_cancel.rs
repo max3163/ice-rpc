@@ -173,7 +173,7 @@ async fn run_consumer() {
     // The cancellation in one line: the caller stops reading. No method to call,
     // no handle to keep — dropping the stream *is* the cancellation. Every
     // operator that gives up on a stream ends up here too: `timeout`,
-    // `take_until(my_token)`, a `switch_map` that moved on, or simply a caller
+    // `take_until_token(my_token)`, a `switch_map` that moved on, or simply a caller
     // that returns.
     println!("[consumer] walking away from report 7: dropping the stream");
     drop(report);

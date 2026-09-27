@@ -53,7 +53,7 @@ method carries its semantics and a runnable example in the crate documentation.
 | Transforming | `map`, `map_err`, `scan`, `switch_map` |
 | Filtering | `filter`, `take`, `distinct_until_changed`, `skip`, `first`, `first_with` |
 | Combining | `merge`, `start_with` |
-| Conditional / Boolean | `take_until` |
+| Conditional / Boolean | `take_until`, `take_until_token` |
 | Error handling | `catch_error` |
 | Utility | `tap`, `finalize`, `delay`, `timeout` |
 | Terminals (they end the chain) | `collect`, `first_value`, `last_value`, `for_each`, `subscribe`, `subscribe_all`, `next`, `recv` |
@@ -62,7 +62,7 @@ Two rules hold for every operator. It is **pull-based and lazy**: it only wraps
 its source in a boxed stream, so there is no intermediate channel and no spawned
 task, and nothing runs until a terminal consumes the pipeline. And it never drops
 or reorders a terminal event, unless its own documentation says otherwise
-(`catch_error`, `take`, `first`, `timeout`, `take_until`).
+(`catch_error`, `take`, `first`, `timeout`, `take_until`, `take_until_token`).
 
 Only `map_err` and `catch_error` act on the **business** error; a technical
 `RpcError` is fatal and travels untouched, because nothing in a service

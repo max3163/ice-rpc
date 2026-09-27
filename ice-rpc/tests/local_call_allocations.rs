@@ -5,12 +5,23 @@
 //! variant that is fast because it allocates less, and one that is slow because
 //! it allocates more, cannot be told apart by a clock at this scale.
 //!
-//! The protocol is the one established by `plans/lot2-allocations-par-appel.md`:
+//! The protocol follows `plans/lot2-allocations-par-appel.md`, with the two
+//! corrections the CI required:
 //!
-//! - the readable figure is a **batch**, not a single call, so the window's edge
-//!   effects stay bounded;
-//! - the idle control is *inside* the test — a second `#[test]` would run in
-//!   parallel with this one and count the other's allocations.
+//! - the window is **this thread's**. A process-wide counter attributes the
+//!   allocations of every thread to the call under measurement, and the process is
+//!   not quiet: the coverage job caught the runner's own work — four allocations,
+//!   in one window and in no other — and reported it as a call that does not cost
+//!   what its neighbours cost;
+//! - the reading is one **window per call**, reduced by the *mode* of the
+//!   histogram. The batch the plan established was written for a transported call,
+//!   served on several threads: there, only a batch bounds the window's edges. A
+//!   direct call never leaves this thread, so its window has no edge to bound —
+//!   and work that is not the call's can only ever *add* to a window, so it moves
+//!   a histogram's tail, never its most frequent value, where a batch sum is
+//!   broken by a single outlier;
+//! - the idle control stays *inside* the test: it must open the same window, on
+//!   the same thread, as the calls it controls.
 //!
 //! See `plans/spans-appels-internes-provider.md`.
 
@@ -18,7 +29,9 @@
 #![allow(missing_docs)] // the rkyv `Archive` derive emits an undocumented struct
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_lite::future::poll_fn;
@@ -26,38 +39,36 @@ use ice_rpc::gen::RpcHeader;
 use ice_rpc::rt::block_on;
 use ice_rpc::{service, CallContext, Observable};
 
-/// Counts the allocations the test window performs.
+/// Counts the allocations the calling thread makes inside its window.
 struct CountingAlloc;
 
-/// Whether the window is open; the counter is only touched while it is.
-static COUNTING: AtomicBool = AtomicBool::new(false);
-/// Number of `alloc`/`alloc_zeroed`/`realloc` calls made while it was open.
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// `(window open, allocations counted while it was open)`, for this thread.
+    ///
+    /// A plain `Cell`: it allocates nothing, needs no destructor and has no panic
+    /// path, so the allocator can read and write it while counting an allocation
+    /// without re-entering itself.
+    static WINDOW: Cell<(bool, usize)> = const { Cell::new((false, 0)) };
+}
 
 // SAFETY: every method forwards to `System` with the same arguments it received,
-// so the allocation contract is the system allocator's own; the counter is a
-// plain relaxed atomic that allocates nothing and cannot panic.
+// so the allocation contract is the system allocator's own; the thread-local above
+// is a `Cell` that allocates nothing and cannot panic.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        count_one();
         // SAFETY: `layout` is the caller's, forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        count_one();
         // SAFETY: `layout` is the caller's, forwarded unchanged.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        count_one();
         // SAFETY: the caller guarantees `ptr` came from this allocator with
         // `layout`, which is what `System::realloc` requires.
         unsafe { System.realloc(ptr, layout, new_size) }
@@ -71,6 +82,20 @@ unsafe impl GlobalAlloc for CountingAlloc {
 
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
+
+/// Records one allocation on the calling thread, when its window is open.
+///
+/// Only the window's own thread is counted: an allocation of another thread is not
+/// this call's, and the CI runner does have threads that allocate.
+#[inline]
+fn count_one() {
+    WINDOW.with(|window| {
+        let (open, count) = window.get();
+        if open {
+            window.set((true, count + 1));
+        }
+    });
+}
 
 /// The service every variant calls.
 ///
@@ -96,7 +121,7 @@ impl LocalEcho for EchoImpl {
 /// Value every variant carries.
 const VALUE: i32 = 7;
 
-/// Calls per batch: large enough that the window's edge effects are amortised.
+/// Windows taken per variant, i.e. calls measured per variant.
 const CALLS: usize = 1_000;
 
 /// The context `CallContext::local` would build for a direct call.
@@ -126,13 +151,83 @@ where
     .await
 }
 
-/// Runs `body` with the counter open and returns how many allocations it made.
+/// Runs `body` with **this thread's** window open, and returns what it counted.
+///
+/// The window is closed here, before the result is inspected: whatever the caller
+/// does with it is not part of the measurement.
 fn count_allocations<T>(body: impl FnOnce() -> T) -> (T, usize) {
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
+    WINDOW.with(|window| window.set((true, 0)));
     let out = body();
-    COUNTING.store(false, Ordering::Relaxed);
-    (out, ALLOCS.load(Ordering::Relaxed))
+    let allocations = WINDOW.with(|window| window.replace((false, 0)).1);
+    (out, allocations)
+}
+
+/// The count of one call, measured on `CALLS` successive windows.
+///
+/// One window per call rather than one window for the batch: a direct call never
+/// leaves this thread, so its window has no edge another thread could cross — the
+/// edges the batch protocol of `plans/lot2-allocations-par-appel.md` bounds only
+/// exist for a transported call, served on several threads.
+///
+/// The histogram is the reading; [`mode`] reduces it. Work that is not the call's
+/// can only ever *add* to a window, so it lands in the tail of the distribution and
+/// cannot move its most frequent value.
+fn per_call_profile<T>(mut body: impl FnMut() -> T) -> BTreeMap<usize, usize> {
+    let mut histogram = BTreeMap::new();
+    for _ in 0..CALLS {
+        let (_, allocations) = count_allocations(&mut body);
+        *histogram.entry(allocations).or_insert(0) += 1;
+    }
+    histogram
+}
+
+/// The cost of a call: the count the windows agreed on most often.
+///
+/// A deterministic count sampled `CALLS` times makes the mode that count itself;
+/// the rare window that caught foreign work cannot tie it. The lower count wins a
+/// tie, because work that is not the call's can only ever add.
+fn mode(histogram: &BTreeMap<usize, usize>) -> usize {
+    histogram
+        .iter()
+        .max_by_key(|(cost, seen)| (**seen, std::cmp::Reverse(**cost)))
+        .map(|(cost, _)| *cost)
+        .expect("`CALLS` is not zero, so the histogram is never empty")
+}
+
+/// Allocations a window counts while **another** thread allocates.
+///
+/// The other thread is started before the window opens (`spawn` allocates on this
+/// thread) and is released inside it. The two threads synchronize on atomics rather
+/// than on a channel or a barrier: neither allocates on the counting thread, so the
+/// handshake cannot pollute the very window it is meant to control.
+fn allocations_of_another_thread_are_not_counted() -> usize {
+    /// Allocations the other thread makes while the window is open.
+    const FOREIGN: usize = 64;
+
+    let go = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let worker = std::thread::spawn({
+        let go = Arc::clone(&go);
+        let done = Arc::clone(&done);
+        move || {
+            while !go.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            for _ in 0..FOREIGN {
+                std::hint::black_box(Vec::<u8>::with_capacity(1024));
+            }
+            done.store(true, Ordering::Release);
+        }
+    });
+
+    let (_, counted) = count_allocations(|| {
+        go.store(true, Ordering::Release);
+        while !done.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+    });
+    worker.join().expect("the noise thread must not panic");
+    counted
 }
 
 /// Direct call, drained to a value.
@@ -161,65 +256,63 @@ fn wrapped_boxed(proxy: &Arc<LocalEchoProxy>) {
     block_on(future);
 }
 
-/// Counts, per batch, what each envelope adds to a direct call.
+/// Counts, per call, what each envelope adds to a direct call.
 #[test]
 fn the_zero_allocation_envelope_adds_no_allocation_and_call_scoped_adds_one() {
     let proxy = LocalEchoProxy::provide(EchoImpl);
 
     // Warm-up: the first calls may allocate one-off state (the proxy's mode lock
-    // is already built, but the executor and the stream machinery are not).
+    // is already built, but the executor and the stream machinery are not). The
+    // mode of the histogram would absorb such a one-off anyway; warming up keeps
+    // it out of the reading instead of hiding it in the tail.
     for _ in 0..CALLS {
         std::hint::black_box(direct(&proxy, VALUE));
     }
 
-    // Idle control, in the same test on purpose (see the module documentation).
+    // Idle control, inside the test on purpose (see the module documentation).
     let (_, idle) = count_allocations(|| {});
     assert_eq!(idle, 0, "an empty window must count nothing");
 
-    let batch = |body: &dyn Fn()| {
-        let (_, allocations) = count_allocations(body);
-        allocations
-    };
-
-    let baseline = batch(&|| {
-        for _ in 0..CALLS {
-            std::hint::black_box(direct(&proxy, VALUE));
-        }
-    });
-    let generic = batch(&|| {
-        for _ in 0..CALLS {
-            std::hint::black_box(wrapped_generic(&proxy, VALUE));
-        }
-    });
-    let boxed = batch(&|| {
-        for _ in 0..CALLS {
-            wrapped_boxed(&proxy);
-        }
-    });
-
-    println!(
-        "allocations for {CALLS} calls — direct: {baseline}, generic: {generic}, boxed: {boxed}"
-    );
-    println!(
-        "per call — direct: {:.2}, generic: {:.2}, boxed: {:.2}",
-        baseline as f64 / CALLS as f64,
-        generic as f64 / CALLS as f64,
-        boxed as f64 / CALLS as f64,
-    );
-
-    // A call is a multiple of the batch size, so the count must divide evenly —
-    // otherwise the window caught work that does not belong to a call.
+    // Control of the window's scope: this is what the CI needed. Without it, the
+    // runner's own threads broke the reading of the very first batch.
     assert_eq!(
-        baseline % CALLS,
+        allocations_of_another_thread_are_not_counted(),
         0,
-        "the direct call counts {baseline} for {CALLS} calls: not a whole number per call"
+        "the window is this thread's: another thread's allocations are not a call's"
+    );
+
+    let direct_profile = per_call_profile(|| std::hint::black_box(direct(&proxy, VALUE)));
+    let generic_profile = per_call_profile(|| std::hint::black_box(wrapped_generic(&proxy, VALUE)));
+    let boxed_profile = per_call_profile(|| wrapped_boxed(&proxy));
+
+    let direct_cost = mode(&direct_profile);
+    let generic_cost = mode(&generic_profile);
+    let boxed_cost = mode(&boxed_profile);
+
+    println!(
+        "allocations per call over {CALLS} calls — direct: {direct_cost}, generic: {generic_cost}, \
+         boxed: {boxed_cost}"
+    );
+    // The raw reading: a count that appears once or twice and sits above the rest
+    // is foreign work the window caught, not the price of a call.
+    println!(
+        "histograms — direct: {direct_profile:?}, generic: {generic_profile:?}, \
+         boxed: {boxed_profile:?}"
+    );
+
+    // Guards the instrument: a counter that sees nothing would make the two
+    // comparisons below hold for the wrong reason.
+    assert!(
+        direct_cost > 0,
+        "the instrument must see a direct call's own allocations, it saw {direct_cost}"
     );
     assert_eq!(
-        generic, baseline,
-        "the generic envelope must cost no allocation at all: {generic} against {baseline}"
+        generic_cost, direct_cost,
+        "the generic envelope must cost no allocation at all: {generic_cost} against {direct_cost}"
     );
     assert!(
-        boxed > baseline,
-        "`call_scoped` must pay for the `Box` it erases the future with: {boxed} against {baseline}"
+        boxed_cost > direct_cost,
+        "`call_scoped` must pay for the `Box` it erases the future with: {boxed_cost} against \
+         {direct_cost}"
     );
 }

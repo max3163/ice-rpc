@@ -296,10 +296,29 @@ mod tests {
         );
     }
 
+    /// Lays the bus out the way a provider does before it serves anything.
+    ///
+    /// The scans below enumerate iceoryx2's directories, and `Node::list` fails
+    /// with "the system cannot find the path specified" on a machine that never
+    /// ran a provider — a clean CI checkout, where the compiled-in root path does
+    /// not exist yet. Creating this process's node creates them; the explicit walk
+    /// is the belt to that pair of braces, and it asks iceoryx2 for the paths
+    /// instead of guessing at them.
+    fn lay_out_the_bus() {
+        let _ = crate::transport::shared_node();
+        let layout = crate::monitor::iceoryx2_layout();
+        for dir in [&layout.root_path, &layout.node_dir, &layout.service_dir] {
+            if dir.starts_with(&layout.root_path) {
+                let _ = std::fs::create_dir_all(dir);
+            }
+        }
+    }
+
     /// The native scan is what turns absence into evidence, so a successful scan
     /// must be distinguishable from a failed one.
     #[test]
     fn the_alive_scan_reports_a_result() {
+        lay_out_the_bus();
         // The set may legitimately be empty on a quiet machine; `None` would mean
         // `Node::list` failed, and callers must never read that as "nobody lives".
         assert!(alive_pids().is_some(), "the node scan must not fail");
@@ -308,6 +327,7 @@ mod tests {
     /// A pid no process can own is conclusively gone, not merely absent.
     #[test]
     fn an_unknown_pid_is_confirmed_dead() {
+        lay_out_the_bus();
         // Absence from the node list means the node disappeared (clean shutdown or
         // crash) — `Dead` and "not found" both count as gone.
         assert!(is_confirmed_dead(u32::MAX - 3));

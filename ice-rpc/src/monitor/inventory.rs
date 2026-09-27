@@ -256,15 +256,39 @@ mod tests {
         assert!(layout.data_segment_suffix.starts_with('.'));
     }
 
+    /// Lays the bus out the way a provider does before it serves anything.
+    ///
+    /// The scans below enumerate iceoryx2's directories, and `Node::list` fails
+    /// with "the system cannot find the path specified" on a machine that never
+    /// ran a provider — a clean CI checkout, where the compiled-in root path
+    /// (`C:\Temp\iceoryx2` on Windows, `/tmp/iceoryx2` elsewhere) does not exist
+    /// yet. Creating this process's node creates them; the explicit walk is the
+    /// belt to that pair of braces, and it asks iceoryx2 for the paths instead of
+    /// guessing at them.
+    fn lay_out_the_bus() {
+        let _ = crate::transport::shared_node();
+        let layout = iceoryx2_layout();
+        for dir in [&layout.root_path, &layout.node_dir, &layout.service_dir] {
+            if dir.starts_with(&layout.root_path) {
+                let _ = std::fs::create_dir_all(dir);
+            }
+        }
+    }
+
     #[test]
     fn the_node_inventory_scans_without_failing() {
+        lay_out_the_bus();
         // A quiet machine legitimately lists no node: what matters is that the
         // scan reports a result instead of degrading to "no node at all".
-        assert!(list_nodes().is_some(), "the native node scan must not fail");
+        assert!(
+            list_nodes().is_some(),
+            "the native node scan must not fail once the bus is laid out"
+        );
     }
 
     #[test]
     fn the_service_inventory_scans_without_failing() {
+        lay_out_the_bus();
         let services = list_services().expect("the service scan must not fail");
         // Whatever the machine runs, every entry carries a role and a pattern.
         for service in &services {

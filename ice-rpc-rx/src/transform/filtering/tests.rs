@@ -53,6 +53,118 @@ fn take_forwards_source_terminal_before_limit() {
     ));
 }
 
+/// Regression for the liveness defect: `take(n)` must complete on its own,
+/// without waiting for an event the source may never send. The channel stays
+/// open after its single value, which is exactly what used to park `take`
+/// on the source for ever.
+#[test]
+fn take_completes_without_waiting_for_a_further_event() {
+    use std::task::{Context, Poll, Waker};
+
+    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    tx.try_send_next(1).expect("the channel has room");
+
+    let mut stream = std::pin::pin!(rx.take(1));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        Poll::Ready(Some(Event::Next(1)))
+    ));
+    // No further event is pushed and the sender is still alive: the completion
+    // must be the one `take` synthesizes.
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        Poll::Ready(Some(Event::Complete))
+    ));
+
+    drop(tx);
+}
+
+/// Same scenario through the public `recv()` API: one value, an **open** source,
+/// then the completion. Bounded by a timeout so a regression can never hang the
+/// suite.
+#[test]
+fn take_one_delivers_complete_through_recv() {
+    use std::time::Duration;
+
+    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    tx.try_send_next(1).expect("the channel has room");
+
+    let mut stream = rx.take(1);
+    // The sender stays alive: only `take` itself can end the stream.
+    let first = pollster::block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
+        .expect("a single value must not wait for ever");
+    assert_eq!(first.expect("the channel is alive"), Event::Next(1));
+
+    let second = pollster::block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
+        .expect("the completion must not wait for ever");
+    assert_eq!(second.expect("the channel is alive"), Event::Complete);
+
+    // Really over: the source is never polled again.
+    assert!(pollster::block_on(stream.recv()).is_err());
+
+    drop(tx);
+}
+
+/// `take(0)` completes at once, without reading the source: a stream that never
+/// produces anything still ends.
+#[test]
+fn take_zero_completes_without_polling_the_source() {
+    use std::task::{Context, Poll, Waker};
+
+    // No event is ever sent, and the sender stays open.
+    let (_tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let mut stream = std::pin::pin!(rx.take(0));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        Poll::Ready(Some(Event::Complete))
+    ));
+}
+
+/// Symmetry check: before the bound, a source that closes after its only value
+/// still ends the stream on a `Complete` of `take`'s own making.
+#[test]
+fn take_one_completes_after_its_single_value() {
+    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    tx.try_send_next(1).expect("the channel has room");
+    drop(tx);
+
+    let events = pollster::block_on(drain(rx.take(1)));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+    assert!(matches!(&events[1], Event::Complete));
+}
+
+/// The bound reached on a live stream: two values, then the completion, with no
+/// third event and no closed sender.
+#[test]
+fn take_two_completes_after_two_values_on_a_live_stream() {
+    use std::task::{Context, Poll, Waker};
+
+    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    tx.try_send_next(1).expect("the channel has room");
+    tx.try_send_next(2).expect("the channel has room");
+
+    let mut stream = std::pin::pin!(rx.take(2));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    for expected in [1, 2] {
+        assert!(matches!(
+            futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+            Poll::Ready(Some(Event::Next(v))) if v == expected
+        ));
+    }
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        Poll::Ready(Some(Event::Complete))
+    ));
+
+    drop(tx);
+}
+
 #[test]
 fn first_emits_only_first_value() {
     let stream = local([1, 2, 3]).first();

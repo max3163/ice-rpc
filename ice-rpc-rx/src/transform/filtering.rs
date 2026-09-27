@@ -93,17 +93,27 @@ where
         if *this.done {
             return Poll::Ready(None);
         }
+        // Answered here, without consulting the source: the poll that follows
+        // the n-th value must not wait for another event to ever arrive.
+        if *this.remaining == 0 {
+            *this.done = true;
+            return Poll::Ready(Some(Event::Complete));
+        }
         match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => {
-                if *this.remaining == 0 {
-                    *this.done = true;
-                    return Poll::Ready(Some(Event::Complete));
-                }
                 *this.remaining -= 1;
                 Poll::Ready(Some(Event::Next(v)))
             }
-            Poll::Ready(Some(other)) => Poll::Ready(Some(other)),
-            Poll::Ready(None) => Poll::Ready(None),
+            // A terminal from the source ends the stream for good: mark it done
+            // so a later poll does not touch the source again.
+            Poll::Ready(Some(other)) => {
+                *this.done = true;
+                Poll::Ready(Some(other))
+            }
+            Poll::Ready(None) => {
+                *this.done = true;
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -330,11 +340,12 @@ impl<T, E> Observable<T, E> {
     /// Forwards at most `n` values, then completes (RxJS `take`).
     ///
     /// The stream ends with `Complete` of `take`'s own making — not with the
-    /// source's terminal. The completion is emitted when the source produces the
-    /// value **after** the `n`-th (that value is discarded) or when the source
-    /// ends. An `Error` raised before the bound is reached still wins: `take`
-    /// never swallows an error. With `n == 0` the completion therefore waits for
-    /// the source's first value (or for its end), rather than firing at once.
+    /// source's terminal. The completion fires on the **poll that follows** the
+    /// `n`-th value, without reading the source again: a live stream that stops
+    /// producing still ends, so `take(n).collect()` cannot hang. With `n == 0`
+    /// the completion fires on the very first poll, without reading the source
+    /// at all. An `Error` raised before the bound is reached still wins: `take`
+    /// never swallows an error.
     ///
     /// # Example
     /// ```rust

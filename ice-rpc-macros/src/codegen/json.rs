@@ -468,7 +468,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
     quote! {
         {
             dispatcher.method(
-                #method_name_str,
+                ice_rpc::gen::method_id_of(#method_name_str),
                 move |header: ice_rpc::gen::RpcHeader,
                       payload: Vec<u8>,
                       emitter: ice_rpc::gen::OwnedEmitter|

@@ -94,7 +94,7 @@ pub fn gen_native_method(
         {
             let service_impl = self.service_impl.clone();
             dispatcher.method(
-                #method_name_str,
+                ice_rpc::gen::method_id_of(#method_name_str),
                 move |header: ice_rpc::gen::RpcHeader,
                       payload: Vec<u8>,
                       emitter: ice_rpc::gen::OwnedEmitter|

@@ -96,7 +96,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             ice_rpc::gen::serialize_and_call::<#ok_type, #err_type, _>(
                 #group,
                 #service_ref,
-                #method_name_str,
+                ice_rpc::gen::method_id_of(#method_name_str),
                 &req_val,
             )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)

@@ -657,7 +657,7 @@ fn handle_request(
     let cid = header.correlation_id;
     let token = hub.register(cid);
     let emitter: OwnedEmitter = Box::new(hub.emitter(header));
-    match dispatcher.dispatch(header.method(), *header, payload.to_vec(), emitter) {
+    match dispatcher.dispatch(header.method_id(), *header, payload.to_vec(), emitter) {
         // Polled once here before being detached: a handler that answers without
         // yielding completes on this thread and costs no hop at all — measured at
         // 240 k req/s with the hop and 313 k without it. One that awaits is
@@ -671,14 +671,16 @@ fn handle_request(
         // An unknown method is answered too: silence would leave the caller
         // waiting for the transport timeout instead of naming the mistake. The
         // call is answered at once, so it is not in flight and must not stay
-        // registered.
+        // registered. The id is named in hexadecimal, exactly like the
+        // `UnknownService` rejection: the provider cannot invert a hash it does
+        // not know.
         None => {
             hub.unregister(&cid);
             reject(
                 channel,
                 header,
                 hub,
-                RpcError::UnknownMethod(header.method().to_owned()),
+                RpcError::UnknownMethod(format!("{:#010x}", header.method_id())),
             );
         }
     }
@@ -694,8 +696,8 @@ fn handle_request(
 /// own thread, which owns the publisher.
 fn reject(channel: &str, header: &RpcHeader, hub: &Arc<ResponseHub>, err: RpcError) {
     log::warn!(
-        "[transport] '{channel}': rejecting '{}': {err}",
-        header.method()
+        "[transport] '{channel}': rejecting '{:#010x}': {err}",
+        header.method_id()
     );
     let mut emitter = hub.emitter(header);
     if !emit_rpc_error(err, &mut emitter) {
@@ -823,7 +825,7 @@ pub fn start_registered_channels() {
 mod tests {
     use super::*;
     use crate::transport::CollectEmitter;
-    use crate::types::{next_correlation_id, ServiceRef};
+    use crate::types::{method_id_of, next_correlation_id, ServiceRef};
     use std::sync::Mutex;
 
     #[test]
@@ -935,23 +937,23 @@ mod tests {
     #[test]
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        first.method("echo", |_header, payload, mut emitter| {
+        first.method(method_id_of("echo"), |_header, payload, mut emitter| {
             Box::pin(async move {
                 emitter.emit(EventKind::Next, &payload);
             })
         });
         let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
-        second.method("ping", |_header, _payload, _emitter| Box::pin(async {}));
+        second.method(method_id_of("ping"), |_header, _payload, _emitter| Box::pin(async {}));
 
         let table: HashMap<u32, ServiceDispatcher> =
             vec![(7, first), (9, second)].into_iter().collect();
-        let header = RpcHeader::request("echo", 7, 1);
+        let header = RpcHeader::request(method_id_of("echo"), 7, 1);
 
         let sink = SharedCollector::default();
         let task = table
             .get(&7)
             .unwrap()
-            .dispatch("echo", header, b"x".to_vec(), Box::new(sink.clone()))
+            .dispatch(method_id_of("echo"), header, b"x".to_vec(), Box::new(sink.clone()))
             .expect("the first dispatcher has `echo`");
         crate::rt::block_on(task);
         assert_eq!(sink.take().len(), 1);
@@ -960,7 +962,7 @@ mod tests {
         assert!(table
             .get(&9)
             .unwrap()
-            .dispatch("echo", header, b"x".to_vec(), Box::new(sink.clone()))
+            .dispatch(method_id_of("echo"), header, b"x".to_vec(), Box::new(sink.clone()))
             .is_none());
         assert!(sink.take().is_empty());
 
@@ -998,12 +1000,12 @@ mod tests {
     #[test]
     fn dispatch_builds_a_task_only_for_a_known_method() {
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        dispatcher.method("echo", |_header, _payload, _emitter| Box::pin(async {}));
+        dispatcher.method(method_id_of("echo"), |_header, _payload, _emitter| Box::pin(async {}));
 
-        let header = RpcHeader::request("echo", 7, 1);
+        let header = RpcHeader::request(method_id_of("echo"), 7, 1);
         assert!(dispatcher
             .dispatch(
-                "echo",
+                method_id_of("echo"),
                 header,
                 b"x".to_vec(),
                 Box::new(CollectEmitter::new())
@@ -1011,7 +1013,7 @@ mod tests {
             .is_some());
         assert!(dispatcher
             .dispatch(
-                "missing",
+                method_id_of("missing"),
                 header,
                 b"x".to_vec(),
                 Box::new(CollectEmitter::new())
@@ -1024,7 +1026,7 @@ mod tests {
     #[test]
     fn an_incompatible_protocol_is_rejected_before_dispatch() {
         let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        let mut header = RpcHeader::request("echo", 7, 1);
+        let mut header = RpcHeader::request(method_id_of("echo"), 7, 1);
         header.protocol_version = PROTOCOL_VERSION.wrapping_add(1);
 
         let rejection = RequestRejection::classify(&dispatcher, &header).expect("rejected");
@@ -1044,7 +1046,7 @@ mod tests {
     #[test]
     fn an_incompatible_service_version_is_classified() {
         let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
-        let header = RpcHeader::request("echo", 7, 1);
+        let header = RpcHeader::request(method_id_of("echo"), 7, 1);
 
         let rejection = RequestRejection::classify(&dispatcher, &header).expect("rejected");
         assert_eq!(
@@ -1067,7 +1069,7 @@ mod tests {
     #[test]
     fn a_matching_header_is_never_rejected() {
         let dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 2));
-        let header = RpcHeader::request("echo", 7, 2);
+        let header = RpcHeader::request(method_id_of("echo"), 7, 2);
         assert_eq!(RequestRejection::classify(&dispatcher, &header), None);
     }
 

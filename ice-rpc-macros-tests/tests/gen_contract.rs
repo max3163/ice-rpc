@@ -70,7 +70,6 @@ fn gen_facade_symbols_resolve() {
         DEFAULT_MAX_SLICE_LEN,
         JSON_CALL_TIMEOUT,
         LIVENESS_POLL_MS,
-        METHOD_NAME_LEN,
         PROTOCOL_VERSION,
         SERVICE_NAME_LEN,
     };

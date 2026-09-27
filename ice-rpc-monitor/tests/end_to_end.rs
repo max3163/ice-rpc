@@ -86,6 +86,17 @@ fn start_provider(channel: &str) -> (u32, CancellationToken, std::thread::JoinHa
     (service_id, stop, server)
 }
 
+/// A registry that names the `echo` method: the wire carries only its 4-byte id,
+/// so an observer renders the name only if it was told about it.
+fn echo_decoders(service_id: u32) -> Arc<Decoders> {
+    let mut decoders = Decoders::new();
+    decoders.register(
+        service_id,
+        Arc::new(ClosureDecoder::new(|_, _| None, |_, _| None).with_method("echo")),
+    );
+    Arc::new(decoders)
+}
+
 #[test]
 fn the_observer_reconstructs_the_traffic_from_the_headers() {
     let _ = env_logger::builder().is_test(false).try_init();
@@ -98,6 +109,7 @@ fn the_observer_reconstructs_the_traffic_from_the_headers() {
     let config = Config {
         channels: vec![channel.clone()],
         prometheus_addr: None,
+        decoders: echo_decoders(service_id),
         ..Config::default()
     };
     let monitor = Monitor::new(config, metrics.clone()).expect("monitor builds");
@@ -186,10 +198,13 @@ fn the_detail_mode_captures_the_payloads() {
     let mut decoders = Decoders::new();
     decoders.register(
         service_id,
-        Arc::new(ClosureDecoder::new(
-            |_method, payload| Some(format!("request:{}", payload.len())),
-            |_method, payload| Some(format!("response:{}", payload.len())),
-        )),
+        Arc::new(
+            ClosureDecoder::new(
+                |_method, payload| Some(format!("request:{}", payload.len())),
+                |_method, payload| Some(format!("response:{}", payload.len())),
+            )
+            .with_method("echo"),
+        ),
     );
 
     let metrics = Arc::new(Metrics::new());
@@ -345,6 +360,7 @@ fn a_late_observer_catches_the_following_traffic() {
     let config = Config {
         channels: vec![channel.clone()],
         prometheus_addr: None,
+        decoders: echo_decoders(service_id),
         ..Config::default()
     };
     let monitor = Monitor::new(config, metrics.clone()).expect("monitor builds");

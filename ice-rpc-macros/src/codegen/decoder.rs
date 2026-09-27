@@ -25,7 +25,7 @@ use super::helpers::is_unit_type;
 
 /// One RPC method, as needed by the decoder.
 pub struct DecoderMethod {
-    /// Method name as it travels in the header.
+    /// Method name; the wire carries its [`method_id_of`](ice_rpc::gen::method_id_of) only.
     pub method_name: String,
     /// Generated request-enum variant of this method.
     pub var_name: Ident,
@@ -79,11 +79,21 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
     let mut display_arms = Vec::new();
     let mut request_arms = Vec::new();
     let mut response_arms = Vec::new();
+    let mut method_name_arms = Vec::new();
 
     for method in methods.iter() {
         let var_name = &method.var_name;
         let method_lit = LitStr::new(&method.method_name, var_name.span());
         let arg_names = &method.arg_names;
+
+        // The wire carries only the method id: the observer resolves it back to
+        // the name through this generated table, the same way it resolves a
+        // service id through the decoder registry.
+        method_name_arms.push(quote! {
+            if method_id == ice_rpc::gen::method_id_of(#method_lit) {
+                return ::std::option::Option::Some(#method_lit);
+            }
+        });
 
         // `Display`: `method(arg1=…, arg2=…)`, each argument rendered by
         // `render_value!` — its `Display` form when it has one, else its `Debug`.
@@ -198,6 +208,14 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
                     #(#response_arms,)*
                     _ => ::std::option::Option::None,
                 }
+            }
+
+            fn method_name(
+                &self,
+                method_id: u32,
+            ) -> ::std::option::Option<&'static str> {
+                #(#method_name_arms)*
+                ::std::option::Option::None
             }
         }
     }

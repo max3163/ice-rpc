@@ -24,14 +24,16 @@ mod node;
 mod wire;
 
 pub use consts::*;
-pub use context::{call_scoped, local_call_scoped, BoxResponseFuture, CallContext, TraceContext};
+pub use context::{
+    call_scoped, local_call_scoped, next_span_id, BoxResponseFuture, CallContext, TraceContext,
+};
 
 // The transport installs the token of a call around every poll of its task; the
 // accessor itself is public, the installer stays inside the crate.
 pub(crate) use context::install_call_cancellation;
 pub use header::{
-    fmt_correlation_id, next_correlation_id, now_ns, parse_correlation_id, service_id_of,
-    EventKind, RpcHeader, ServiceRef, CORRELATION_ID_LEN,
+    fmt_correlation_id, method_id_of, next_correlation_id, now_ns, parse_correlation_id,
+    service_id_of, EventKind, MethodId, RpcHeader, ServiceRef, CORRELATION_ID_LEN,
 };
 pub use node::*;
 pub use wire::WireEvent;

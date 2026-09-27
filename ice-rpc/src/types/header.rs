@@ -10,11 +10,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iceoryx2::prelude::ZeroCopySend;
-use iceoryx2_bb_container::string::StaticString;
 
 use super::context::TraceContext;
 use crate::labels::impl_labels;
-use crate::types::consts::{METHOD_NAME_LEN, PROTOCOL_VERSION};
+use crate::types::consts::PROTOCOL_VERSION;
 
 /// Correlation id prefixing every request/response pair.
 pub const CORRELATION_ID_LEN: usize = 16;
@@ -151,7 +150,17 @@ pub struct RpcHeader {
     /// not a valid id — which is why [`TraceContext::is_present`] exists.
     pub trace_id: [u8; 16],
     /// Span of the caller, onto which the receiver parents its own span.
+    ///
+    /// This is the W3C `parent-id` of the `traceparent`: the id of the span
+    /// that emitted the call. Zero only on a sample that opens a trace.
     pub parent_span_id: u64,
+    /// W3C span id of the hop that **emitted** this sample.
+    ///
+    /// Distinct from [`parent_span_id`](Self::parent_span_id): this is the
+    /// emitter's own span, unique per call and non-zero. It lets an out-of-band
+    /// observer reconstruct the trace tree — matching a child's `parent_span_id`
+    /// to the parent's `span_id` — and lets an exporter build a `traceparent`.
+    pub span_id: u64,
     /// Identifier of the target service inside the channel it is published on.
     ///
     /// Several services can share one channel (their *group*); this id —
@@ -165,8 +174,17 @@ pub struct RpcHeader {
     ///
     /// [`Sample::header()`]: iceoryx2::sample::Sample::header
     pub service_id: u32,
-    /// Method invoked by the request (left empty on a response).
-    pub method_name: StaticString<METHOD_NAME_LEN>,
+    /// Method invoked by the request (zero on a response or a Cancel).
+    ///
+    /// [`method_id_of`] of the method name, exactly as [`service_id`](Self::service_id)
+    /// is the hash of the service name. The method is routed before the payload
+    /// is decoded, so an unknown method is rejected without ever decoding.
+    pub method_id: u32,
+    /// W3C `traceparent` version byte (always `0` today).
+    ///
+    /// Stored so the header is a literal `traceparent` prefix and so a future
+    /// version can be negotiated without adding another field.
+    pub traceparent_version: u8,
     /// Kind of the sample (request / next / complete / error), as a wire value.
     pub event_kind: u8,
     /// ice-rpc wire protocol version of the emitter.
@@ -180,20 +198,22 @@ pub struct RpcHeader {
 impl RpcHeader {
     /// Creates a **request** header with a fresh correlation id.
     ///
-    /// A method name longer than [`METHOD_NAME_LEN`] is truncated; the
-    /// `#[service]` macro already rejects such names at compile time.
+    /// `method_id` is [`method_id_of`] of the method name, computed by the
+    /// generated caller as a constant.
     #[inline]
-    pub fn request(method: &str, service_id: u32, service_version: u16) -> Self {
+    pub fn request(method_id: impl MethodId, service_id: u32, service_version: u16) -> Self {
         Self {
             correlation_id: next_correlation_id(),
             service_id,
-            method_name: StaticString::try_from(method).unwrap_or_default(),
+            method_id: method_id.method_id(),
+            traceparent_version: 0,
             event_kind: EventKind::Request.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
             // No trace until the caller attaches one with `with_trace`.
             trace_id: [0u8; 16],
             parent_span_id: 0,
+            span_id: 0,
             flags: 0,
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
@@ -211,6 +231,16 @@ impl RpcHeader {
         self.trace_id = trace.trace_id;
         self.parent_span_id = trace.parent_span_id;
         self.flags = trace.flags;
+        self
+    }
+
+    /// Sets the W3C span id of the emitting hop (builder style).
+    ///
+    /// Distinct from the trace context: `with_trace` carries the **caller's**
+    /// span (the W3C `parent-id`), while this is the emitter's own span.
+    #[inline]
+    pub fn with_span_id(mut self, span_id: u64) -> Self {
+        self.span_id = span_id;
         self
     }
 
@@ -240,13 +270,17 @@ impl RpcHeader {
         Self {
             correlation_id: request.correlation_id,
             service_id: request.service_id,
-            method_name: StaticString::default(),
+            method_id: 0,
+            traceparent_version: request.traceparent_version,
             event_kind: event_kind.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version,
             // A response echoes the trace of the request it answers.
             trace_id: request.trace_id,
             parent_span_id: request.parent_span_id,
+            // The emitter's own span is not known here; an observer joins the
+            // response to its request through the correlation id.
+            span_id: 0,
             flags: request.flags,
             // Stamped by the caller with the per-channel sequence.
             seq: 0,
@@ -267,13 +301,15 @@ impl RpcHeader {
         Self {
             correlation_id: request.correlation_id,
             service_id: request.service_id,
-            method_name: StaticString::default(),
+            method_id: 0,
+            traceparent_version: request.traceparent_version,
             event_kind: EventKind::Cancel.as_u8(),
             protocol_version: PROTOCOL_VERSION,
             service_version: request.service_version,
             // A Cancel stays in the trace of the call it abandons.
             trace_id: request.trace_id,
             parent_span_id: request.parent_span_id,
+            span_id: 0,
             flags: request.flags,
             // Stamped by the emitter with the per-channel sequence, like every
             // other sample: a gap in `seq` is how the observer detects a loss.
@@ -282,10 +318,10 @@ impl RpcHeader {
         }
     }
 
-    /// Returns the method name carried by the header.
+    /// Returns the method id carried by the header (zero on a response).
     #[inline]
-    pub fn method(&self) -> &str {
-        std::str::from_utf8(self.method_name.as_bytes_const()).unwrap_or("")
+    pub fn method_id(&self) -> u32 {
+        self.method_id
     }
 
     /// Returns the kind of the sample.
@@ -293,6 +329,25 @@ impl RpcHeader {
     pub fn event_kind(&self) -> EventKind {
         EventKind::from_u8(self.event_kind)
     }
+}
+
+/// FNV-1a hash of `bytes`: the shared identity primitive of the wire contract.
+///
+/// `const` so every name hash is computed at compile time, and deterministic so
+/// every process derives the same value without discovery.
+#[inline]
+const fn fnv1a_u32(bytes: &[u8]) -> u32 {
+    const OFFSET_BASIS: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+
+    let mut hash = OFFSET_BASIS;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(PRIME);
+        i += 1;
+    }
+    hash
 }
 
 /// Computes the stable identifier of a service inside its channel (FNV-1a).
@@ -303,18 +358,44 @@ impl RpcHeader {
 /// registration.
 #[inline]
 pub const fn service_id_of(name: &str) -> u32 {
-    const OFFSET_BASIS: u32 = 0x811c_9dc5;
-    const PRIME: u32 = 0x0100_0193;
+    fnv1a_u32(name.as_bytes())
+}
 
-    let bytes = name.as_bytes();
-    let mut hash = OFFSET_BASIS;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u32;
-        hash = hash.wrapping_mul(PRIME);
-        i += 1;
+/// Computes the stable identifier of a method inside its service (FNV-1a).
+///
+/// The method counterpart of [`service_id_of`]: the wire carries this 4-byte id
+/// instead of the method name, which frees the header and lets the provider
+/// route — and reject an unknown method — before decoding the payload. The name
+/// itself stays compile-time knowledge of the generated code (logs, spans, the
+/// observer's registry), never a wire field.
+#[inline]
+pub const fn method_id_of(name: &str) -> u32 {
+    fnv1a_u32(name.as_bytes())
+}
+
+/// A method identifier accepted by the call APIs.
+///
+/// The wire carries only a `u32` ([`method_id_of`]). The generated code passes
+/// that constant id, but hand-written callers and tests may pass the method name
+/// directly and pay one hash — which keeps the call sites readable without ever
+/// putting the name on the wire.
+pub trait MethodId {
+    /// Returns the wire id of the method.
+    fn method_id(self) -> u32;
+}
+
+impl MethodId for u32 {
+    #[inline]
+    fn method_id(self) -> u32 {
+        self
     }
-    hash
+}
+
+impl MethodId for &str {
+    #[inline]
+    fn method_id(self) -> u32 {
+        method_id_of(self)
+    }
 }
 
 /// Identity of a service contract: its id inside the channel and its interface
@@ -414,9 +495,10 @@ mod tests {
     #[test]
     fn request_header_carries_the_method_and_a_fresh_id() {
         let id = service_id_of("DatabaseService");
-        let a = RpcHeader::request("get_user_age", id, 2);
-        let b = RpcHeader::request("get_user_age", id, 2);
-        assert_eq!(a.method(), "get_user_age");
+        let method = method_id_of("get_user_age");
+        let a = RpcHeader::request(method, id, 2);
+        let b = RpcHeader::request(method, id, 2);
+        assert_eq!(a.method_id(), method);
         assert_eq!(a.event_kind(), EventKind::Request);
         assert_eq!(a.service_id, id);
         assert_eq!(a.service_version, 2);
@@ -426,20 +508,12 @@ mod tests {
     #[test]
     fn response_header_reuses_the_request_id_and_service() {
         let id = service_id_of("GetPerson");
-        let request = RpcHeader::request("ping", id, 1);
+        let request = RpcHeader::request(method_id_of("ping"), id, 1);
         let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
         assert_eq!(response.correlation_id, request.correlation_id);
         assert_eq!(response.service_id, id);
         assert_eq!(response.event_kind(), EventKind::Complete);
-        assert!(response.method().is_empty());
-    }
-
-    #[test]
-    fn a_name_longer_than_the_capacity_falls_back_to_empty() {
-        // `#[service]` rejects this at compile time: the fallback is a safety net.
-        let long = "x".repeat(METHOD_NAME_LEN + 20);
-        let header = RpcHeader::request(&long, 0, 1);
-        assert!(header.method().is_empty());
+        assert_eq!(response.method_id(), 0, "a response names no method");
     }
 
     #[test]
@@ -457,25 +531,37 @@ mod tests {
     }
 
     #[test]
+    fn method_id_is_stable_and_distinguishes_names() {
+        // Same primitive as `service_id_of`: the offset basis is pinned.
+        assert_eq!(method_id_of(""), 0x811c_9dc5);
+
+        const ID: u32 = method_id_of("get_user_age");
+        assert_eq!(ID, method_id_of("get_user_age"));
+        assert_ne!(method_id_of("get_user_age"), method_id_of("get_user_name"));
+    }
+
+    #[test]
     fn the_header_layout_stays_bounded_and_aligned() {
         // Part of the wire contract: the header is copied per sample and its size
         // is validated by iceoryx2 when a service is opened, so every process on
         // the machine must agree on it. Pinning the exact size makes any layout
         // drift a deliberate, reviewed change.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
-        assert_eq!(std::mem::size_of::<RpcHeader>(), 120);
+        assert_eq!(std::mem::size_of::<RpcHeader>(), 80);
 
         assert_eq!(std::mem::offset_of!(RpcHeader, correlation_id), 0);
         assert_eq!(std::mem::offset_of!(RpcHeader, timestamp_ns), 16);
         assert_eq!(std::mem::offset_of!(RpcHeader, seq), 24);
         assert_eq!(std::mem::offset_of!(RpcHeader, trace_id), 32);
         assert_eq!(std::mem::offset_of!(RpcHeader, parent_span_id), 48);
-        assert_eq!(std::mem::offset_of!(RpcHeader, service_id), 56);
-        assert_eq!(std::mem::offset_of!(RpcHeader, method_name), 64);
-        assert_eq!(std::mem::offset_of!(RpcHeader, event_kind), 112);
-        assert_eq!(std::mem::offset_of!(RpcHeader, protocol_version), 114);
-        assert_eq!(std::mem::offset_of!(RpcHeader, service_version), 116);
-        assert_eq!(std::mem::offset_of!(RpcHeader, flags), 118);
+        assert_eq!(std::mem::offset_of!(RpcHeader, span_id), 56);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_id), 64);
+        assert_eq!(std::mem::offset_of!(RpcHeader, method_id), 68);
+        assert_eq!(std::mem::offset_of!(RpcHeader, traceparent_version), 72);
+        assert_eq!(std::mem::offset_of!(RpcHeader, event_kind), 73);
+        assert_eq!(std::mem::offset_of!(RpcHeader, protocol_version), 74);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_version), 76);
+        assert_eq!(std::mem::offset_of!(RpcHeader, flags), 78);
     }
 
     /// The trace context survives a header round-trip, and the response echoes
@@ -488,7 +574,7 @@ mod tests {
             flags: 1,
         };
 
-        let request = RpcHeader::request("ping", service_id_of("Ping"), 1).with_trace(trace);
+        let request = RpcHeader::request(method_id_of("ping"), service_id_of("Ping"), 1).with_trace(trace);
         assert_eq!(request.trace(), trace);
         assert!(request.trace().is_present());
         assert!(request.trace().is_sampled());
@@ -500,7 +586,7 @@ mod tests {
     /// With no trace attached, the three fields stay at their "absent" value.
     #[test]
     fn a_request_without_trace_carries_zeros() {
-        let request = RpcHeader::request("ping", service_id_of("Ping"), 1);
+        let request = RpcHeader::request(method_id_of("ping"), service_id_of("Ping"), 1);
         assert!(!request.trace().is_present());
         assert_eq!(request.trace().parent_span_id, 0);
     }
@@ -509,7 +595,7 @@ mod tests {
     fn request_stamps_a_timestamp() {
         let id = service_id_of("Ping");
         let before = now_ns();
-        let header = RpcHeader::request("ping", id, 1);
+        let header = RpcHeader::request(method_id_of("ping"), id, 1);
         let after = now_ns();
 
         assert!(header.timestamp_ns >= before);
@@ -521,7 +607,7 @@ mod tests {
 
     #[test]
     fn response_stamps_its_own_emission_time() {
-        let request = RpcHeader::request("ping", service_id_of("Ping"), 1);
+        let request = RpcHeader::request(method_id_of("ping"), service_id_of("Ping"), 1);
         let response = RpcHeader::response_from(&request, EventKind::Complete, 1);
 
         assert_eq!(response.correlation_id, request.correlation_id);
@@ -580,14 +666,15 @@ mod tests {
     #[test]
     fn cancel_header_reuses_the_request_identity_without_a_method() {
         let id = service_id_of("GetPerson");
-        let request = RpcHeader::request("get_person", id, 3).with_trace(TraceContext::new_root());
+        let request =
+            RpcHeader::request(method_id_of("get_person"), id, 3).with_trace(TraceContext::new_root());
         let cancel = RpcHeader::cancel_from(&request);
 
         assert_eq!(cancel.correlation_id, request.correlation_id);
         assert_eq!(cancel.service_id, id);
         assert_eq!(cancel.service_version, 3);
         assert_eq!(cancel.event_kind(), EventKind::Cancel);
-        assert!(cancel.method().is_empty(), "a Cancel names no method");
+        assert_eq!(cancel.method_id(), 0, "a Cancel names no method");
         assert_eq!(cancel.trace(), request.trace(), "the Cancel stays traced");
         // `seq` belongs to the emitter, exactly like a response's.
         assert_eq!(cancel.seq, 0);

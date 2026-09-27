@@ -335,13 +335,21 @@ place by the bus, so it costs no serialization and no allocation.
 | `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
 | `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
 | `trace_id` | `[u8; 16]` | W3C trace id, shared by every hop of a call tree; zero when no trace is propagated |
-| `parent_span_id` | `u64` | span of the caller, onto which the receiver parents its own span |
+| `parent_span_id` | `u64` | W3C `parent-id`: the span of the caller, onto which the receiver parents its own span (never zero for a traced call) |
+| `span_id` | `u64` | W3C `span-id` of the hop that emitted the sample; unique per span and never zero |
 | `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
-| `method_name` | `StaticString<32>` | target method (carried by requests) |
+| `method_id` | `u32` | FNV-1a of the method name; selects the handler inside the service, before any payload decode |
+| `traceparent_version` | `u8` | W3C `traceparent` version byte (always `0`) |
 | `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` / `RpcError` |
 | `protocol_version` | `u16` | framing version, validated by the provider |
 | `service_version` | `u16` | service API version, validated by the provider and echoed on the responses |
 | `flags` | `u8` | W3C trace flags (bit 0: sampled) |
+
+The header is **80 bytes** (it shrank from 120 when `method_name` — a 32-byte
+`StaticString`, 48 bytes once laid out — became a 4-byte `method_id`). The
+`trace_id` / `parent_span_id` / `span_id` / `flags` / `traceparent_version`
+fields are the W3C `traceparent` contents, so an exporter can be wired without
+another wire field.
 
 `Error` labels a **business** error, whose payload is the service's
 `WireEvent<T, E>`; `RpcError` labels a **transport-level** rejection — unknown
@@ -478,12 +486,11 @@ payload, alignment-safe decoding.** The same care applies to the observer: the
 payload, while the `detail` mode pays one decode per sample by design
 ([§13](#13-out-of-band-monitoring)).
 
-The name-length limits are shared with `ice-rpc-macros`, which rejects longer names
-at compile time: `SERVICE_NAME_LEN` = 64, the limit of the `group` parameter of
-`#[service]`, and `METHOD_NAME_LEN` = 32, the capacity of the header's
-`StaticString`. The method name is the largest field of a header capped by
-iceoryx2's `user_header`, and the 32 bytes it gives back fund the trace context —
-32 characters is ample for a method name.
+The service-name limit is shared with `ice-rpc-macros`, which rejects a longer
+name at compile time: `SERVICE_NAME_LEN` = 64, the limit of the `group` parameter
+of `#[service]`. Method names have **no** limit: the header carries a 4-byte
+`method_id` rather than the name, which is why the header shrank to 80 bytes and
+has room for the W3C `span_id` and `traceparent_version` fields.
 
 ### 5.1. Stale iceoryx2 services
 

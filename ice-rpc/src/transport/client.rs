@@ -1,6 +1,6 @@
 //! Consumer side: request publication and response routing.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,9 +21,9 @@ use super::{
 use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
-    fmt_correlation_id, normalize_wire_event, unbounded_channel, CallContext, Event, EventKind,
-    Observable, ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext, WireEvent,
-    CORRELATION_ID_LEN,
+    fmt_correlation_id, next_span_id, normalize_wire_event, unbounded_channel, CallContext, Event,
+    EventKind, MethodId, Observable, ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext,
+    WireEvent, CORRELATION_ID_LEN,
 };
 
 /// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.
@@ -268,12 +268,14 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
     crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
 }
 
-/// Sends `payload` as the `method` call of `service` on `channel`, and returns
-/// the streamed responses as an [`Observable`].
+/// Sends `payload` as the call of `method_id` on `service`, and returns the
+/// streamed responses as an [`Observable`].
 ///
 /// `service` carries both the id and the interface version, so the version
 /// cannot be dropped between the caller and the frame: it reaches
 /// [`RpcHeader::request`] from the same value the provider registered.
+/// `method_id` is [`crate::types::method_id_of`] of the method name, computed by
+/// the generated caller as a constant.
 ///
 /// Dropping the returned stream while the call is in flight **cancels the call
 /// remotely**: the provider abandons it, so the work it was doing for a caller
@@ -281,7 +283,7 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
 pub fn native_call<T, E>(
     channel: &str,
     service: ServiceRef,
-    method: &str,
+    method_id: impl MethodId,
     payload: &[u8],
 ) -> Result<Observable<T, E>, RpcError>
 where
@@ -303,10 +305,13 @@ where
     // never held across an await, which is what makes it safe here.
     let trace = match CallContext::current() {
         Some(ctx) => ctx.child_trace(),
-        None => TraceContext::new_root(),
+        // A call emitted outside any trace is a **root**: it still names its own
+        // span as the W3C `parent-id`, never zero.
+        None => TraceContext::new_root().continued_or_root(next_span_id()),
     };
-    let header = RpcHeader::request(method, service.id, service.version)
+    let header = RpcHeader::request(method_id, service.id, service.version)
         .with_trace(trace)
+        .with_span_id(trace.parent_span_id)
         .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
     let cid = header.correlation_id;
     let (tx, rx) = unbounded_channel::<T, E>();
@@ -402,9 +407,19 @@ thread_local! {
     /// locked scratch measured 20 to 45 times slower than a local one in
     /// `benches/concurrency.rs` — the same reason the response path keeps its
     /// buffer local to one stream.
-    static REQUEST_SCRATCH: RefCell<AlignedVec<{ PAYLOAD_ALIGNMENT }>> = RefCell::new(
+    ///
+    /// A `Cell<Option<..>>` rather than a `RefCell`: the buffer is **taken** for
+    /// the whole duration of a call, so a re-entrant call — a `Serialize`
+    /// implementation that calls back into the framework — simply finds `None`
+    /// and allocates its own. There is no borrow to violate, hence no runtime
+    /// panic path.
+    ///
+    /// The buffer is pre-seeded so the first call allocates nothing, and the
+    /// initializer stays non-`const` on purpose: a `const` thread-local would not
+    /// run the `AlignedVec` destructor, leaking the buffer at thread exit.
+    static REQUEST_SCRATCH: Cell<Option<AlignedVec<{ PAYLOAD_ALIGNMENT }>>> = Cell::new(Some(
         AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY),
-    );
+    ));
 }
 
 /// Serializes `request` into the thread's buffer and publishes it as a call.
@@ -419,7 +434,7 @@ thread_local! {
 pub fn serialize_and_call<T, E, V>(
     channel: &str,
     service: ServiceRef,
-    method: &str,
+    method_id: impl MethodId,
     request: &V,
 ) -> Result<Observable<T, E>, RpcError>
 where
@@ -444,16 +459,11 @@ where
     >,
 {
     REQUEST_SCRATCH.with(|cell| {
-        // A re-entrant call — a `Serialize` implementation that calls back into
-        // the framework — finds the buffer taken and allocates its own, rather
-        // than panicking on a borrowed cell.
-        let mut buffer = match cell.try_borrow_mut() {
-            Ok(mut guard) => std::mem::replace(
-                &mut *guard,
-                AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(0),
-            ),
-            Err(_) => AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY),
-        };
+        // The buffer is taken for the whole call: a re-entrant serialization
+        // finds the slot empty and gets its own allocation rather than a panic.
+        let mut buffer = cell.take().unwrap_or_else(|| {
+            AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY)
+        });
         buffer.clear();
 
         let encoded: Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error> =
@@ -466,12 +476,10 @@ where
             }
         };
 
-        let call = native_call::<T, E>(channel, service, method, &bytes);
+        let call = native_call::<T, E>(channel, service, method_id, &bytes);
 
         // The allocation goes back to the thread whether the call started or not.
-        if let Ok(mut guard) = cell.try_borrow_mut() {
-            *guard = bytes;
-        }
+        cell.set(Some(bytes));
         call
     })
 }

@@ -16,7 +16,7 @@ use proc_macro2::{Ident, Span};
 use syn::{ItemTrait, LitInt, LitStr, TraitItem, Type, Visibility};
 
 use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name};
-use crate::{METHOD_NAME_LEN, SERVICE_NAME_LEN};
+use crate::SERVICE_NAME_LEN;
 
 /// Optional parameters of the `#[service]` macro.
 ///
@@ -298,18 +298,8 @@ impl ServiceModel {
     /// Reads one method: name, arguments and return types.
     fn read_method(method: &syn::TraitItemFn) -> syn::Result<RpcMethod> {
         let fn_name = method.sig.ident.clone();
+        // No length limit: the wire carries the method id, not the name.
         let fn_name_str = fn_name.to_string();
-
-        if fn_name_str.len() > METHOD_NAME_LEN {
-            return Err(syn::Error::new(
-                fn_name.span(),
-                format!(
-                    "Method name '{fn_name_str}' too long ({} > {METHOD_NAME_LEN} characters). \
-                     Rename the method so that it is at most {METHOD_NAME_LEN} characters long.",
-                    fn_name_str.len(),
-                ),
-            ));
-        }
 
         let mut arg_names = Vec::new();
         let mut arg_types = Vec::new();

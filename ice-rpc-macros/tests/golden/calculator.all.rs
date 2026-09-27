@@ -37,7 +37,12 @@ impl CalculatorClient {
             i32,
             String,
             _,
-        >("calculator", <CalculatorProxy>::SERVICE, "add", &req_val)
+        >(
+                "calculator",
+                <CalculatorProxy>::SERVICE,
+                ice_rpc::gen::method_id_of("add"),
+                &req_val,
+            )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
@@ -77,7 +82,7 @@ impl CalculatorServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    "add",
+                    ice_rpc::gen::method_id_of("add"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
                         payload: Vec<u8>,
@@ -254,7 +259,7 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                 {
                     dispatcher
                         .method(
-                            "add",
+                            ice_rpc::gen::method_id_of("add"),
                             move |
                                 header: ice_rpc::gen::RpcHeader,
                                 payload: Vec<u8>,
@@ -630,6 +635,12 @@ impl ice_rpc::monitor::ServiceDecoder for CalculatorDecoder {
             }
             _ => ::std::option::Option::None,
         }
+    }
+    fn method_name(&self, method_id: u32) -> ::std::option::Option<&'static str> {
+        if method_id == ice_rpc::gen::method_id_of("add") {
+            return ::std::option::Option::Some("add");
+        }
+        ::std::option::Option::None
     }
 }
 #[allow(missing_docs)]

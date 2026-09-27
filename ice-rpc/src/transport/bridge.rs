@@ -8,7 +8,9 @@ use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
 use super::{PAYLOAD_ALIGNMENT, REQUEST_SCRATCH_CAPACITY};
-use crate::types::{Event, EventKind, Observable, RpcError, RpcHeader, ServiceRef, WireEvent};
+use crate::types::{
+    Event, EventKind, MethodId, Observable, RpcError, RpcHeader, ServiceRef, WireEvent,
+};
 
 /// Sink of the encoded responses of one RPC method.
 ///
@@ -239,7 +241,8 @@ pub type BoxResponseFuture = crate::types::BoxResponseFuture;
 pub struct ServiceDispatcher {
     /// Identity (id + interface version) of the service contract.
     service: ServiceRef,
-    handlers: HashMap<&'static str, MethodHandler>,
+    /// Handlers keyed by [`crate::types::method_id_of`] of the method name.
+    handlers: HashMap<u32, MethodHandler>,
 }
 
 impl ServiceDispatcher {
@@ -256,12 +259,12 @@ impl ServiceDispatcher {
         self.service
     }
 
-    /// Registers the handler of one RPC method.
-    pub fn method<F>(&mut self, name: &'static str, handler: F) -> &mut Self
+    /// Registers the handler of one RPC method, keyed by its id.
+    pub fn method<F>(&mut self, method_id: impl MethodId, handler: F) -> &mut Self
     where
         F: Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync + 'static,
     {
-        self.handlers.insert(name, Box::new(handler));
+        self.handlers.insert(method_id.method_id(), Box::new(handler));
         self
     }
 
@@ -278,13 +281,13 @@ impl ServiceDispatcher {
     /// yields, so one slow call cannot hold back the next ones.
     pub fn dispatch(
         &self,
-        method: &str,
+        method_id: u32,
         header: RpcHeader,
         payload: Vec<u8>,
         emitter: OwnedEmitter,
     ) -> Option<BoxResponseFuture> {
         self.handlers
-            .get(method)
+            .get(&method_id)
             .map(|handler| handler(header, payload, emitter))
     }
 }

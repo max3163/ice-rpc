@@ -166,6 +166,17 @@ pub trait ServiceDecoder: Send + Sync {
 
     /// Renders a response payload, given the method of the matched request.
     fn response(&self, method: &str, payload: &[u8]) -> Option<String>;
+
+    /// Resolves the human-readable name of `method_id`, when this decoder knows
+    /// it.
+    ///
+    /// The wire carries only [`method_id_of`](crate::types::method_id_of): an
+    /// observer that did not link the service definitions cannot name a method,
+    /// exactly as it cannot name a service. The default returns `None`, so the
+    /// observer falls back to the hexadecimal id.
+    fn method_name(&self, _method_id: u32) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Boxed renderer used by [`ClosureDecoder`].
@@ -175,6 +186,8 @@ type Render = Box<dyn Fn(&str, &[u8]) -> Option<String> + Send + Sync>;
 pub struct ClosureDecoder {
     request: Render,
     response: Render,
+    /// Method names this decoder can resolve from their wire id.
+    names: Vec<(u32, &'static str)>,
 }
 
 impl ClosureDecoder {
@@ -186,7 +199,18 @@ impl ClosureDecoder {
         Self {
             request: Box::new(request),
             response: Box::new(response),
+            names: Vec::new(),
         }
+    }
+
+    /// Declares one method name this decoder can resolve from its wire id.
+    ///
+    /// A hand-built observer must name the methods it wants rendered; the
+    /// generated decoders declare theirs automatically.
+    #[must_use]
+    pub fn with_method(mut self, name: &'static str) -> Self {
+        self.names.push((crate::types::method_id_of(name), name));
+        self
     }
 }
 
@@ -197,6 +221,13 @@ impl ServiceDecoder for ClosureDecoder {
 
     fn response(&self, method: &str, payload: &[u8]) -> Option<String> {
         (self.response)(method, payload)
+    }
+
+    fn method_name(&self, method_id: u32) -> Option<&'static str> {
+        self.names
+            .iter()
+            .find(|(id, _)| *id == method_id)
+            .map(|(_, name)| *name)
     }
 }
 
@@ -263,6 +294,15 @@ impl Decoders {
     /// Renders a response payload; `None` without a decoder or on a decode failure.
     pub fn response(&self, service_id: u32, method: &str, payload: &[u8]) -> Option<String> {
         self.services.get(&service_id)?.response(method, payload)
+    }
+
+    /// Resolves the human-readable name of a method from its wire id.
+    ///
+    /// `None` without a decoder for the service, or when the decoder was not
+    /// told that method's name: the observer then falls back to the hexadecimal
+    /// id, exactly as it does for an unlinked service.
+    pub fn method_name(&self, service_id: u32, method_id: u32) -> Option<&'static str> {
+        self.services.get(&service_id)?.method_name(method_id)
     }
 }
 

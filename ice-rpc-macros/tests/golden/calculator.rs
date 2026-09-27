@@ -37,7 +37,12 @@ impl CalculatorClient {
             i32,
             String,
             _,
-        >("calculator", <CalculatorProxy>::SERVICE, "add", &req_val)
+        >(
+                "calculator",
+                <CalculatorProxy>::SERVICE,
+                ice_rpc::gen::method_id_of("add"),
+                &req_val,
+            )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
@@ -77,7 +82,7 @@ impl CalculatorServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    "add",
+                    ice_rpc::gen::method_id_of("add"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
                         payload: Vec<u8>,

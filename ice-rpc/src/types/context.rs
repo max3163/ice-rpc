@@ -34,7 +34,7 @@
 //! names that call. The implementation reads it to stay interruptible — the
 //! provider drops the handler's future as soon as the token is cancelled.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -57,10 +57,12 @@ thread_local! {
     /// Cancellation token of the call being **polled** on this thread, if any.
     ///
     /// Same discipline as [`CURRENT`], for the same reason: installed around one
-    /// poll, restored — not cleared — on the way out. A `RefCell` rather than a
-    /// `Cell`, because a [`CancellationToken`] is not `Copy` and reading the slot
-    /// must not consume it.
-    static CURRENT_CANCEL: RefCell<Option<CancellationToken>> = const { RefCell::new(None) };
+    /// poll, restored — not cleared — on the way out. A `Cell` rather than a
+    /// `RefCell`: a [`CancellationToken`] is not `Copy`, so the read takes the
+    /// value out and puts it back (see [`CallContext::cancellation`]). There is
+    /// then no borrow to violate, hence no runtime panic path — the failure mode
+    /// a `RefCell` would reintroduce.
+    static CURRENT_CANCEL: Cell<Option<CancellationToken>> = const { Cell::new(None) };
 }
 
 /// Trace ids of one call.
@@ -127,13 +129,30 @@ impl TraceContext {
     ///
     /// This is the rule a hop applies: a call emitted while serving a traced
     /// call stays in that trace, a call emitted outside one becomes a root.
+    ///
+    /// `span_id` is the **emitter's own** span, which becomes the outgoing W3C
+    /// `parent-id`. It is set in both branches: a root has no incoming parent,
+    /// but the call it emits still names the span that emitted it — a
+    /// `traceparent` with an all-zero `parent-id` is invalid.
     #[inline]
     pub fn continued_or_root(&self, span_id: u64) -> Self {
         if self.is_present() {
             self.child_of(span_id)
         } else {
-            Self::new_root()
+            Self {
+                trace_id: next_correlation_id(),
+                parent_span_id: span_id,
+                flags: self.flags,
+            }
         }
+    }
+
+    /// Renders the W3C `traceparent` of a call emitted by the span `span_id`.
+    ///
+    /// `00-<trace-id 32hex>-<span-id 16hex>-<trace-flags 2hex>`; the version is
+    /// always `00`, the only one this build emits.
+    pub fn traceparent(&self, span_id: u64) -> String {
+        format!("00-{}-{:016x}-{:02x}", self.trace_id_hex(), span_id, self.flags)
     }
 }
 
@@ -149,16 +168,23 @@ fn hex_trace_id(bytes: &[u8; 16]) -> String {
     out
 }
 
-/// Derives the span id of one hop from the call id.
+/// Allocates a non-zero span id, unique per span and per process.
 ///
-/// Unique per call and stable for its whole duration, so a downstream call can
-/// parent on it. No randomness, no extra wire field: the correlation id already
-/// carries a process-unique `pid ++ counter`.
+/// W3C requires a span id unique within its trace and never zero. The process id
+/// and a per-process counter are mixed with the SplitMix64 finalizer — no random
+/// generator, and a value the generator would not produce for another process.
+/// The final `| 1` guarantees the "not all zero" rule.
 #[inline]
-fn span_id_of(correlation_id: &[u8; CORRELATION_ID_LEN]) -> u64 {
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&correlation_id[..8]);
-    u64::from_be_bytes(bytes)
+pub fn next_span_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let pid = std::process::id() as u64;
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let mut z = (pid << 32) ^ counter;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)) | 1
 }
 
 /// Builds the `rpc` span of a call, optionally carrying a `kind` field.
@@ -178,6 +204,7 @@ macro_rules! rpc_span {
             method = $ctx.method,
             corr = ?span_fields::Correlation(&$ctx.correlation_id),
             trace = ?span_fields::TraceId(&$ctx.trace.trace_id),
+            traceparent = ?span_fields::TraceParent(&$ctx.trace, $ctx.span_id),
             parent = $ctx.trace.parent_span_id,
             span = $ctx.span_id,
             sampled = $ctx.trace.is_sampled(),
@@ -228,7 +255,10 @@ impl CallContext {
             method,
             received_at_ns: header.timestamp_ns,
             trace: header.trace(),
-            span_id: span_id_of(&header.correlation_id),
+            // The receiver mints its **own** span: deriving it from the caller's
+            // correlation id would make it identical to the caller's span, which
+            // W3C forbids.
+            span_id: next_span_id(),
         }
     }
 
@@ -261,7 +291,7 @@ impl CallContext {
             method,
             received_at_ns: 0,
             trace,
-            span_id: span_id_of(&correlation_id),
+            span_id: next_span_id(),
         }
     }
 
@@ -367,7 +397,15 @@ impl CallContext {
     /// [`CallContext::current`].
     #[inline]
     pub fn cancellation() -> Option<CancellationToken> {
-        CURRENT_CANCEL.with(|slot| slot.borrow().clone())
+        CURRENT_CANCEL.with(|slot| {
+            // `Cell` exposes no shared borrow: take the value out, clone it, put
+            // it back. No other code runs in between, so the slot is never
+            // observed empty — and there is no borrow to violate, hence no panic.
+            let current = slot.take();
+            let cloned = current.clone();
+            slot.set(current);
+            cloned
+        })
     }
 
     /// Installs this context as the thread-local ambient one, and nothing else.
@@ -575,6 +613,15 @@ mod span_fields {
             f.write_str(&super::hex_trace_id(self.0))
         }
     }
+
+    /// The W3C `traceparent` of a call, rendered lazily.
+    pub(super) struct TraceParent<'a>(pub(super) &'a super::TraceContext, pub(super) u64);
+
+    impl fmt::Debug for TraceParent<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.0.traceparent(self.1))
+        }
+    }
 }
 
 /// Installs `token` as the cancellation token of the call being polled on this
@@ -602,7 +649,7 @@ pub(crate) struct AmbientCancelScope {
 
 impl Drop for AmbientCancelScope {
     fn drop(&mut self) {
-        CURRENT_CANCEL.with(|slot| *slot.borrow_mut() = self.previous.take());
+        CURRENT_CANCEL.with(|slot| slot.set(self.previous.take()));
     }
 }
 
@@ -698,12 +745,58 @@ mod tests {
 
         let out = ctx.child_trace();
         assert!(out.is_present(), "a fresh trace is started");
-        assert_eq!(out.parent_span_id, 0, "a root has no parent");
+        assert_eq!(
+            out.parent_span_id,
+            ctx.span_id(),
+            "a root names its own span as the W3C parent, never zero"
+        );
+        assert_ne!(out.parent_span_id, 0, "a traceparent parent-id is never zero");
         assert_ne!(
             out.trace_id,
             ctx.trace().trace_id,
             "the fresh id replaces the absent one rather than reusing it"
         );
+    }
+
+    /// W3C: two spans never share an id, the id is never zero, and the receiver
+    /// mints its own span rather than reusing the caller's.
+    #[test]
+    fn span_ids_are_unique_and_non_zero() {
+        let a = CallContext::new(&RpcHeader::request("a", 1, 1), "A", "a");
+        let b = CallContext::new(&RpcHeader::request("b", 1, 1), "B", "b");
+        assert_ne!(a.span_id(), b.span_id(), "one span id per span");
+        assert_ne!(a.span_id(), 0);
+        assert_ne!(b.span_id(), 0);
+
+        // The caller's span travels as the W3C `parent-id` (the trace context),
+        // while `span_id` on the header is the emitter's own span.
+        let caller_span = a.span_id();
+        let header = RpcHeader::request("c", 1, 1)
+            .with_trace(TraceContext {
+                trace_id: [1u8; 16],
+                parent_span_id: caller_span,
+                flags: 0,
+            })
+            .with_span_id(caller_span);
+        let c = CallContext::new(&header, "C", "c");
+        assert_ne!(c.span_id(), caller_span, "the receiver mints its own span");
+        assert_eq!(c.trace().parent_span_id, caller_span, "parented on the caller");
+    }
+
+    /// The rendered `traceparent` matches the W3C grammar.
+    #[test]
+    fn the_traceparent_is_well_formed() {
+        let trace = TraceContext {
+            trace_id: [0xab; 16],
+            parent_span_id: 0,
+            flags: 1,
+        };
+        let rendered = trace.traceparent(0x0123_4567_89ab_cdef);
+        assert_eq!(
+            rendered,
+            "00-abababababababababababababababab-0123456789abcdef-01"
+        );
+        assert_eq!(rendered.len(), 55, "version + ids + flags");
     }
 
     /// Same contract as the context slot, for the token: ambient for one scope,

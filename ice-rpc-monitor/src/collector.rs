@@ -454,8 +454,18 @@ impl Monitor {
             return;
         }
 
-        let method = header.method();
-        self.metrics.on_request(channel, header.service_id, method);
+        // The wire carries only the method id: resolve it to the name the
+        // observer was told about, or fall back to the hexadecimal id — the
+        // same discipline as an unlinked service.
+        let method = match self
+            .config
+            .decoders
+            .method_name(header.service_id, header.method_id())
+        {
+            Some(name) => name.to_owned(),
+            None => format!("{:#010x}", header.method_id()),
+        };
+        self.metrics.on_request(channel, header.service_id, &method);
         self.metrics.on_inflight(channel, header.service_id, 1);
 
         // Decode the request with the registry this observer was built with.
@@ -463,7 +473,7 @@ impl Monitor {
             Sample::Full { payload } => Some(
                 self.config
                     .decoders
-                    .request(header.service_id, method, payload)
+                    .request(header.service_id, &method, payload)
                     .unwrap_or_else(|| undecoded(payload.len())),
             ),
             Sample::Meta { .. } => None,
@@ -472,7 +482,7 @@ impl Monitor {
         let call = PendingCall::new(
             channel.to_owned(),
             header.service_id,
-            method.to_owned(),
+            method,
             header.timestamp_ns,
             sample.payload_len(),
             request_text,
@@ -811,9 +821,11 @@ mod tests {
             text.contains("ice_rpc_inflight{channel=\"TestChannel\",service=\"7\"} 0"),
             "the terminal sample must close the call:\n{text}"
         );
+        // The wire carries only the method id and this observer was given no
+        // decoder to name it, so the label falls back to the hexadecimal id.
         assert!(
             text.contains(
-                "ice_rpc_latency_seconds_count{channel=\"TestChannel\",service=\"7\",method=\"\"} 1"
+                "ice_rpc_latency_seconds_count{channel=\"TestChannel\",service=\"7\",method=\"0x00000000\"} 1"
             ),
             "the first response must yield exactly one latency:\n{text}"
         );

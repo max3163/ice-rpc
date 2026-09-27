@@ -88,9 +88,9 @@ fn the_handler_receives_the_request_header() {
         seen.trace.is_present(),
         "the client injects a trace even when the caller has none"
     );
-    assert_eq!(
+    assert_ne!(
         seen.trace.parent_span_id, 0,
-        "a call emitted outside any trace starts one: it has no parent"
+        "a call emitted outside any trace names its own span as the W3C parent"
     );
 
     stop.cancel();

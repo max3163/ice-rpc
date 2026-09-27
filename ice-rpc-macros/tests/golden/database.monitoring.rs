@@ -39,7 +39,7 @@ impl DatabaseApiClient {
             String,
             String,
             _,
-        >("db", <DatabaseApiProxy>::SERVICE, "get", &req_val)
+        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("get"), &req_val)
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
     pub async fn put(
@@ -55,7 +55,7 @@ impl DatabaseApiClient {
             (),
             String,
             _,
-        >("db", <DatabaseApiProxy>::SERVICE, "put", &req_val)
+        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("put"), &req_val)
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
@@ -95,7 +95,7 @@ impl DatabaseApiServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    "get",
+                    ice_rpc::gen::method_id_of("get"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
                         payload: Vec<u8>,
@@ -149,7 +149,7 @@ impl DatabaseApiServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    "put",
+                    ice_rpc::gen::method_id_of("put"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
                         payload: Vec<u8>,
@@ -442,6 +442,15 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
             }
             _ => ::std::option::Option::None,
         }
+    }
+    fn method_name(&self, method_id: u32) -> ::std::option::Option<&'static str> {
+        if method_id == ice_rpc::gen::method_id_of("get") {
+            return ::std::option::Option::Some("get");
+        }
+        if method_id == ice_rpc::gen::method_id_of("put") {
+            return ::std::option::Option::Some("put");
+        }
+        ::std::option::Option::None
     }
 }
 #[allow(missing_docs)]

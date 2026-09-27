@@ -13,7 +13,7 @@ library, and settings the deployment provides:
 
 | Recorded setting | Changed by | Family |
 |---|---|---|
-| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 120 bytes today) | compiled in |
+| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 80 bytes today) | compiled in |
 | payload alignment | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs) | compiled in |
 | payload type | the `Payload` generic of the service definition | compiled in |
 | safe overflow | the `enable_safe_overflow(false)` of the request and response services | compiled in |
@@ -113,10 +113,10 @@ doing the very operation it is meant to protect against.
 | 5 | `Cancel` | consumer → provider | no |
 
 It is a new **value** of an existing field, not a new field: `RpcHeader` keeps its
-layout, its size (120 bytes, pinned by a unit test), its offsets, the payload
-alignment and every buffer size. Nothing of what iceoryx2 records when a service
-is created changes, so **no purge is needed** and two builds of this table can
-share a channel:
+layout, its size (pinned by a unit test), its offsets, the payload alignment and
+every buffer size. Nothing of what iceoryx2 records when a service is created
+changes, so **no purge is needed** and two builds of this table can share a
+channel:
 
 - a **new** consumer talking to an **older** provider: the provider reads the
   unknown value through `EventKind::from_u8`, which is deliberately fail-closed —
@@ -176,24 +176,39 @@ only leftover state calls for the purge.
 ## The call context and its trace ids
 
 `RpcHeader` carries the call context an implementation reads through
-`CallContext`: the correlation id, the service and the method the call was routed
-to, and the **trace context** — `trace_id: [u8; 16]`, `parent_span_id: u64` and
-W3C `flags`.
+`CallContext`: the correlation id, the **ids** of the service and the method the
+call was routed to, and the **W3C trace context**.
 
-The trace ids are the framework's own. A call made outside any traced work mints
-one (`pid ++ counter`, unique on the machine), and every hop continues it by
-parenting on the span id of the hop that emitted the call. No OpenTelemetry stack
-is needed to obtain them, and `trace_id` is already in the W3C shape, so an
-exporter can be wired downstream later.
+The header is a literal `traceparent` prefix:
+
+| Header field | W3C `traceparent` |
+|---|---|
+| `trace_id [u8; 16]` | `trace-id` |
+| `parent_span_id u64` | `parent-id` (the caller's span) |
+| `span_id u64` | the emitter's own span, unique per span |
+| `flags u8` | `trace-flags` (bit 0: sampled) |
+| `traceparent_version u8` | version byte (`00`) |
+
+`TraceContext::traceparent(span_id)` renders the exact
+`00-<trace-id>-<span-id>-<flags>` string for an exporter. A call made outside any
+traced work mints a fresh trace **and** a non-zero parent named after its own
+span; every hop continues the trace and parents on the span id of the hop that
+emitted the call. No OpenTelemetry stack is needed, and the ids are already in the
+W3C shape.
+
+The service and the method are identified by their **4-byte hash**
+(`service_id_of` / `method_id_of`) rather than their names: the name is
+compile-time knowledge of the generated code (logs, spans, the observer's
+registry) and is never a wire field. An observer that did not link the service
+definitions renders the hexadecimal id instead, exactly as it does for an
+unlinked service.
 
 Three consequences worth keeping in mind:
 
-- adding fields to `RpcHeader` changes its **size**, and that size is part of what
+- the header is **80 bytes** today.
+- adding or moving fields changes its **size**, and that size is part of what
   iceoryx2 validates when a service is opened: every process on the machine must
   be rebuilt together, exactly like the other compiled-in settings above;
-- the header is capped by iceoryx2's `user_header`, so the room for the trace
-  context was found by reducing `METHOD_NAME_LEN` from 64 to 32 — the header did
-  not grow, it shrank (128 → 120 bytes);
 - a trace id is **per call**. It belongs in the trace records, never in a
   Prometheus label, where one series per call would explode the cardinality.
 

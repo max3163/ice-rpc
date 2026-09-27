@@ -14,10 +14,11 @@ mod model;
 #[cfg(test)]
 mod golden_tests;
 
-// Private: the public versions live in `ice-rpc` (`types/consts.rs`). The values
-// MUST stay identical, the maximum name lengths the wire framing accepts.
+// Private: the public version lives in `ice-rpc` (`types/consts.rs`). The value
+// MUST stay identical. It caps the service or channel name, which becomes the
+// iceoryx2 service name (`{channel}{suffix}`, capped at 255 bytes by iceoryx2).
+// Method names have no limit: the wire carries the method id, not the name.
 pub(crate) const SERVICE_NAME_LEN: usize = 64;
-pub(crate) const METHOD_NAME_LEN: usize = 32;
 
 use proc_macro::TokenStream;
 use quote::quote;

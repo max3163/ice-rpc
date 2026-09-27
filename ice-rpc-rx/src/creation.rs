@@ -45,9 +45,9 @@ pub fn of<T, E>(value: T) -> Observable<T, E> {
 /// Creates an observable that only emits a business error.
 ///
 /// Equivalent to RxJS `throwError`: the stream terminates on
-/// [`Event::Error`] with the business variant of
-/// [`ObservableError`](crate::ObservableError). This is the counterpart of
-/// [`of`] for single-response services that must fail on the business channel.
+/// [`Event::Error`] with the business variant of [`ObservableError`]. It is the
+/// counterpart of [`of`] for single-response services that must fail on the
+/// business channel.
 ///
 /// # Example
 /// ```rust,ignore

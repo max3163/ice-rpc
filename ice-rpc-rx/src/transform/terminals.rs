@@ -46,8 +46,7 @@ impl<T, E> Observable<T, E> {
     /// [`subscribe_all`](Self::subscribe_all) to observe them. This is the only
     /// operator that spawns, so it needs the execution facade.
     ///
-    /// Dropping the returned [`Subscription`](crate::Subscription) cancels the
-    /// task silently, as does
+    /// Dropping the returned [`Subscription`] cancels the task silently, as does
     /// [`unsubscribe`](crate::Subscription::unsubscribe). Await
     /// [`Subscription::closed`](crate::Subscription::closed) to know when the
     /// stream ended on its own.
@@ -74,7 +73,7 @@ impl<T, E> Observable<T, E> {
     ///
     /// The counterpart of `subscribe({ next, error, complete })` in RxJS: exactly
     /// one of `on_error` / `on_complete` runs, and neither runs when the
-    /// [`Subscription`](crate::Subscription) is dropped or
+    /// [`Subscription`] is dropped or
     /// [`unsubscribe`](crate::Subscription::unsubscribe)d — a cancellation is
     /// silent by design, which is what makes a dropped handle a clean "stop
     /// listening". Needs the execution facade (it spawns one task).

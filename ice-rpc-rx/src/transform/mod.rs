@@ -53,7 +53,7 @@
 //! | Conditional / Boolean | [`take_until`](crate::Observable::take_until) |
 //! | Error handling | [`catch_error`](crate::Observable::catch_error) |
 //! | Utility | [`tap`](crate::Observable::tap), [`finalize`](crate::Observable::finalize), [`delay`](crate::Observable::delay), [`timeout`](crate::Observable::timeout) |
-//! | Terminals (they end the chain) | [`collect`](crate::Observable::collect), [`first_value`](crate::Observable::first_value), [`for_each`](crate::Observable::for_each), [`subscribe`](crate::Observable::subscribe), [`subscribe_all`](crate::Observable::subscribe_all), [`next`](crate::Observable::next), [`recv`](crate::Observable::recv) |
+//! | Terminals (they end the chain) | [`collect`](crate::Observable::collect), [`first_value`](crate::Observable::first_value), [`last_value`](crate::Observable::last_value), [`for_each`](crate::Observable::for_each), [`subscribe`](crate::Observable::subscribe), [`subscribe_all`](crate::Observable::subscribe_all), [`next`](crate::Observable::next), [`recv`](crate::Observable::recv) |
 //!
 //! # Layout
 //!

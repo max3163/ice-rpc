@@ -1,4 +1,4 @@
-//! Matrice de conformité des opérateurs : la spécification exécutable de L5.
+//! Matrice de conformité des opérateurs : leur spécification exécutable.
 //!
 //! Chaque opérateur est confronté aux **mêmes huit cas canoniques**, et la
 //! sortie est comparée événement par événement, **terminaux inclus**. C'est ce
@@ -8,13 +8,14 @@
 //! traverse, celui qu'il rattrape, celui qu'il synthétise, et ce qu'il répond à
 //! un poll suivant.
 //!
-//! # Pourquoi elle a été écrite avant la réécriture
+//! # Pourquoi elle existe
 //!
-//! Les douze opérateurs couverts par [`event_stream!`](super::event_stream)
-//! passent d'un `poll_next` écrit à la main à quatre hooks. La matrice a été
-//! écrite **sur le code d'origine**, puis doit rester verte sans modification :
-//! c'est ce qui autorise à dire que la factorisation n'a pas changé la
-//! sémantique, plutôt que de l'espérer.
+//! Chaque opérateur traite les terminaux à sa manière : il les laisse passer,
+//! en rattrape un, ou en synthétise un. Cette matrice fige cette répartition,
+//! opérateur par opérateur, sur les huit cas canoniques. C'est le filet de
+//! sécurité de toute réécriture : une factorisation, un remaniement de
+//! `poll_next` ou l'ajout d'un opérateur se valident ici, au lieu de supposer
+//! que la sémantique n'a pas bougé.
 //!
 //! # Les huit cas
 //!
@@ -32,7 +33,7 @@
 //! Le cas `empty_failure` mérite d'être signalé : `ObservableError::Empty` est
 //! l'artefact de lecture que seul `map_err` transpose, et il est le plus facile
 //! à oublier dans un `match` sur les variants d'erreur. Le cas `abrupt_close`
-//! exerce le chemin `on_none`, distinct du terminal.
+//! exerce la fermeture sans terminal, distincte du terminal lui-même.
 
 use std::future::poll_fn;
 
@@ -101,7 +102,7 @@ fn empty_failure() -> Vec<Event<i32, String>> {
     vec![empty()]
 }
 
-/// Une valeur, puis une fermeture **sans** terminal : le chemin `on_none`.
+/// Une valeur, puis une fermeture **sans** terminal.
 fn abrupt_close() -> Vec<Event<i32, String>> {
     vec![next(1)]
 }

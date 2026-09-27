@@ -369,9 +369,9 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
             }
         };
 
-        // Keep `terminated` in sync for callers that poll the stream directly
-        // (`as_stream` pipelines, `Subject` relays) before falling back to
-        // `recv` / `next`.
+        // Keep `terminated` in sync for the callers that poll the stream
+        // directly — an operator pipeline and the `Subject` relay both wrap it
+        // as a `futures_lite::Stream` — before they fall back to `recv`/`next`.
         if let Poll::Ready(Some(event)) = &polled {
             if event.is_terminal() {
                 *this.terminated = true;

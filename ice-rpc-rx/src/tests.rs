@@ -45,14 +45,10 @@ fn observable_error_display() {
 /// Garde-fou **délibéré** sur le vocabulaire d'erreur.
 ///
 /// Ce `match` n'a pas de wildcard : l'ajout d'un variant à `ObservableError`
-/// casse la compilation ici, à un endroit qui dit pourquoi il existe. Le code de
-/// production n'a plus qu'un seul endroit qui nomme les variants — le hook
-/// `on_terminal` de `MapErr`, le seul opérateur qui touche au canal d'erreur sans
-/// le terminer — et c'est ce test qui garantit qu'on ne l'oubliera pas deux fois.
-///
-/// Avant L5, c'était `MapErr` lui-même qui jouait ce rôle par accident : un
-/// variant ajouté cassait cet opérateur, et lui seul, sans que la règle soit
-/// écrite quelque part.
+/// casse la compilation ici, à un endroit qui dit pourquoi il existe. Le seul
+/// autre `match` qui nomme les variants est celui de `MapErr`, le seul opérateur
+/// qui touche au canal d'erreur sans le terminer ; c'est ce test qui garantit
+/// qu'on ne l'oubliera pas deux fois.
 #[test]
 fn the_error_vocabulary_is_closed() {
     fn kind<E>(error: &ObservableError<E>) -> &'static str {
@@ -269,7 +265,7 @@ fn of_returns_a_channel_free_observable() {
 #[test]
 fn a_pipeline_stays_one_observable_type() {
     // An operator returns the same `Observable` type as its source, so a
-    // pipeline can be returned by a service method as-is: no `into_observable`.
+    // pipeline can be returned by a service method as-is: no conversion step.
     let stream: crate::Observable<i32, Infallible> = from([1, 2, 3]).map(|v| v * 2);
 
     let events = pollster::block_on(drain(stream));

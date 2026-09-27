@@ -7,14 +7,22 @@
 //! The poll-based combinator and the `Observable` method that exposes it both
 //! live in this file.
 
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use crate::Event;
 use crate::Observable;
 use futures_lite::future::FutureExt;
-use std::time::Duration;
+
+/// How many events one `poll_next` of [`Delay`] reads ahead at most.
+///
+/// Without a bound, an always-ready source would spin in the drain loop without
+/// ever yielding to the timer, and the queue would grow while the stream never
+/// returns `Pending`.
+const DELAY_READ_AHEAD: usize = 64;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::tap`](crate::Observable::tap).
@@ -111,19 +119,27 @@ pin_project_lite::pin_project! {
     pub struct Delay<S, T, E> {
         #[pin]
         stream: S,
-        duration: std::time::Duration,
-        pending: Option<Event<T, E>>,
+        duration: Duration,
+        // Events read ahead, each with the instant it must be released. An
+        // event's deadline is *its own* arrival time plus the delay, so the
+        // source's spacing survives (RxJS `delay`).
+        queue: VecDeque<(Instant, Event<T, E>)>,
+        // Timer armed for the head of `queue`, when one is waiting.
         sleep: Option<futures_lite::future::Boxed<()>>,
+        // Set once the source has no more events: the end is forwarded after the
+        // queue drains.
+        source_finished: bool,
     }
 }
 
 impl<S, T, E> Delay<S, T, E> {
-    pub(super) fn new(stream: S, duration: std::time::Duration) -> Self {
+    pub(super) fn new(stream: S, duration: Duration) -> Self {
         Self {
             stream,
             duration,
-            pending: None,
+            queue: VecDeque::new(),
             sleep: None,
+            source_finished: false,
         }
     }
 }
@@ -136,31 +152,59 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
+        let mut read = 0usize;
         loop {
-            if this.pending.is_some() {
-                let ready = this
-                    .sleep
-                    .as_mut()
-                    .expect("sleep future present when an event is pending")
-                    .as_mut()
-                    .poll(cx);
-                match ready {
+            // Release the head as soon as its own deadline is reached.
+            if let Some((deadline, _)) = this.queue.front() {
+                let now = Instant::now();
+                if *deadline <= now {
+                    let (_, event) = this.queue.pop_front().expect("queue head");
+                    // The next head needs a timer of its own.
+                    *this.sleep = None;
+                    return Poll::Ready(Some(event));
+                }
+                if this.sleep.is_none() {
+                    *this.sleep = Some(crate::rt::sleep(*deadline - now).boxed());
+                }
+            } else {
+                *this.sleep = None;
+                if *this.source_finished {
+                    return Poll::Ready(None);
+                }
+            }
+
+            // Drain a bounded batch from the source: a burst stays a burst, it is
+            // merely shifted, so the source is never throttled. The queue is
+            // ordered, so a newly pushed event never precedes the head and the
+            // armed timer stays valid.
+            if !*this.source_finished && read < DELAY_READ_AHEAD {
+                match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                    Poll::Ready(Some(event)) => {
+                        this.queue
+                            .push_back((Instant::now() + *this.duration, event));
+                        read += 1;
+                        continue;
+                    }
+                    Poll::Ready(None) => {
+                        *this.source_finished = true;
+                        continue;
+                    }
+                    Poll::Pending => {}
+                }
+            }
+
+            // Nothing is due: wait for the head's deadline. A pending source has
+            // already registered its waker.
+            if let Some(sleep) = this.sleep.as_mut() {
+                match sleep.as_mut().poll(cx) {
                     Poll::Ready(()) => {
                         *this.sleep = None;
-                        let event = this.pending.take().expect("pending event");
-                        return Poll::Ready(Some(event));
+                        continue;
                     }
                     Poll::Pending => return Poll::Pending,
                 }
             }
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
-                Poll::Ready(Some(event)) => {
-                    *this.pending = Some(event);
-                    *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());
-                }
-                Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Pending => return Poll::Pending,
-            }
+            return Poll::Pending;
         }
     }
 }
@@ -304,13 +348,19 @@ impl<T, E> Observable<T, E> {
         Observable::from_stream(Finalize::new(self, f))
     }
 
-    /// Delays every event — values **and** terminals — by `duration` (RxJS
-    /// `delay`).
+    /// Shifts **every** notification — values **and** terminals — by `duration`
+    /// (RxJS `delay`).
     ///
-    /// Events are held one at a time and released after the delay, so a burst is
-    /// spread out instead of being replayed at once: the source is read again
-    /// only once the previous event has been released. The first event starts the
-    /// timer.
+    /// Each event is scheduled from **its own arrival time**, so the source's
+    /// spacing survives: a burst comes out as a burst, `duration` later, and a
+    /// source that paces itself keeps its pace. The source is drained while
+    /// events wait, so it is never throttled — this is a **shift**, not a
+    /// pacer. To slow a burst down, `delay` is the wrong tool.
+    ///
+    /// The price is memory: events are held for `duration`, so a source faster
+    /// than that window grows the queue. That is the queue RxJS gets from its
+    /// scheduler — bounded read-ahead per poll keeps the executor responsive,
+    /// but not the backlog.
     ///
     /// Needs the execution facade: it sleeps through [`rt::sleep`](crate::rt::sleep),
     /// so one of the three execution modes must be enabled.

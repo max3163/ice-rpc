@@ -148,6 +148,61 @@ fn delay_forwards_terminal_events() {
     assert!(elapsed >= std::time::Duration::from_millis(15));
 }
 
+/// A burst must cost **one** delay, not one per event: the old implementation
+/// paced the queue instead of shifting it.
+#[test]
+fn delay_shifts_a_burst_instead_of_spreading_it() {
+    use std::time::{Duration, Instant};
+
+    let stream = crate::from::<i32, String, _>([1, 2, 3]).delay(Duration::from_millis(40));
+
+    let start = Instant::now();
+    let values = crate::rt::test_block_on(stream.collect()).expect("the stream completes cleanly");
+    let elapsed = start.elapsed();
+
+    assert_eq!(values, vec![1, 2, 3]);
+    assert!(
+        elapsed < Duration::from_millis(110),
+        "a burst of three must cost one delay, not three: {elapsed:?}"
+    );
+}
+
+/// The source's own spacing must survive: two arrivals 20 ms apart come out
+/// 20 ms apart, not `duration` apart. The old implementation stretched them to
+/// the delay, behaving as a pacer.
+#[test]
+fn delay_preserves_the_source_spacing() {
+    use std::time::{Duration, Instant};
+
+    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let mut stream = Box::pin(rx.delay(Duration::from_millis(100)));
+
+    // The second value arrives 20 ms after the first, well inside the delay
+    // window, so the shift and the pacing give different answers.
+    let producer = tx.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = pollster::block_on(producer.send_next(2));
+    });
+    pollster::block_on(tx.send_next(1)).unwrap();
+
+    let outcome = crate::rt::test_block_on(async {
+        let first = next_event(&mut stream).await;
+        let start = Instant::now();
+        let second = next_event(&mut stream).await;
+        (first, second, start.elapsed())
+    });
+
+    assert!(matches!(outcome.0, Some(Event::Next(1))));
+    assert!(matches!(outcome.1, Some(Event::Next(2))));
+    assert!(
+        outcome.2 < Duration::from_millis(60),
+        "the source's 20 ms spacing must survive the delay, got {:?}",
+        outcome.2
+    );
+    drop(tx);
+}
+
 #[test]
 fn timeout_emits_technical_error_on_silence() {
     let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);

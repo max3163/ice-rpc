@@ -98,12 +98,18 @@ pub(super) fn try_publish(
     header: RpcHeader,
     payload: &[u8],
 ) -> Result<bool, RpcError> {
-    // A zero-length payload still needs a sample, hence the `max(1)`.
-    let len = payload.len().max(1);
+    // A zero-length payload still needs a sample
+    const EMPTY: [u8; 1] = [0];
+    let payload = if payload.is_empty() {
+        &EMPTY[..]
+    } else {
+        payload
+    };
+
     let sample = publisher
-        .loan_slice_uninit(len)
+        .loan_slice_uninit(payload.len())
         .map_err(|e| transport_error("loan sample", e))?;
-    let mut sample = sample.write_from_fn(|i| payload.get(i).copied().unwrap_or(0));
+    let mut sample = sample.write_from_slice(payload);
     *sample.user_header_mut() = header;
     let delivered = sample
         .send()

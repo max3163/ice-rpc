@@ -183,7 +183,7 @@ fn hex_trace_id(bytes: &[u8; 16]) -> String {
 pub fn next_span_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let pid = std::process::id() as u64;
+    let pid = u64::from(super::node::cached_pid());
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let mut z = (pid << 32) ^ counter;

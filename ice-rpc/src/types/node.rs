@@ -17,8 +17,26 @@ impl NodeId {
     /// Creates a [`NodeId`] from the current process PID.
     #[inline]
     pub fn current() -> Self {
-        Self(std::process::id())
+        Self(cached_pid())
     }
+}
+
+/// The host process id, read **once**.
+///
+/// `std::process::id()` is a syscall, and two per-call paths need it: the
+/// correlation id a consumer mints ([`next_correlation_id`]) and the span id a
+/// provider mints ([`next_span_id`]). `perf` showed `__getpid` at ~0.5 % of the
+/// provider's self time before this cache. A process id cannot change after the
+/// process starts, so a `OnceLock` holds it for the life of the process.
+///
+/// [`next_correlation_id`]: super::header::next_correlation_id
+/// [`next_span_id`]: super::context::next_span_id
+#[inline]
+pub(crate) fn cached_pid() -> u32 {
+    use std::sync::OnceLock;
+
+    static PID: OnceLock<u32> = OnceLock::new();
+    *PID.get_or_init(std::process::id)
 }
 
 /// Converts an iceoryx2 raw process identifier to the unsigned value stored in

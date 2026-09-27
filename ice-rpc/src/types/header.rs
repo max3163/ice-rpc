@@ -427,7 +427,7 @@ impl ServiceRef {
 pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let pid = std::process::id() as u64;
+    let pid = u64::from(super::node::cached_pid());
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut out = [0u8; CORRELATION_ID_LEN];
     out[..8].copy_from_slice(&pid.to_be_bytes());

@@ -105,6 +105,62 @@ fn switch_map_switches_to_latest_inner_and_cancels_previous() {
     assert!(pollster::block_on(inner1_tx.send_next(10)).is_err());
 
     pollster::block_on(outer_tx.send_complete()).unwrap();
+
+    // RxJS: the outer's completion waits for the inner in flight, so the
+    // pipeline is not over while `inner2` is still open.
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        std::task::Poll::Pending
+    ));
+
+    let inner2_tx = senders.lock().unwrap()[1].clone();
+    pollster::block_on(inner2_tx.send_complete()).unwrap();
+    drop(inner2_tx);
+    drop(outer_tx);
+
+    assert!(matches!(
+        pollster::block_on(next_event(&mut stream)),
+        Some(Event::Complete)
+    ));
+}
+
+/// Regression for P0-2: the last inner must still deliver after the outer has
+/// completed — RxJS awaits it instead of dropping it.
+#[test]
+fn switch_map_waits_for_the_in_flight_inner_before_completing() {
+    use std::cell::RefCell;
+
+    let (outer_tx, outer_rx) = crate::channel::<i32, String>(8);
+    let (inner_tx, inner_rx) = crate::channel::<i32, String>(8);
+
+    let inner = RefCell::new(Some(inner_rx));
+    let mut stream = Box::pin(outer_rx.switch_map(move |_| {
+        inner
+            .borrow_mut()
+            .take()
+            .expect("the inner channel is subscribed once")
+    }));
+
+    pollster::block_on(outer_tx.send_next(1)).unwrap();
+    // The outer ends while the inner is still in flight.
+    pollster::block_on(outer_tx.send_complete()).unwrap();
+
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(matches!(
+        futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
+        std::task::Poll::Pending
+    ));
+
+    // The last inner still delivers: nothing is lost.
+    pollster::block_on(inner_tx.send_next(10)).unwrap();
+    assert!(matches!(
+        pollster::block_on(next_event(&mut stream)),
+        Some(Event::Next(v)) if v == 10
+    ));
+
+    pollster::block_on(inner_tx.send_complete()).unwrap();
+    drop(inner_tx);
     drop(outer_tx);
 
     assert!(matches!(

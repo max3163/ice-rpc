@@ -209,6 +209,31 @@ fn scan_conformance() {
     );
 }
 
+/// `switch_map` matches `map`'s row for a one-value projection: the canonical
+/// cases are inline, so no inner is ever in flight when the outer ends. The rule
+/// that matters there — the outer's completion waits for the last inner — is
+/// exercised on channels in `transforming::tests`.
+#[test]
+fn switch_map_conformance() {
+    assert_matrix(
+        "switch_map",
+        |stream| stream.switch_map(|v| crate::of::<i32, String>(v * 10)),
+        &[
+            (no_event(), vec![]),
+            (one_value(), vec![next(10), complete()]),
+            (completion_only(), vec![complete()]),
+            (business_failure(), vec![business("boom")]),
+            (technical_failure(), vec![technical()]),
+            (empty_failure(), vec![empty()]),
+            (abrupt_close(), vec![next(10)]),
+            (
+                three_values(),
+                vec![next(10), next(20), next(30), complete()],
+            ),
+        ],
+    );
+}
+
 #[test]
 fn tap_conformance() {
     assert_matrix(

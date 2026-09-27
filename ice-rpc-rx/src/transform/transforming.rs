@@ -153,6 +153,15 @@ where
     }
 }
 
+/// How the outer stream of a [`SwitchMap`] ended.
+#[derive(Clone, Copy)]
+enum OuterEnd {
+    /// The outer completed normally.
+    Completed,
+    /// The outer closed without a terminal event.
+    Closed,
+}
+
 pin_project_lite::pin_project! {
     /// See [`Observable::switch_map`](crate::Observable::switch_map).
     pub struct SwitchMap<S, F, T, U, E> {
@@ -161,7 +170,11 @@ pin_project_lite::pin_project! {
         f: F,
         #[pin]
         inner: Option<crate::Observable<U, E>>,
-        done: bool,
+        // Set once the outer ended: the in-flight inner is then drained before
+        // the pipeline terminates (RxJS semantics).
+        outer_end: Option<OuterEnd>,
+        // Set once our own terminal has been emitted.
+        finished: bool,
         _marker: PhantomData<T>,
     }
 }
@@ -172,7 +185,8 @@ impl<S, F, T, U, E> SwitchMap<S, F, T, U, E> {
             stream,
             f,
             inner: None,
-            done: false,
+            outer_end: None,
+            finished: false,
             _marker: PhantomData,
         }
     }
@@ -188,42 +202,70 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            if *this.done {
+            if *this.finished {
                 return Poll::Ready(None);
             }
+
+            // The active inner is always polled first: it may still carry values,
+            // even after the outer has ended.
             if this.inner.is_some() {
-                let result = {
+                let polled = {
                     let inner = this.inner.as_mut().as_pin_mut().expect("inner stream");
                     futures_lite::Stream::poll_next(inner, cx)
                 };
-                match result {
-                    Poll::Ready(Some(Event::Next(u))) => return Poll::Ready(Some(Event::Next(u))),
-                    Poll::Ready(Some(Event::Complete)) => {
-                        this.inner.set(None);
+                match polled {
+                    Poll::Ready(Some(Event::Next(u))) => {
+                        return Poll::Ready(Some(Event::Next(u)));
                     }
+                    // RxJS: an error from either stream ends the pipeline at once.
                     Poll::Ready(Some(Event::Error(e))) => {
-                        *this.done = true;
+                        *this.finished = true;
                         return Poll::Ready(Some(Event::Error(e)));
                     }
-                    Poll::Ready(None) => {
+                    // RxJS: an inner completion is *not* a downstream completion —
+                    // the outer may still project another value.
+                    Poll::Ready(Some(Event::Complete)) | Poll::Ready(None) => {
                         this.inner.set(None);
                     }
                     Poll::Pending => {}
                 }
             }
+
+            // The outer ended and the last inner has been drained: the pipeline
+            // now ends the way the outer did. This is the RxJS rule — the outer's
+            // completion waits for the inner in flight instead of dropping it.
+            if let Some(end) = *this.outer_end {
+                if this.inner.is_none() {
+                    *this.finished = true;
+                    return match end {
+                        OuterEnd::Completed => Poll::Ready(Some(Event::Complete)),
+                        // An outer that closed without a terminal is passed
+                        // through as such, the convention every other operator
+                        // follows.
+                        OuterEnd::Closed => Poll::Ready(None),
+                    };
+                }
+                // The inner is still pending: the poll above registered its
+                // waker, and the outer must not be read again.
+                return Poll::Pending;
+            }
+
             match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     this.inner.set(Some((this.f)(v)));
                 }
                 Poll::Ready(Some(Event::Complete)) => {
-                    *this.done = true;
-                    return Poll::Ready(Some(Event::Complete));
+                    *this.outer_end = Some(OuterEnd::Completed);
                 }
                 Poll::Ready(Some(Event::Error(e))) => {
-                    *this.done = true;
+                    *this.finished = true;
                     return Poll::Ready(Some(Event::Error(e)));
                 }
-                Poll::Ready(None) => return Poll::Ready(None),
+                // RxJS has no "closed without a terminal": the crate maps it to
+                // the same wait, then forwards the end as `None`.
+                Poll::Ready(None) => {
+                    *this.outer_end = Some(OuterEnd::Closed);
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -328,11 +370,22 @@ impl<T, E> Observable<T, E> {
     /// terminal error from either the outer stream or the active inner stream
     /// ends the pipeline.
     ///
-    /// The completion rule is **stricter than RxJS**: when the *outer* stream
-    /// completes, the pipeline completes immediately, even if an inner stream is
-    /// still in flight (RxJS awaits that last inner stream first). A projection
-    /// that must not lose its final result belongs in
-    /// [`map`](Self::map) + [`collect`](Self::collect) instead.
+    /// # Terminals (RxJS semantics)
+    ///
+    /// - a new outer value **switches**: the previous inner is dropped, so its
+    ///   pending values are never emitted;
+    /// - the outer's `Complete` **waits for the inner in flight**: the pipeline
+    ///   completes only once that inner has ended, so its last values are never
+    ///   lost;
+    /// - an `Error` from either stream ends the pipeline at once and drops the
+    ///   other one.
+    ///
+    /// Because the last inner is awaited, a projection that returns a long-lived
+    /// stream — a notification or a state feed — keeps the pipeline alive for as
+    /// long as that stream lives. Bound it with [`take`](Self::take),
+    /// [`take_until`](Self::take_until) or [`timeout`](Self::timeout). To keep
+    /// every projection instead of only the latest one, [`merge`](Self::merge)
+    /// them.
     ///
     /// # Example
     /// ```rust

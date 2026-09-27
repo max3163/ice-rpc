@@ -302,7 +302,10 @@ impl<T, E> Observable<T, E> {
     }
 
     /// Applies `f` to the **business** error, leaving values and technical errors
-    /// alone (RxJS `map`, error channel only).
+    /// alone.
+    ///
+    /// Its RxJS spelling is `catchError(e => throwError(f(e)))`: the error channel
+    /// is mapped, not recovered — the stream still ends on the failure.
     ///
     /// Only `ObservableError::Business(e)` becomes `Business(f(e))`. A technical
     /// error and `Empty` pass through untouched: rewriting a technical error as a

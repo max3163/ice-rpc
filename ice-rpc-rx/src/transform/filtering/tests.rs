@@ -93,12 +93,16 @@ fn take_one_delivers_complete_through_recv() {
 
     let mut stream = rx.take(1);
     // The sender stays alive: only `take` itself can end the stream.
-    let first = pollster::block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
+    //
+    // `rt::timeout` sleeps through `rt::sleep`, which needs an active runtime
+    // under the `tokio` facade: `test_block_on` supplies one for the whole poll.
+    let first = crate::rt::test_block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
         .expect("a single value must not wait for ever");
     assert_eq!(first.expect("the channel is alive"), Event::Next(1));
 
-    let second = pollster::block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
-        .expect("the completion must not wait for ever");
+    let second =
+        crate::rt::test_block_on(crate::rt::timeout(Duration::from_secs(2), stream.recv()))
+            .expect("the completion must not wait for ever");
     assert_eq!(second.expect("the channel is alive"), Event::Complete);
 
     // Really over: the source is never polled again.

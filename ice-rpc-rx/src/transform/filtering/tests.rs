@@ -5,7 +5,7 @@ use crate::{Event, ObservableError};
 
 #[test]
 fn filter_normalizes_complete_with_as_value() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.filter(|v| *v % 2 == 1);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -22,7 +22,7 @@ fn filter_normalizes_complete_with_as_value() {
 
 #[test]
 fn take_zero_completes_without_forwarding() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.take(0);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -35,7 +35,7 @@ fn take_zero_completes_without_forwarding() {
 
 #[test]
 fn take_forwards_source_terminal_before_limit() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.take(5);
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -61,7 +61,7 @@ fn take_forwards_source_terminal_before_limit() {
 fn take_completes_without_waiting_for_a_further_event() {
     use std::task::{Context, Poll, Waker};
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     tx.try_send_next(1).expect("the channel has room");
 
     let mut stream = std::pin::pin!(rx.take(1));
@@ -88,7 +88,7 @@ fn take_completes_without_waiting_for_a_further_event() {
 fn take_one_delivers_complete_through_recv() {
     use std::time::Duration;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     tx.try_send_next(1).expect("the channel has room");
 
     let mut stream = rx.take(1);
@@ -114,7 +114,7 @@ fn take_zero_completes_without_polling_the_source() {
     use std::task::{Context, Poll, Waker};
 
     // No event is ever sent, and the sender stays open.
-    let (_tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (_tx, rx) = crate::channel::<i32, String>(8);
     let mut stream = std::pin::pin!(rx.take(0));
     let mut cx = Context::from_waker(Waker::noop());
 
@@ -128,7 +128,7 @@ fn take_zero_completes_without_polling_the_source() {
 /// still ends the stream on a `Complete` of `take`'s own making.
 #[test]
 fn take_one_completes_after_its_single_value() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     tx.try_send_next(1).expect("the channel has room");
     drop(tx);
 
@@ -144,7 +144,7 @@ fn take_one_completes_after_its_single_value() {
 fn take_two_completes_after_two_values_on_a_live_stream() {
     use std::task::{Context, Poll, Waker};
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     tx.try_send_next(1).expect("the channel has room");
     tx.try_send_next(2).expect("the channel has room");
 
@@ -187,7 +187,7 @@ fn first_with_emits_first_matching_value() {
 
 #[test]
 fn first_forwards_error_before_any_value() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.first();
 
     pollster::block_on(tx.send_error("boom".to_string())).unwrap();

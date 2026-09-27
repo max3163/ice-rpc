@@ -41,11 +41,14 @@ use crate::{Event, Observable, ObservableError};
 ///   (snapshot, replay bookkeeping, registration);
 /// - `emit` serializes **every** broadcast and every subscription, so a
 ///   subscriber observes the events in exactly the order the subject emitted
-///   them. It is the lock held while the sends are awaited.
+///   them. It is the lock held while the sends are awaited — and those awaits
+///   never wait on a subscriber, since each queue is unbounded.
 ///
-/// Because broadcasts are serialized, one that waits on a slow subscriber also
-/// delays the next broadcast or subscription — that is the backpressure of a
-/// bounded multicast, not a lock defect: `state` is free at that moment.
+/// Each subscriber gets an **unbounded** queue, as in RxJS: an emission never
+/// waits for anyone, so a subscriber that stops reading stalls neither the
+/// other subscribers, nor `complete`/`error`, nor a new subscription. The price
+/// is memory — that subscriber's queue grows until it reads again — which is the
+/// trade-off a hot multicast always makes.
 ///
 /// # Sharing
 ///
@@ -144,6 +147,10 @@ impl<T, E> Subject<T, E> {
     /// (the last values, then `Complete` or `Error` if it is terminated), then
     /// receives the live events.
     ///
+    /// The subscriber's queue is **unbounded**: a consumer that stops reading
+    /// accumulates its own backlog instead of blocking the subject, exactly as
+    /// an RxJS `Subject` behaves.
+    ///
     /// # Example
     /// ```rust,ignore
     /// let rx = subject.subscribe().await;
@@ -164,12 +171,11 @@ impl<T, E> Subject<T, E> {
             (state.replay.clone(), state.terminal_event())
         };
 
-        // Room for the whole replay plus the terminal event: both are pushed
-        // before the consumer starts polling, so the channel must hold them
-        // without blocking. `replay(n)` above the multicast capacity used to
-        // deadlock here, waiting on a full channel nobody was draining yet.
-        let capacity = crate::MULTICAST_CHANNEL_CAPACITY.max(replayed.len() + 1);
-        let (tx, rx) = crate::channel::<T, E>(capacity);
+        // An unbounded queue: the replay is pushed before the consumer starts
+        // polling, and a live emission must never wait for a subscriber — a
+        // bounded channel used to deadlock here on `replay(n)` for `n` above its
+        // capacity, and used to stall the whole subject on a slow subscriber.
+        let (tx, rx) = crate::unbounded_channel::<T, E>();
         for value in replayed {
             let _ = tx.send_next(value).await;
         }
@@ -461,49 +467,28 @@ mod tests {
         }
     }
 
-    /// The state lock must stay free while a broadcast waits on a slow
-    /// subscriber: holding it across the send is what used to deadlock
-    /// `subscribe`.
+    /// A subscriber that never reads cannot stall the subject: emissions never
+    /// park, and the others keep receiving. Under the old bounded channel this
+    /// failed at the 9th value, where the send waited for a queue nobody was
+    /// draining.
     #[test]
-    fn the_state_lock_is_free_while_a_broadcast_waits_on_a_slow_subscriber() {
-        use std::sync::Arc;
+    fn a_slow_subscriber_cannot_stall_the_subject() {
+        let subject = Subject::<u32, String>::new();
+        // Never drained: its queue grows, nothing else notices.
+        let _stuck = pollster::block_on(subject.subscribe());
+        let mut live = pollster::block_on(subject.subscribe());
 
-        let subject = Arc::new(Subject::<u32, String>::new());
-        // Never drained: its bounded channel fills up in a moment.
-        let slow = pollster::block_on(subject.subscribe());
-
-        pollster::block_on(async {
-            for value in 0..crate::MULTICAST_CHANNEL_CAPACITY as u32 {
-                subject.next(value).await;
-            }
-        });
-
-        // The channel is now full: this send parks, holding `emit`.
-        let producer = Arc::clone(&subject);
-        std::thread::spawn(move || pollster::block_on(producer.next(999)));
-
-        assert!(
-            wait_for_emit_to_be_held(&subject),
-            "the broadcast never parked on the full channel"
-        );
-        assert!(
-            subject.state.try_lock().is_some(),
-            "the state lock must stay free while a broadcast waits on a subscriber"
-        );
-
-        // Closing the subscriber releases the parked send.
-        drop(slow);
-    }
-
-    /// Waits (bounded) until the subject holds its `emit` lock, i.e. a
-    /// broadcast is inside its sends.
-    fn wait_for_emit_to_be_held(subject: &Subject<u32, String>) -> bool {
-        for _ in 0..400 {
-            if subject.emit.try_lock().is_none() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        for value in 0..64u32 {
+            let sent = pollster::block_on(futures_lite::future::poll_once(subject.next(value)));
+            assert!(sent.is_some(), "emission {value} parked on a subscriber");
         }
-        false
+
+        // The live subscriber received every value, in order.
+        for expected in 0..64u32 {
+            match pollster::block_on(live.recv()).unwrap() {
+                Event::Next(v) => assert_eq!(v, expected),
+                other => panic!("expected Next({expected}), got {other:?}"),
+            }
+        }
     }
 }

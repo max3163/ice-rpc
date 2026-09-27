@@ -8,7 +8,7 @@ fn finalize_runs_on_complete() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -29,7 +29,7 @@ fn finalize_runs_on_source_channel_close() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -48,7 +48,7 @@ fn finalize_runs_on_error() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
     let flag = finalized.clone();
     let stream = rx.finalize(move || flag.store(true, Ordering::SeqCst));
@@ -70,7 +70,7 @@ fn tap_runs_side_effect() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let seen = Arc::new(AtomicI32::new(0));
     let flag = seen.clone();
     let stream = rx.tap(move |_| {
@@ -91,7 +91,7 @@ fn tap_does_not_touch_terminal_events() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let seen = Arc::new(AtomicI32::new(0));
     let flag = seen.clone();
     let stream = rx.tap(move |_| {
@@ -114,7 +114,7 @@ fn tap_does_not_touch_terminal_events() {
 
 #[test]
 fn delay_postpones_events() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.delay(std::time::Duration::from_millis(20));
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -133,7 +133,7 @@ fn delay_postpones_events() {
 
 #[test]
 fn delay_forwards_terminal_events() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.delay(std::time::Duration::from_millis(20));
 
     pollster::block_on(tx.send_complete()).unwrap();
@@ -174,7 +174,7 @@ fn delay_shifts_a_burst_instead_of_spreading_it() {
 fn delay_preserves_the_source_spacing() {
     use std::time::{Duration, Instant};
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let mut stream = Box::pin(rx.delay(Duration::from_millis(100)));
 
     // The second value arrives 20 ms after the first, well inside the delay
@@ -205,7 +205,7 @@ fn delay_preserves_the_source_spacing() {
 
 #[test]
 fn timeout_emits_technical_error_on_silence() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.timeout(std::time::Duration::from_millis(20));
 
     let mut stream = Box::pin(stream);
@@ -220,7 +220,7 @@ fn timeout_emits_technical_error_on_silence() {
 
 #[test]
 fn timeout_forwards_values_before_deadline() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.timeout(std::time::Duration::from_millis(200));
 
     pollster::block_on(tx.send_next(1)).unwrap();

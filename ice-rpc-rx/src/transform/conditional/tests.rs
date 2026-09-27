@@ -45,7 +45,7 @@ fn take_until_stops_on_the_notifiers_first_value() {
 fn take_until_keeps_the_prefix_already_emitted() {
     use std::task::{Context, Poll, Waker};
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let (stop_tx, stop_rx) = crate::channel::<(), String>(1);
     let mut stream = Box::pin(rx.take_until(stop_rx));
     let mut cx = Context::from_waker(Waker::noop());

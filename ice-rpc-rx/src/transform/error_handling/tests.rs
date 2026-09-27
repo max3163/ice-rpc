@@ -7,7 +7,7 @@ use crate::{Event, ObservableError};
 /// failed source.
 #[test]
 fn catch_error_switches_to_the_recovery_stream() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.catch_error(|_| crate::from([10, 20]));
 
     pollster::block_on(tx.send_next(1)).unwrap();
@@ -27,7 +27,7 @@ fn catch_error_forwards_technical_error_unchanged() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
     let stream = rx.catch_error(move |_| {
@@ -52,7 +52,7 @@ fn catch_error_passthrough_when_no_error() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let called = Arc::new(AtomicBool::new(false));
     let flag = called.clone();
     let stream = rx.catch_error(move |_| {
@@ -75,7 +75,7 @@ fn catch_error_passthrough_when_no_error() {
 /// the selector.
 #[test]
 fn catch_error_can_rethrow() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.catch_error(|_| crate::throw_error("recovered".to_string()));
 
     pollster::block_on(tx.send_error("boom".to_string())).unwrap();
@@ -96,7 +96,7 @@ fn catch_error_does_not_catch_the_recovery_error() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let calls = Arc::new(AtomicI32::new(0));
     let counter = calls.clone();
     let stream = rx.catch_error(move |_| {

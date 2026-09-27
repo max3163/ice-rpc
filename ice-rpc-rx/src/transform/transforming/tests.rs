@@ -5,7 +5,7 @@ use crate::{Event, ObservableError};
 
 #[test]
 fn map_maps_normalized_single_value() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.map(|v| v * 2);
 
     pollster::block_on(tx.send_complete_with(5)).unwrap();
@@ -19,7 +19,7 @@ fn map_maps_normalized_single_value() {
 
 #[test]
 fn map_forwards_terminal_events_unchanged() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.map(|v| v * 2);
 
     pollster::block_on(tx.send_error("boom".to_string())).unwrap();
@@ -40,7 +40,7 @@ fn map_forwards_terminal_events_unchanged() {
 
 #[test]
 fn map_err_transforms_error_type() {
-    let (tx, rx) = crate::channel::<i32, String>(crate::MULTICAST_CHANNEL_CAPACITY);
+    let (tx, rx) = crate::channel::<i32, String>(8);
     let stream = rx.map_err(|e| e.len());
 
     pollster::block_on(tx.send_next(1)).unwrap();

@@ -112,9 +112,3 @@ pub use transform::{retry_with, RetryPolicy};
 pub mod gen {
     pub use crate::stream::{collect_values, first_event};
 }
-
-/// Default capacity of the channels created by the multicast primitive.
-///
-/// A bounded channel provides backpressure: a producer waits when the queue is
-/// full, which keeps memory usage bounded.
-pub(crate) const MULTICAST_CHANNEL_CAPACITY: usize = 8;

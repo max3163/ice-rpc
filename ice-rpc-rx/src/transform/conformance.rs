@@ -374,7 +374,7 @@ fn first_conformance() {
 fn catch_error_conformance() {
     assert_matrix(
         "catch_error",
-        |stream| stream.catch_error(|_| -1),
+        |stream| stream.catch_error(|_| crate::of(-1)),
         &[
             (no_event(), vec![]),
             (one_value(), vec![next(1), complete()]),

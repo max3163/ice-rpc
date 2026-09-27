@@ -139,7 +139,12 @@ fn bench_operators(c: &mut Criterion) {
     bench_operator!(group, "start_with", |s| s.start_with(0), SOURCE_SUM);
     bench_operator!(group, "finalize", |s| s.finalize(|| {}), SOURCE_SUM);
     bench_operator!(group, "map_err", |s| s.map_err(|e| e), SOURCE_SUM);
-    bench_operator!(group, "catch_error", |s| s.catch_error(|_| 0), SOURCE_SUM);
+    bench_operator!(
+        group,
+        "catch_error",
+        |s| s.catch_error(|_| ice_rpc::of::<u32, String>(0)),
+        SOURCE_SUM
+    );
 
     // A token that is never cancelled: the operator is measured on its watch,
     // not on its reaction.

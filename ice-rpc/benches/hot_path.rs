@@ -11,9 +11,10 @@
 //! - `request_encoding` — the generated method called `to_bytes`, which
 //!   allocates a buffer per call; the alternative reuses one buffer, emptied and
 //!   handed back by `to_bytes_in` (the pattern the response path already uses);
-//! - `response_decoding` — `decode_aligned` copies the payload into an aligned
-//!   buffer before decoding, although the transport guarantees the alignment; the
-//!   alternative decodes in place;
+//! - `response_decoding` — the two paths of `decode_aligned`: the copy it keeps
+//!   for an **unaligned** payload, against the in-place decode a real sample
+//!   takes (the transport aligns its payloads, so this pair is the measurement
+//!   that justified the fast path, not an outstanding optimisation);
 //! - `misc` — the cost of a clock read (`Instant::now()`), which bounds what the
 //!   coalescer may spend per call before deciding to notify, and the cost of a
 //!   `service_id_of("literal")` call site as the generated code writes it.
@@ -73,14 +74,15 @@ fn encode_reused(req: &Request, buffer: AlignedVec<16>) -> AlignedVec<16> {
     result.unwrap()
 }
 
-/// What `decode_aligned` did: copy into an aligned buffer, then decode.
+/// `decode_aligned`'s **fallback** path: copy into an aligned buffer, then
+/// decode. A real sample never takes it — the transport aligns its payloads.
 fn decode_copied(bytes: &[u8]) -> Reply {
     let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
     aligned.extend_from_slice(bytes);
     rkyv::from_bytes::<Reply, Error>(&aligned).unwrap()
 }
 
-/// What it does when the payload is already aligned: decode in place.
+/// `decode_aligned`'s **hot** path: a sample is aligned, so it decodes in place.
 fn decode_in_place(bytes: &[u8]) -> Reply {
     rkyv::from_bytes::<Reply, Error>(bytes).unwrap()
 }

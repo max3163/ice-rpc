@@ -191,6 +191,21 @@ harness = false
 name = "hash_map"
 harness = false
 
+# Prices `ipc_threadsafe`'s `MutexProtected` against `ipc`'s `SingleThreaded` on
+# a real pub/sub port: it is the mutex cluster `perf` attributes to the provider,
+# and the question is what switching the service flavour would actually buy.
+# See `benches/iox_port_mutex.rs`.
+[[bench]]
+name = "iox_port_mutex"
+harness = false
+
+# Prices the payload hand-off of `handle_request`: the `to_vec()` that decouples
+# the handler's lifetime from the sample pool, against decoding in place and
+# against a recycled buffer. See `benches/handler_handoff.rs`.
+[[bench]]
+name = "handler_handoff"
+harness = false
+
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here (see `plans/split-rx-layer.md`) so a single crate ships the
 # library, its examples and its benches. They all need the Tokio runtime facade,

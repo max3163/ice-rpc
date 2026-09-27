@@ -943,7 +943,9 @@ mod tests {
             })
         });
         let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
-        second.method(method_id_of("ping"), |_header, _payload, _emitter| Box::pin(async {}));
+        second.method(method_id_of("ping"), |_header, _payload, _emitter| {
+            Box::pin(async {})
+        });
 
         let table: HashMap<u32, ServiceDispatcher> =
             vec![(7, first), (9, second)].into_iter().collect();
@@ -953,7 +955,12 @@ mod tests {
         let task = table
             .get(&7)
             .unwrap()
-            .dispatch(method_id_of("echo"), header, b"x".to_vec(), Box::new(sink.clone()))
+            .dispatch(
+                method_id_of("echo"),
+                header,
+                b"x".to_vec(),
+                Box::new(sink.clone()),
+            )
             .expect("the first dispatcher has `echo`");
         crate::rt::block_on(task);
         assert_eq!(sink.take().len(), 1);
@@ -962,7 +969,12 @@ mod tests {
         assert!(table
             .get(&9)
             .unwrap()
-            .dispatch(method_id_of("echo"), header, b"x".to_vec(), Box::new(sink.clone()))
+            .dispatch(
+                method_id_of("echo"),
+                header,
+                b"x".to_vec(),
+                Box::new(sink.clone())
+            )
             .is_none());
         assert!(sink.take().is_empty());
 
@@ -1000,7 +1012,9 @@ mod tests {
     #[test]
     fn dispatch_builds_a_task_only_for_a_known_method() {
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
-        dispatcher.method(method_id_of("echo"), |_header, _payload, _emitter| Box::pin(async {}));
+        dispatcher.method(method_id_of("echo"), |_header, _payload, _emitter| {
+            Box::pin(async {})
+        });
 
         let header = RpcHeader::request(method_id_of("echo"), 7, 1);
         assert!(dispatcher

@@ -574,7 +574,8 @@ mod tests {
             flags: 1,
         };
 
-        let request = RpcHeader::request(method_id_of("ping"), service_id_of("Ping"), 1).with_trace(trace);
+        let request =
+            RpcHeader::request(method_id_of("ping"), service_id_of("Ping"), 1).with_trace(trace);
         assert_eq!(request.trace(), trace);
         assert!(request.trace().is_present());
         assert!(request.trace().is_sampled());
@@ -666,8 +667,8 @@ mod tests {
     #[test]
     fn cancel_header_reuses_the_request_identity_without_a_method() {
         let id = service_id_of("GetPerson");
-        let request =
-            RpcHeader::request(method_id_of("get_person"), id, 3).with_trace(TraceContext::new_root());
+        let request = RpcHeader::request(method_id_of("get_person"), id, 3)
+            .with_trace(TraceContext::new_root());
         let cancel = RpcHeader::cancel_from(&request);
 
         assert_eq!(cancel.correlation_id, request.correlation_id);

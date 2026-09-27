@@ -264,7 +264,8 @@ impl ServiceDispatcher {
     where
         F: Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync + 'static,
     {
-        self.handlers.insert(method_id.method_id(), Box::new(handler));
+        self.handlers
+            .insert(method_id.method_id(), Box::new(handler));
         self
     }
 

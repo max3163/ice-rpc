@@ -22,8 +22,8 @@ use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
     fmt_correlation_id, next_span_id, normalize_wire_event, unbounded_channel, CallContext, Event,
-    EventKind, MethodId, Observable, ObservableError, RpcError, RpcHeader, ServiceRef, TraceContext,
-    WireEvent, CORRELATION_ID_LEN,
+    EventKind, MethodId, Observable, ObservableError, RpcError, RpcHeader, ServiceRef,
+    TraceContext, WireEvent, CORRELATION_ID_LEN,
 };
 
 /// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.

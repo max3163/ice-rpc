@@ -152,7 +152,12 @@ impl TraceContext {
     /// `00-<trace-id 32hex>-<span-id 16hex>-<trace-flags 2hex>`; the version is
     /// always `00`, the only one this build emits.
     pub fn traceparent(&self, span_id: u64) -> String {
-        format!("00-{}-{:016x}-{:02x}", self.trace_id_hex(), span_id, self.flags)
+        format!(
+            "00-{}-{:016x}-{:02x}",
+            self.trace_id_hex(),
+            span_id,
+            self.flags
+        )
     }
 }
 
@@ -750,7 +755,10 @@ mod tests {
             ctx.span_id(),
             "a root names its own span as the W3C parent, never zero"
         );
-        assert_ne!(out.parent_span_id, 0, "a traceparent parent-id is never zero");
+        assert_ne!(
+            out.parent_span_id, 0,
+            "a traceparent parent-id is never zero"
+        );
         assert_ne!(
             out.trace_id,
             ctx.trace().trace_id,
@@ -780,7 +788,11 @@ mod tests {
             .with_span_id(caller_span);
         let c = CallContext::new(&header, "C", "c");
         assert_ne!(c.span_id(), caller_span, "the receiver mints its own span");
-        assert_eq!(c.trace().parent_span_id, caller_span, "parented on the caller");
+        assert_eq!(
+            c.trace().parent_span_id,
+            caller_span,
+            "parented on the caller"
+        );
     }
 
     /// The rendered `traceparent` matches the W3C grammar.

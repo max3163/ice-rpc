@@ -116,20 +116,13 @@ impl<T, E> Observable<T, E> {
         Self::from_events([Event::Error(ObservableError::Technical(err))])
     }
 
-    /// Builds an [`Observable`] from any stream of [`Event`].
+    /// Wraps any poll-based stream of [`Event`] as an [`Observable`].
     ///
-    /// Makes **any** poll-based stream usable as the return value of a service
-    /// method. The `CompleteWith` single-sample optimization is preserved: a
-    /// `Next(v)` immediately followed by a `Complete` is folded into one sample.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// async fn watch(&self, count: u32) -> Observable<u32, String> {
-    ///     ice_rpc::from(1..=count).delay(Duration::from_millis(100))
-    /// }
-    /// ```
-    #[doc(hidden)]
-    pub fn from_stream<S>(stream: S) -> Self
+    /// Internal to the operator pipeline: every operator wraps its source here.
+    /// The `CompleteWith` single-sample optimization is preserved — a `Next(v)`
+    /// immediately followed by a `Complete` folds into one sample. Not part of
+    /// the public API.
+    pub(crate) fn from_stream<S>(stream: S) -> Self
     where
         S: futures_lite::Stream<Item = Event<T, E>> + Send + 'static,
         T: 'static,
@@ -242,8 +235,7 @@ impl<T, E> Observable<T, E> {
     ///
     /// Drains the stream instead of buffering it: one slot is held, not one
     /// value per event, so a long response costs the same as a short one. The
-    /// counterpart of [`first_value`](Self::first_value); the canonical
-    /// implementation lives in [`last_event`].
+    /// counterpart of [`first_value`](Self::first_value).
     ///
     /// # Example
     /// ```rust
@@ -297,9 +289,9 @@ where
 /// living in a free function lets the generated code and the operators reuse it
 /// on a raw `futures_lite::Stream`.
 ///
-/// Reachable as `ice_rpc::gen::last_event`.
-#[doc(hidden)]
-pub async fn last_event<S, T, E>(stream: S) -> Result<T, ObservableError<E>>
+/// Internal to this crate: the generated code never names it, so it stays out
+/// of the public surface entirely.
+pub(crate) async fn last_event<S, T, E>(stream: S) -> Result<T, ObservableError<E>>
 where
     S: futures_lite::Stream<Item = Event<T, E>>,
 {

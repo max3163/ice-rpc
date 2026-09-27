@@ -212,6 +212,7 @@ fn collect_values_gathers_values_and_reports_business_error() {
 }
 
 use super::{from, of, throw_error};
+use crate::gen::{collect_values, first_event};
 use crate::{Event, ObservableError};
 use std::convert::Infallible;
 

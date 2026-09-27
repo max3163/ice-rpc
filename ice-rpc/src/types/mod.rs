@@ -43,7 +43,10 @@ pub(crate) use wire::normalize_wire_event;
 
 // The reactive vocabulary, re-exported so this module stays the single place
 // from which the transport and the generated code name their types.
+//
+// The two canonical terminals are a codegen seam: they are named through the
+// hidden `gen` module of `ice-rpc-rx`, not through its crate root.
+pub use ice_rpc_rx::gen::{collect_values, first_event};
 pub use ice_rpc_rx::{
-    channel, collect_values, first_event, unbounded_channel, Event, Observable, ObservableError,
-    RpcError, Sender,
+    channel, unbounded_channel, Event, Observable, ObservableError, RpcError, Sender,
 };

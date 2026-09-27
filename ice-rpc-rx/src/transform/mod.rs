@@ -19,10 +19,8 @@
 //! events, and ships a runnable example. Two rules hold for **every** operator:
 //!
 //! - **Pull-based and lazy.** An operator only wraps its source in a boxed
-//!   `futures_lite::Stream` through
-//!   [`Observable::from_stream`](crate::Observable::from_stream): no
-//!   intermediate channel, no spawned task, no `Arc`/lock. Nothing runs until a
-//!   terminal consumes the pipeline.
+//!   `futures_lite::Stream`: no intermediate channel, no spawned task, no
+//!   `Arc`/lock. Nothing runs until a terminal consumes the pipeline.
 //! - **Terminals pass through.** `Complete` and `Error` are never dropped,
 //!   reordered or duplicated, unless the documentation below says otherwise
 //!   ([`catch_error`](crate::Observable::catch_error),

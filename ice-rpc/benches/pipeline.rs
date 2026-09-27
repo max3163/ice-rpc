@@ -2,8 +2,8 @@
 //! `Box<dyn Stream>` chain cost?
 //!
 //! The operators of `ice-rpc` are **inherent methods** returning `Observable`:
-//! each step wraps the previous one in a boxed, poll-based combinator
-//! (`Observable::from_stream`). This benchmark measures its price on 100 000
+//! each step wraps the previous one in a boxed, poll-based combinator. This
+//! benchmark measures its price on 100 000
 //! events, by comparing:
 //!
 //! - `direct_loop` — a hand-written iterator chain over a range (lower bound);

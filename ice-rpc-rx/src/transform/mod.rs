@@ -45,12 +45,12 @@
 //!
 //! | Category | Operators |
 //! |---|---|
-//! | Creating | [`of`](crate::of), [`from`](crate::from), [`throw_error`](crate::throw_error), [`channel`](crate::channel), [`Subject`](crate::Subject) |
+//! | Creating | [`of`](crate::of), [`from`](crate::from), [`throw_error`](crate::throw_error), [`defer`](crate::defer), [`from_future`](crate::from_future), [`channel`](crate::channel), [`Subject`](crate::Subject) |
 //! | Transforming | [`map`](crate::Observable::map), [`map_err`](crate::Observable::map_err), [`scan`](crate::Observable::scan), [`switch_map`](crate::Observable::switch_map) |
 //! | Filtering | [`filter`](crate::Observable::filter), [`take`](crate::Observable::take), [`distinct_until_changed`](crate::Observable::distinct_until_changed), [`skip`](crate::Observable::skip), [`first`](crate::Observable::first), [`first_with`](crate::Observable::first_with) |
 //! | Combining | [`merge`](crate::Observable::merge), [`start_with`](crate::Observable::start_with) |
 //! | Conditional / Boolean | [`take_until`](crate::Observable::take_until), [`take_until_token`](crate::Observable::take_until_token) |
-//! | Error handling | [`catch_error`](crate::Observable::catch_error) |
+//! | Error handling | [`catch_error`](crate::Observable::catch_error), [`retry_with`](crate::retry_with) |
 //! | Utility | [`tap`](crate::Observable::tap), [`finalize`](crate::Observable::finalize), [`delay`](crate::Observable::delay), [`timeout`](crate::Observable::timeout) |
 //! | Terminals (they end the chain) | [`collect`](crate::Observable::collect), [`first_value`](crate::Observable::first_value), [`last_value`](crate::Observable::last_value), [`for_each`](crate::Observable::for_each), [`subscribe`](crate::Observable::subscribe), [`subscribe_all`](crate::Observable::subscribe_all), [`next`](crate::Observable::next), [`recv`](crate::Observable::recv) |
 //!
@@ -84,6 +84,11 @@ mod filtering;
 mod terminals;
 mod transforming;
 mod utility;
+
+// A factory-based retry cannot be an inherent method: it re-runs the *source*
+// instead of wrapping the stream it was called on, and an `Observable` is
+// single-subscription. It is therefore a free function of the crate.
+pub use error_handling::{retry_with, RetryPolicy};
 
 #[cfg(test)]
 mod test_support;

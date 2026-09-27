@@ -385,3 +385,79 @@ fn throw_error_emits_business_error() {
         Event::Error(ObservableError::Business(e)) if e == "boom"
     ));
 }
+
+// ── deferred creation ───────────────────────────────────────────────
+
+/// `defer` runs its factory at the first poll, never before, and only once.
+#[test]
+fn defer_defers_its_factory_to_the_first_poll() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::defer(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        async { crate::of(2) }
+    });
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "nothing runs before a consumer"
+    );
+    let values = pollster::block_on(stream.collect()).expect("clean completion");
+    assert_eq!(values, vec![2]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the factory runs once");
+}
+
+/// The deferred future is awaited, then its stream is taken over as-is: its
+/// values and its terminal are the output.
+#[test]
+fn defer_hands_over_the_stream_its_future_produced() {
+    let stream = crate::defer(|| async { crate::from::<i32, String, _>([1, 2]) });
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 3);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+    assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+    assert!(matches!(&events[2], Event::Complete));
+}
+
+/// An error carried *by the produced stream* travels untouched.
+#[test]
+fn defer_forwards_an_error_from_the_produced_stream() {
+    let stream = crate::defer(|| async { crate::throw_error::<i32, String>("boom".into()) });
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "boom"
+    ));
+}
+
+#[test]
+fn from_future_emits_one_value_then_completes() {
+    let stream: crate::Observable<i32, String> = crate::from_future(async { Ok(7) });
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 7));
+    assert!(matches!(&events[1], Event::Complete));
+}
+
+/// The future's failure is the service's own, so it lands on the **business**
+/// channel — a technical failure reaches the caller as an `RpcError`.
+#[test]
+fn from_future_maps_a_failure_to_a_business_error() {
+    let stream: crate::Observable<i32, String> =
+        crate::from_future(async { Err("boom".to_string()) });
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "boom"
+    ));
+}

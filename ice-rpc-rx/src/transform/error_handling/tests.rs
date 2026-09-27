@@ -161,3 +161,204 @@ fn catch_error_does_not_repoll_a_closed_source() {
         "a closed source must not be polled twice"
     );
 }
+
+// ── retry_with ──────────────────────────────────────────────────────
+
+/// Every attempt is a fresh stream, so the values an attempt emitted before
+/// failing are kept and followed by the next attempt's — the RxJS rule.
+#[test]
+fn retry_with_keeps_the_values_of_a_failed_attempt() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    crate::Observable::from_events([
+                        Event::Next(1),
+                        Event::Error(ObservableError::Business("boom".into())),
+                    ])
+                } else {
+                    crate::Observable::from_events([Event::Next(2), Event::Complete])
+                }
+            }
+        },
+        crate::RetryPolicy {
+            attempts: 2,
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 3);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+    assert!(matches!(&events[1], Event::Next(v) if *v == 2));
+    assert!(matches!(&events[2], Event::Complete));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// Once the policy gives up, the last error travels downstream unchanged.
+#[test]
+fn retry_with_forwards_the_last_error_when_it_gives_up() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            async move { crate::throw_error("boom".to_string()) }
+        },
+        crate::RetryPolicy {
+            attempts: 3,
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "boom"
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "the policy allowed three attempts"
+    );
+}
+
+/// A completion is final: `retry` only acts on errors (RxJS).
+#[test]
+fn retry_with_does_not_retry_a_completion() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            async move { crate::of(1) }
+        },
+        crate::RetryPolicy {
+            attempts: 5,
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 1));
+    assert!(matches!(&events[1], Event::Complete));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// `only_retryable` refuses what `RpcError::is_retryable` refuses.
+#[test]
+fn retry_with_only_retryable_refuses_a_business_error() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            async move { crate::throw_error("boom".to_string()) }
+        },
+        crate::RetryPolicy {
+            attempts: 3,
+            only_retryable: true,
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Event::Error(ObservableError::Business(e)) if e == "boom"
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a business error is not retried"
+    );
+}
+
+/// …and retries a technical failure `is_retryable` accepts.
+#[test]
+fn retry_with_only_retryable_retries_a_transport_failure() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    crate::Observable::from_technical_error(crate::RpcError::Timeout)
+                } else {
+                    crate::of(7)
+                }
+            }
+        },
+        crate::RetryPolicy {
+            attempts: 2,
+            only_retryable: true,
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    assert_eq!(
+        pollster::block_on(stream.collect()).expect("the retry recovered"),
+        vec![7]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// The policy's delay is observed before each re-attempt.
+#[test]
+fn retry_with_waits_the_policy_delay_before_retrying() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let attempt = calls.clone();
+    let stream: crate::Observable<i32, String> = crate::retry_with(
+        move || {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    crate::throw_error("boom".to_string())
+                } else {
+                    crate::of(1)
+                }
+            }
+        },
+        crate::RetryPolicy {
+            attempts: 2,
+            delay: std::time::Duration::from_millis(20),
+            ..crate::RetryPolicy::default()
+        },
+    );
+
+    let start = Instant::now();
+    // `retry_with` sleeps through `rt::sleep`, which needs a runtime under the
+    // `tokio` facade: `test_block_on` supplies one for the whole poll.
+    let values = crate::rt::test_block_on(stream.collect()).expect("the retry recovered");
+    assert_eq!(values, vec![1]);
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(15),
+        "the policy delay must have been observed"
+    );
+}

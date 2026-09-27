@@ -178,8 +178,8 @@ pub use service_traits::ServiceInit;
 // Defined by `ice-rpc-rx` and re-exported unchanged: the crate keeps one single
 // stream type, and a consumer never has to name the stream crate.
 pub use ice_rpc_rx::{
-    from, of, throw_error, CancellationToken, Event, Observable, ObservableError, RpcError,
-    Subject, Subscription,
+    defer, from, from_future, of, retry_with, throw_error, CancellationToken, Event, Observable,
+    ObservableError, RetryPolicy, RpcError, Subject, Subscription,
 };
 
 // Wire-level items live in `ice_rpc::gen`; the protocol types come from `types`.

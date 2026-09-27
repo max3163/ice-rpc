@@ -54,7 +54,7 @@ method carries its semantics and a runnable example in the crate documentation.
 | Filtering | `filter`, `take`, `distinct_until_changed`, `skip`, `first`, `first_with` |
 | Combining | `merge`, `start_with` |
 | Conditional / Boolean | `take_until`, `take_until_token` |
-| Error handling | `catch_error` |
+| Error handling | `catch_error`, `retry_with` |
 | Utility | `tap`, `finalize`, `delay`, `timeout` |
 | Terminals (they end the chain) | `collect`, `first_value`, `last_value`, `for_each`, `subscribe`, `subscribe_all`, `next`, `recv` |
 

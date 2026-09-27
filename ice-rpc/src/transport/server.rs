@@ -21,6 +21,7 @@ use super::{
     REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
+use crate::hash::{FastMap, IdMap};
 use crate::sync::lock;
 use crate::types::{
     fmt_correlation_id, install_call_cancellation, BoxResponseFuture, EventKind, RpcError,
@@ -122,7 +123,9 @@ pub fn spawn_native_service(
 ) -> JoinHandle<()> {
     // The table key is read from the dispatcher: it is the same value the client
     // stamps in the frame, so it can never disagree with the version answered for.
-    let table: HashMap<u32, ServiceDispatcher> = services
+    // An `IdMap`: consulted on every request, so the identity hasher replaces the
+    // default SipHash (see `src/hash.rs`).
+    let table: IdMap<u32, ServiceDispatcher> = services
         .into_iter()
         .map(|dispatcher| (dispatcher.service().id, dispatcher))
         .collect();
@@ -280,7 +283,9 @@ struct ResponseHub {
 /// suffices however many consumers share the channel.
 #[derive(Default)]
 struct InFlightCalls {
-    calls: Mutex<HashMap<[u8; CORRELATION_ID_LEN], CancellationToken>>,
+    /// A [`FastMap`]: one insert and one remove per request, keyed by the 16-byte
+    /// correlation id.
+    calls: Mutex<FastMap<[u8; CORRELATION_ID_LEN], CancellationToken>>,
 }
 
 impl InFlightCalls {
@@ -600,7 +605,7 @@ impl RequestRejection {
 /// method this build may not even know.
 fn handle_request(
     channel: &str,
-    table: &HashMap<u32, ServiceDispatcher>,
+    table: &IdMap<u32, ServiceDispatcher>,
     hub: &Arc<ResponseHub>,
     spawner: &crate::rt::Spawner,
     header: &RpcHeader,

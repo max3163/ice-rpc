@@ -1,6 +1,5 @@
 //! Bridge from a service `Observable` to the samples the transport publishes.
 
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -8,6 +7,7 @@ use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
 use super::{PAYLOAD_ALIGNMENT, REQUEST_SCRATCH_CAPACITY};
+use crate::hash::IdMap;
 use crate::types::{
     Event, EventKind, MethodId, Observable, RpcError, RpcHeader, ServiceRef, WireEvent,
 };
@@ -242,7 +242,10 @@ pub struct ServiceDispatcher {
     /// Identity (id + interface version) of the service contract.
     service: ServiceRef,
     /// Handlers keyed by [`crate::types::method_id_of`] of the method name.
-    handlers: HashMap<u32, MethodHandler>,
+    ///
+    /// An [`IdMap`]: looked up on **every** request, so it uses the identity
+    /// hasher rather than the default SipHash (see `src/hash.rs`).
+    handlers: IdMap<u32, MethodHandler>,
 }
 
 impl ServiceDispatcher {
@@ -250,7 +253,7 @@ impl ServiceDispatcher {
     pub fn new(service: ServiceRef) -> Self {
         Self {
             service,
-            handlers: HashMap::new(),
+            handlers: IdMap::default(),
         }
     }
 

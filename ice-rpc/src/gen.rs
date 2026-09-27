@@ -22,6 +22,10 @@ pub use crate::types::{
     PROTOCOL_VERSION, SERVICE_NAME_LEN,
 };
 
+// The hashers the transport's own maps use, re-exported so `benches/hash_map.rs`
+// can price the **shipped** implementation instead of a copy of it.
+pub use crate::hash::{FxHasher, IdentityHasher};
+
 // Canonical terminals behind the inherent `Observable` methods.
 pub use crate::types::{collect_values, first_event};
 

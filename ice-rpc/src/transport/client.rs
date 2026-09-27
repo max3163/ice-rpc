@@ -33,7 +33,10 @@ use crate::types::{
 type ResponseHandler = Arc<dyn Fn(EventKind, &[u8]) + Send + Sync>;
 
 /// Handlers of the calls in flight on one channel, keyed by correlation id.
-type HandlerMap = HashMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
+///
+/// A [`crate::hash::FastMap`]: one insert and one remove per call, plus a lookup
+/// per response, so it uses the Fx hasher rather than the default SipHash.
+type HandlerMap = crate::hash::FastMap<[u8; CORRELATION_ID_LEN], ResponseHandler>;
 
 /// Removes the handler of one call, releasing its entry.
 ///
@@ -232,7 +235,7 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         listener,
         publisher,
         request_notifier,
-        handlers: Mutex::new(HashMap::new()),
+        handlers: Mutex::new(crate::hash::FastMap::default()),
         last_request_notify: Coalescer::new(),
         seq: AtomicU64::new(0),
     });

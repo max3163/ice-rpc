@@ -184,6 +184,13 @@ harness = false
 name = "local_call"
 harness = false
 
+# Prices the default `HashMap` hasher (SipHash) against the candidate custom
+# hashers the transport's maps would use, on the key shapes they actually have
+# (`u32` service ids, 16-byte correlation ids). See `benches/hash_map.rs`.
+[[bench]]
+name = "hash_map"
+harness = false
+
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here (see `plans/split-rx-layer.md`) so a single crate ships the
 # library, its examples and its benches. They all need the Tokio runtime facade,

@@ -204,4 +204,36 @@ mod tests {
         assert_eq!(evicted.len(), 1);
         assert_eq!(table.len(), 1);
     }
+
+    #[test]
+    fn the_table_reports_the_calls_it_tracks() {
+        let mut table = Correlate::new(8, Duration::from_secs(60));
+        let cid = [3u8; CORRELATION_ID_LEN];
+        assert!(!table.contains(&cid));
+        table.insert(cid, call());
+        assert!(table.contains(&cid));
+        assert!(table.len() == 1);
+    }
+
+    #[test]
+    fn a_young_call_has_a_tiny_age() {
+        let call = call();
+        assert!(call.age() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn sweeping_evicts_only_the_calls_past_their_ttl() {
+        let mut table = Correlate::new(8, Duration::from_millis(20));
+        table.insert([4u8; CORRELATION_ID_LEN], call());
+
+        // Nothing is old enough yet: the table is left alone.
+        assert!(table.sweep().is_empty());
+        assert_eq!(table.len(), 1);
+
+        std::thread::sleep(Duration::from_millis(30));
+        let evicted = table.sweep();
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].channel, "c");
+        assert_eq!(table.len(), 0, "an expired call is evicted, not answered");
+    }
 }

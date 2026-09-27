@@ -102,3 +102,30 @@ fn main() {
     console.leave();
     let _ = observer.join();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sleep_returns_early_when_already_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let started = std::time::Instant::now();
+        sleep_interruptible(Duration::from_secs(30), &cancel);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a cancelled sleep must not wait out its whole duration"
+        );
+    }
+
+    #[test]
+    fn a_sleep_waits_its_duration_when_not_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        sleep_interruptible(Duration::from_millis(250), &cancel);
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "an uncancelled sleep waits for its duration"
+        );
+    }
+}

@@ -487,4 +487,173 @@ mod tests {
             "{console}"
         );
     }
+
+    #[test]
+    fn the_observer_and_liveness_counters_are_exported() {
+        let metrics = Metrics::new();
+        metrics.on_unmatched_request("c");
+        metrics.on_orphan_response("c");
+        metrics.on_orphan_response("c");
+        metrics.on_clock_skew();
+        metrics.add_node_crash(2);
+        metrics.set_nodes_alive(3);
+        metrics.set_observer(5, 7);
+
+        let text = metrics.render_prometheus();
+        assert!(text.contains("ice_rpc_unmatched_requests_total{channel=\"c\"} 1"));
+        assert!(text.contains("ice_rpc_orphan_responses_total{channel=\"c\"} 2"));
+        assert!(text.contains("ice_rpc_clock_skew_total 1"));
+        assert!(text.contains("ice_rpc_node_crashes_total 2"));
+        assert!(text.contains("ice_rpc_nodes_alive 3"));
+        assert!(text.contains("ice_rpc_observer_dropped_traces_total 5"));
+        assert!(text.contains("ice_rpc_discovery_errors_total 7"));
+
+        let console = metrics.render_console();
+        assert!(console.contains(" orphan responses: 2"), "{console}");
+        assert!(console.contains(" unmatched req.  : 1"));
+        assert!(console.contains(" clock skew      : 1"));
+        assert!(console.contains(" nodes           : alive=3 crashes=2"));
+    }
+
+    #[test]
+    fn the_shm_and_process_inventory_is_exported() {
+        use crate::health::{ProcessMetrics, ShmFootprint};
+        use ice_rpc::monitor::{NodeHealth, NodeInfo, ServiceInfo, ServiceRole};
+
+        let metrics = Metrics::new();
+        let snapshot = HealthSnapshot {
+            nodes: vec![NodeInfo {
+                pid: 7,
+                health: NodeHealth::Alive,
+                executable: Some("worker".to_owned()),
+                name: Some(String::new()),
+            }],
+            services: vec![ServiceInfo {
+                name: "S_req".to_owned(),
+                pattern: "PublishSubscribe",
+                role: ServiceRole::Request,
+                participants: 1,
+            }],
+            shm: Some(ShmFootprint {
+                bytes: 4096,
+                segments: 2,
+                files: 3,
+            }),
+            processes: vec![ProcessMetrics {
+                pid: 7,
+                name: "worker".to_owned(),
+                cpu_percent: 12.5,
+                cpu_percent_total: 1.25,
+                rss_bytes: 2048,
+                virtual_bytes: 8192,
+                run_time_secs: 30,
+            }],
+            cpu_count: 8,
+            scans: 2,
+            errors: 0,
+            ..HealthSnapshot::default()
+        };
+        metrics.set_health(&snapshot);
+
+        let text = metrics.render_prometheus();
+        assert!(text.contains("ice_rpc_shm_scan_enabled 1"), "{text}");
+        assert!(text.contains("ice_rpc_shm_bytes 4096"));
+        assert!(text.contains("ice_rpc_shm_segments 2"));
+        assert!(text.contains("ice_rpc_shm_files 3"));
+        assert!(text.contains("ice_rpc_host_cpu_count 8"));
+        assert!(text.contains("ice_rpc_process_cpu_percent{pid=\"7\",name=\"worker\"} 12.5"));
+        assert!(text.contains("ice_rpc_process_cpu_percent_total{pid=\"7\",name=\"worker\"} 1.25"));
+        assert!(text.contains("ice_rpc_process_rss_bytes{pid=\"7\",name=\"worker\"} 2048"));
+        assert!(text.contains("ice_rpc_process_virtual_bytes{pid=\"7\",name=\"worker\"} 8192"));
+        assert!(text.contains("ice_rpc_process_uptime_seconds{pid=\"7\",name=\"worker\"} 30"));
+
+        let console = metrics.render_console();
+        assert!(
+            console.contains(" shm     : 2 segment(s), 4.0KiB"),
+            "{console}"
+        );
+        assert!(console.contains(" node    : pid=7 worker"), "{console}");
+    }
+
+    #[test]
+    fn the_shm_footprint_reads_as_unavailable_without_segment_files() {
+        use crate::health::ShmFootprint;
+        use ice_rpc::monitor::{NodeHealth, NodeInfo};
+
+        let metrics = Metrics::new();
+        let snapshot = HealthSnapshot {
+            nodes: vec![NodeInfo {
+                pid: 1,
+                health: NodeHealth::Alive,
+                executable: None,
+                name: None,
+            }],
+            shm: Some(ShmFootprint {
+                bytes: 0,
+                segments: 0,
+                files: 3,
+            }),
+            ..HealthSnapshot::default()
+        };
+        metrics.set_health(&snapshot);
+
+        let console = metrics.render_console();
+        assert!(
+            console.contains("n/a (segments are not file-backed here)"),
+            "{console}"
+        );
+        // A node with no executable name falls back to a placeholder.
+        let text = metrics.render_prometheus();
+        assert!(
+            text.contains("ice_rpc_node_info{pid=\"1\",state=\"alive\",executable=\"?\"} 1"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_request_without_a_response_has_no_latency_yet() {
+        let metrics = Metrics::new();
+        metrics.on_request("DatabaseService", 42, "get_user_age");
+
+        let console = metrics.render_console();
+        assert!(console.contains("no response yet"), "{console}");
+    }
+
+    #[test]
+    fn the_console_truncates_a_busy_registry() {
+        use crate::health::ProcessMetrics;
+        use ice_rpc::monitor::{NodeHealth, NodeInfo};
+
+        let metrics = Metrics::new();
+        for index in 0..10 {
+            metrics.on_request("C", 1, &format!("m{index}"));
+        }
+        let processes = (0..6)
+            .map(|index| ProcessMetrics {
+                pid: 100 + index,
+                name: format!("p{index}"),
+                cpu_percent: 0.0,
+                cpu_percent_total: 0.0,
+                rss_bytes: 0,
+                virtual_bytes: 0,
+                run_time_secs: 0,
+            })
+            .collect();
+        metrics.set_health(&HealthSnapshot {
+            nodes: vec![NodeInfo {
+                pid: 100,
+                health: NodeHealth::Alive,
+                executable: Some("p0".to_owned()),
+                name: None,
+            }],
+            processes,
+            ..HealthSnapshot::default()
+        });
+
+        let console = metrics.render_console();
+        // Eight lines at most, then a summary of what was left out.
+        assert!(console.contains("and 2 more"), "{console}");
+        // Five node lines at most, then the count of the remaining process.
+        assert!(console.contains("node    : ... and 1 more"), "{console}");
+    }
 }

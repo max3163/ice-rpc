@@ -317,4 +317,83 @@ mod tests {
         assert_eq!(footprint.files, 2);
         assert_eq!(footprint.bytes, 4096 + 2048);
     }
+
+    fn layout_for(root: &std::path::Path) -> Iceoryx2Layout {
+        Iceoryx2Layout {
+            root_path: root.to_string_lossy().into_owned(),
+            service_dir: String::new(),
+            node_dir: String::new(),
+            prefix: "iox2_".to_owned(),
+            data_segment_suffix: ".data".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_scanner_throttles_its_refreshes() {
+        // An interval no test can reach: only the very first tick scans.
+        let mut scanner = Scanner::new(Duration::from_secs(3600), false);
+        assert!(scanner.refresh_if_due(), "the first tick always scans");
+        assert!(
+            !scanner.refresh_if_due(),
+            "a second tick before the interval must be throttled"
+        );
+        assert_eq!(scanner.scans(), 1);
+        assert_eq!(scanner.errors(), 0);
+    }
+
+    #[test]
+    fn the_shm_footprint_is_measured_only_when_enabled() {
+        let mut scanner = Scanner::new(Duration::from_millis(1), true);
+        scanner.refresh();
+        assert!(
+            scanner.snapshot().shm.is_some(),
+            "the walk runs when the shm scan is enabled"
+        );
+    }
+
+    #[test]
+    fn the_walk_descends_into_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("ice-rpc-shm-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("segments");
+        std::fs::create_dir_all(&nested).expect("create dir");
+        std::fs::write(nested.join("iox2_cccc.data"), vec![0u8; 1024]).expect("write segment");
+
+        let layout = layout_for(&dir);
+        let mut footprint = ShmFootprint::default();
+        walk(&dir, &layout, &mut footprint, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            footprint.segments, 1,
+            "a segment below a subdirectory counts"
+        );
+        assert_eq!(footprint.bytes, 1024);
+    }
+
+    #[test]
+    fn walking_a_missing_directory_is_harmless() {
+        let layout = layout_for(std::path::Path::new("somewhere"));
+        let mut footprint = ShmFootprint::default();
+        walk(
+            std::path::Path::new("ice-rpc-no-such-dir"),
+            &layout,
+            &mut footprint,
+            0,
+        );
+        assert_eq!(footprint.files, 0);
+    }
+
+    #[test]
+    fn the_walk_stops_at_the_depth_limit() {
+        let layout = layout_for(std::path::Path::new("."));
+        let mut footprint = ShmFootprint::default();
+        walk(
+            std::path::Path::new("."),
+            &layout,
+            &mut footprint,
+            MAX_WALK_DEPTH + 1,
+        );
+        assert_eq!(footprint.files, 0, "beyond the depth limit nothing is read");
+    }
 }

@@ -137,13 +137,20 @@ pub fn frame(metrics: &Metrics, recent: Option<&RecentBuffer>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+
+    /// Serialises the tests that read or write the process-global `LINES`
+    /// variable: the harness runs the tests in threads, and `std::env` is shared.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
 
     #[test]
     fn a_frame_appends_the_recent_messages() {
-        use std::collections::VecDeque;
-        use std::sync::{Arc, Mutex};
-
         let metrics = Metrics::new();
         let recent: RecentBuffer = Arc::new(Mutex::new(VecDeque::from([
             "[msg] cid=1 request=ping".to_owned(),
@@ -157,16 +164,73 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_without_messages_holds_no_message_section() {
+        let metrics = Metrics::new();
+        assert!(!frame(&metrics, None).contains("recent messages"));
+
+        // An empty buffer is as good as no buffer at all.
+        let empty: RecentBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        assert!(!frame(&metrics, Some(&empty)).contains("recent messages"));
+    }
+
+    #[test]
     fn a_disabled_console_never_switches_screen() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         // Not a terminal in the test harness: the live mode must stay off.
         let console = LiveConsole::new(false);
         assert!(!console.is_active());
     }
 
     #[test]
+    fn the_live_mode_needs_a_terminal_even_when_requested() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        // Requested explicitly, but the test harness pipes stdout: it stays off,
+        // so the frames are appended instead of redrawn in place.
+        let console = LiveConsole::new(true);
+        assert!(!console.is_active());
+    }
+
+    #[test]
+    fn an_inactive_console_appends_and_leaves_cleanly() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut console = LiveConsole::new(false);
+        console.draw("plain frame\n");
+        console.leave();
+        // `leave` is idempotent: the `Drop` guard calls it again.
+        console.leave();
+        assert!(!console.is_active());
+    }
+
+    #[test]
+    fn the_terminal_height_comes_from_the_environment() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("LINES").ok();
+
+        std::env::set_var("LINES", "42");
+        assert_eq!(terminal_lines(), 42);
+        // A frame taller than the screen is worse than no frame at all, so an
+        // unusable value falls back to the conservative default.
+        std::env::set_var("LINES", "4");
+        assert_eq!(terminal_lines(), 24);
+        std::env::set_var("LINES", "not-a-number");
+        assert_eq!(terminal_lines(), 24);
+
+        match previous {
+            Some(value) => std::env::set_var("LINES", value),
+            None => std::env::remove_var("LINES"),
+        }
+    }
+
+    #[test]
     fn a_short_frame_is_left_untouched() {
         let frame = "a\nb\nc\n";
         assert_eq!(clamp_frame(frame, 10), frame);
+    }
+
+    #[test]
+    fn a_frame_exactly_the_screen_height_is_not_truncated() {
+        let frame: String = (0..10).map(|index| format!("line {index}\n")).collect();
+        assert_eq!(clamp_frame(&frame, 10), frame);
     }
 
     #[test]
@@ -177,5 +241,13 @@ mod tests {
         assert!(clamped.contains("more line(s)"), "{clamped}");
         // The tail of the original frame is gone, never overflowing the screen.
         assert!(!clamped.contains("line 39"));
+    }
+
+    #[test]
+    fn a_one_line_screen_keeps_only_the_summary() {
+        let frame: String = (0..5).map(|index| format!("line {index}\n")).collect();
+        let clamped = clamp_frame(&frame, 1);
+        assert!(clamped.contains("more line(s)"), "{clamped}");
+        assert!(!clamped.contains("line 0"), "{clamped}");
     }
 }

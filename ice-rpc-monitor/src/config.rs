@@ -302,4 +302,100 @@ mod tests {
         assert_eq!(config.trace_format, TraceFormat::Human);
         assert!(Config::from_args(&["--trace-format".to_owned(), "xml".to_owned()]).is_err());
     }
+
+    #[test]
+    fn every_option_is_parsed() {
+        let args: Vec<String> = [
+            "--prometheus",
+            "127.0.0.1:1234",
+            "--channel",
+            "A",
+            "--mode",
+            "stats",
+            "--detail-channel",
+            "B",
+            "--discover-interval-ms",
+            "1500",
+            "--call-ttl-ms",
+            "2500",
+            "--max-inflight",
+            "42",
+            "--trace-sample-rate",
+            "7",
+            "--trace-file",
+            "traces.ndjson",
+            "--trace-format",
+            "human",
+            "--health-interval-ms",
+            "500",
+            "--health-shm",
+            "--live",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let config = Config::from_args(&args).expect("valid args");
+
+        assert_eq!(
+            config.prometheus_addr,
+            Some("127.0.0.1:1234".parse().unwrap())
+        );
+        assert_eq!(config.channels, vec!["A"]);
+        assert_eq!(config.mode, Mode::Stats);
+        assert_eq!(config.detail_channels, vec!["B"]);
+        assert_eq!(config.discover_interval, Duration::from_millis(1500));
+        assert_eq!(config.call_ttl, Duration::from_millis(2500));
+        assert_eq!(config.max_inflight, 42);
+        assert_eq!(config.trace_sample_rate, 7);
+        assert_eq!(config.trace_file, Some(PathBuf::from("traces.ndjson")));
+        assert_eq!(config.trace_format, TraceFormat::Human);
+        assert_eq!(config.health_interval, Duration::from_millis(500));
+        assert!(config.health_shm);
+        assert!(config.console_live);
+    }
+
+    #[test]
+    fn a_zero_health_interval_disables_the_inventory() {
+        let config =
+            Config::from_args(&["--health-interval-ms".to_owned(), "0".to_owned()]).unwrap();
+        assert!(config.health_interval.is_zero());
+    }
+
+    #[test]
+    fn detail_for_matches_the_global_mode_and_the_per_channel_list() {
+        let mut config = Config::default();
+        assert!(!config.detail_for("A"));
+
+        config.mode = Mode::Detail;
+        assert!(
+            config.detail_for("A"),
+            "the global mode covers every channel"
+        );
+
+        config.mode = Mode::Stats;
+        config.detail_channels = vec!["A".to_owned()];
+        assert!(config.detail_for("A"));
+        assert!(
+            !config.detail_for("B"),
+            "an unlisted channel stays in stats"
+        );
+    }
+
+    #[test]
+    fn malformed_values_are_rejected() {
+        let args = |values: &[&str]| values.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(Config::from_args(&args(&["--prometheus", "not-an-address"])).is_err());
+        assert!(Config::from_args(&args(&["--max-inflight", "many"])).is_err());
+        assert!(Config::from_args(&args(&["--discover-interval-ms"])).is_err());
+    }
+
+    #[test]
+    fn help_and_unknown_arguments_are_reported_as_messages() {
+        assert_eq!(Config::from_args(&["--help".to_owned()]).unwrap_err(), HELP);
+        assert_eq!(Config::from_args(&["-h".to_owned()]).unwrap_err(), HELP);
+
+        let unknown = Config::from_args(&["--nope".to_owned()]).unwrap_err();
+        assert!(unknown.contains("unknown argument '--nope'"), "{unknown}");
+        assert!(unknown.contains("USAGE"), "the usage text is appended");
+    }
 }

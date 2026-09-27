@@ -256,6 +256,8 @@ impl Drop for TraceSink {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn record() -> TraceRecord<'static> {
@@ -363,5 +365,81 @@ mod tests {
             "the last record must be kept: {:?}",
             guard.back()
         );
+    }
+
+    #[test]
+    fn a_record_without_a_trace_omits_the_trace_fields() {
+        let mut record = record();
+        record.trace_id = None;
+
+        let json = record.to_json();
+        // A `null` rather than an absent key: the consumer can tell "no trace"
+        // from "a field the writer does not know about".
+        assert!(json.contains("\"trace_id\":null"), "{json}");
+
+        let human = record.to_human();
+        assert!(!human.contains(" trace="), "{human}");
+        assert!(!human.contains("parent_span="), "{human}");
+    }
+
+    #[test]
+    fn a_file_sink_writes_one_line_per_record() {
+        let path = std::env::temp_dir().join(format!(
+            "ice-rpc-monitor-sink-{}.ndjson",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let sink = TraceSink::file(&path, 64, TraceFormat::Json).expect("file sink");
+        sink.emit(&record());
+        // Dropping the sink closes the queue and joins the writer, which flushes.
+        drop(sink);
+
+        let content = std::fs::read_to_string(&path).expect("read the trace file");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(content.lines().count(), 1, "{content}");
+        assert!(content.contains("\"call_id\":"));
+        assert!(content.ends_with('\n'), "the writer terminates the line");
+    }
+
+    #[test]
+    fn a_file_sink_reports_a_path_it_cannot_create() {
+        let path = std::env::temp_dir()
+            .join("ice-rpc-monitor-no-such-directory")
+            .join("traces.ndjson");
+        assert!(TraceSink::file(&path, 8, TraceFormat::Json).is_err());
+    }
+
+    #[test]
+    fn the_stdout_sink_accepts_records() {
+        let sink = TraceSink::stdout(8, TraceFormat::Human);
+        sink.emit(&record());
+        assert_eq!(sink.dropped(), 0, "nothing is dropped on an empty queue");
+    }
+
+    #[test]
+    fn a_saturated_sink_drops_records_instead_of_blocking() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // Capacity one, and a writer that blocks on its first record: the queue
+        // is then full, and the next record must be dropped, never block.
+        let sink = TraceSink::spawn(1, TraceFormat::Human, move |_line| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        let record = record();
+
+        sink.emit(&record);
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the writer consumed the first record");
+        // The writer holds the only slot: this fills the queue...
+        sink.emit(&record);
+        // ...so this one finds it full.
+        sink.emit(&record);
+        assert!(sink.dropped() >= 1, "a full queue must drop, not block");
+
+        drop(release_tx); // let the writer finish
+        drop(sink); // close the queue and join the writer
     }
 }

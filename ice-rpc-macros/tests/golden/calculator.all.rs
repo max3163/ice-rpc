@@ -85,7 +85,7 @@ impl CalculatorServer {
                     ice_rpc::gen::method_id_of("add"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
-                        payload: Vec<u8>,
+                        payload: &[u8],
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
                         let ctx = ice_rpc::gen::CallContext::new(
@@ -94,39 +94,43 @@ impl CalculatorServer {
                             "add",
                         );
                         let impl_ref = service_impl.clone();
+                        let request = match ice_rpc::gen::decode_aligned::<
+                            CalculatorRequest,
+                        >(payload) {
+                            Ok(CalculatorRequest::Add { a, b }) => (a, b),
+                            Err(e) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload decoding failed: {:?}", <
+                                    CalculatorProxy > ::SERVICE_NAME, "add", e
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                            Ok(_) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload is another method's variant", <
+                                    CalculatorProxy > ::SERVICE_NAME, "add"
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                        };
                         ice_rpc::gen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
-                                match ice_rpc::gen::decode_aligned::<
-                                    CalculatorRequest,
-                                >(&payload) {
-                                    Ok(CalculatorRequest::Add { a, b }) => {
-                                        let stream = impl_ref.add(a, b).await;
-                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload decoding failed: {:?}", <
-                                            CalculatorProxy > ::SERVICE_NAME, "add", e
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                    Ok(_) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload is another method's variant", <
-                                            CalculatorProxy > ::SERVICE_NAME, "add"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                }
+                                let (a, b) = request;
+                                let stream = impl_ref.add(a, b).await;
+                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                    .await;
                             },
                         )
                     },
@@ -262,7 +266,7 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                             ice_rpc::gen::method_id_of("add"),
                             move |
                                 header: ice_rpc::gen::RpcHeader,
-                                payload: Vec<u8>,
+                                payload: &[u8],
                                 emitter: ice_rpc::gen::OwnedEmitter,
                             | -> ice_rpc::gen::BoxResponseFuture {
                                 let ctx = ice_rpc::gen::CallContext::new(
@@ -270,14 +274,15 @@ impl ice_rpc::gen::ServiceLifecycle for CalculatorProxy {
                                     <CalculatorProxy>::SERVICE_NAME,
                                     "add",
                                 );
+                                let args = CalculatorProxy::deserialize_request_to_value(
+                                    "add",
+                                    payload,
+                                );
                                 ice_rpc::gen::call_scoped(
                                     ctx,
                                     async move {
                                         let mut emitter = emitter;
-                                        let Some(args) = CalculatorProxy::deserialize_request_to_value(
-                                            "add",
-                                            &payload,
-                                        ) else {
+                                        let Some(args) = args else {
                                             ::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 CalculatorProxy > ::SERVICE_NAME, "add"

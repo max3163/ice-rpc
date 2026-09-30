@@ -223,15 +223,17 @@ where
 /// a [`CollectEmitter`], a provider hands it the channel's sink.
 pub type OwnedEmitter = Box<dyn ResponseEmitter + Send>;
 
-/// Handler of one RPC method: an owned request, and the sink of its responses.
+/// Handler of one RPC method: the received payload, and the sink of its
+/// responses.
 ///
-/// **Owned, and returning a future**, because the handler runs as a task that
-/// outlives the sample it was decoded from: a borrow of the received payload
-/// could not be held across an await. The header travels with the payload so the
-/// task can build the [`CallContext`](crate::types::CallContext) of the call it
-/// serves.
+/// **Borrowed, and returning a future.** The payload is the received sample's
+/// slice, aligned by construction: the handler decodes straight from it — no
+/// `to_vec`, no alignment realign — and the borrow ends **before** the future is
+/// built (the decode is synchronous), so nothing outlives the sample. The header
+/// travels with the payload so the task can build the
+/// [`CallContext`](crate::types::CallContext) of the call it serves.
 pub type MethodHandler =
-    Box<dyn Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync>;
+    Box<dyn for<'a> Fn(RpcHeader, &'a [u8], OwnedEmitter) -> BoxResponseFuture + Send + Sync>;
 
 /// A handler's boxed future, re-exported where the codegen names it.
 pub type BoxResponseFuture = crate::types::BoxResponseFuture;
@@ -265,7 +267,10 @@ impl ServiceDispatcher {
     /// Registers the handler of one RPC method, keyed by its id.
     pub fn method<F>(&mut self, method_id: impl MethodId, handler: F) -> &mut Self
     where
-        F: Fn(RpcHeader, Vec<u8>, OwnedEmitter) -> BoxResponseFuture + Send + Sync + 'static,
+        F: for<'a> Fn(RpcHeader, &'a [u8], OwnedEmitter) -> BoxResponseFuture
+            + Send
+            + Sync
+            + 'static,
     {
         self.handlers
             .insert(method_id.method_id(), Box::new(handler));
@@ -287,7 +292,7 @@ impl ServiceDispatcher {
         &self,
         method_id: u32,
         header: RpcHeader,
-        payload: Vec<u8>,
+        payload: &[u8],
         emitter: OwnedEmitter,
     ) -> Option<BoxResponseFuture> {
         self.handlers

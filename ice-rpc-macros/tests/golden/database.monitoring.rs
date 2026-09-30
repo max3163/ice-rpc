@@ -98,7 +98,7 @@ impl DatabaseApiServer {
                     ice_rpc::gen::method_id_of("get"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
-                        payload: Vec<u8>,
+                        payload: &[u8],
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
                         let ctx = ice_rpc::gen::CallContext::new(
@@ -107,39 +107,43 @@ impl DatabaseApiServer {
                             "get",
                         );
                         let impl_ref = service_impl.clone();
+                        let request = match ice_rpc::gen::decode_aligned::<
+                            DatabaseApiRequest,
+                        >(payload) {
+                            Ok(DatabaseApiRequest::Get { key }) => (key),
+                            Err(e) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload decoding failed: {:?}", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "get", e
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                            Ok(_) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload is another method's variant", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "get"
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                        };
                         ice_rpc::gen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
-                                match ice_rpc::gen::decode_aligned::<
-                                    DatabaseApiRequest,
-                                >(&payload) {
-                                    Ok(DatabaseApiRequest::Get { key }) => {
-                                        let stream = impl_ref.get(key).await;
-                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload decoding failed: {:?}", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "get", e
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                    Ok(_) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload is another method's variant", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "get"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                }
+                                let (key) = request;
+                                let stream = impl_ref.get(key).await;
+                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                    .await;
                             },
                         )
                     },
@@ -152,7 +156,7 @@ impl DatabaseApiServer {
                     ice_rpc::gen::method_id_of("put"),
                     move |
                         header: ice_rpc::gen::RpcHeader,
-                        payload: Vec<u8>,
+                        payload: &[u8],
                         emitter: ice_rpc::gen::OwnedEmitter,
                     | -> ice_rpc::gen::BoxResponseFuture {
                         let ctx = ice_rpc::gen::CallContext::new(
@@ -161,39 +165,43 @@ impl DatabaseApiServer {
                             "put",
                         );
                         let impl_ref = service_impl.clone();
+                        let request = match ice_rpc::gen::decode_aligned::<
+                            DatabaseApiRequest,
+                        >(payload) {
+                            Ok(DatabaseApiRequest::Put { key, value }) => (key, value),
+                            Err(e) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload decoding failed: {:?}", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "put", e
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                            Ok(_) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload is another method's variant", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "put"
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                        };
                         ice_rpc::gen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
-                                match ice_rpc::gen::decode_aligned::<
-                                    DatabaseApiRequest,
-                                >(&payload) {
-                                    Ok(DatabaseApiRequest::Put { key, value }) => {
-                                        let stream = impl_ref.put(key, value).await;
-                                        ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload decoding failed: {:?}", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "put", e
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                    Ok(_) => {
-                                        ice_rpc::gen::log::error!(
-                                            "[{}::{}] request payload is another method's variant", <
-                                            DatabaseApiProxy > ::SERVICE_NAME, "put"
-                                        );
-                                        let _ = ice_rpc::gen::emit_rpc_error(
-                                            ice_rpc::gen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                    }
-                                }
+                                let (key, value) = request;
+                                let stream = impl_ref.put(key, value).await;
+                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                    .await;
                             },
                         )
                     },

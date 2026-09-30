@@ -61,12 +61,14 @@ pub mod context;
 pub mod database;
 pub mod http;
 pub mod notification;
+pub mod workload;
 
 pub use config::*;
 pub use context::*;
 pub use database::*;
 pub use http::*;
 pub use notification::*;
+pub use workload::*;
 
 /// The decoders this crate generates are **submitted at link time**.
 ///
@@ -101,6 +103,7 @@ mod linked_decoders {
                 "DatabaseService",
                 "HttpService",
                 "NotificationService",
+                "WorkloadService",
             ],
             "every `#[service]` of this crate must submit a decoder"
         );

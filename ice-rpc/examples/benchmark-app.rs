@@ -24,7 +24,17 @@
 //! the code.
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
-use common::{ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery};
+
+// The allocator A/B of `plans/zero-copie-structs-options.md` (M2): the caller
+// allocates too — the payload it builds and the response it decodes — so both
+// sides of the measurement run on the same allocator.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+use common::{
+    ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery, WorkloadFilter,
+    WorkloadProfile, WorkloadQuery, WorkloadScalars, WorkloadService, WorkloadServiceProxy,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -39,6 +49,12 @@ struct BenchConfig {
     json: bool,
     min_success_rate: f64,
     min_rps: f64,
+    /// Bytes of the `text`/`blob` workload payloads.
+    payload_size: usize,
+    /// Number of string fields of the `fields`/`nested` workload payloads.
+    fields: usize,
+    /// Bytes per string field of the `fields`/`nested` workload payloads.
+    field_size: usize,
     /// Number of times the whole measured phase is repeated. With more than
     /// one repetition the **median** is reported: on a non-realtime OS a single
     /// phase is noisy enough to swing the throughput by 10-30%.
@@ -57,6 +73,9 @@ impl BenchConfig {
             json: false,
             min_success_rate: 0.95,
             min_rps: 0.0,
+            payload_size: 64,
+            fields: 8,
+            field_size: 32,
             repeat: 1,
         };
         let mut i = 1;
@@ -99,6 +118,18 @@ impl BenchConfig {
                 "--repeat" => {
                     i += 1;
                     cfg.repeat = args[i].parse().unwrap_or(cfg.repeat).max(1);
+                }
+                "--payload-size" => {
+                    i += 1;
+                    cfg.payload_size = args[i].parse().unwrap_or(cfg.payload_size);
+                }
+                "--fields" => {
+                    i += 1;
+                    cfg.fields = args[i].parse().unwrap_or(cfg.fields);
+                }
+                "--field-size" => {
+                    i += 1;
+                    cfg.field_size = args[i].parse().unwrap_or(cfg.field_size);
                 }
                 _ => {}
             }
@@ -261,6 +292,231 @@ async fn worker_person(
 
         join_set.spawn(async move {
             let outcome = send_one_person(db2, query).await;
+            drop(permit);
+            outcome
+        });
+
+        while let Some(Ok(outcome)) = join_set.try_join_next() {
+            results.push(outcome);
+        }
+    }
+
+    while let Some(Ok(outcome)) = join_set.join_next().await {
+        results.push(outcome);
+    }
+    results
+}
+
+/// The representative request shapes the workload service carries.
+#[derive(Clone, Copy)]
+enum WorkloadKind {
+    Text,
+    Fields,
+    Blob,
+    Nested,
+    /// Every remaining type family in one call.
+    Mixed,
+    /// One scalar in, one scalar out — the control of [`WorkloadKind::Reply`].
+    Ping,
+    /// One scalar in, a **struct** out: the response-side counterpart of
+    /// `Nested`, and the only case whose cost is paid by the caller's decode.
+    Reply,
+}
+
+impl WorkloadKind {
+    /// `None` when `service` is a demo service (db, person, config, ...).
+    fn from_service(service: &str) -> Option<Self> {
+        match service {
+            "text" => Some(WorkloadKind::Text),
+            "fields" => Some(WorkloadKind::Fields),
+            "blob" => Some(WorkloadKind::Blob),
+            "nested" => Some(WorkloadKind::Nested),
+            "mixed" => Some(WorkloadKind::Mixed),
+            "ping" => Some(WorkloadKind::Ping),
+            "reply" => Some(WorkloadKind::Reply),
+            _ => None,
+        }
+    }
+}
+
+/// One text field of `size` bytes. The suffix keeps each payload distinct, so
+/// string sharing/dedup cannot hide the per-request work.
+fn make_text(size: usize, seq: usize) -> String {
+    let mut s = "x".repeat(size.saturating_sub(16));
+    s.push_str(&format!("{seq:016x}"));
+    s
+}
+
+/// One binary body of `size` bytes, prefixed with the request sequence.
+fn make_blob(size: usize, seq: usize) -> Vec<u8> {
+    let mut b = vec![0xABu8; size];
+    if b.len() >= 8 {
+        b[..8].copy_from_slice(&(seq as u64).to_le_bytes());
+    }
+    b
+}
+
+/// `count` string fields of `field_size` bytes each.
+fn make_fields(count: usize, field_size: usize, seq: usize) -> Vec<String> {
+    (0..count)
+        .map(|k| make_text(field_size, seq.wrapping_add(k)))
+        .collect()
+}
+
+/// A nested query: a key, tags and structured filters.
+fn make_query(count: usize, field_size: usize, seq: usize) -> WorkloadQuery {
+    let tags = (0..count / 2).map(|k| make_text(field_size, k)).collect();
+    let filters = (0..count / 2)
+        .map(|k| WorkloadFilter {
+            field: make_text(field_size / 2, k),
+            value: make_text(field_size / 2, k + 1),
+        })
+        .collect();
+    WorkloadQuery {
+        key: make_text(field_size, seq),
+        tags,
+        filters,
+    }
+}
+
+/// `count` structured filters.
+fn make_filters(count: usize, field_size: usize, seq: usize) -> Vec<WorkloadFilter> {
+    (0..count)
+        .map(|k| WorkloadFilter {
+            field: make_text(field_size / 2, k + seq),
+            value: make_text(field_size / 2, k + seq + 1),
+        })
+        .collect()
+}
+
+/// `count` POD codes (`Vec<u32>`).
+fn make_codes(count: usize, seq: usize) -> Vec<u32> {
+    (0..count)
+        .map(|k| (seq as u32).wrapping_add(k as u32))
+        .collect()
+}
+
+/// Every scalar family, an enum and an `Option`.
+fn make_scalars(seq: usize) -> WorkloadScalars {
+    WorkloadScalars {
+        flag: seq.is_multiple_of(2),
+        count: seq as u32,
+        total: -(seq as i64),
+        ratio: seq as f64 * 0.5,
+        profile: match seq % 3 {
+            0 => WorkloadProfile::Fast,
+            1 => WorkloadProfile::Balanced,
+            _ => WorkloadProfile::Precise,
+        },
+        optional: if seq.is_multiple_of(4) {
+            None
+        } else {
+            Some(seq as u32)
+        },
+    }
+}
+
+async fn send_one_workload(
+    proxy: Arc<WorkloadServiceProxy>,
+    kind: WorkloadKind,
+    cfg: &BenchConfig,
+    seq: usize,
+) -> ReqOutcome {
+    let t0 = Instant::now();
+
+    // `fetch` answers with a **struct**, a success type no other case shares, so it
+    // is drained on its own — same timeout, same outcome mapping.
+    if matches!(kind, WorkloadKind::Reply) {
+        let mut rx = proxy.fetch(cfg.fields as u32).await;
+        return first_outcome(rx.next(), t0).await;
+    }
+
+    let mut rx = match kind {
+        WorkloadKind::Text => proxy.echo_text(make_text(cfg.payload_size, seq)).await,
+        WorkloadKind::Blob => proxy.upload(make_blob(cfg.payload_size, seq)).await,
+        WorkloadKind::Fields => {
+            // The list is built once and moved in: the case prices what a request
+            // that carries K variable fields costs on the caller side too.
+            proxy
+                .index_fields(make_fields(cfg.fields, cfg.field_size, seq))
+                .await
+        }
+        WorkloadKind::Nested => {
+            // Declared flat: the query is split into the four lists the signature
+            // asks for, and every one of them is moved in.
+            let query = make_query(cfg.fields, cfg.field_size, seq);
+            let filter_fields: Vec<String> =
+                query.filters.iter().map(|f| f.field.clone()).collect();
+            let filter_values: Vec<String> =
+                query.filters.iter().map(|f| f.value.clone()).collect();
+            proxy
+                .search(query.key, query.tags, filter_fields, filter_values)
+                .await
+        }
+        WorkloadKind::Ping => proxy.ping(cfg.fields as u32).await,
+        WorkloadKind::Mixed => {
+            proxy
+                .mixed(
+                    seq.is_multiple_of(2),
+                    seq as u32,
+                    -(seq as i64),
+                    make_scalars(seq),
+                    make_codes(cfg.fields, seq),
+                    make_filters(cfg.fields, cfg.field_size, seq),
+                )
+                .await
+        }
+        // Drained above: its success type is the only one that differs.
+        WorkloadKind::Reply => unreachable!("the reply case is drained before the match"),
+    };
+    first_outcome(rx.next(), t0).await
+}
+
+/// Maps the first event of a call to a [`ReqOutcome`], with the shared timeout.
+///
+/// Extracted from the request match so that the **response-side** case, whose
+/// success type is a struct, is measured by the very same rules as the others.
+async fn first_outcome<T>(
+    next: impl std::future::Future<Output = Option<Result<T, ice_rpc::ObservableError<String>>>>,
+    t0: Instant,
+) -> ReqOutcome {
+    match tokio::time::timeout(REQ_TIMEOUT, next).await {
+        Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
+        Ok(Some(Ok(_))) => ReqOutcome::Ok(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Business(_)))) => {
+            ReqOutcome::ErrService(t0.elapsed())
+        }
+        Ok(Some(Err(ice_rpc::ObservableError::Technical(_)))) => ReqOutcome::ErrIpc(t0.elapsed()),
+        Ok(Some(Err(ice_rpc::ObservableError::Empty)) | None) => ReqOutcome::ErrEmpty(t0.elapsed()),
+    }
+}
+
+async fn worker_workload(
+    proxy: Arc<WorkloadServiceProxy>,
+    kind: WorkloadKind,
+    worker_id: usize,
+    cfg: Arc<BenchConfig>,
+) -> Vec<ReqOutcome> {
+    let total = cfg.warmup_per_worker + cfg.requests_per_worker;
+
+    for i in 0..cfg.warmup_per_worker {
+        send_one_workload(proxy.clone(), kind, &cfg, worker_id * 7 + i * 3).await;
+    }
+
+    let mut results = Vec::with_capacity(cfg.requests_per_worker);
+    let depth = cfg.pipeline_depth.min(cfg.requests_per_worker);
+    let sem = Arc::new(Semaphore::new(depth));
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for i in cfg.warmup_per_worker..total {
+        let seq = worker_id * 7 + i * 3;
+        let proxy2 = proxy.clone();
+        let cfg2 = cfg.clone();
+        let sem2 = sem.clone();
+
+        let permit = sem2.acquire_owned().await.unwrap();
+        join_set.spawn(async move {
+            let outcome = send_one_workload(proxy2, kind, &cfg2, seq).await;
             drop(permit);
             outcome
         });
@@ -468,25 +724,47 @@ fn print_json(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
 /// The one-off connection costs (provider discovery, publisher creation,
 /// shared-memory growth, OS page-in) are paid by the **first** phase, so it is
 /// always used as an untimed warm-up before the measured repetitions.
-async fn run_phase(proxy: Arc<DatabaseServiceProxy>, cfg: Arc<BenchConfig>) -> (Stats, Duration) {
+/// Which proxy the phase drives: the demo database service, or the benchmark
+/// workload service.
+#[derive(Clone)]
+enum BenchmarkProxy {
+    Database(Arc<DatabaseServiceProxy>),
+    Workload(Arc<WorkloadServiceProxy>),
+}
+
+async fn run_phase(proxy: BenchmarkProxy, cfg: Arc<BenchConfig>) -> (Stats, Duration) {
     let wall_start = Instant::now();
     let mut handles = Vec::with_capacity(cfg.workers);
 
-    if cfg.service == "person" {
-        for worker_id in 0..cfg.workers {
-            let proxy = proxy.clone();
-            let cfg_c = cfg.clone();
-            handles.push(tokio::spawn(async move {
-                worker_person(proxy, worker_id, cfg_c).await
-            }));
+    match proxy {
+        BenchmarkProxy::Workload(proxy) => {
+            let kind = WorkloadKind::from_service(&cfg.service).expect("a workload service name");
+            for worker_id in 0..cfg.workers {
+                let proxy = proxy.clone();
+                let cfg_c = cfg.clone();
+                handles.push(tokio::spawn(async move {
+                    worker_workload(proxy, kind, worker_id, cfg_c).await
+                }));
+            }
         }
-    } else {
-        for worker_id in 0..cfg.workers {
-            let proxy = proxy.clone();
-            let cfg_c = cfg.clone();
-            handles.push(tokio::spawn(async move {
-                worker_db(proxy, worker_id, cfg_c).await
-            }));
+        BenchmarkProxy::Database(proxy) => {
+            if cfg.service == "person" {
+                for worker_id in 0..cfg.workers {
+                    let proxy = proxy.clone();
+                    let cfg_c = cfg.clone();
+                    handles.push(tokio::spawn(async move {
+                        worker_person(proxy, worker_id, cfg_c).await
+                    }));
+                }
+            } else {
+                for worker_id in 0..cfg.workers {
+                    let proxy = proxy.clone();
+                    let cfg_c = cfg.clone();
+                    handles.push(tokio::spawn(async move {
+                        worker_db(proxy, worker_id, cfg_c).await
+                    }));
+                }
+            }
         }
     }
 
@@ -517,8 +795,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("");
 
     // This process consumes services via locator().get().
-    let db_proxy = if cfg.service == "db" || cfg.service == "person" || cfg.service == "all" {
+    let workload_kind = WorkloadKind::from_service(&cfg.service);
+    let db_proxy = if workload_kind.is_none()
+        && (cfg.service == "db" || cfg.service == "person" || cfg.service == "all")
+    {
         ice_rpc::locator().get::<DatabaseServiceProxy>().await
+    } else {
+        None
+    };
+
+    let workload_proxy = if workload_kind.is_some() {
+        ice_rpc::locator().get::<WorkloadServiceProxy>().await
     } else {
         None
     };
@@ -537,7 +824,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Warmup: {} req/worker (not counted)", cfg.warmup_per_worker);
     log::info!("");
 
-    let proxy = db_proxy.expect("DatabaseServiceProxy not initialized");
+    let proxy = match workload_proxy {
+        Some(workload) => BenchmarkProxy::Workload(workload),
+        None => BenchmarkProxy::Database(
+            db_proxy
+                .clone()
+                .expect("DatabaseServiceProxy not initialized"),
+        ),
+    };
 
     // ── Untimed warm-up phase ────────────────────────────────────────
     // Absorbs the one-off connection costs before the measured phase(s).
@@ -640,34 +934,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !cfg.json {
-        log::info!("");
-        log::info!("=== get_person DEMO (3 calls) ===");
-        let demo_queries: &[(&str, &str)] = &[
-            ("Dupont", "Jean"),
-            ("Martin", "Marie"),
-            ("Bernard", "Pierre"),
-        ];
-        for (nom, prenom) in demo_queries {
-            let query = PersonneQuery {
-                nom: nom.to_string(),
-                prenom: prenom.to_string(),
-            };
-            let mut rx = proxy.get_person(query).await;
-            match rx.recv().await {
-                Ok(ice_rpc::Event::Next(info)) => {
-                    log::info!(
-                        "  {} {} — {} years old, {}, {}",
-                        info.nom,
-                        info.prenom,
-                        info.age,
-                        info.ville,
-                        info.profession
-                    );
+        if let Some(db) = &db_proxy {
+            log::info!("");
+            log::info!("=== get_person DEMO (3 calls) ===");
+            let demo_queries: &[(&str, &str)] = &[
+                ("Dupont", "Jean"),
+                ("Martin", "Marie"),
+                ("Bernard", "Pierre"),
+            ];
+            for (nom, prenom) in demo_queries {
+                let query = PersonneQuery {
+                    nom: nom.to_string(),
+                    prenom: prenom.to_string(),
+                };
+                let mut rx = db.get_person(query).await;
+                match rx.recv().await {
+                    Ok(ice_rpc::Event::Next(info)) => {
+                        log::info!(
+                            "  {} {} — {} years old, {}, {}",
+                            info.nom,
+                            info.prenom,
+                            info.age,
+                            info.ville,
+                            info.profession
+                        );
+                    }
+                    Ok(ice_rpc::Event::Error(e)) => {
+                        log::warn!("  {} {} — Error: {}", nom, prenom, e);
+                    }
+                    _ => log::warn!("  {} {} — No response", nom, prenom),
                 }
-                Ok(ice_rpc::Event::Error(e)) => {
-                    log::warn!("  {} {} — Error: {}", nom, prenom, e);
-                }
-                _ => log::warn!("  {} {} — No response", nom, prenom),
             }
         }
     }

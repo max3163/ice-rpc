@@ -26,11 +26,21 @@
 
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
+
+// The allocator A/B of `plans/zero-copie-structs-options.md` (M2): a deployment
+// that serves requests with many variable fields pays one `malloc` per field in
+// the deserializing decode, so the process allocator is part of its profile. The
+// library never picks one; the binary does.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use async_trait::async_trait;
 use common::{
     ConfigError, ConfigService, ConfigServiceProxy, DatabaseError, DatabaseService,
     DatabaseServiceProxy, HttpError, HttpRequestParams, HttpResponseParams, HttpService,
     HttpServiceProxy, NotificationService, NotificationServiceProxy, PersonneInfo, PersonneQuery,
+    WorkloadFilter, WorkloadProfile, WorkloadQuery, WorkloadScalars, WorkloadService,
+    WorkloadServiceProxy,
 };
 use ice_rpc::{from, of, throw_error};
 use ice_rpc::{Observable, ObservableError, ServiceInit};
@@ -329,6 +339,97 @@ impl NotificationService for NotificationServiceImpl {
     }
 }
 
+/// Benchmark workload: echoes a length-derived checksum of the request, so the
+/// **response** stays a single small `u32` and the measurement isolates the
+/// **request** cost.
+struct WorkloadServiceImpl;
+
+#[async_trait]
+impl WorkloadService for WorkloadServiceImpl {
+    async fn echo_text(&self, text: String) -> Observable<u32, String> {
+        of(text.len() as u32)
+    }
+
+    async fn index_fields(&self, fields: Vec<String>) -> Observable<u32, String> {
+        // Every field is read, so nothing can be optimized away: the provider
+        // pays one `String` per field to rebuild the list from the archive.
+        let total: usize = fields.iter().map(|field| field.len()).sum();
+        of(total as u32)
+    }
+
+    async fn upload(&self, body: Vec<u8>) -> Observable<u32, String> {
+        of(body.len() as u32)
+    }
+
+    async fn search(
+        &self,
+        key: String,
+        tags: Vec<String>,
+        filter_fields: Vec<String>,
+        filter_values: Vec<String>,
+    ) -> Observable<u32, String> {
+        // Every field is read, so nothing can be optimized away.
+        let mut total = key.len();
+        total += tags.iter().map(|tag| tag.len()).sum::<usize>();
+        total += filter_fields
+            .iter()
+            .zip(filter_values)
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        of(total as u32)
+    }
+
+    async fn ping(&self, count: u32) -> Observable<u32, String> {
+        of(count)
+    }
+
+    async fn fetch(&self, count: u32) -> Observable<WorkloadQuery, String> {
+        // The response the caller will **deserialize**: one `String` per tag and
+        // two per filter, which is exactly what a struct argument costs on the
+        // other side of the wire. Nothing of the request is echoed — it is a
+        // single scalar — so the measurement isolates the response.
+        let count = count as usize;
+        let mut query = WorkloadQuery {
+            key: "reply-key".to_string(),
+            tags: Vec::with_capacity(count),
+            filters: Vec::with_capacity(count),
+        };
+        for index in 0..count {
+            query.tags.push(format!("tag{index:08}"));
+            query.filters.push(WorkloadFilter {
+                field: format!("field{index:06}"),
+                value: format!("value{index:06}"),
+            });
+        }
+        of(query)
+    }
+
+    async fn mixed(
+        &self,
+        flag: bool,
+        count: u32,
+        total: i64,
+        scalars: WorkloadScalars,
+        codes: Vec<u32>,
+        filters: Vec<WorkloadFilter>,
+    ) -> Observable<u32, String> {
+        // Every field is read, so nothing can be optimized away on the provider
+        // side either.
+        let mut sum = u64::from(count)
+            + total.unsigned_abs()
+            + u64::from(scalars.count)
+            + scalars.total.unsigned_abs()
+            + u64::from(scalars.optional.unwrap_or(0))
+            + u64::from(flag)
+            + scalars.ratio as u64
+            + matches!(scalars.profile, WorkloadProfile::Precise) as u64
+            + codes.iter().map(|c| u64::from(*c)).sum::<u64>()
+            + filters.len() as u64;
+        sum = sum.wrapping_add(filters.iter().map(|f| f.field.len() as u64).sum());
+        of(sum as u32)
+    }
+}
+
 #[ice_rpc::main(tokio)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -384,6 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))),
         HttpServiceProxy::provide_with_init(HttpServiceImpl::new(100 * 1024 * 1024)),
         NotificationServiceProxy::provide(NotificationServiceImpl),
+        WorkloadServiceProxy::provide(WorkloadServiceImpl),
     )
     .await
 }

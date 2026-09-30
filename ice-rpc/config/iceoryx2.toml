@@ -17,3 +17,8 @@ max-subscribers = 16
 max-nodes = 32
 subscriber-max-buffer-size = 1024
 publisher-max-loaned-samples = 1024
+# `static` (the compiled-in default) makes `initial_max_slice_len` a hard cap,
+# refusing any larger payload at loan time. `power-of-two` grows the sample
+# instead, so a request larger than the channel's declared `max_slice_len`
+# still travels. See `Readme.md`, section "Configuration".
+publisher-allocation-strategy = "PowerOfTwo"

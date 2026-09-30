@@ -12,3 +12,11 @@ max-subscribers = 16
 max-nodes = 32
 subscriber-max-buffer-size = 1024
 publisher-max-loaned-samples = 1024
+# The compiled-in default is `static`, which makes a publisher's
+# `initial_max_slice_len` a hard cap: a payload larger than it is refused at
+# loan time (the transport turns that into an `RpcError`). `power-of-two` lets
+# the publisher grow the sample instead, so a request larger than the channel's
+# declared `max_slice_len` still travels — which is what the HttpService (up to
+# 100 MB) and the benchmark workload rely on. See `ice-rpc/Readme.md`,
+# section "Configuration".
+publisher-allocation-strategy = "PowerOfTwo"

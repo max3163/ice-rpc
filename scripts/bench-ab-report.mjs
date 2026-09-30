@@ -3,9 +3,8 @@
 //
 // The statistic that matters is the **median of the paired ratios**: within one
 // pass the two variants ran back to back, so their ratio is free of the temporal
-// drift that makes two separate runs incomparable (±10-15 % on unchanged code,
-// see `plans/bench-after-step2.md`). The median of the per-pass throughputs is
-// printed next to it for scale only.
+// drift that makes two separate runs incomparable (±10-15 % on unchanged code).
+// The median of the per-pass throughputs is printed next to it for scale only.
 //
 // Usage:
 //   node scripts/bench-ab-report.mjs target/ab/results-view

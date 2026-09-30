@@ -8,11 +8,9 @@
 //!
 //! The feature-on counterpart is `local_call_span.rs`, and the allocation side is
 //! counted by `local_call_allocations.rs` (3,00 per call, the same as before).
-//!
-//! See `plans/spans-appels-internes-provider.md`.
 
 #![cfg(not(feature = "tracing"))]
-#![allow(missing_docs)] // test target: documented by the plan, not part of a published API
+#![allow(missing_docs)] // test target: documented by the module header, not part of a published API
 #![allow(clippy::unwrap_used)] // tests may panic
 
 use std::sync::Mutex;

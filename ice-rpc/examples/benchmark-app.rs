@@ -25,9 +25,9 @@
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
-// The allocator A/B of `plans/zero-copie-structs-options.md` (M2): the caller
-// allocates too — the payload it builds and the response it decodes — so both
-// sides of the measurement run on the same allocator.
+// The allocator A/B: the caller allocates too — the payload it builds and the
+// response it decodes — so both sides of the measurement run on the same
+// allocator.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

@@ -150,8 +150,8 @@ impl napi::bindgen_prelude::ToNapiValue for JsonValue {
 ///
 /// `compute` owns the blocking IPC call; `resolve` hands the value back to the
 /// Node.js main thread. This split is what keeps the event loop free — the
-/// synchronous version froze it for the whole call, including the 30 s failure
-/// path measured in `plans/baseline/BASELINE.md`.
+/// synchronous version it replaced froze it for the whole call, including the
+/// 30 s failure path.
 pub struct CallServiceTask {
     service: String,
     method: String,

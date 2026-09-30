@@ -163,9 +163,9 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
-# The allocator A/B of `plans/zero-copie-structs-options.md` (M2): the two demo
-# binaries opt in with `#[global_allocator]`, so the measurement is a property of
-# the **deployment**, never of the library. Dev-only, like the rest of the demos.
+# The allocator A/B: the two demo binaries opt in with `#[global_allocator]`, so
+# the measurement is a property of the **deployment**, never of the library.
+# Dev-only, like the rest of the demos.
 mimalloc = "0.1"
 # `tracing-demo` reads the spans the `tracing` feature emits. Dev-only: the
 # subscriber of a deployment is the deployment's business.
@@ -190,8 +190,7 @@ name = "hot_path"
 harness = false
 
 # Prices the envelope that would give a **direct** (in-process) provider call a
-# `CallContext` and a span, so the decision is taken on numbers. See
-# `plans/spans-appels-internes-provider.md`.
+# `CallContext` and a span, so the decision is taken on numbers.
 [[bench]]
 name = "local_call"
 harness = false
@@ -219,18 +218,18 @@ name = "handler_handoff"
 harness = false
 
 # Prices realistic request shapes (scalar, text, record, blob, many strings,
-# table) across sizes, under the three strategies of the zero-copy plan
+# table) across sizes, under three decoding strategies
 # (`current_copy_then_decode`, `in_place_decode`, `access_zero_alloc`). The
 # shapes that matter are the ones the `handler_handoff` bench misses: many
 # variable fields (K allocations) and large blobs. See
-# `benches/payload_shapes.rs` and `plans/zero-copie-requetes-provider.md`.
+# `benches/payload_shapes.rs`.
 [[bench]]
 name = "payload_shapes"
 harness = false
 
 # ── Demo applications ───────────────────────────────────────────────
-# Hosted here (see `plans/split-rx-layer.md`) so a single crate ships the
-# library, its examples and its benches. They all need the Tokio runtime facade,
+# Hosted here so a single crate ships the library, its examples and its benches.
+# They all need the Tokio runtime facade,
 # which the transport selects through the `tokio` feature; the reactive layer
 # they use is re-exported from `ice-rpc-rx`.
 [[example]]

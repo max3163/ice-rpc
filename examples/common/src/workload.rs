@@ -15,8 +15,7 @@
 //! Every method takes what a real caller has: **owned** values. A request that
 //! carries structures is materialized on both sides — the caller builds it, the
 //! provider rebuilds it from the archive — and that is exactly the cost this
-//! service exists to price. The A/B harness and the conclusions drawn from it
-//! live in `plans/zero-copie-structs-options.md`.
+//! service exists to price, and what the interleaved A/B harness measures.
 //!
 //! Every method answers a small `u32` (a length-derived checksum) so the
 //! **response** cannot be the cause, except `fetch`, whose response is a
@@ -113,9 +112,8 @@ pub trait WorkloadService {
     ///
     /// Declared **flat** rather than as one `WorkloadQuery`: the same fields
     /// travel as four arguments, so the case prices the variable fields without
-    /// also pricing the structural nesting. Measured against a bespoke view type,
-    /// the flat form is within 3 % and costs the library nothing at all
-    /// (`plans/c2c-nested-views.md`).
+    /// also pricing the structural nesting. Measured against a bespoke borrowed
+    /// view type, the flat form is within 3 % and costs the library nothing.
     async fn search(
         &self,
         key: String,
@@ -136,8 +134,7 @@ pub trait WorkloadService {
     /// request: a **struct** crosses the wire here as a *return* value, which is
     /// the direction the caller cannot read in place — a stream hands out owned
     /// values, so it materializes the whole structure. `count` drives the number
-    /// of variable fields, so one parameter prices the response cost
-    /// (`plans/zero-copie-structs-options.md` §9).
+    /// of variable fields, so one parameter prices the response cost.
     async fn fetch(&self, count: u32) -> Observable<WorkloadQuery, String>;
 
     /// Covers every remaining type family in one call: scalars (`bool`, `u32`,

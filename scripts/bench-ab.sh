@@ -2,10 +2,10 @@
 # Interleaved A/B benchmark: two frozen binary pairs, passes alternated.
 #
 # The sequential before/after harness cannot resolve the zero-copy work: whole
-# runs drift by ±10-15 % on code that did not change at all (see
-# `plans/bench-after-step2.md`). This script removes the temporal drift by
-# alternating the two variants *within* each pass, and by flipping their order
-# every pass (A→B, then B→A) so neither benefits from a warm machine.
+# runs drift by ±10-15 % on code that did not change at all. This script removes
+# the temporal drift by alternating the two variants *within* each pass, and by
+# flipping their order every pass (A→B, then B→A) so neither benefits from a warm
+# machine.
 #
 # Prerequisites — both pairs must already be built and frozen, under
 # `target/ab/<variant>/`:

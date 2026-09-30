@@ -1,8 +1,7 @@
 //! The call context: the transport hands the request header to the handler, and
 //! the implementation reads it as an **ambient** value.
 //!
-//! Increment 1 of `plans/call-context-tracing.md`. No wire format changes:
-//! everything asserted here is already transported today.
+//! No wire format changes: everything asserted here is already transported today.
 
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]

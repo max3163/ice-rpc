@@ -155,6 +155,10 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
+# The allocator A/B of `plans/zero-copie-structs-options.md` (M2): the two demo
+# binaries opt in with `#[global_allocator]`, so the measurement is a property of
+# the **deployment**, never of the library. Dev-only, like the rest of the demos.
+mimalloc = "0.1"
 # `tracing-demo` reads the spans the `tracing` feature emits. Dev-only: the
 # subscriber of a deployment is the deployment's business.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -204,6 +208,16 @@ harness = false
 # against a recycled buffer. See `benches/handler_handoff.rs`.
 [[bench]]
 name = "handler_handoff"
+harness = false
+
+# Prices realistic request shapes (scalar, text, record, blob, many strings,
+# table) across sizes, under the three strategies of the zero-copy plan
+# (`current_copy_then_decode`, `in_place_decode`, `access_zero_alloc`). The
+# shapes that matter are the ones the `handler_handoff` bench misses: many
+# variable fields (K allocations) and large blobs. See
+# `benches/payload_shapes.rs` and `plans/zero-copie-requetes-provider.md`.
+[[bench]]
+name = "payload_shapes"
 harness = false
 
 # ── Demo applications ───────────────────────────────────────────────

@@ -366,7 +366,7 @@ publisher-max-loaned-samples = 1024
 
 The one publisher setting iceoryx2 does not expose in its configuration is the
 initial slice length, and its builder default is `1` — with the default
-`publisher-allocation-strategy = "static"` that is a hard cap, so a 1-element
+`publisher-allocation-strategy = "Static"` that is a hard cap, so a 1-element
 slice cannot carry an RPC payload. It is therefore declared by the service, per
 channel:
 
@@ -376,8 +376,48 @@ channel:
 
 Every service of a group must declare the same `max_slice_len`; an omitted value
 falls back to `DEFAULT_MAX_SLICE_LEN` (256). Setting
-`publisher-allocation-strategy = "power-of-two"` in the configuration lets a
+`publisher-allocation-strategy = "PowerOfTwo"` in the configuration lets a
 publisher grow past that initial size instead of refusing the sample.
+
+### Process allocator
+
+A request that carries a **struct the service takes by value** (`async fn
+search(&self, query: WorkloadQuery)`) is deserialized, and rkyv pays **one
+allocation per variable field** to do it — the same for a `String` argument, or
+for the list a caller builds before the call. On a request with ~130 variable
+fields that is 130 `malloc`/`free` pairs per call, and the process allocator
+becomes the dominant cost:
+
+| one process, one line changed | system allocator | `mimalloc` |
+|---|---|---|
+| provider serving a struct of ~130 variable fields | 62 481 req/s | **138 032 req/s** |
+| caller building 256 string fields | 83 717 req/s | **141 618 req/s** |
+
+A **response** pays it twice — once by the provider that builds the value, once by
+the caller that decodes it — and no signature can avoid that, since a stream hands
+out owned values. The same 64-field structure runs at 19 434 req/s as a *return*
+value, against 139 854 as a *request* and 283 668 for a scalar call (40 733 /
+211 429 / 341 074 with `mimalloc`, `plans/zero-copie-structs-options.md` §9). A
+large structured response is therefore a **design choice**: splitting it into
+several small ones costs a fraction of that.
+
+ice-rpc never picks an allocator; the binary does:
+
+```rust,ignore
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+```
+
+Both demo binaries carry it for that reason, and
+`plans/zero-copie-structs-options.md` §8 holds the three-way measurement
+(provider only, caller only, both).
+
+The allocations themselves cannot be avoided from the outside: an archive holds the
+**archived** form of a value, so the provider rebuilds every owned field, and a
+stream hands the caller owned values. What the numbers above price *is* that, and the
+levers left are the allocator (above) and the **shape** of the exchange — a response
+split into several small ones, or a request that carries fewer variable fields.
+`plans/zero-copie-structs-options.md` records what was measured, and what was refused.
 
 ## License
 

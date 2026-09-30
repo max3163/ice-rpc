@@ -123,6 +123,8 @@ jobs:
 
       - name: Check (common, optional features)
         run: cargo check -p common --all-targets --features napi,monitoring,http --features ice-rpc/http-threads
+      - name: Check (common, http without json)
+        run: cargo check -p common --all-targets --no-default-features --features monitoring,http --features ice-rpc/http-threads
   msrv:
     name: MSRV (declared rust-version)
     runs-on: ubuntu-latest

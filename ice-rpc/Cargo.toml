@@ -75,7 +75,13 @@ tracing = ["dep:tracing"]
 #                    application's executor;
 # - `http-tokio`   → trillium-tokio on tokio.
 # Enabling `http` without any of them is a compile error naming the three.
-http = ["dep:trillium", "ice-rpc-macros/http"]
+#
+# The invoker also decodes a byte argument from base64 — the same contract the
+# Node.js bridge uses — so `http` enables the `base64` dependency the invoker
+# names. Without it, a service with a `Vec<u8>` argument would not compile in a
+# gateway that never speaks Node.js: the invoker is emitted for `http` too, and
+# the symbol would be missing.
+http = ["dep:base64", "dep:trillium", "ice-rpc-macros/http"]
 http-threads = ["http", "rt-threads", "dep:trillium-smol"]
 http-smol = ["http", "smol", "dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
@@ -106,10 +112,12 @@ async-trait = { workspace = true }
 tracing = { version = "0.1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Optional, and reachable only through the `json` feature: the only code that
-# names `base64` is the JSON converter `#[service]` generates for a `Vec<u8>`
-# argument or field. It stays declared with `optional = true` so the `dep:` form
-# in that feature can name it, instead of exposing a `base64` feature of its own.
+# Optional, and reachable through `json` or `http`: the only code that names
+# `base64` is the JSON converter `#[service]` generates for a `Vec<u8>` argument
+# or field — the request builder under `json`, and the invoker both bridges
+# dispatch to under `json` or `http`. It stays declared with `optional = true` so
+# the `dep:` form in those features can name it, instead of exposing a `base64`
+# feature of its own.
 base64 = { workspace = true, optional = true }
 # Pulled by the `monitoring` feature only: it is the linker-section machinery the
 # generated decoder registrations are collected through.

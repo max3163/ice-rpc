@@ -121,24 +121,39 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── transport/              ← Publish/subscribe transport: one request and one
 │   │   │                          response channel per channel (group of services),
 │   │   │                          correlated by the 16-byte id of the zero-copy header
-│   │   ├── mod.rs              ← aliases, tuning constants, shared node, rkyv decode
+│   │   ├── mod.rs              ← aliases, shared node, rkyv decode, orphan sweep
+│   │   ├── tuning.rs           ← protocol invariants + runtime tuning constants
+│   │   ├── open.rs             ← service opening + mismatch / stale-state diagnosis
 │   │   ├── notify.rs           ← coalesced wake-up notifications
 │   │   ├── waitset.rs          ← blocking wait (Notifier / Listener / WaitSet)
+│   │   ├── pump.rs             ← receive loop shared by both dispatch threads
+│   │   ├── publish.rs          ← retrying publication (publish_until_delivered)
 │   │   ├── bridge.rs           ← Observable → wire samples, ServiceDispatcher
 │   │   ├── client.rs           ← request publication + response routing
-│   │   └── server.rs           ← channel creation, dispatch, response publication
+│   │   ├── server.rs           ← channel creation, dispatch, response publication
+│   │   └── monitor.rs          ← read-only observation surface (Emitter, monitor ports)
 │   ├── types/                  ← Protocol types + the stream vocabulary re-exported
 │   │   │                          from ice-rpc-rx (Event, Observable, Sender, …):
+│   │   ├── mod.rs              ← sub-module facade + the ice-rpc-rx re-exports
 │   │   ├── node.rs             ← NodeId (PID) + raw_pid_to_u32
 │   │   ├── wire.rs             ← WireEvent (serializable event), normalize_wire_event
 │   │   ├── header.rs           ← RpcHeader (zero-copy) + EventKind
+│   │   ├── context.rs          ← CallContext (the call being served, read-only)
 │   │   └── consts.rs           ← name-length limits shared with the macros
 │   ├── node_liveness.rs        ← Native iceoryx2 node monitoring (Node::list,
 │   │                              NodeState::Alive/Dead), single shared poller
+│   ├── monitor.rs              ← Read-only observation surface for ice-rpc-monitor
+│   │   │                          (ServiceDecoder, Decoders::linked)
+│   │   ├── decode.rs           ← payload rendering + the link-time decoder registry
+│   │   └── inventory.rs        ← nodes / services / file-layout inventory
 │   ├── http_gateway.rs         ← HTTP REST gateway (trillium) : exposes the services
 │   │                              via GET/POST on /{service}/{method}
 │   ├── locator.rs              ← ServiceLocator (register/get + Kahn topological
 │   │                              initialization order)
+│   ├── service_traits.rs       ← ServiceLifecycle / ServiceNamed / ServiceInit
+│   ├── global.rs               ← Process-wide state: one declaration + locking policy
+│   ├── hash.rs                 ← fast deterministic hashers for the hot-path maps
+│   ├── labels.rs               ← stable labels of the enums crossing a process bound
 │   ├── shutdown.rs             ← Registry of the blocking IPC threads (clean stop)
 │   ├── sync.rs                 ← Poisoning-tolerant lock helper
 │   ├── config.rs               ← iceoryx2 effective configuration (inherits the
@@ -148,23 +163,31 @@ ice-rpc/                        ← Main crate (library + runtime)
 │
 ice-rpc-macros/                 ← Procedural macros crate
 ├── src/
-│   ├── lib.rs                  ← Entry point : parses the trait, orchestrates the modules
+│   ├── lib.rs                  ← Entry point : the #[service] attribute macro
+│   ├── entry.rs                ← Expansion of the #[ice_rpc::main] attribute
+│   ├── features.rs             ← Features::from_cfg : which optional blocks to emit
+│   ├── model.rs                ← The single reading of a #[service] trait
+│   ├── golden_tests.rs         ← Golden comparison of the whole expansion
 │   └── codegen/
+│       ├── mod.rs              ← sub-modules specialized by role
 │       ├── helpers.rs          ← g_variant_name(), extract_rpc_result_types()
 │       ├── client.rs           ← {Trait}Client : rkyv request → native_call
 │       ├── server.rs           ← {Trait}Server : per-method ServiceDispatcher
 │       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderJson modes
 │       ├── lifecycle.rs        ← ServiceLifecycle/ServiceInit/ServiceNamed
 │       │                          (+ spawn_native_service for the provider)
+│       ├── decoder.rs          ← monitoring: Display for the request + {Trait}Decoder
 │       └── json.rs             ← The JSON view: rkyv↔Value converters and JsonInvoker
 │
-common/                         ← Example service definitions (not shipped)
+examples/common/                ← Example service definitions (not shipped)
 │   └── src/
-│       ├── mod.rs              ← pub mod config/context/database/http + re-exports
+│       ├── mod.rs              ← pub mod config/context/database/http/notification/workload
 │       ├── config.rs           ← ConfigService
 │       ├── context.rs          ← ContextService
 │       ├── database.rs         ← DatabaseService
-│       └── http.rs             ← HttpService
+│       ├── http.rs             ← HttpService
+│       ├── notification.rs     ← NotificationService (push/stream demo)
+│       └── workload.rs         ← WorkloadService (benchmark payload shapes)
 gateway_nodejs/                 ← NAPI-RS gateway : one bridge + the generated JSON views
 │   ├── build.rs                ← N-API build script
 │   └── src/
@@ -496,7 +519,7 @@ sequenceDiagram
 | Step | Byte copy | What happens |
 |---|---|---|
 | Build the value | none | the caller builds its owned args, or the service builds its return value. Not a transport cost |
-| Encode | **no copy**, but serialization | `rkyv` walks the value into a reusable `AlignedVec` with `to_bytes_in`. A request uses the **thread-local** [`REQUEST_SCRATCH`](ice-rpc/src/transport/client.rs:423) — one allocation per thread, reused by every later call; a response uses the scratch [`observable_to_responses`](ice-rpc/src/transport/bridge.rs:173) owns — **one allocation per response stream**, reused for every event of that stream |
+| Encode | **no copy**, but serialization | `rkyv` walks the value into a reusable `AlignedVec` with `to_bytes_in`. A request uses the **thread-local** [`REQUEST_SCRATCH`](ice-rpc/src/transport/client.rs:423) — one allocation per thread, reused by every later call; a response uses the scratch [`observable_to_responses`](ice-rpc/src/transport/bridge.rs:157) owns — **one allocation per response stream**, reused for every event of that stream |
 | Publish | **one copy of the whole payload** | [`try_publish`](ice-rpc/src/transport/publish.rs:96) loans a sample and `write_from_slice`s the archive into it: this is where the bytes enter shared memory. The `RpcHeader` rides in the sample's `user_header`, not in the payload |
 | Deliver on the bus | none | iceoryx2 makes the sample visible to its subscribers; the consumer receives a pointer to it |
 | Decode | **none of the raw bytes** | [`decode_aligned`](ice-rpc/src/transport/mod.rs:203) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` **on the sample**. The provider decodes a request straight from the received slice — the `to_vec()` it used to do is gone, which is what keeps a request from paying a second payload-sized copy |

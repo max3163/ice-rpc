@@ -140,7 +140,7 @@ several turns of the event loop.
 Nothing to declare: the consumer proxy is created on demand, and the methods it
 answers to are the ones `#[service]` generated for the service. The **services**
 this gateway serves are the list in
-[`src/services.rs`](src/services.rs:24) (`maintained_services!`) — its own, not
+[`src/services.rs`](src/services.rs:36) (`maintained_services!`) — its own, not
 `common`'s, so a process that maintains a subset says which subset, and the
 compiler checks each name against the generated proxies.
 

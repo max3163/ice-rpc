@@ -11,6 +11,7 @@
 //! | [`database`]     | `DatabaseService` + `DatabaseError` + `PersonneQuery`/`PersonneInfo` |
 //! | [`http`]         | `HttpService` + `HttpRequestParams`/`HttpResponseParams` + `HttpError` |
 //! | [`notification`] | `NotificationService` (multi-value stream for `subscribe`)     |
+//! | [`workload`]     | `WorkloadService` (benchmark payload shapes)                   |
 //!
 //! ## Lazy consumption
 //!

@@ -1,6 +1,7 @@
 #[allow(unexpected_cfgs)]
 #[async_trait::async_trait]
 pub trait DatabaseApi: Send + Sync + 'static {
+    async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
     async fn get(&self, key: String) -> Observable<String, String>;
     async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
 }
@@ -13,8 +14,9 @@ pub trait DatabaseApi: Send + Sync + 'static {
     Debug
 )]
 pub enum DatabaseApiRequest {
-    Get { key: String } = 0u8,
-    Put { key: String, value: Vec<u8> } = 1u8,
+    Add { a: i32, b: i32 } = 0u8,
+    Get { key: String } = 1u8,
+    Put { key: String, value: Vec<u8> } = 2u8,
 }
 #[allow(missing_docs)]
 impl DatabaseApiProxy {
@@ -32,6 +34,15 @@ pub struct DatabaseApiClient;
 impl DatabaseApiClient {
     pub fn new() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self)
+    }
+    pub async fn add(&self, a: i32, b: i32) -> ice_rpc::Observable<i32, String> {
+        let req_val = DatabaseApiRequest::Add { a, b };
+        ice_rpc::gen::serialize_and_call::<
+            i32,
+            String,
+            _,
+        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("add"), &req_val)
+            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
     pub async fn get(&self, key: String) -> ice_rpc::Observable<String, String> {
         let req_val = DatabaseApiRequest::Get { key };
@@ -91,6 +102,64 @@ impl DatabaseApiServer {
         let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
             <DatabaseApiProxy>::SERVICE,
         );
+        {
+            let service_impl = self.service_impl.clone();
+            dispatcher
+                .method(
+                    ice_rpc::gen::method_id_of("add"),
+                    move |
+                        header: ice_rpc::gen::RpcHeader,
+                        payload: &[u8],
+                        emitter: ice_rpc::gen::OwnedEmitter,
+                    | -> ice_rpc::gen::BoxResponseFuture {
+                        let ctx = ice_rpc::gen::CallContext::new(
+                            &header,
+                            <DatabaseApiProxy>::SERVICE_NAME,
+                            "add",
+                        );
+                        let impl_ref = service_impl.clone();
+                        let request = match ice_rpc::gen::decode_aligned::<
+                            DatabaseApiRequest,
+                        >(payload) {
+                            Ok(DatabaseApiRequest::Add { a, b }) => (a, b),
+                            Err(e) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload decoding failed: {:?}", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "add", e
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                            Ok(_) => {
+                                ice_rpc::gen::log::error!(
+                                    "[{}::{}] request payload is another method's variant", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "add"
+                                );
+                                let mut emitter = emitter;
+                                let _ = ice_rpc::gen::emit_rpc_error(
+                                    ice_rpc::gen::RpcError::SerializationError,
+                                    &mut *emitter,
+                                );
+                                return Box::pin(async {});
+                            }
+                        };
+                        ice_rpc::gen::call_scoped(
+                            ctx,
+                            async move {
+                                let mut emitter = emitter;
+                                let (a, b) = request;
+                                let stream = impl_ref.add(a, b).await;
+                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                    .await;
+                            },
+                        )
+                    },
+                );
+        }
         {
             let service_impl = self.service_impl.clone();
             dispatcher
@@ -291,6 +360,28 @@ impl DatabaseApiProxy {
 #[allow(missing_docs)]
 #[async_trait::async_trait]
 impl DatabaseApi for DatabaseApiProxy {
+    async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            DatabaseApiMode::Provider { local_impl, .. } => {
+                ice_rpc::gen::local_call_scoped(
+                        <DatabaseApiProxy>::SERVICE,
+                        <DatabaseApiProxy>::SERVICE_NAME,
+                        "add",
+                        local_impl.add(a, b),
+                    )
+                    .await
+            }
+            DatabaseApiMode::Consumer { ipc_client } => ipc_client.add(a, b).await,
+            DatabaseApiMode::ProviderJson => {
+                ice_rpc::Observable::from_technical_error(
+                    ice_rpc::RpcError::Internal(
+                        "ProviderJson: direct calls are not supported — use IPC".into(),
+                    ),
+                )
+            }
+        }
+    }
     async fn get(&self, key: String) -> Observable<String, String> {
         let mode = self.mode.read().await;
         match &*mode {
@@ -352,6 +443,100 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                 let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
                     <DatabaseApiProxy>::SERVICE,
                 );
+                {
+                    dispatcher
+                        .method(
+                            ice_rpc::gen::method_id_of("add"),
+                            move |
+                                header: ice_rpc::gen::RpcHeader,
+                                payload: &[u8],
+                                emitter: ice_rpc::gen::OwnedEmitter,
+                            | -> ice_rpc::gen::BoxResponseFuture {
+                                let ctx = ice_rpc::gen::CallContext::new(
+                                    &header,
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "add",
+                                );
+                                let args = DatabaseApiProxy::deserialize_request_to_value(
+                                    "add",
+                                    payload,
+                                );
+                                ice_rpc::gen::call_scoped(
+                                    ctx,
+                                    async move {
+                                        let mut emitter = emitter;
+                                        let Some(args) = args else {
+                                            ::log::error!(
+                                                "[{}::{}] Failed to deserialize the request", <
+                                                DatabaseApiProxy > ::SERVICE_NAME, "add"
+                                            );
+                                            let _ = ice_rpc::gen::emit_rpc_error(
+                                                ice_rpc::gen::RpcError::SerializationError,
+                                                &mut *emitter,
+                                            );
+                                            return;
+                                        };
+                                        let mut events = match ice_rpc::gen::dispatch_json(
+                                                header.correlation_id,
+                                                <DatabaseApiProxy>::SERVICE_NAME,
+                                                "add",
+                                                args,
+                                            )
+                                            .await
+                                        {
+                                            Ok(events) => events,
+                                            Err(e) => {
+                                                ::log::error!(
+                                                    "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
+                                                    ::SERVICE_NAME, "add", e
+                                                );
+                                                let _ = ice_rpc::gen::emit_rpc_error(
+                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                    &mut *emitter,
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        while let Some(event) = events.next().await {
+                                            let value = match event {
+                                                ice_rpc::gen::JsonCallEvent::Event(value) => value,
+                                                ice_rpc::gen::JsonCallEvent::Failed(message) => {
+                                                    ::log::error!(
+                                                        "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
+                                                        ::SERVICE_NAME, "add", message
+                                                    );
+                                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                                        ice_rpc::gen::RpcError::Internal(message),
+                                                        &mut *emitter,
+                                                    );
+                                                    return;
+                                                }
+                                            };
+                                            match DatabaseApiProxy::serialize_response_from_value(
+                                                "add",
+                                                value,
+                                            ) {
+                                                Some((kind, sample)) => {
+                                                    emitter.emit(kind, &sample);
+                                                }
+                                                None => {
+                                                    ::log::error!(
+                                                        "[{}::{}] Failed to serialize the JSON response", <
+                                                        DatabaseApiProxy > ::SERVICE_NAME, "add"
+                                                    );
+                                                    let _ = ice_rpc::gen::emit_rpc_error(
+                                                        ice_rpc::gen::RpcError::SerializationError,
+                                                        &mut *emitter,
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    },
+                                )
+                            },
+                        );
+                }
                 {
                     dispatcher
                         .method(
@@ -610,6 +795,23 @@ impl DatabaseApiProxy {
         bytes: &[u8],
     ) -> Option<ice_rpc::gen::serde_json::Value> {
         match method {
+            "add" => {
+                let req: DatabaseApiRequest = ice_rpc::gen::decode_aligned::<
+                    DatabaseApiRequest,
+                >(bytes)
+                    .ok()?;
+                match req {
+                    DatabaseApiRequest::Add { a, b } => {
+                        Some(
+                            ice_rpc::gen::serde_json::json!(
+                                { "a" : ice_rpc::gen::serde_json::to_value(a).ok() ?, "b" :
+                                ice_rpc::gen::serde_json::to_value(b).ok() ? }
+                            ),
+                        )
+                    }
+                    _ => None,
+                }
+            }
             "get" => {
                 let req: DatabaseApiRequest = ice_rpc::gen::decode_aligned::<
                     DatabaseApiRequest,
@@ -654,6 +856,57 @@ impl DatabaseApiProxy {
         value: ice_rpc::gen::serde_json::Value,
     ) -> Option<(ice_rpc::gen::EventKind, Vec<u8>)> {
         match method {
+            "add" => {
+                let event_type = value
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("next");
+                let event = match event_type {
+                    "next" => {
+                        let data: i32 = match value.get("data") {
+                            Some(d) => {
+                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                }
+                            }
+                            None => return None,
+                        };
+                        ice_rpc::gen::WireEvent::Next(data)
+                    }
+                    "complete" => {
+                        match value.get("data") {
+                            Some(d) => {
+                                let data: i32 = match ice_rpc::gen::serde_json::from_value(
+                                    d.clone(),
+                                ) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                };
+                                ice_rpc::gen::WireEvent::CompleteWith(data)
+                            }
+                            None => ice_rpc::gen::WireEvent::Complete,
+                        }
+                    }
+                    "error" => {
+                        let err: String = match value.get("data") {
+                            Some(d) => {
+                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                    Ok(v) => v,
+                                    Err(_) => return None,
+                                }
+                            }
+                            None => return None,
+                        };
+                        ice_rpc::gen::WireEvent::Error(err)
+                    }
+                    _ => return None,
+                };
+                let kind = event.kind();
+                ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                    .ok()
+                    .map(|aligned| (kind, aligned.to_vec()))
+            }
             "get" => {
                 let event_type = value
                     .get("type")
@@ -762,6 +1015,38 @@ impl DatabaseApiProxy {
 }
 #[allow(missing_docs)]
 impl DatabaseApiProxy {
+    /// The JSON view of `add`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
+    async fn json_view_of_add(
+        &self,
+        args: ice_rpc::gen::serde_json::Value,
+        read: ice_rpc::gen::ReadMode,
+    ) -> ice_rpc::gen::JsonResult {
+        let a: i32 = {
+            let __value = args
+                .get("a")
+                .cloned()
+                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
+            ice_rpc::gen::serde_json::from_value(__value)
+                .map_err(|e| {
+                    ice_rpc::gen::JsonCallError::InvalidArgs(
+                        format!("invalid parameter 'a' for 'add': {e}"),
+                    )
+                })?
+        };
+        let b: i32 = {
+            let __value = args
+                .get("b")
+                .cloned()
+                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
+            ice_rpc::gen::serde_json::from_value(__value)
+                .map_err(|e| {
+                    ice_rpc::gen::JsonCallError::InvalidArgs(
+                        format!("invalid parameter 'b' for 'add': {e}"),
+                    )
+                })?
+        };
+        ice_rpc::gen::read_json(self.add(a, b).await, read).await
+    }
     /// The JSON view of `get`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
     async fn json_view_of_get(
         &self,
@@ -822,6 +1107,7 @@ impl ice_rpc::gen::JsonInvoker for DatabaseApiProxy {
         read: ice_rpc::gen::ReadMode,
     ) -> Option<ice_rpc::gen::JsonResult> {
         match method {
+            "add" => Some(self.json_view_of_add(args, read).await),
             "get" => Some(self.json_view_of_get(args, read).await),
             "put" => Some(self.json_view_of_put(args, read).await),
             _ => None,
@@ -832,6 +1118,12 @@ impl ice_rpc::gen::JsonInvoker for DatabaseApiProxy {
 impl ::std::fmt::Display for DatabaseApiRequest {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match self {
+            DatabaseApiRequest::Add { a, b } => {
+                ::std::write!(
+                    f, "add(a={}, b={})", ice_rpc::monitor::render_value!(a),
+                    ice_rpc::monitor::render_value!(b)
+                )
+            }
             DatabaseApiRequest::Get { key } => {
                 ::std::write!(f, "get(key={})", ice_rpc::monitor::render_value!(key))
             }
@@ -879,6 +1171,7 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
         payload: &[u8],
     ) -> ::std::option::Option<::std::string::String> {
         match method {
+            "add" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             "get" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             "put" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             _ => ::std::option::Option::None,
@@ -890,6 +1183,16 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
         payload: &[u8],
     ) -> ::std::option::Option<::std::string::String> {
         match method {
+            "add" => {
+                ice_rpc::monitor::decode_response::<
+                    i32,
+                    String,
+                >(
+                    payload,
+                    |value| ice_rpc::monitor::render_value!(value),
+                    |error| ice_rpc::monitor::render_value!(error),
+                )
+            }
             "get" => {
                 ice_rpc::monitor::decode_response::<
                     String,
@@ -909,6 +1212,9 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
         }
     }
     fn method_name(&self, method_id: u32) -> ::std::option::Option<&'static str> {
+        if method_id == ice_rpc::gen::method_id_of("add") {
+            return ::std::option::Option::Some("add");
+        }
         if method_id == ice_rpc::gen::method_id_of("get") {
             return ::std::option::Option::Some("get");
         }

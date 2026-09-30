@@ -17,7 +17,20 @@
 //! unbalanced braces or a malformed item fails here rather than only at the
 //! first use of the macro.
 //!
-//! # Three pinned feature sets, checked in every build
+//! # One pinned declaration, and one assertion
+//!
+//! A single declaration carries every shape the generators special-case: all four
+//! parameters of `#[service]`, a scalar argument, an owned `String`, a `Vec<u8>`
+//! (which the Node.js bridge converts without a JSON round-trip), a value return,
+//! a unit return and a failure. Three files — one per feature set — are then
+//! enough, and that is what keeps the golden readable: it is what a reviewer opens
+//! to see what a generator change moved.
+//!
+//! That declaration passes every parameter, so the fallbacks a **bare** trait
+//! falls back to — its lowercased name, its version 1 — cannot be read off its
+//! golden. They are asserted directly on the expansion by
+//! `the_default_naming_of_a_bare_trait_is_pinned`, which is the price of the
+//! merge: a substring check instead of three more files to review.
 //!
 //! The expansion depends on which optional blocks a build asks for. That set is
 //! passed to [`expand_service_with`](crate::expand_service_with) as a value
@@ -155,28 +168,19 @@ fn assert_golden(
     );
 }
 
-/// The smallest declaration: no parameter, one method, one argument type.
+/// The pinned declaration: every parameter of the attribute, every argument shape
+/// the generators special-case, and every response shape.
 ///
-/// It pins the default naming (`Calculator` → `calculator`), the request enum,
-/// and the shape of every generated wrapper.
+/// Three methods, so the numbering, the routing and the two request-enum variants
+/// are all visible in one file — and `put` returns `()`, which expands differently
+/// from a value return, while `get` can fail, which fixes the `Ok`/`Err` extraction
+/// on both sides.
 #[test]
-fn a_nominal_service_is_pinned_in_every_feature_set() {
-    for (features, label) in PINNED {
-        assert_golden(label, features, "calculator", quote! {}, CALCULATOR());
-    }
-}
-
-/// Every parameter of the attribute, and the three argument shapes the
-/// generators special-case: a scalar, an owned `String`, and a `Vec<u8>` (the
-/// Node.js bridge converts the last one without a JSON round-trip).
-///
-/// A unit-returning method and a fallible one are both present, so the golden
-/// also fixes the `Ok`/`Err` extraction on both sides.
-#[test]
-fn a_service_with_a_name_a_version_and_a_group_is_pinned_in_every_feature_set() {
+fn the_pinned_service_carries_every_shape_in_every_feature_set() {
     let item = quote! {
         #[async_trait::async_trait]
         pub trait DatabaseApi: Send + Sync + 'static {
+            async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
             async fn get(&self, key: String) -> Observable<String, String>;
             async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
         }
@@ -190,6 +194,42 @@ fn a_service_with_a_name_a_version_and_a_group_is_pinned_in_every_feature_set() 
             item.clone(),
         );
     }
+}
+
+/// The default naming, which only a trait **without** attribute parameters can show.
+///
+/// The declaration above carries all four, so the fallbacks cannot be read off its
+/// golden: they are asserted here, on the identifiers the expansion emits. The
+/// trade against the two-declaration version is deliberate — a substring check
+/// instead of a whole-expansion comparison, for three fewer files to review.
+#[test]
+fn the_default_naming_of_a_bare_trait_is_pinned() {
+    let rendered = render(NONE, quote! {}, CALCULATOR());
+
+    // The logical name falls back to the trait name lowercased. A trait named
+    // `Calculator` only ever produces this literal if the fallback ran — the same
+    // string names the service on the bus (`SERVICE_NAME`) and its channel (the
+    // group).
+    assert!(
+        rendered.contains("\"calculator\""),
+        "the logical name must fall back to the lowercased trait name: {rendered}"
+    );
+    // The version falls back to 1, in the identity the client and the provider
+    // share. Compared whitespace-free and without the call's closing tokens:
+    // `prettyplease` decides where to break the call and whether it needs a
+    // trailing comma, but it cannot invent the `u16` suffix nor the version.
+    assert!(
+        compact(&rendered).contains("ice_rpc::gen::service_id_of(\"calculator\"),1u16"),
+        "the identity must be built from the fallback name and version: {rendered}"
+    );
+}
+
+/// The rendering with every run of whitespace removed.
+///
+/// For an assertion that must not depend on how `prettyplease` spaces a line —
+/// `ServiceRef :: new (…)` today, `ServiceRef::new(…)` tomorrow.
+fn compact(rendered: &str) -> String {
+    rendered.split_whitespace().collect()
 }
 
 /// Each optional block follows its own flag, in **all** eight combinations.

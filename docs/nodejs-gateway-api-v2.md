@@ -7,9 +7,10 @@
   built it, and the numbers quoted below come from the baseline measured on the
   synchronous version it replaced.
 - **Scope**: the public surface of the `gateway-nodejs` addon
-  ([`gateway_nodejs/src/lib.rs`](gateway_nodejs/src/lib.rs:1))
+  ([`gateway_nodejs/src/lib.rs`](../gateway_nodejs/src/lib.rs:1))
 - **Supersedes**: the surface documented in the root
-  [`Readme.md`](Readme.md:790) §12, which no longer matches the code
+  [`Readme.md`](../Readme.md#12-nodejs-gateway-napi-rs-bridge) §12, which no longer
+  matches the code
 
 ## Context
 
@@ -22,7 +23,7 @@ contract untenable:
 2. `callService` is synchronous and, as the pre-rewrite baseline measured,
    freezes the Node.js event loop for up to 30 s — including on the failure path.
 3. The consumer dispatch is a hardcoded table
-   ([`consumer.rs`](gateway_nodejs/src/consumer.rs:46)) that already rejects
+   ([`consumer.rs`](../gateway_nodejs/src/consumer.rs:46)) that already rejects
    `ContextService::get` while `ContextService` is a registered provider.
 
 The consumer surface therefore cannot be described as a contract: nothing ties
@@ -45,12 +46,12 @@ it to the services the process actually advertises.
 
 `init`'s callback keeps the `(err, call)` shape: the Rust side builds the
 ThreadsafeFunction with `callee_handled::<true>()`, which is what
-[`provider-context.js`](gateway_nodejs/examples/provider-context.js:100) already
+[`provider-context.js`](../gateway_nodejs/examples/provider-context.js:100) already
 relies on and what the root Readme wrongly documents as `(call) => void`.
 
 ### 2. Argument convention (unchanged, already generated)
 
-Owned by [`codegen/json.rs`](ice-rpc-macros/src/codegen/json.rs:1) and kept
+Owned by [`codegen/json.rs`](../ice-rpc-macros/src/codegen/json.rs:1) and kept
 identical on the consumer side so both directions agree:
 
 | Arity | On the wire, seen from JS |
@@ -78,7 +79,7 @@ The gateway maps the envelope onto `WireEvent` via the macro-generated
 Every rejection carries a stable code so JS can branch on it instead of on a
 message. `napi::Error` exposes no custom `code` property, so the code is the
 **message prefix**: `"<CODE>: <message>"`. That prefix is the contract, and it is
-what [`GatewayError`](gateway_nodejs/src/error.rs:1) renders and what the tests
+what [`GatewayError`](../gateway_nodejs/src/error.rs:1) renders and what the tests
 assert on.
 
 | `code` | Raised when |
@@ -100,7 +101,7 @@ assert on.
 `E_BUSINESS` carries the service's own `Display` output, and `E_TRANSPORT` /
 `E_INVALID_ARGS` the message the generated code produced — exactly what the HTTP
 gateway already does. The generated consumer dispatch reports a failure *kind*
-([`JsonCallError`](ice-rpc/src/json.rs:56)) and the gateway owns
+([`JsonCallError`](../ice-rpc/src/json.rs:56)) and the gateway owns
 the stable code, so a service never has to make its error type
 `serde::Serialize` merely to be callable from Node.js. The only bound the
 generator adds on it is `Display`.

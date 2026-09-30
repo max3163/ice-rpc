@@ -367,7 +367,7 @@ header would only risk a divergence, and the native `publisher_id` is a more
 robust key than a PID for scoping `seq` — it survives a PID reuse.
 
 `event_kind` is stored as a `u8` because `ZeroCopySend` is only derivable on
-structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:20)
+structs, not on enums: the enum lives in [`EventKind`](ice-rpc/src/types/header.rs:45)
 and is converted with `as_u8()` / `from_u8()`. A response carries the **real**
 kind of its sample (derived from the `WireEvent` before serialization), so an
 observer counts completion and errors without decoding the payload.
@@ -382,7 +382,7 @@ provider from an older build reads it as `EventKind::Error`, logs an unexpected
 sample and ignores it — see [`docs/wire-compat.md`](docs/wire-compat.md).
 
 `service_id` is a `const fn` of the name
-([`service_id_of`](ice-rpc/src/types/header.rs:129)), so the provider and the
+([`service_id_of`](ice-rpc/src/types/header.rs:360)), so the provider and the
 consumer derive the **same** value with no coordination and no discovery; a
 collision between two services of a channel is detected when the channel is
 registered.
@@ -391,10 +391,13 @@ The monitoring fields make the header **self-describing for an out-of-band
 observer** (`ice-rpc-monitor`): it subscribes to the same services, reads the
 header without touching the rkyv payload, and derives an exact latency
 (`response.timestamp_ns - request.timestamp_ns`) plus its **own** sample loss
-(`seq` holes, scoped by the native `publisher_id`). The layout is pinned to
-exactly 128 bytes by a unit test: iceoryx2 validates the `user_header` size when
-a service is opened,
-so every process on a machine must be rebuilt together after a layout change.
+(`seq` holes, scoped by the native `publisher_id`). The layout is **80 bytes**,
+and both its size and every field offset are pinned by a unit test
+([`the_header_layout_stays_bounded_and_aligned`](ice-rpc/src/types/header.rs:544)):
+iceoryx2 validates the `user_header` size when a service is opened, so every
+process on a machine must be rebuilt together after a layout change. Staying
+within the 128-byte `user_header` budget iceoryx2 grants leaves room for a few
+more wire fields before that budget becomes the binding constraint.
 
 ### 4.3. Provider
 
@@ -438,7 +441,7 @@ One cached publisher and one dispatch thread per **channel**:
 | Setting | Value | Why |
 |---|---|---|
 | `subscriber_max_buffer_size` | 1 024 | one term of the memory budget of a channel (see `max_loaned_samples`) |
-| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport/client.rs:276) retries: the overflow becomes backpressure instead of data loss |
+| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport/publish.rs:27) retries: the overflow becomes backpressure instead of data loss |
 | `initial_max_slice_len` | 256 | `slice` memory per sample; larger payloads grow the segment |
 | `max_loaned_samples` | 1 024 | sizes the data segment of a publisher (`max_loaned_samples × ~400 B`): ~400 KB, against ~6.5 MB at the iceoryx2 default of 8 raised to 16 384 — untenable with dozens of services |
 | `max_publishers` / `max_subscribers` | 16 | a channel is shared: every consuming process publishes on it, every provider subscribes to it |
@@ -461,16 +464,44 @@ travels in the `user_header`, so the payload holds the rkyv bytes alone:
 `rkyv(args)` for a request, `rkyv(WireEvent<T, E>)` for a response.
 
 **Zero-copy applies to the header and to reading a payload in place — not to the
-payload itself:**
+payload itself.** A request and a response each cross the shared-memory boundary
+**once**, and each crossing is a single `memcpy`: a flat archive has to leave the
+buffer it was built in to enter the sample iceoryx2 lent. Every other step is
+either an allocation (the deserialization) or a borrow — never a copy of the bytes.
+
+```mermaid
+sequenceDiagram
+    participant App as Caller
+    participant CB as "Caller buffers"
+    participant Q as "request channel (shm)"
+    participant P as Provider
+    participant RB as "Provider scratch (per stream)"
+    participant S as "response channel (shm)"
+
+    App->>CB: owned args - String, Vec<u8> or struct
+    Note over CB: serialize with to_bytes_in into REQUEST_SCRATCH,<br/>thread-local and reused - no copy
+    CB->>Q: write_from_slice
+    Note over Q: COPY 1 of 2 - the whole archive enters the sample,<br/>next to the 80-byte RpcHeader in user_header
+    Q->>P: the sample is borrowed, never copied
+    Note over P: rkyv::from_bytes ON the sample (in place), then<br/>deserialize into the owned args - 1 alloc per variable field
+    P->>RB: the service returns an owned value, serialized per event
+    Note over RB: no copy - the stream's own scratch is reused
+    RB->>S: write_from_slice
+    Note over S: COPY 2 of 2 - the same payload, other direction
+    S->>CB: routed back by correlation id
+    Note over CB: from_bytes in place, then deserialize -<br/>1 alloc per variable field
+    CB->>App: Event::Next(value) reached the caller
+```
 
 | Step | Byte copy | What happens |
 |---|---|---|
-| Encode (both directions) | none — but **serialization** | `rkyv` walks the object graph into a reusable scratch buffer (`to_bytes_in`): one allocation per **thread**, then reused |
-| Publish | **one copy** | [`try_publish`](ice-rpc/src/transport/client.rs:454) loans a sample and writes `header ++ payload` into it (`write_from_fn`); this is where the bytes enter shared memory |
-| Deliver on the bus | none | iceoryx2 makes the sample visible to its subscribers |
-| Decode, aligned | **none of the raw bytes** | [`decode_aligned`](ice-rpc/src/transport/mod.rs:113) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` directly on the sample |
-| Materialise | none — but **deserialization** | `from_bytes` performs access **and** deserialization into an owned `T`: the traversal and the allocations remain |
-| Decode, unaligned | one copy | the fallback: the payload is copied into a 16-byte-aligned `AlignedVec` first |
+| Build the value | none | the caller builds its owned args, or the service builds its return value. Not a transport cost |
+| Encode | **no copy**, but serialization | `rkyv` walks the value into a reusable `AlignedVec` with `to_bytes_in`. A request uses the **thread-local** [`REQUEST_SCRATCH`](ice-rpc/src/transport/client.rs:423) — one allocation per thread, reused by every later call; a response uses the scratch [`observable_to_responses`](ice-rpc/src/transport/bridge.rs:173) owns — **one allocation per response stream**, reused for every event of that stream |
+| Publish | **one copy of the whole payload** | [`try_publish`](ice-rpc/src/transport/publish.rs:96) loans a sample and `write_from_slice`s the archive into it: this is where the bytes enter shared memory. The `RpcHeader` rides in the sample's `user_header`, not in the payload |
+| Deliver on the bus | none | iceoryx2 makes the sample visible to its subscribers; the consumer receives a pointer to it |
+| Decode | **none of the raw bytes** | [`decode_aligned`](ice-rpc/src/transport/mod.rs:203) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` **on the sample**. The provider decodes a request straight from the received slice — the `to_vec()` it used to do is gone, which is what keeps a request from paying a second payload-sized copy |
+| Materialise | **no copy**, but deserialization | `from_bytes` validates in place and deserializes into an owned `T`: what is left is **one allocation per variable field**, and that is a `malloc`, not a copy of the payload |
+| Decode, unaligned only | one copy | the fallback: a payload built by hand, or a buffer read outside the transport, is first copied into a 16-byte-aligned `AlignedVec`. The transport never takes that path itself |
 
 The sample is requested with `payload_alignment(Alignment::new(16))`, the
 alignment `rkyv::to_bytes` produces, so a delivered payload is aligned by
@@ -480,11 +511,11 @@ buffer read outside the transport — because `rkyv::from_bytes` fails at runtim
 on a misaligned slice for any type whose alignment is greater than 1, which is
 what silently produced empty response streams before.
 
-In one line: **zero-copy header, one copy into shared memory, serialized rkyv
-payload, alignment-safe decoding.** The same care applies to the observer: the
-`stats` mode reads the header and the payload length and never touches the
-payload, while the `detail` mode pays one decode per sample by design
-([§13](#13-out-of-band-monitoring)).
+In one line: **zero-copy header, one copy into shared memory per direction,
+serialized rkyv payload, alignment-safe decoding.** The same care applies to the
+observer: the `stats` mode reads the header and the payload length and never
+touches the payload, while the `detail` mode pays one decode per sample by design
+([§17](#17-out-of-band-monitoring)).
 
 The service-name limit is shared with `ice-rpc-macros`, which rejects a longer
 name at compile time: `SERVICE_NAME_LEN` = 64, the limit of the `group` parameter
@@ -502,7 +533,7 @@ holds a service can also leave a file without its shared memory, which iceoryx2
 tries to remove in an **unbounded recursion** (of the builder's `Debug` output)
 and ends in `thread has overflowed its stack`.
 
-Both failures are reported as [`RpcError::ProtocolMismatch`](ice-rpc/src/types/error.rs:8),
+Both failures are reported as [`RpcError::ProtocolMismatch`](ice-rpc-rx/src/error.rs:20),
 which is deliberately **not retryable** and whose message names the iceoryx2
 variant and the remedy, so a failing startup log is enough to act.
 
@@ -625,9 +656,9 @@ test today, a future WASM bridge — implement that same trait.
 
 ### 8.1. Topological sort
 
-[`ServiceLocator::initialize_all()`](ice-rpc/src/locator.rs:140) sorts the services
+[`ServiceLocator::initialize_all()`](ice-rpc/src/locator.rs:139) sorts the services
 by the dependencies declared via
-[`ServiceInit::dependencies()`](ice-rpc/src/service_traits.rs:107) :
+[`ServiceInit::dependencies()`](ice-rpc/src/service_traits.rs:86) :
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -718,7 +749,7 @@ by the dependencies declared via
 │    ▼                                                                     │
 │  Client::get_user_age()                                                  │
 │    │                                                                     │
-│    ├─1. rkyv::to_bytes(Request::GetUserAge { name: "Alice" })            │
+│    ├─1. rkyv::to_bytes_in(Request::GetUserAge { name: "Alice" })         │
 │    │                                                                     │
 │    ├─2. consumer_ports("DatabaseService")  [created once, then cached]   │
 │    │                                                                     │
@@ -1050,7 +1081,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 **Key points :**
-- [`start_http_gateway!`](ice-rpc/src/lib.rs:459) builds the `name → factory` mapping and starts the gateway
+- [`start_http_gateway!`](ice-rpc/src/lib.rs:448) builds the `name → factory` mapping and starts the gateway
 - The gateway consumes the other ice-rpc services of the process through the `ServiceLocator`
 - The shutdown is graceful : the trillium server stops cleanly via [`global_cancel_token()`](ice-rpc/src/lib.rs)
 - The logs display example URLs at startup
@@ -1064,6 +1095,7 @@ The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro genera
 3. **RPC call** → call of the method on the proxy (local or IPC depending on the mode)
 4. **Reading** → `ice_rpc::gen::read_json(call, read)`: the one helper carrying the `First` / `All` policy and mapping a business failure onto `JsonCallError::Business`
 
+```
 ┌──────────────────────────────────────────────────────────────────┐
 │            JsonInvoker GENERATION BY THE MACRO                   │
 │                                                                  │
@@ -1100,7 +1132,6 @@ The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro genera
 │  │     }                                                        │  │
 │  │ }                                                            │  │
 │  └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1307,7 +1338,7 @@ git push origin vX.Y.Z
 
 ---
 
-## 13. Out-of-band monitoring
+## 17. Out-of-band monitoring
 
 [`ice-rpc-monitor`](ice-rpc-monitor/Readme.md) is a standalone workspace binary
 that observes the traffic **without touching the hot path**: it attaches in

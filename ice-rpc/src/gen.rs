@@ -73,10 +73,12 @@ pub use crate::transport::{
 // used to provide now lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
-// The JSON converters are the only generated code that names `base64`, and they
-// are emitted only under the `json` feature — which enables the dependency, so
-// this re-export follows the same switch.
-#[cfg(feature = "json")]
+// The JSON converters are the only generated code that names `base64`. The
+// request builder is emitted under `json` alone, but the invoker both JSON
+// bridges dispatch to is emitted under `json` **or** `http` — the gateway needs
+// it, base64 included, for a service with a `Vec<u8>` argument. Both features
+// enable the dependency, so this re-export follows their union, not `json`.
+#[cfg(any(feature = "json", feature = "http"))]
 pub use base64;
 pub use futures_lite;
 // The link-time registration surface the generated decoders use. The whole crate

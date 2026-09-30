@@ -652,17 +652,17 @@ fn handle_request(
         return;
     }
 
-    // The request is copied into the task, because the task outlives the sample
-    // it came from: a borrow of the received payload could not be held across an
-    // await. It is one copy of a small blob, and the rkyv decode that follows
-    // allocates the arguments anyway.
+    // No copy is made: the handler decodes **synchronously** from the received
+    // sample's slice — aligned by construction — and only the owned request
+    // enters the task. The borrow therefore never crosses an await, which is
+    // what used to force the `to_vec()` here.
     //
     // The token is created here, before the dispatch, so that the Cancel of this
     // request — published on the very channel this loop drains — finds it.
     let cid = header.correlation_id;
     let token = hub.register(cid);
     let emitter: OwnedEmitter = Box::new(hub.emitter(header));
-    match dispatcher.dispatch(header.method_id(), *header, payload.to_vec(), emitter) {
+    match dispatcher.dispatch(header.method_id(), *header, payload, emitter) {
         // Polled once here before being detached: a handler that answers without
         // yielding completes on this thread and costs no hop at all — measured at
         // 240 k req/s with the hop and 313 k without it. One that awaits is
@@ -943,9 +943,11 @@ mod tests {
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
         first.method(method_id_of("echo"), |_header, payload, mut emitter| {
-            Box::pin(async move {
-                emitter.emit(EventKind::Next, &payload);
-            })
+            // Emitted synchronously: the payload is borrowed from the sample and
+            // the returned future is 'static, so the borrow must not enter it —
+            // exactly the rule the generated handler follows by decoding first.
+            emitter.emit(EventKind::Next, payload);
+            Box::pin(async {})
         });
         let mut second = ServiceDispatcher::new(ServiceRef::new(9, 1));
         second.method(method_id_of("ping"), |_header, _payload, _emitter| {
@@ -960,12 +962,7 @@ mod tests {
         let task = table
             .get(&7)
             .unwrap()
-            .dispatch(
-                method_id_of("echo"),
-                header,
-                b"x".to_vec(),
-                Box::new(sink.clone()),
-            )
+            .dispatch(method_id_of("echo"), header, b"x", Box::new(sink.clone()))
             .expect("the first dispatcher has `echo`");
         crate::rt::block_on(task);
         assert_eq!(sink.take().len(), 1);
@@ -974,12 +971,7 @@ mod tests {
         assert!(table
             .get(&9)
             .unwrap()
-            .dispatch(
-                method_id_of("echo"),
-                header,
-                b"x".to_vec(),
-                Box::new(sink.clone())
-            )
+            .dispatch(method_id_of("echo"), header, b"x", Box::new(sink.clone()))
             .is_none());
         assert!(sink.take().is_empty());
 
@@ -1026,7 +1018,7 @@ mod tests {
             .dispatch(
                 method_id_of("echo"),
                 header,
-                b"x".to_vec(),
+                b"x",
                 Box::new(CollectEmitter::new())
             )
             .is_some());
@@ -1034,7 +1026,7 @@ mod tests {
             .dispatch(
                 method_id_of("missing"),
                 header,
-                b"x".to_vec(),
+                b"x",
                 Box::new(CollectEmitter::new())
             )
             .is_none());

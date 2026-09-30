@@ -160,11 +160,15 @@ impl Demo {
 
         let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
         dispatcher.method("get_user_age", |_header, payload, mut emitter| {
+            // The decode is **synchronous**, and it happens before the future is
+            // built: the handler is `for<'a>`, so the future cannot capture the
+            // sample's slice — and it does not need to, since the value it sends
+            // back is derived from the request here.
+            let name = match decode_aligned::<DatabaseServiceRequest>(payload) {
+                Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
+                _ => return Box::pin(async {}),
+            };
             Box::pin(async move {
-                let name = match decode_aligned::<DatabaseServiceRequest>(&payload) {
-                    Ok(DatabaseServiceRequest::GetUserAge { name }) => name,
-                    _ => return,
-                };
                 let age: i32 = match name.as_str() {
                     "Alice" => 30,
                     "Bob" => 42,

@@ -404,9 +404,8 @@ A **response** pays it twice — once by the provider that builds the value, onc
 the caller that decodes it — and no signature can avoid that, since a stream hands
 out owned values. The same 64-field structure runs at 19 434 req/s as a *return*
 value, against 139 854 as a *request* and 283 668 for a scalar call (40 733 /
-211 429 / 341 074 with `mimalloc`, `plans/zero-copie-structs-options.md` §9). A
-large structured response is therefore a **design choice**: splitting it into
-several small ones costs a fraction of that.
+211 429 / 341 074 with `mimalloc`). A large structured response is therefore a
+**design choice**: splitting it into several small ones costs a fraction of that.
 
 ice-rpc never picks an allocator; the binary does:
 
@@ -415,16 +414,15 @@ ice-rpc never picks an allocator; the binary does:
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 ```
 
-Both demo binaries carry it for that reason, and
-`plans/zero-copie-structs-options.md` §8 holds the three-way measurement
-(provider only, caller only, both).
+Both demo binaries carry it for that reason, and the three-way measurement
+(provider only, caller only, both) is what the two rows above come from: the
+allocator is a property each side decides for itself.
 
 The allocations themselves cannot be avoided from the outside: an archive holds the
 **archived** form of a value, so the provider rebuilds every owned field, and a
 stream hands the caller owned values. What the numbers above price *is* that, and the
 levers left are the allocator (above) and the **shape** of the exchange — a response
 split into several small ones, or a request that carries fewer variable fields.
-`plans/zero-copie-structs-options.md` records what was measured, and what was refused.
 
 ## License
 

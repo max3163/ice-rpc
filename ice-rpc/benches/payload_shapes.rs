@@ -10,11 +10,11 @@
 //!   `access`;
 //! - **the byte count**, where the copies dominate — one 1 MiB blob.
 //!
-//! Each shape is measured under the three strategies of the design plan
-//! ([`plans/zero-copie-requetes-provider.md`](../plans/zero-copie-requetes-provider.md)):
+//! Each shape is measured under three decoding strategies:
 //!
-//! - `current_copy_then_decode` — what the transport does today: `to_vec()`
-//!   then `from_bytes` on the copy (2 copies, one allocation-free, one not);
+//! - `current_copy_then_decode` — the strategy the request path used before it
+//!   decoded in place: `to_vec()` then `from_bytes` on the copy (2 copies, one
+//!   allocation-free, one not);
 //! - `in_place_decode` — Tier A2: `from_bytes` straight from the (aligned)
 //!   sample, no extra copy, same allocations;
 //! - `access_zero_alloc` — Tier B: `rkyv::access` and a traversal of the

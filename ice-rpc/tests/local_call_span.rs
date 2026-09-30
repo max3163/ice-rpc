@@ -9,11 +9,9 @@
 //!
 //! The feature-off counterpart is `local_call_no_span.rs`: same call, and nothing
 //! is built at all.
-//!
-//! See `plans/spans-appels-internes-provider.md`.
 
 #![cfg(feature = "tracing")]
-#![allow(missing_docs)] // test target: documented by the plan, not part of a published API
+#![allow(missing_docs)] // test target: documented by the module header, not part of a published API
 #![allow(clippy::unwrap_used)] // tests may panic
 
 use std::sync::atomic::{AtomicUsize, Ordering};

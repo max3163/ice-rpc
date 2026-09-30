@@ -27,10 +27,9 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
-// The allocator A/B of `plans/zero-copie-structs-options.md` (M2): a deployment
-// that serves requests with many variable fields pays one `malloc` per field in
-// the deserializing decode, so the process allocator is part of its profile. The
-// library never picks one; the binary does.
+// The allocator A/B: a deployment that serves requests with many variable fields
+// pays one `malloc` per field in the deserializing decode, so the process
+// allocator is part of its profile. The library never picks one; the binary does.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

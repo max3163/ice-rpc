@@ -1,11 +1,10 @@
 /**
  * Latency and throughput of the bridge, measured on a real round trip.
  *
- * `plans/baseline/BASELINE.md` records what the bridge cost before this work
- * (a 30 s freeze per failed call, 0 timer ticks served meanwhile) and the
- * numbers of a served call. This script is how those numbers are reproduced and
- * how a regression would show: it drives `callService` against a provider in
- * another process, sequentially and then concurrently.
+ * The bridge used to cost a 30 s freeze per failed call, with 0 timer ticks
+ * served meanwhile. This script is how that stays fixed and how a regression
+ * would show: it drives `callService` against a provider in another process,
+ * sequentially and then concurrently.
  *
  * Usage:
  *   npm run bench

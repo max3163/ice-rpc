@@ -5,8 +5,7 @@
 //! variant that is fast because it allocates less, and one that is slow because
 //! it allocates more, cannot be told apart by a clock at this scale.
 //!
-//! The protocol follows `plans/lot2-allocations-par-appel.md`, with the two
-//! corrections the CI required:
+//! The protocol is a counted window, with the two corrections the CI required:
 //!
 //! - the window is **this thread's**. A process-wide counter attributes the
 //!   allocations of every thread to the call under measurement, and the process is
@@ -14,16 +13,14 @@
 //!   in one window and in no other — and reported it as a call that does not cost
 //!   what its neighbours cost;
 //! - the reading is one **window per call**, reduced by the *mode* of the
-//!   histogram. The batch the plan established was written for a transported call,
-//!   served on several threads: there, only a batch bounds the window's edges. A
+//!   histogram. A batch protocol was written for a transported call, served on
+//!   several threads: there, only a batch bounds the window's edges. A
 //!   direct call never leaves this thread, so its window has no edge to bound —
 //!   and work that is not the call's can only ever *add* to a window, so it moves
 //!   a histogram's tail, never its most frequent value, where a batch sum is
 //!   broken by a single outlier;
 //! - the idle control stays *inside* the test: it must open the same window, on
 //!   the same thread, as the calls it controls.
-//!
-//! See `plans/spans-appels-internes-provider.md`.
 
 #![allow(clippy::unwrap_used)] // test target: it may panic
 #![allow(missing_docs)] // the rkyv `Archive` derive emits an undocumented struct
@@ -166,8 +163,8 @@ fn count_allocations<T>(body: impl FnOnce() -> T) -> (T, usize) {
 ///
 /// One window per call rather than one window for the batch: a direct call never
 /// leaves this thread, so its window has no edge another thread could cross — the
-/// edges the batch protocol of `plans/lot2-allocations-par-appel.md` bounds only
-/// exist for a transported call, served on several threads.
+/// edges a batch bounds only exist for a transported call, served on several
+/// threads.
 ///
 /// The histogram is the reading; [`mode`] reduces it. Work that is not the call's
 /// can only ever *add* to a window, so it lands in the tail of the distribution and

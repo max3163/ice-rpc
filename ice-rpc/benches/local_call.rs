@@ -2,9 +2,9 @@
 //!
 //! A provider that hosts two services and calls one from the other goes through
 //! the generated proxy, whose `Provider` arm calls the local implementation
-//! directly: no header, no `CallContext`, no span. Adding one is the subject of
-//! `plans/spans-appels-internes-provider.md`; this benchmark prices it, so the
-//! decision is taken on numbers rather than on intuition.
+//! directly: no header, no `CallContext`, no span. Adding one would be a change of
+//! its own; this benchmark prices the candidate envelopes, so that decision is
+//! taken on numbers rather than on intuition.
 //!
 //! Three questions are measured separately, because they have different answers:
 //!
@@ -29,7 +29,7 @@
 //! ```
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
-#![allow(missing_docs)] // bench target: documented by the plan, not part of a published API
+#![allow(missing_docs)] // bench target: documented by the module header, not part of a published API
 
 use std::future::Future;
 use std::hint::black_box;
@@ -95,8 +95,8 @@ fn local_context() -> CallContext {
 ///
 /// `pin!` on a local of an `async` block is what removes the second `Box::pin` of
 /// [`call_scoped`](ice_rpc::gen::call_scoped); the `#[cfg]` lives in this function
-/// rather than in a struct field, which is what the `pin_project_lite` limitation
-/// recorded in `plans/lot2-allocations-par-appel.md` §2a.2 would otherwise forbid.
+/// rather than in a struct field, which is the shape `pin_project_lite` cannot
+/// express.
 async fn local_scope<F>(ctx: CallContext, future: F) -> F::Output
 where
     F: Future,

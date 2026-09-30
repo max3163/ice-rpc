@@ -3,10 +3,9 @@
 - **Status**: **implemented**. Every section below is in place: the surface
   (1), the argument convention (2), the event envelope and its multi-value
   streaming (3), the error codes (4), the lifecycle (5), the async execution (6)
-  and the transport-agnostic JSON surface it dispatches to (7). Phases P1–P4 of
-  [`plans/gateway-nodejs-amelioration.md`](plans/gateway-nodejs-amelioration.md:1)
-  built it; the measurements are in
-  [`plans/baseline/BASELINE.md`](plans/baseline/BASELINE.md:1).
+  and the transport-agnostic JSON surface it dispatches to (7). Phases P1–P4
+  built it, and the numbers quoted below come from the baseline measured on the
+  synchronous version it replaced.
 - **Scope**: the public surface of the `gateway-nodejs` addon
   ([`gateway_nodejs/src/lib.rs`](gateway_nodejs/src/lib.rs:1))
 - **Supersedes**: the surface documented in the root
@@ -20,9 +19,8 @@ contract untenable:
 1. `init` and `registerService` return a `bool` and swallow the reason; a caller
    cannot distinguish "unknown service name" from "already initialized" from
    "the bridge failed".
-2. `callService` is synchronous and, per the measured baseline
-   ([`plans/baseline/BASELINE.md`](plans/baseline/BASELINE.md:1)), freezes the
-   Node.js event loop for up to 30 s — including on the failure path.
+2. `callService` is synchronous and, as the pre-rewrite baseline measured,
+   freezes the Node.js event loop for up to 30 s — including on the failure path.
 3. The consumer dispatch is a hardcoded table
    ([`consumer.rs`](gateway_nodejs/src/consumer.rs:46)) that already rejects
    `ContextService::get` while `ContextService` is a registered provider.
@@ -133,9 +131,6 @@ implementing napi's `Task` trait:
   `ice_rpc::rt::block_on(consumer::call_ipc_method(…))`, which dispatches to the
   generated `JsonInvoker` with `ReadMode::First`;
 - `resolve` runs on the Node.js main thread and yields the `serde_json::Value`.
-
-Evidence that this needs no extra `napi` feature is in
-[`plans/baseline/BASELINE.md`](plans/baseline/BASELINE.md:1) (P0.2 verdict).
 
 ### 7. The JSON surface it dispatches to
 

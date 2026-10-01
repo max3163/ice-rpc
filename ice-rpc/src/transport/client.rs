@@ -14,8 +14,8 @@ use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
 use super::publish::{publish_until_delivered, try_publish};
 use super::{
-    shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
+    shared_node, transport_error, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub,
+    IoxPublisher, IoxSubscriber, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
     REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
@@ -253,7 +253,7 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
         let cancel = crate::global_cancel_token().clone();
         super::pump::run_receive_loop(
             &channel,
-            "response",
+            Direction::Response,
             &ports.subscriber,
             &ports.listener,
             || cancel.is_cancelled(),

@@ -11,18 +11,17 @@ use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::signal::SignalHandler;
 
 use super::waitset::wait_for_wakeup;
-use super::{Iox, IoxListener, IoxSubscriber, IDLE_SPINS, SIGNAL_CHECK_SAMPLES};
+use super::{Direction, Iox, IoxListener, IoxSubscriber, IDLE_SPINS, SIGNAL_CHECK_SAMPLES};
 use crate::types::RpcHeader;
 
 /// Drains `subscriber` until `stop` returns `true` or the process is asked to
 /// terminate, calling `handle` with the header and payload of every sample.
 ///
-/// `channel` and `direction` only label the logs (`"request"` on the provider
-/// side, `"response"` on the consumer side), so one log line still identifies
-/// the thread it came from.
+/// `channel` and `direction` only label the logs, so one log line still
+/// identifies the thread it came from.
 pub(super) fn run_receive_loop(
     channel: &str,
-    direction: &str,
+    direction: Direction,
     subscriber: &IoxSubscriber,
     listener: &IoxListener,
     stop: impl Fn() -> bool,
@@ -74,7 +73,10 @@ pub(super) fn run_receive_loop(
                 }
             }
             Err(e) => {
-                log::warn!("[transport] '{channel}': {direction} receive error: {e:?}");
+                log::warn!(
+                    "[transport] '{channel}': {} receive error: {e:?}",
+                    direction.label()
+                );
                 idle_spins = 0;
                 std::thread::yield_now();
             }

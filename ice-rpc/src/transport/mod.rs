@@ -31,7 +31,7 @@ pub use bridge::{
     ResponseEmitter, ServiceDispatcher,
 };
 pub use client::{native_call, serialize_and_call};
-pub use monitor::{discover_channels, Direction, DirectionView, Emitter};
+pub use monitor::{discover_channels, DirectionView, Emitter};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
 // The transport reads its tunables through these names, so `tuning.rs` stays the
@@ -92,6 +92,45 @@ type IoxPublisher = iceoryx2::port::publisher::Publisher<Iox, [u8], RpcHeader>;
 type IoxSubscriber = iceoryx2::port::subscriber::Subscriber<Iox, [u8], RpcHeader>;
 type IoxListener = iceoryx2::port::listener::Listener<Iox>;
 type IoxNotifier = iceoryx2::port::notifier::Notifier<Iox>;
+
+/// Direction of the traffic on a channel.
+///
+/// One `(channel, direction)` pair is backed by one pub/sub service and one
+/// wake-up event service, whose suffixes are defined here — the single source of
+/// truth shared by the dispatch loops, the observer and the monitoring metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// `consumer → provider` requests.
+    Request,
+    /// `provider → consumer` responses.
+    Response,
+}
+
+impl Direction {
+    /// Suffix of the pub/sub service backing this direction.
+    const fn pub_sub_suffix(self) -> &'static str {
+        match self {
+            Direction::Request => REQUEST_SUFFIX,
+            Direction::Response => RESPONSE_SUFFIX,
+        }
+    }
+
+    /// Suffix of the event service used as a wake-up signal.
+    const fn notify_suffix(self) -> &'static str {
+        match self {
+            Direction::Request => REQUEST_NOTIFY_SUFFIX,
+            Direction::Response => RESPONSE_NOTIFY_SUFFIX,
+        }
+    }
+
+    /// Human-readable label of this direction, for the receive loops' logs.
+    const fn label(self) -> &'static str {
+        match self {
+            Direction::Request => "request",
+            Direction::Response => "response",
+        }
+    }
+}
 
 /// Wraps a transport error with its context.
 pub(super) fn transport_error(context: &str, err: impl std::fmt::Debug) -> RpcError {
@@ -226,6 +265,14 @@ fn is_sample_aligned(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direction_suffixes_match_the_transport() {
+        assert_eq!(Direction::Request.pub_sub_suffix(), "_req");
+        assert_eq!(Direction::Response.pub_sub_suffix(), "_resp");
+        assert_eq!(Direction::Request.notify_suffix(), "_req_notify");
+        assert_eq!(Direction::Response.notify_suffix(), "_resp_notify");
+    }
 
     #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, PartialEq)]
     struct Sample {

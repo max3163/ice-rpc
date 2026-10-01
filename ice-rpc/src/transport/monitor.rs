@@ -22,37 +22,10 @@ use iceoryx2::service::{Service, ServiceDetails};
 
 use super::open::{open_event_service, open_service, OpenMode};
 use super::{
-    shared_node, transport_error, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber,
-    REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    shared_node, transport_error, Direction, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber,
+    REQUEST_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::types::{RpcError, RpcHeader};
-
-/// Direction of the traffic on a channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Direction {
-    /// `consumer → provider` requests.
-    Request,
-    /// `provider → consumer` responses.
-    Response,
-}
-
-impl Direction {
-    /// Suffix of the pub/sub service backing this direction.
-    const fn pub_sub_suffix(self) -> &'static str {
-        match self {
-            Direction::Request => REQUEST_SUFFIX,
-            Direction::Response => RESPONSE_SUFFIX,
-        }
-    }
-
-    /// Suffix of the event service used as a wake-up signal.
-    const fn notify_suffix(self) -> &'static str {
-        match self {
-            Direction::Request => REQUEST_NOTIFY_SUFFIX,
-            Direction::Response => RESPONSE_NOTIFY_SUFFIX,
-        }
-    }
-}
 
 /// Identity of the process that emitted an observed sample.
 ///
@@ -286,14 +259,6 @@ pub fn discover_channels() -> Result<Vec<String>, RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn direction_suffixes_match_the_transport() {
-        assert_eq!(Direction::Request.pub_sub_suffix(), "_req");
-        assert_eq!(Direction::Response.pub_sub_suffix(), "_resp");
-        assert_eq!(Direction::Request.notify_suffix(), "_req_notify");
-        assert_eq!(Direction::Response.notify_suffix(), "_resp_notify");
-    }
 
     #[test]
     fn discovery_strips_only_the_direction_suffix() {

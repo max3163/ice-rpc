@@ -16,8 +16,8 @@ use super::notify::Coalescer;
 use super::open::{open_event_service, open_service, OpenMode};
 use super::publish::publish_until_delivered;
 use super::{
-    shared_node, transport_error, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
-    IoxSubscriber, CONSUMER_WAIT_TIMEOUT, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP,
+    shared_node, transport_error, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub,
+    IoxPublisher, IoxSubscriber, CONSUMER_WAIT_TIMEOUT, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP,
     REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
@@ -167,7 +167,7 @@ pub fn spawn_native_service(
 
         super::pump::run_receive_loop(
             &channel,
-            "request",
+            Direction::Request,
             &ports.subscriber,
             &ports.listener,
             || stop.is_cancelled(),

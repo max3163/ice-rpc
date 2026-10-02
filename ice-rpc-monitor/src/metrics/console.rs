@@ -85,24 +85,25 @@ pub(super) fn render(inner: &Inner) -> String {
                 Some(histogram) => describe_latency(histogram, LATENCY_BOUNDS),
                 None => "no response yet".to_owned(),
             };
-            let _ = writeln!(
-                out,
-                " {channel} service={service} method={method}: requests={count} {latency_text}"
-            );
+            // The numeric service id is dropped: the channel name just before it
+            // already identifies the service, and the id means nothing to a human.
+            let _ = writeln!(out, " {channel} {method}: requests={count} {latency_text}");
         }
     }
 
     // Network and resource health; empty until the first inventory scan.
-    if !inner.node_states.is_empty() || !inner.services.is_empty() {
+    if inner.services > 0 || !inner.node_states.is_empty() {
         let _ = writeln!(out, "{rule}");
         let alive = inner.node_states.get("alive").copied().unwrap_or(0);
         let dead = inner.node_states.get("dead").copied().unwrap_or(0);
         let total: i64 = inner.node_states.values().copied().sum();
+        // "services" counts the ice-rpc services present on the bus, one per
+        // observed channel — not the raw iceoryx2 entities, which are four per
+        // channel and carry no macro meaning.
         let _ = writeln!(
             out,
-            " network : nodes={total} (alive {alive}, dead {dead})  services={}  channels={}",
-            inner.services.len(),
-            inner.channels.len()
+            " network : nodes={total} (alive {alive}, dead {dead})  services={}",
+            inner.services
         );
         if inner.shm_enabled {
             if inner.shm_segments == 0 {

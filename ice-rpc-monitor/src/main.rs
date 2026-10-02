@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use iceoryx2_bb_posix::signal::SignalHandler;
-
+use ice_rpc_monitor::cleanup;
 use ice_rpc_monitor::config::{Config, HELP};
 use ice_rpc_monitor::console::{self, LiveConsole};
 use ice_rpc_monitor::metrics::Metrics;
+use ice_rpc_monitor::shutdown::{self, Termination};
 use ice_rpc_monitor::{prometheus, Monitor};
 
 /// Refresh interval of the live console view.
@@ -44,6 +44,18 @@ fn main() {
     let live_requested = config.console_live;
     let channels = config.channels.len();
 
+    // Opt-in: heal a bus polluted by killed runs before observing it. Without
+    // the flag the observer stays strictly read-only.
+    if config.cleanup {
+        let (dead_nodes, orphan_markers) = cleanup::reap_dead_state();
+        log::info!(
+            "[monitor] cleanup: reaped {dead_nodes} dead node(s), {orphan_markers} orphan shm marker(s)"
+        );
+        eprintln!(
+            "ice-rpc-monitor: cleanup reaped {dead_nodes} dead node(s), {orphan_markers} orphan shm marker(s)"
+        );
+    }
+
     let metrics = Arc::new(Metrics::new());
     if let Some(addr) = config.prometheus_addr {
         if let Err(e) = prometheus::serve(addr, metrics.clone()) {
@@ -51,16 +63,11 @@ fn main() {
         }
     }
 
-    // Bridge the process termination signal to the acquisition loop.
-    let cancel = Arc::new(AtomicBool::new(false));
-    let signal_flag = cancel.clone();
-    std::thread::spawn(move || loop {
-        if SignalHandler::termination_requested() {
-            signal_flag.store(true, Ordering::Relaxed);
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    });
+    // A persistent signal callback sets the shutdown flag once, so the loops no
+    // longer depend on a bridge competing for the (consumed) pending signal. Keep
+    // the guard alive for the whole process; it falls back to polling internally.
+    let _termination = Termination::install();
+    let cancel: &'static AtomicBool = shutdown::flag();
 
     let monitor = match Monitor::new(config, metrics.clone()) {
         Ok(monitor) => monitor,
@@ -74,7 +81,7 @@ fn main() {
     // attached; otherwise the observer stays quiet (metrics + traces only).
     let mut console = LiveConsole::new(live_requested);
     if !console.is_active() {
-        if let Err(e) = monitor.run(&cancel) {
+        if let Err(e) = monitor.run(cancel) {
             eprintln!("monitor error: {e}");
             std::process::exit(1);
         }
@@ -85,15 +92,15 @@ fn main() {
         "ice-rpc-monitor: live view, observing {channels} requested channel(s), Ctrl+C to stop"
     );
     let recent = monitor.recent_messages();
-    let monitor_cancel = cancel.clone();
+    let monitor_cancel = cancel;
     let observer = std::thread::spawn(move || {
-        if let Err(e) = monitor.run(&monitor_cancel) {
+        if let Err(e) = monitor.run(monitor_cancel) {
             eprintln!("monitor error: {e}");
         }
     });
 
     while !cancel.load(Ordering::Relaxed) {
-        sleep_interruptible(LIVE_REFRESH, &cancel);
+        sleep_interruptible(LIVE_REFRESH, cancel);
         if cancel.load(Ordering::Relaxed) {
             break;
         }

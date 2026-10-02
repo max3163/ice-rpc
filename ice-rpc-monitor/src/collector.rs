@@ -298,6 +298,10 @@ impl Monitor {
         // published on every pass: the inventory scan is throttled, the truth
         // about what is attached must not be.
         self.metrics.set_channels(&self.channel_health());
+        // One ice-rpc service per channel, as the bus shows it. Counting the
+        // linked contract instead would include services that are not hosted
+        // here (e.g. a `#[service]` this provider never started).
+        self.metrics.set_services(self.known_channels.len() as i64);
         // The observer's own counters are published on every pass.
         self.metrics
             .set_observer(self.dropped_traces(), self.discovery_errors);

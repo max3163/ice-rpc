@@ -69,6 +69,12 @@ pub struct Config {
     /// Whether the health inventory also measures the on-disk shared-memory
     /// footprint (a filesystem walk).
     pub health_shm: bool,
+    /// Reap the dead-node state and the orphan shared-memory markers at startup.
+    ///
+    /// The observer is read-only by default; this is a one-shot, opt-in repair of
+    /// a bus polluted by killed runs, which otherwise keeps every registry scan
+    /// slow (see the `iox2 endpoints` count in the live view).
+    pub cleanup: bool,
     /// Whether to draw a `top`-like live view (redrawn in place, no scrolling).
     ///
     /// Ignored when stdout is not a terminal. In detail mode the messages are
@@ -95,6 +101,7 @@ impl Default for Config {
             decoders: Arc::new(Decoders::new()),
             health_interval: Duration::from_secs(2),
             health_shm: false,
+            cleanup: false,
             console_live: false,
             liveness_interval: Duration::from_secs(1),
         }
@@ -184,6 +191,7 @@ impl Config {
                     };
                 }
                 "--health-shm" => config.health_shm = true,
+                "--cleanup" => config.cleanup = true,
                 "--live" => config.console_live = true,
                 "--help" | "-h" => return Err(HELP.to_owned()),
                 other => return Err(format!("unknown argument '{other}'\n{HELP}")),
@@ -224,6 +232,8 @@ OPTIONS:
     --trace-format <json|human>    Trace record format (default json)
     --health-interval-ms <ms>      Node/service inventory interval (default 2000, 0 = off)
     --health-shm                   Also measure the shared-memory footprint on disk
+    --cleanup                      Reap dead-node state and orphan shm markers at
+                                   startup, then stay read-only (default: off)
     --live                         Redraw the stats in place, like `top` (needs a terminal)
     -h, --help                     Show this help";
 
@@ -352,6 +362,13 @@ mod tests {
         assert_eq!(config.health_interval, Duration::from_millis(500));
         assert!(config.health_shm);
         assert!(config.console_live);
+    }
+
+    #[test]
+    fn cleanup_is_opt_in() {
+        assert!(!Config::default().cleanup, "the observer stays read-only");
+        let config = Config::from_args(&["--cleanup".to_owned()]).expect("valid args");
+        assert!(config.cleanup);
     }
 
     #[test]

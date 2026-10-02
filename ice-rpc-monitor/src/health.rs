@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use ice_rpc::monitor::{self, Iceoryx2Layout, NodeInfo, ServiceInfo};
+use ice_rpc::monitor::{self, Iceoryx2Layout, NodeInfo};
 
 /// Health of one direction of one ice-rpc channel.
 #[derive(Debug, Clone)]
@@ -78,8 +78,6 @@ pub struct ProcessMetrics {
 pub struct HealthSnapshot {
     /// Every iceoryx2 node of the machine.
     pub nodes: Vec<NodeInfo>,
-    /// Every iceoryx2 service of the machine.
-    pub services: Vec<ServiceInfo>,
     /// Filesystem layout of the iceoryx2 resources.
     pub layout: Option<Iceoryx2Layout>,
     /// Measured shared-memory footprint, when the shm scan is enabled.
@@ -147,14 +145,6 @@ impl Scanner {
             Some(nodes) => self.snapshot.nodes = nodes,
             // Keep the previous nodes: an inconclusive scan is not "no node".
             None => self.snapshot.errors += 1,
-        }
-
-        match monitor::list_services() {
-            Ok(services) => self.snapshot.services = services,
-            Err(e) => {
-                self.snapshot.errors += 1;
-                log::debug!("[monitor] service inventory failed: {e}");
-            }
         }
 
         let layout = monitor::iceoryx2_layout();
@@ -279,7 +269,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_scan_reports_nodes_and_services() {
+    fn a_scan_reports_nodes_and_health() {
         let mut scanner = Scanner::new(Duration::from_millis(1), false);
         scanner.refresh();
         let snapshot = scanner.snapshot();

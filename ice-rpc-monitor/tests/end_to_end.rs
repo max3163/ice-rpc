@@ -484,8 +484,7 @@ fn the_observer_publishes_the_network_inventory() {
     let mut found = false;
     for _ in 0..60 {
         text = metrics.render_prometheus();
-        if text.contains(&format!("ice_rpc_services{{service=\"{channel}_req\""))
-            && text.contains("ice_rpc_health_scans_total ")
+        if text.contains("ice_rpc_health_scans_total ")
             && text.contains(&format!(
                 "ice_rpc_channel{{channel=\"{channel}\",direction=\"req\"}} 1"
             ))

@@ -119,8 +119,8 @@ struct Inner {
     // ── Health inventory, replaced wholesale on every scan ──
     node_states: BTreeMap<&'static str, i64>,
     node_info: BTreeMap<(u32, &'static str, String), i64>,
-    services: BTreeMap<(String, &'static str, &'static str), i64>,
-    service_participants: BTreeMap<String, i64>,
+    /// Number of ice-rpc services present on the bus, one per observed channel.
+    services: i64,
     channels: BTreeMap<(String, &'static str), ChannelSample>,
     processes: BTreeMap<u32, ProcessSample>,
     shm_enabled: bool,
@@ -274,6 +274,14 @@ impl Metrics {
         }
     }
 
+    /// Publishes the number of ice-rpc services present on the bus — one per
+    /// observed channel.
+    pub fn set_services(&self, count: i64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.services = count;
+        }
+    }
+
     /// Replaces the whole health inventory with a fresh scan.
     ///
     /// The inventory is *replaced*, never accumulated, so a service or a node
@@ -291,18 +299,6 @@ impl Metrics {
             *inner.node_states.entry(state).or_default() += 1;
             let executable = node.executable.clone().unwrap_or_else(|| "?".to_owned());
             inner.node_info.insert((node.pid, state, executable), 1);
-        }
-
-        inner.services.clear();
-        inner.service_participants.clear();
-        for service in &snapshot.services {
-            inner.services.insert(
-                (service.name.clone(), service.pattern, service.role.label()),
-                1,
-            );
-            inner
-                .service_participants
-                .insert(service.name.clone(), service.participants as i64);
         }
 
         inner.processes.clear();
@@ -418,7 +414,7 @@ mod tests {
         assert!(text.contains("responses       : 1"));
         assert!(text.contains("complete=1"), "missing kind:\n{text}");
         assert!(text.contains("p50=1.00ms"), "missing latency:\n{text}");
-        assert!(text.contains("DatabaseService service=42 method=get_user_age"));
+        assert!(text.contains("DatabaseService get_user_age: requests=1"));
     }
 
     #[test]
@@ -430,7 +426,7 @@ mod tests {
 
     #[test]
     fn the_health_inventory_is_exported() {
-        use ice_rpc::monitor::{NodeHealth, NodeInfo, ServiceInfo, ServiceRole};
+        use ice_rpc::monitor::{NodeHealth, NodeInfo};
 
         let metrics = Metrics::new();
         let snapshot = HealthSnapshot {
@@ -439,12 +435,6 @@ mod tests {
                 health: NodeHealth::Alive,
                 executable: Some("provider-app".to_owned()),
                 name: Some(String::new()),
-            }],
-            services: vec![ServiceInfo {
-                name: "DatabaseService_req".to_owned(),
-                pattern: "PublishSubscribe",
-                role: ServiceRole::Request,
-                participants: 2,
             }],
             scans: 1,
             errors: 0,
@@ -461,6 +451,7 @@ mod tests {
             subscriber_buffer: 8,
         }];
         metrics.set_channels(&channels);
+        metrics.set_services(1);
         metrics.set_health(&snapshot);
 
         let text = metrics.render_prometheus();
@@ -468,10 +459,7 @@ mod tests {
         assert!(text.contains(
             "ice_rpc_node_info{pid=\"42\",state=\"alive\",executable=\"provider-app\"} 1"
         ));
-        assert!(text.contains(
-            "ice_rpc_services{service=\"DatabaseService_req\",pattern=\"PublishSubscribe\",role=\"req\"} 1"
-        ));
-        assert!(text.contains("ice_rpc_service_participants{service=\"DatabaseService_req\"} 2"));
+        assert!(text.contains("ice_rpc_services 1"), "{text}");
         assert!(text.contains(
             "ice_rpc_channel_capacity{channel=\"DatabaseService\",direction=\"req\",kind=\"max_publishers\"} 16"
         ));
@@ -483,7 +471,7 @@ mod tests {
 
         let console = metrics.render_console();
         assert!(
-            console.contains("network : nodes=1 (alive 1, dead 0)  services=1  channels=1"),
+            console.contains("network : nodes=1 (alive 1, dead 0)  services=1"),
             "{console}"
         );
     }
@@ -518,7 +506,7 @@ mod tests {
     #[test]
     fn the_shm_and_process_inventory_is_exported() {
         use crate::health::{ProcessMetrics, ShmFootprint};
-        use ice_rpc::monitor::{NodeHealth, NodeInfo, ServiceInfo, ServiceRole};
+        use ice_rpc::monitor::{NodeHealth, NodeInfo};
 
         let metrics = Metrics::new();
         let snapshot = HealthSnapshot {
@@ -527,12 +515,6 @@ mod tests {
                 health: NodeHealth::Alive,
                 executable: Some("worker".to_owned()),
                 name: Some(String::new()),
-            }],
-            services: vec![ServiceInfo {
-                name: "S_req".to_owned(),
-                pattern: "PublishSubscribe",
-                role: ServiceRole::Request,
-                participants: 1,
             }],
             shm: Some(ShmFootprint {
                 bytes: 4096,

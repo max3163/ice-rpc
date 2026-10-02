@@ -42,9 +42,11 @@ use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher, Servi
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
+use ice_rpc_monitor::cleanup;
 use ice_rpc_monitor::config::{Config, Mode};
 use ice_rpc_monitor::console::{self, LiveConsole};
 use ice_rpc_monitor::metrics::Metrics;
+use ice_rpc_monitor::shutdown::{self, Termination};
 use ice_rpc_monitor::traces::TraceFormat;
 use ice_rpc_monitor::{Decoders, Monitor};
 
@@ -154,7 +156,7 @@ impl Demo {
     ///
     /// The channel is unique per process, but the **service id** stays that of
     /// `DatabaseService`, so the registered decoders apply.
-    fn start(cancel: &Arc<AtomicBool>) -> Self {
+    fn start(cancel: &'static AtomicBool) -> Self {
         let channel = format!("ConsoleMonitorDemo{}", std::process::id());
         let service_id = service_id_of(DEMO_SERVICE);
 
@@ -191,7 +193,7 @@ impl Demo {
         // Give the provider time to open every port before the first call.
         std::thread::sleep(Duration::from_millis(300));
 
-        let generator_cancel = cancel.clone();
+        let generator_cancel = cancel;
         let generator_channel = channel.clone();
         let generator = std::thread::spawn(move || {
             const NAMES: [&str; 3] = ["Alice", "Bob", "Max"];
@@ -298,18 +300,12 @@ fn main() {
         }
     };
 
-    // Bridge the process termination signal (Ctrl+C) to the shutdown flag.
-    let cancel = Arc::new(AtomicBool::new(false));
-    let signal_flag = cancel.clone();
-    std::thread::spawn(move || loop {
-        if iceoryx2_bb_posix::signal::SignalHandler::termination_requested() {
-            signal_flag.store(true, Ordering::Relaxed);
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    });
+    // A persistent signal callback sets the shutdown flag once; keep the guard
+    // alive for the whole process. It falls back to polling internally.
+    let _termination = Termination::install();
+    let cancel: &'static AtomicBool = shutdown::flag();
 
-    let demo = options.demo.then(|| Demo::start(&cancel));
+    let demo = options.demo.then(|| Demo::start(cancel));
     if let Some(demo) = &demo {
         // Pin the observer to the demo channel so it attaches deterministically.
         options.config.channels.push(demo.channel.clone());
@@ -335,6 +331,18 @@ fn main() {
         }
     }
 
+    // Opt-in: heal a bus polluted by killed runs before observing it. Without
+    // the flag the observer stays strictly read-only.
+    if options.config.cleanup {
+        let (dead_nodes, orphan_markers) = cleanup::reap_dead_state();
+        log::info!(
+            "[monitor] cleanup: reaped {dead_nodes} dead node(s), {orphan_markers} orphan shm marker(s)"
+        );
+        eprintln!(
+            "cleanup reaped {dead_nodes} dead node(s), {orphan_markers} orphan shm marker(s)"
+        );
+    }
+
     let monitor = match Monitor::new(options.config, metrics.clone()) {
         Ok(monitor) => monitor,
         Err(e) => {
@@ -343,9 +351,9 @@ fn main() {
         }
     };
     let recent = monitor.recent_messages();
-    let monitor_cancel = cancel.clone();
+    let monitor_cancel = cancel;
     let observer = std::thread::spawn(move || {
-        if let Err(e) = monitor.run(&monitor_cancel) {
+        if let Err(e) = monitor.run(monitor_cancel) {
             eprintln!("monitor error: {e}");
         }
     });
@@ -365,7 +373,7 @@ fn main() {
     }
 
     while !cancel.load(Ordering::Relaxed) {
-        sleep_interruptible(interval, &cancel);
+        sleep_interruptible(interval, cancel);
         if cancel.load(Ordering::Relaxed) {
             break;
         }

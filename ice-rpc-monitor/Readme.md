@@ -99,17 +99,17 @@ Bus metrics:
 ## Health of the network
 
 An inventory of the machine's iceoryx2 state is refreshed at
-`--health-interval-ms` (default 2000, `0` disables it). `Node::list` and
-`Service::list` are expensive, so the scan is throttled and **conservative on
-error**: a failed scan keeps the previous snapshot and never reports a live node
-as dead.
+`--health-interval-ms` (default 2000, `0` disables it). The scan is throttled and
+**conservative on error**: a failed scan keeps the previous snapshot and never
+reports a live node as dead. On a clean bus a scan is near-free; it only becomes
+costly when the registry holds **stale entities** left by killed runs, which is
+exactly what `--cleanup` removes (below).
 
 | Metric | Meaning |
 |---|---|
 | `ice_rpc_nodes{state}` | nodes by native liveness (`alive`/`dead`/`inaccessible`/`undefined`) |
 | `ice_rpc_node_info{pid,state,executable}` | one series per node (value 1) |
-| `ice_rpc_services{service,pattern,role}` | one series per iceoryx2 service (`role`: `req`/`resp`/`req_notify`/`resp_notify`) |
-| `ice_rpc_service_participants{service}` | nodes registered on a service |
+| `ice_rpc_services` | ice-rpc services present on the bus (one per observed channel) |
 | `ice_rpc_channel{channel,direction}` | whether the observer is attached (0/1) |
 | `ice_rpc_channel_publishers` / `ice_rpc_channel_subscribers` | active ports, observer excluded |
 | `ice_rpc_channel_capacity{kind}` | `max_publishers`, `max_subscribers`, `subscriber_buffer_samples` |
@@ -127,13 +127,19 @@ cargo run -p ice-rpc-monitor --features process-metrics -- \
     --health-interval-ms 1000 --health-shm
 ```
 
+The observer is **read-only by default**: it never creates nor removes anything.
+Pass `--cleanup` to reap, once at startup, the dead-node state and the orphan
+shared-memory markers left by processes that were killed — the same repair an
+`ice-rpc` provider performs on startup. The number reaped is logged, and the
+observer then stays read-only.
+
 ```
- network : nodes=2 (alive 2, dead 0)  services=12  channels=3
+ network : nodes=2 (alive 2, dead 0)  services=3
  shm     : 6 segment(s), 1.2MiB
  node    : pid=1234 provider-app  cpu 3.1% core / 0.2% host  rss 18.4MiB  up 42s
 ```
 
-Reading the block: `network` is a bus summary (nodes, services, channels);
+Reading the block: `network` is a bus summary (nodes and ice-rpc services);
 `shm` is the measured shared-memory footprint; each `node` line describes **one
 emitting process** (an iceoryx2 node) with its CPU, memory and uptime.
 

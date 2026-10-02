@@ -112,23 +112,11 @@ pub(super) fn render(inner: &Inner) -> String {
             );
     }
 
-    out.push_str("# HELP ice_rpc_services One series per iceoryx2 service\n");
+    out.push_str(
+        "# HELP ice_rpc_services Ice-rpc services present on the bus, one per observed channel\n",
+    );
     out.push_str("# TYPE ice_rpc_services gauge\n");
-    for ((service, pattern, role), value) in &inner.services {
-        let _ = writeln!(
-                out,
-                "ice_rpc_services{{service=\"{service}\",pattern=\"{pattern}\",role=\"{role}\"}} {value}"
-            );
-    }
-
-    out.push_str("# HELP ice_rpc_service_participants Nodes registered on a service\n");
-    out.push_str("# TYPE ice_rpc_service_participants gauge\n");
-    for (service, value) in &inner.service_participants {
-        let _ = writeln!(
-            out,
-            "ice_rpc_service_participants{{service=\"{service}\"}} {value}"
-        );
-    }
+    let _ = writeln!(out, "ice_rpc_services {}", inner.services);
 
     out.push_str("# HELP ice_rpc_channel Whether the observer is attached to a direction\n");
     out.push_str("# TYPE ice_rpc_channel gauge\n");

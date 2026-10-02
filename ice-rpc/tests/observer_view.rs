@@ -50,8 +50,6 @@ fn start_echo(channel: &str) -> (u32, CancellationToken, std::thread::JoinHandle
     });
     let stop = CancellationToken::new();
     let server = spawn_native_service(channel, vec![dispatcher], stop.clone());
-    // Let the service thread create the node and the channel ports.
-    std::thread::sleep(Duration::from_millis(300));
     (service_id, stop, server)
 }
 
@@ -77,13 +75,37 @@ fn drain_payload(view: &DirectionView) -> Option<(RpcHeader, Emitter, Vec<u8>)> 
     None
 }
 
+/// Opens a read-only view, waiting for the provider to publish its ports.
+///
+/// The provider opens its ports on its own thread, so the observer must wait for
+/// the services to exist rather than sleep a fixed delay: a fixed delay races
+/// the provider and fails on a loaded runner. `open` needs both the pub/sub
+/// service and its wake-up event service to exist, so a successful open is
+/// exactly the readiness condition the observer needs.
+fn open_view_when_ready(channel: &str, direction: Direction) -> DirectionView {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match DirectionView::open(channel, direction) {
+            Ok(view) => return view,
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("the {direction:?} view of '{channel}' never became openable: {e}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
 #[test]
 fn the_view_describes_and_reads_a_real_channel() {
     let channel = format!("IceRpcObserverView{}", std::process::id());
     let (service_id, stop, server) = start_echo(&channel);
 
-    let requests = DirectionView::open(&channel, Direction::Request).expect("request view");
-    let responses = DirectionView::open(&channel, Direction::Response).expect("response view");
+    // The provider opens its ports asynchronously, so wait for them instead of
+    // assuming a fixed delay is enough.
+    let requests = open_view_when_ready(&channel, Direction::Request);
+    let responses = open_view_when_ready(&channel, Direction::Response);
 
     // ── The description of the service the view attached to ─────────────
     assert_eq!(requests.service_name(), format!("{channel}_req"));
@@ -189,7 +211,6 @@ fn a_malformed_response_reaches_the_caller_as_a_technical_error() {
     });
     let stop = CancellationToken::new();
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
-    std::thread::sleep(Duration::from_millis(300));
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "garbage", b"")

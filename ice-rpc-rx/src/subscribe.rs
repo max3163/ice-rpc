@@ -10,7 +10,9 @@
 //! [`ObservableError`] unchanged. [`Observer`] and [`ObserverFns`] are internal,
 //! so the RxJS callbacks are reachable without naming a trait.
 
+use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::{Event, ObservableError};
 
@@ -87,6 +89,19 @@ where
 ///
 /// Dropping it cancels the underlying task (Rx `unsubscribe`, silent: no
 /// callback is invoked).
+///
+/// It is also a [`Future`]: awaiting it **joins** the subscription, resolving on
+/// the first of a terminal event (`Complete`/`Error`), an explicit
+/// [`unsubscribe`](Self::unsubscribe), or the drop of this handle. Awaiting
+/// consumes the handle — it means "I am done with this subscription". Keep it
+/// instead when something else must still be able to `unsubscribe` it.
+///
+/// ```rust,no_run
+/// use ice_rpc_rx::{from, rt::block_on};
+///
+/// let sub = from::<i32, String, _>([1, 2, 3]).subscribe(|v| println!("{v}"));
+/// block_on(sub); // join: resolves on Complete
+/// ```
 pub struct Subscription {
     cancel: crate::CancellationToken,
 }
@@ -100,26 +115,24 @@ impl Subscription {
     pub fn unsubscribe(&self) {
         self.cancel.cancel();
     }
+}
 
-    /// Resolves once the subscription has ended.
-    ///
-    /// This happens on a terminal event (`Complete` or `Error`), on an explicit
-    /// [`Subscription::unsubscribe`], or when the `Subscription` is dropped.
-    pub async fn closed(&self) {
-        self.cancel.cancelled().await;
-    }
+impl Future for Subscription {
+    type Output = ();
 
-    /// Returns `true` once the subscription has ended (cancelled, completed or
-    /// errored).
-    pub fn is_closed(&self) -> bool {
-        self.cancel.is_cancelled()
+    /// Delegates to
+    /// [`CancellationToken::poll_cancelled`](crate::CancellationToken::poll_cancelled):
+    /// the push task cancels the token when it returns, so a terminal event
+    /// resolves this future exactly like an explicit unsubscribe.
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.get_mut().cancel.poll_cancelled(cx)
     }
 }
 
 impl std::fmt::Debug for Subscription {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subscription")
-            .field("closed", &self.is_closed())
+            .field("finished", &self.cancel.is_cancelled())
             .finish()
     }
 }
@@ -150,7 +163,7 @@ where
     let token = cancel.clone();
     crate::rt::spawn(async move {
         run_push(stream, &mut observer, &token).await;
-        // Signal completion so `Subscription::is_closed` becomes observable.
+        // Signal completion so a task awaiting the `Subscription` resolves.
         token.cancel();
     });
 }
@@ -291,14 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn subscription_closed_resolves_on_complete() {
+    fn subscription_await_resolves_on_complete() {
         let stream: crate::Observable<i32, String> = crate::of(1);
         let sub = stream.subscribe(|_v| {});
 
-        // The push task cancels its token when it returns, so `closed` resolves
-        // on a terminal event as well.
-        pollster::block_on(sub.closed());
-        assert!(sub.is_closed());
+        // The push task cancels its token when it returns, so awaiting the handle
+        // resolves on a terminal event as well.
+        pollster::block_on(sub);
     }
 
     #[test]

@@ -77,7 +77,7 @@ implementation can recover from a transport, discovery or protocol failure.
 | `error` | `RpcError`, the technical error of the whole stack |
 | `creation` | `from`, `of`, `throw_error` |
 | `subject` | `Subject`, the multicast source |
-| `subscribe` | `Subscription`, the cancellation handle |
+| `subscribe` | `Subscription`, the cancellation handle — awaited to join the subscription (`sub.await`) |
 | `transform` | the operators, carried by `Observable` |
 | `rt` | execution facade (`spawn`, `Spawner`, `sleep`, `block_on`) and `CancellationToken` |
 

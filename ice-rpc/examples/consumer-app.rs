@@ -464,8 +464,8 @@ async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
 
     // `subscribe`: values only, the terminal event is ignored.
     let sub = from::<u32, String, _>([1, 2, 3]).subscribe(|v| log::info!("  [from] next {v}"));
-    sub.closed().await; // resolves on Complete
-    log::info!("   closed: {}", sub.is_closed());
+    sub.await; // resolves on Complete
+    log::info!("   the subscription ended");
 
     // The business error travels through the `error` callback, not as an `Err`.
     let sub = throw_error::<u32, String>("nothing to notify".to_string()).subscribe_all(
@@ -473,15 +473,15 @@ async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
         |e| log::warn!("  [error] error: {e}"),
         || log::info!("  [error] complete"),
     );
-    sub.closed().await;
+    sub.await;
 
     // The same stream through the value-only view: the error is dropped.
     let sub = of::<u32, String>(0).subscribe(|v| log::info!("  [value-only] next {v}"));
-    sub.closed().await;
+    sub.await;
     let sub = throw_error::<u32, String>("ignored".to_string()).subscribe(|v| {
         log::info!("  [value-only] next {v}");
     });
-    sub.closed().await;
+    sub.await;
     log::info!("   value-only `subscribe` ignored the business error");
 
     // ── Over ice-rpc ─────────────────────────────────────────────────
@@ -500,8 +500,8 @@ async fn run_notification_demo(notif: &NotificationServiceProxy) -> bool {
         |e| log::error!("<- error: {e}"),
         || log::info!("<- complete"),
     );
-    sub.closed().await;
-    log::info!("   subscription closed: {}", sub.is_closed());
+    sub.await;
+    log::info!("   subscription ended");
 
     // Unsubscribe in the middle of a stream: dropping the handle stops the local
     // task, and the provider's next `send_next` fails, so it stops producing.

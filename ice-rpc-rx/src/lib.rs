@@ -14,7 +14,7 @@
 //! | `error` | [`RpcError`], the technical error of the whole stack |
 //! | `creation` | [`from`], [`of`], [`throw_error`] |
 //! | `subject` | [`Subject`], the multicast source |
-//! | `subscribe` | [`Subscription`], the cancellation handle |
+//! | `subscribe` | [`Subscription`], the cancellation handle — and the `Future` awaited to join it |
 //! | `transform` | the operators carried by [`Observable`] |
 //! | [`rt`] | execution facade and [`CancellationToken`] |
 //!
@@ -43,7 +43,10 @@
 //!   state) to late subscribers.
 //! - `Observable::subscribe` / `Observable::subscribe_all` — push-based
 //!   consumption through RxJS-style callbacks. [`Subscription`] is the
-//!   cancellation handle.
+//!   cancellation handle **and** a `Future`: `sub.await` joins the subscription,
+//!   the shape `JoinHandle` uses, while keeping the handle and
+//!   [`unsubscribe`](Subscription::unsubscribe)ing it is how a caller stops a
+//!   stream early.
 //! - [`from`], [`of`], [`throw_error`] — channel-free local constructors;
 //!   [`defer`] and [`from_future`] defer their work to the first poll, so a
 //!   service call is only issued when someone consumes the stream.

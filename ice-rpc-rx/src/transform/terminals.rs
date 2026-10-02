@@ -47,9 +47,8 @@ impl<T, E> Observable<T, E> {
     /// operator that spawns, so it needs the execution facade.
     ///
     /// Dropping the returned [`Subscription`] cancels the task silently, as does
-    /// [`unsubscribe`](crate::Subscription::unsubscribe). Await
-    /// [`Subscription::closed`](crate::Subscription::closed) to know when the
-    /// stream ended on its own.
+    /// [`unsubscribe`](crate::Subscription::unsubscribe). Await the
+    /// [`Subscription`] itself to know when the stream ended on its own.
     ///
     /// # Example
     /// ```rust,no_run
@@ -57,7 +56,7 @@ impl<T, E> Observable<T, E> {
     ///
     /// let sub = from::<i32, String, _>([1, 2, 3]).subscribe(|v| println!("next {v}"));
     /// // `sub.unsubscribe();` cancels before the end.
-    /// block_on(sub.closed());
+    /// block_on(sub);
     /// ```
     pub fn subscribe<F>(self, on_next: F) -> Subscription
     where
@@ -87,7 +86,7 @@ impl<T, E> Observable<T, E> {
     ///     |e: ObservableError<String>| eprintln!("error {e}"),
     ///     || println!("complete"),
     /// );
-    /// block_on(sub.closed());
+    /// block_on(sub);
     /// ```
     pub fn subscribe_all<N, Er, C>(self, on_next: N, on_error: Er, on_complete: C) -> Subscription
     where

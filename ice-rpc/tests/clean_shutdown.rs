@@ -7,8 +7,15 @@
 //! the services survive it, and the next process to open one of them can be told
 //! `SystemInFlux` for state that a clean exit should have removed.
 //!
-//! Waiting for them is what [`ice_rpc::gen::shutdown_and_release`] does, through
-//! the shutdown registry, and this test is the guard of that behaviour.
+//! The **node** is the other half, and the piece that outlives its ports: iceoryx2
+//! removes `nodes/<id>/` and its `node_monitor*` files when the node is dropped,
+//! and the transport keeps its node in a process-wide cell. `shutdown_and_release`
+//! empties that cell once the ports are gone; without it, every clean exit left
+//! one node per run for the *next* process to reap.
+//!
+//! Waiting for the threads and releasing both caches is what
+//! [`ice_rpc::gen::shutdown_and_release`] does, and this test is the guard of
+//! that behaviour — it asserts the services *and* the node are gone.
 //!
 //! It shuts down **programmatically** rather than by signal on purpose:
 //! `signal_shutdown.rs` needs `kill -INT` and skips on Windows, which is the very
@@ -17,6 +24,7 @@
 
 use std::time::{Duration, Instant};
 
+use ice_rpc::gen::iceoryx2::prelude::SemanticString;
 use ice_rpc::gen::{service_id_of, spawn_native_service, ServiceDispatcher, ServiceRef};
 
 /// Channel — and service name — the test creates on the bus.
@@ -41,6 +49,27 @@ fn probe_services() -> usize {
         .unwrap_or(0)
 }
 
+/// Number of entries in iceoryx2's node directory.
+///
+/// This is the state a **node** owns — its `nodes/<id>/` directory and the
+/// `node_monitor*` files beside it — and that iceoryx2 removes when the node is
+/// dropped. A clean shutdown must give it back: the node the transport creates
+/// lives in a process-wide cell, and a cell nothing empties keeps the node, and
+/// its files, alive until the process dies.
+///
+/// The directory is shared by every process on the machine, so the test compares
+/// the count before and after rather than asserting it is empty: an observer or
+/// another provider may own entries of its own.
+fn node_entries() -> usize {
+    let config = ice_rpc::gen::iceoryx2::config::Config::global_config();
+    // Bound first: `node_dir` returns the path by value, and `as_bytes` borrows it.
+    let node_dir = config.global.node_dir();
+    let dir = std::str::from_utf8(node_dir.as_bytes()).unwrap_or_default();
+    std::fs::read_dir(dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
 /// Waits for `condition`, or fails with what it was waiting for.
 fn wait_until(condition: impl Fn() -> bool, expectation: &str) {
     let deadline = Instant::now() + SETTLE;
@@ -54,9 +83,9 @@ fn wait_until(condition: impl Fn() -> bool, expectation: &str) {
 }
 
 /// The process creates a channel, shuts down cleanly, and the bus must be back to
-/// what it was: nothing left behind.
+/// what it was: nothing left behind — neither its services nor its node.
 #[test]
-fn a_clean_shutdown_releases_the_services_this_process_created() {
+fn a_clean_shutdown_releases_what_this_process_created() {
     let _guard = ice_rpc::gen::init();
 
     assert_eq!(
@@ -64,6 +93,8 @@ fn a_clean_shutdown_releases_the_services_this_process_created() {
         0,
         "the probe service must not exist before the test"
     );
+
+    let nodes_before = node_entries();
 
     // Registered exactly as the generated provider does: without it, a clean
     // shutdown has nothing to wait for and the services survive the process.
@@ -90,5 +121,14 @@ fn a_clean_shutdown_releases_the_services_this_process_created() {
         || probe_services() == 0,
         "a clean shutdown must release every service the process created \
          (the dispatch thread was not joined, so its ports were never dropped)",
+    );
+
+    // The node is the other half: dropping it is what removes `nodes/<id>/` and
+    // its `node_monitor*` files. Without it, a clean exit leaves one node per run
+    // for the *next* process to reap.
+    wait_until(
+        || node_entries() <= nodes_before,
+        "a clean shutdown must release the node this process created \
+         (`nodes/<id>/` and its `node_monitor*` files, removed when the node is dropped)",
     );
 }

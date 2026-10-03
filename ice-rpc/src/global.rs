@@ -14,7 +14,7 @@
 //! | Registry cancel token | `lib.rs`, [`Global`] | — | unchanged after creation | `publish_until_delivered` | never |
 //! | iceoryx2 bootstrap (`Once`) | `lib.rs`, [`Global`] | — | first `init()` | every `init()` | never |
 //! | Signal-handling flag | `lib.rs`, `AtomicBool` | — | `init` / `init_without_ctrl_c` | `waitset_signal_handling_mode` | not applicable |
-//! | Shared iceoryx2 node | `transport::shared_node`, [`Global`] | — | first port creation | every port creation, observers | never |
+//! | Shared iceoryx2 node | `transport::node_slot`, [`Locked`] | — | first port creation | every port creation, observers | at shutdown, `transport::release_shared_node` |
 //! | In-flight response handlers | `transport::client`, map owned by the channel ports | correlation id | `native_call`, before publishing | response dispatch thread | on the terminal event of the call, or when the call is dropped |
 //! | Consumer ports per channel | `transport::client`, [`Locked`] | channel name | `consumer_ports` | `native_call` | never (one set per channel) |
 //! | Pending channels | `transport::server`, [`Locked`] | channel name | `register_native_service` | `start_registered_channels` | drained at the end of initialization |

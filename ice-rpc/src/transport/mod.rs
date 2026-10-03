@@ -12,7 +12,7 @@ use std::sync::Arc;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc_threadsafe;
 
-use crate::global::{Global, Locked};
+use crate::global::Locked;
 use crate::types::{RpcError, RpcHeader};
 
 mod bridge;
@@ -137,17 +137,47 @@ pub(super) fn transport_error(context: &str, err: impl std::fmt::Debug) -> RpcEr
     RpcError::TransportError(format!("{context}: {err:?}"))
 }
 
+/// The cell holding the process-wide iceoryx2 node.
+///
+/// A `Locked<Option<..>>` rather than a `Global`: a node owns state on the bus —
+/// its `nodes/<id>/` directory and the `node_monitor*` files beside it — that
+/// iceoryx2 removes when the node is dropped, and a cell nothing can empty would
+/// hold that state until the process dies. See [`release_shared_node`].
+fn node_slot() -> &'static Locked<Option<Result<Arc<IoxNode>, String>>> {
+    static SLOT: Locked<Option<Result<Arc<IoxNode>, String>>> = Locked::new();
+    &SLOT
+}
+
 /// Returns the **process-wide** iceoryx2 node, created on first use.
 pub(super) fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
-    static NODE: Global<Result<Arc<IoxNode>, String>> = Global::new();
-    NODE.get_or_init(|| {
-        NodeBuilder::new()
-            .create::<Iox>()
-            .map(Arc::new)
-            .map_err(|e| format!("{e:?}"))
-    })
-    .clone()
-    .map_err(|e| RpcError::TransportError(format!("node creation: {e}")))
+    node_slot()
+        .with(|slot| {
+            slot.get_or_insert_with(|| {
+                NodeBuilder::new()
+                    .create::<Iox>()
+                    .map(Arc::new)
+                    .map_err(|e| format!("{e:?}"))
+            })
+            .clone()
+        })
+        .map_err(|e| RpcError::TransportError(format!("node creation: {e}")))
+}
+
+/// Drops the process-wide node, releasing the state it owns on the bus.
+///
+/// Called at shutdown, **after** the dispatch threads are joined and the cached
+/// ports released: a node that outlives its ports cannot be released, and
+/// iceoryx2 removes `nodes/<id>/` and its `node_monitor*` files only when the
+/// last reference to the node goes away. Without this, every clean exit left one
+/// node behind per run — state that the *next* process reaps, and that no
+/// unprivileged one could even delete before the DACL fix.
+///
+/// Idempotent. A later [`shared_node`] would create a fresh node, which is
+/// deliberate: the cell is a cache, not a lease.
+///
+/// Returns whether a node was actually released.
+pub fn release_shared_node() -> bool {
+    node_slot().with(|slot| slot.take().is_some())
 }
 
 /// Drops the per-channel port caches this process still holds.

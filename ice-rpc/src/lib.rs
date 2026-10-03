@@ -262,6 +262,14 @@ pub async fn shutdown_and_release() {
     if released > 0 {
         log::info!("[ice-rpc] released {released} cached channel port(s)");
     }
+
+    // Last, and only now: the node itself. iceoryx2 removes the node's own state
+    // — `nodes/<id>/` and its `node_monitor*` files — when the node is dropped,
+    // so releasing it is what a clean exit needs to leave nothing behind. It has
+    // to come after the ports, which is why it is not part of their release.
+    if crate::transport::release_shared_node() {
+        log::info!("[ice-rpc] released the iceoryx2 node");
+    }
 }
 
 /// RAII guard for the automatic shutdown of an ice-rpc process.

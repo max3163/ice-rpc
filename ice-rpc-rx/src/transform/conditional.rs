@@ -19,7 +19,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::take_until`](crate::Observable::take_until).
     pub struct TakeUntil<S, U, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         // The notifier, polled first and dropped as soon as it is over: one that
         // completes without a value never stops the source (RxJS).
         #[pin]
@@ -33,9 +33,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, U, T, E> TakeUntil<S, U, T, E> {
-    pub(super) fn new(stream: S, notifier: Observable<U, E>) -> Self {
+    pub(super) fn new(source: S, notifier: Observable<U, E>) -> Self {
         Self {
-            stream,
+            source,
             notifier: Some(notifier),
             stopped: false,
             done: false,
@@ -87,7 +87,7 @@ where
             return Poll::Ready(Some(Event::Complete));
         }
 
-        futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
+        futures_lite::Stream::poll_next(this.source.as_mut(), cx)
     }
 }
 
@@ -95,7 +95,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::take_until_token`](crate::Observable::take_until_token).
     pub struct TakeUntilToken<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         token: crate::CancellationToken,
         done: bool,
         _marker: PhantomData<(T, E)>,
@@ -103,9 +103,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, T, E> TakeUntilToken<S, T, E> {
-    pub(super) fn new(stream: S, token: crate::CancellationToken) -> Self {
+    pub(super) fn new(source: S, token: crate::CancellationToken) -> Self {
         Self {
-            stream,
+            source,
             token,
             done: false,
             _marker: PhantomData,
@@ -130,7 +130,7 @@ where
                 crate::RpcError::Cancelled,
             ))));
         }
-        futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
+        futures_lite::Stream::poll_next(this.source.as_mut(), cx)
     }
 }
 

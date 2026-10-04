@@ -19,16 +19,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::map`](crate::Observable::map).
     pub struct Map<S, F, T, U, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         _marker: PhantomData<(T, U, E)>,
     }
 }
 
 impl<S, F, T, U, E> Map<S, F, T, U, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             _marker: PhantomData,
         }
@@ -44,7 +44,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next((this.f)(v)))),
             Poll::Ready(Some(Event::Complete)) => Poll::Ready(Some(Event::Complete)),
             Poll::Ready(Some(Event::Error(e))) => Poll::Ready(Some(Event::Error(e))),
@@ -58,16 +58,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::map_err`](crate::Observable::map_err).
     pub struct MapErr<S, F, T, E, E2> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         _marker: PhantomData<(T, E, E2)>,
     }
 }
 
 impl<S, F, T, E, E2> MapErr<S, F, T, E, E2> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             _marker: PhantomData,
         }
@@ -83,7 +83,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => Poll::Ready(Some(Event::Next(v))),
             // Only the business error is remapped; technical errors pass through.
             Poll::Ready(Some(Event::Error(crate::ObservableError::Business(e)))) => {
@@ -110,7 +110,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::scan`](crate::Observable::scan).
     pub struct Scan<S, F, T, U, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         acc: Option<U>,
         _marker: PhantomData<(T, E)>,
@@ -118,9 +118,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, F, T, U, E> Scan<S, F, T, U, E> {
-    pub(super) fn new(stream: S, initial: U, f: F) -> Self {
+    pub(super) fn new(source: S, initial: U, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             acc: Some(initial),
             _marker: PhantomData,
@@ -138,7 +138,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => {
                 let acc = this.acc.take().expect("scan accumulator");
                 let next = (this.f)(acc, v);
@@ -167,7 +167,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::switch_map`](crate::Observable::switch_map).
     pub struct SwitchMap<S, F, T, U, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         // The **projected** stream, replaced on every new source value.
         #[pin]
@@ -182,9 +182,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, F, T, U, E> SwitchMap<S, F, T, U, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             projected: None,
             source_end: None,
@@ -257,7 +257,7 @@ where
                 return Poll::Pending;
             }
 
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     this.projected.set(Some((this.f)(v)));
                 }

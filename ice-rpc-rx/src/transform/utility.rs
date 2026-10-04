@@ -28,16 +28,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::tap`](crate::Observable::tap).
     pub struct Tap<S, F, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, F, T, E> Tap<S, F, T, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             _marker: PhantomData,
         }
@@ -53,7 +53,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => {
                 (this.f)(&v);
                 Poll::Ready(Some(Event::Next(v)))
@@ -69,16 +69,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::finalize`](crate::Observable::finalize).
     pub struct Finalize<S, F, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: Option<F>,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, F, T, E> Finalize<S, F, T, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f: Some(f),
             _marker: PhantomData,
         }
@@ -94,7 +94,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(event)) => {
                 if event.is_terminal() {
                     if let Some(f) = this.f.take() {
@@ -118,7 +118,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::delay`](crate::Observable::delay).
     pub struct Delay<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         duration: Duration,
         // Events read ahead, each with the instant it must be released. An
         // event's deadline is *its own* arrival time plus the delay, so the
@@ -133,9 +133,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, T, E> Delay<S, T, E> {
-    pub(super) fn new(stream: S, duration: Duration) -> Self {
+    pub(super) fn new(source: S, duration: Duration) -> Self {
         Self {
-            stream,
+            source,
             duration,
             queue: VecDeque::new(),
             sleep: None,
@@ -178,7 +178,7 @@ where
             // ordered, so a newly pushed event never precedes the head and the
             // armed timer stays valid.
             if !*this.source_finished && read < DELAY_READ_AHEAD {
-                match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+                match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                     Poll::Ready(Some(event)) => {
                         this.queue
                             .push_back((Instant::now() + *this.duration, event));
@@ -213,7 +213,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::timeout`](crate::Observable::timeout).
     pub struct Timeout<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         duration: std::time::Duration,
         sleep: Option<futures_lite::future::Boxed<()>>,
         done: bool,
@@ -222,9 +222,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, T, E> Timeout<S, T, E> {
-    pub(super) fn new(stream: S, duration: std::time::Duration) -> Self {
+    pub(super) fn new(source: S, duration: std::time::Duration) -> Self {
         Self {
-            stream,
+            source,
             duration,
             sleep: None,
             done: false,
@@ -247,7 +247,7 @@ where
         if this.sleep.is_none() {
             *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());
         }
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(event)) => {
                 // Reset the silence deadline after every received event.
                 *this.sleep = Some(crate::rt::sleep(*this.duration).boxed());

@@ -18,7 +18,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::catch_error`](crate::Observable::catch_error).
     pub struct CatchError<S, F, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         // The selector, consumed by the first business error (`FnOnce`).
         f: Option<F>,
         // The recovery stream: it replaces the failed source entirely, values
@@ -31,9 +31,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, F, T, E> CatchError<S, F, T, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f: Some(f),
             recovery: None,
             finished: false,
@@ -81,7 +81,7 @@ where
                 };
             }
 
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => return Poll::Ready(Some(Event::Next(v))),
                 // Only a business error is recoverable; a technical error and
                 // `Empty` are fatal, so they travel untouched.

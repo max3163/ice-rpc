@@ -20,16 +20,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::filter`](crate::Observable::filter).
     pub struct Filter<S, F, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, F, T, E> Filter<S, F, T, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             _marker: PhantomData,
         }
@@ -46,7 +46,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     if (this.f)(&v) {
                         return Poll::Ready(Some(Event::Next(v)));
@@ -64,7 +64,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::take`](crate::Observable::take).
     pub struct Take<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         remaining: usize,
         done: bool,
         _marker: PhantomData<(T, E)>,
@@ -72,9 +72,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, T, E> Take<S, T, E> {
-    pub(super) fn new(stream: S, n: usize) -> Self {
+    pub(super) fn new(source: S, n: usize) -> Self {
         Self {
-            stream,
+            source,
             remaining: n,
             done: false,
             _marker: PhantomData,
@@ -99,7 +99,7 @@ where
             *this.done = true;
             return Poll::Ready(Some(Event::Complete));
         }
-        match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+        match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(Event::Next(v))) => {
                 *this.remaining -= 1;
                 Poll::Ready(Some(Event::Next(v)))
@@ -123,16 +123,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::distinct_until_changed`](crate::Observable::distinct_until_changed).
     pub struct DistinctUntilChanged<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         last: Option<T>,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, T, E> DistinctUntilChanged<S, T, E> {
-    pub(super) fn new(stream: S) -> Self {
+    pub(super) fn new(source: S) -> Self {
         Self {
-            stream,
+            source,
             last: None,
             _marker: PhantomData,
         }
@@ -149,7 +149,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     // Compared against the last *emitted* value, not the whole
                     // history. An equal value falls through to the next poll of
@@ -171,16 +171,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::skip`](crate::Observable::skip).
     pub struct Skip<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         remaining: usize,
         _marker: PhantomData<(T, E)>,
     }
 }
 
 impl<S, T, E> Skip<S, T, E> {
-    pub(super) fn new(stream: S, n: usize) -> Self {
+    pub(super) fn new(source: S, n: usize) -> Self {
         Self {
-            stream,
+            source,
             remaining: n,
             _marker: PhantomData,
         }
@@ -196,7 +196,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         loop {
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     if *this.remaining > 0 {
                         *this.remaining -= 1;
@@ -216,7 +216,7 @@ pin_project_lite::pin_project! {
     /// See [`Observable::first_with`](crate::Observable::first_with).
     pub struct First<S, F, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         f: F,
         completed: bool,
         done: bool,
@@ -225,9 +225,9 @@ pin_project_lite::pin_project! {
 }
 
 impl<S, F, T, E> First<S, F, T, E> {
-    pub(super) fn new(stream: S, f: F) -> Self {
+    pub(super) fn new(source: S, f: F) -> Self {
         Self {
-            stream,
+            source,
             f,
             completed: false,
             done: false,
@@ -253,7 +253,7 @@ where
             return Poll::Ready(Some(Event::Complete));
         }
         loop {
-            match futures_lite::Stream::poll_next(this.stream.as_mut(), cx) {
+            match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
                     if (this.f)(&v) {
                         *this.completed = true;

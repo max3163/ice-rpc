@@ -18,16 +18,16 @@ pin_project_lite::pin_project! {
     /// See [`Observable::start_with`](crate::Observable::start_with).
     pub struct StartWith<S, T, E> {
         #[pin]
-        stream: S,
+        source: S,
         first: Option<T>,
         _marker: PhantomData<E>,
     }
 }
 
 impl<S, T, E> StartWith<S, T, E> {
-    pub(super) fn new(stream: S, value: T) -> Self {
+    pub(super) fn new(source: S, value: T) -> Self {
         Self {
-            stream,
+            source,
             first: Some(value),
             _marker: PhantomData,
         }
@@ -45,7 +45,7 @@ where
         if let Some(value) = this.first.take() {
             return Poll::Ready(Some(Event::Next(value)));
         }
-        futures_lite::Stream::poll_next(this.stream.as_mut(), cx)
+        futures_lite::Stream::poll_next(this.source.as_mut(), cx)
     }
 }
 

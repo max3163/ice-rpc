@@ -69,25 +69,126 @@ fn the_error_vocabulary_is_closed() {
 
 // ── RpcError ────────────────────────────────────────────────────────
 
-#[test]
-fn rpc_error_is_retryable_classification() {
-    assert!(RpcError::TransportError("boom".into()).is_retryable());
-    assert!(RpcError::Timeout.is_retryable());
-    assert!(!RpcError::SerializationError.is_retryable());
-    assert!(!RpcError::Cancelled.is_retryable());
-    assert!(!RpcError::Internal("boom".into()).is_retryable());
+/// Every `RpcError` variant, so the tests below are exhaustive **by
+/// construction**: adding a variant to `RpcError` reaches them without any other
+/// edit — and the closed `match` of [`retryable_by_hand`] fails to compile until
+/// the new variant is classified, exactly as `the_error_vocabulary_is_closed`
+/// guards the `ObservableError` vocabulary.
+fn every_rpc_error() -> Vec<RpcError> {
+    vec![
+        RpcError::SerializationError,
+        RpcError::TransportError("link down".to_string()),
+        RpcError::Timeout,
+        RpcError::Cancelled,
+        RpcError::Internal("invariant".to_string()),
+        RpcError::ProtocolMismatch("stale".to_string()),
+        RpcError::UnknownMethod("nope".to_string()),
+        RpcError::UnknownService("0xdead".to_string()),
+        RpcError::IncompatibleVersion {
+            expected: 2,
+            actual: 1,
+        },
+    ]
+}
+
+/// The classification restated **with no wildcard**: a new variant must be
+/// classified here before this module compiles again.
+fn retryable_by_hand(error: &RpcError) -> bool {
+    match error {
+        RpcError::TransportError(_) | RpcError::Timeout => true,
+        RpcError::SerializationError
+        | RpcError::Cancelled
+        | RpcError::Internal(_)
+        | RpcError::ProtocolMismatch(_)
+        | RpcError::UnknownMethod(_)
+        | RpcError::UnknownService(_)
+        | RpcError::IncompatibleVersion { .. } => false,
+    }
 }
 
 #[test]
-fn rpc_error_display_variants() {
-    assert!(RpcError::SerializationError
-        .to_string()
-        .contains("serialization"));
-    assert!(RpcError::Timeout.to_string().contains("timeout"));
-    assert!(RpcError::Cancelled.to_string().contains("cancelled"));
-    assert!(RpcError::TransportError("boom".into())
-        .to_string()
-        .contains("boom"));
+fn rpc_error_is_retryable_covers_every_variant() {
+    for error in every_rpc_error() {
+        assert_eq!(
+            error.is_retryable(),
+            retryable_by_hand(&error),
+            "is_retryable for {error:?}"
+        );
+    }
+}
+
+/// The retry policy is only meaningful if the transient failures are the *only*
+/// retryable ones — a contract mismatch must never be retried.
+#[test]
+fn only_transient_rpc_errors_are_retryable() {
+    for error in every_rpc_error() {
+        let transient = matches!(error, RpcError::TransportError(_) | RpcError::Timeout);
+        assert_eq!(
+            error.is_retryable(),
+            transient,
+            "retryable policy for {error:?}"
+        );
+    }
+}
+
+/// The `Display` `match` has one arm per variant: the loop exercises every arm,
+/// and the assertions below pin each rendering exactly.
+#[test]
+fn rpc_error_display_covers_every_variant() {
+    for error in every_rpc_error() {
+        assert!(!error.to_string().is_empty(), "Display for {error:?}");
+    }
+
+    assert_eq!(
+        RpcError::SerializationError.to_string(),
+        "RPC error: serialization failure"
+    );
+    assert_eq!(RpcError::Timeout.to_string(), "RPC error: timeout exceeded");
+    assert_eq!(RpcError::Cancelled.to_string(), "RPC error: call cancelled");
+    assert_eq!(
+        RpcError::TransportError("link down".into()).to_string(),
+        "RPC transport error: link down"
+    );
+    assert_eq!(
+        RpcError::Internal("invariant".into()).to_string(),
+        "RPC internal error: invariant"
+    );
+    assert_eq!(
+        RpcError::ProtocolMismatch("stale".into()).to_string(),
+        "RPC error: incompatible service on the bus: stale"
+    );
+    assert_eq!(
+        RpcError::UnknownMethod("nope".into()).to_string(),
+        "RPC error: unknown method 'nope'"
+    );
+    assert_eq!(
+        RpcError::UnknownService("0xdead".into()).to_string(),
+        "RPC error: unknown service id 0xdead"
+    );
+    assert_eq!(
+        RpcError::IncompatibleVersion {
+            expected: 2,
+            actual: 1,
+        }
+        .to_string(),
+        "RPC error: incompatible service version: provider is v2, requested v1"
+    );
+}
+
+#[test]
+fn rpc_error_is_a_std_error() {
+    use std::error::Error;
+
+    let boxed: Box<dyn Error + Send + Sync> = Box::new(RpcError::Timeout);
+    assert_eq!(boxed.to_string(), "RPC error: timeout exceeded");
+    assert!(RpcError::UnknownService("0xdead".into()).source().is_none());
+}
+
+#[test]
+fn rpc_error_clone_and_eq_round_trip() {
+    for error in every_rpc_error() {
+        assert_eq!(error.clone(), error, "Clone/PartialEq for {error:?}");
+    }
 }
 
 // ── Observable ──────────────────────────────────────────────────────

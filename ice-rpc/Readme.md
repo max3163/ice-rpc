@@ -216,6 +216,9 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
   (`catch_error`) and utility (`tap`, `finalize`, `delay`, `timeout`). Each
   method documents its semantics and ships a runnable example — see the
   `Observable` API documentation;
+- `switch_map`'s projection accepts either an `Observable` or a `Future`
+  producing one (`ObservableInput`), so an `async fn` call composes directly:
+  `.switch_map(move |x| async move { proxy.get_other(x).await })`;
 - dropping a response stream whose call is still in flight **cancels the call on
   the provider**: the handler's future is dropped, so the work stops instead of
   running on for a caller that no longer listens. A call whose terminal event was

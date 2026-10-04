@@ -98,6 +98,57 @@ where
     Observable::from_stream(Deferred::new(factory))
 }
 
+/// Anything a combinator can accept as a source: an [`Observable`] itself, or a
+/// [`Future`](std::future::Future) that produces one.
+///
+/// This is the Rust counterpart of RxJS `ObservableInput`. It lets a projection
+/// hand back **either** form, so an `async fn` client method composes directly —
+/// `stream.switch_map(move |x| async move { proxy.get_other(x).await })` — without
+/// an explicit [`defer`].
+///
+/// A future is turned into a **cold** observable: nothing runs until a consumer
+/// polls it, exactly as if it had been passed to [`defer`]. The future is created
+/// by the caller and polled **once**.
+///
+/// # Example
+/// ```rust
+/// use ice_rpc_rx::{rt::block_on, Observable, ObservableInput};
+///
+/// // Every `Observable` is its own input.
+/// let direct: Observable<i32, String> = ice_rpc_rx::of(1).into_observable();
+/// assert_eq!(block_on(direct.collect()).expect("clean"), vec![1]);
+///
+/// // A future resolving to an `Observable` is accepted too — the shape an
+/// // `async fn` client method returns.
+/// let deferred = async { ice_rpc_rx::of::<i32, String>(2) }.into_observable();
+/// assert_eq!(block_on(deferred.collect()).expect("clean"), vec![2]);
+/// ```
+pub trait ObservableInput<T, E> {
+    /// Views `self` as an [`Observable`].
+    fn into_observable(self) -> Observable<T, E>;
+}
+
+impl<T, E> ObservableInput<T, E> for Observable<T, E> {
+    #[inline]
+    fn into_observable(self) -> Observable<T, E> {
+        self
+    }
+}
+
+impl<T, E, F> ObservableInput<T, E> for F
+where
+    F: std::future::Future<Output = Observable<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    fn into_observable(self) -> Observable<T, E> {
+        // The future is created by the caller and polled once, on the first poll
+        // of the returned observable: the same laziness as `defer`.
+        let mut future = Some(self);
+        defer(move || future.take().expect("the future is polled once"))
+    }
+}
+
 /// Creates a one-value observable from a future (RxJS `from(promise)`).
 ///
 /// The future is polled at the **first poll**, never before. `Ok(value)` emits

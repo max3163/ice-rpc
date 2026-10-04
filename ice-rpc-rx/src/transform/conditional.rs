@@ -13,6 +13,7 @@ use std::task::{Context, Poll};
 
 use crate::Event;
 use crate::Observable;
+use crate::ObservableInput;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::take_until`](crate::Observable::take_until).
@@ -165,13 +166,33 @@ impl<T, E> Observable<T, E> {
     ///     .expect("a stop is a completion, not a failure");
     /// assert!(values.is_empty());
     /// ```
-    pub fn take_until<U>(self, notifier: Observable<U, E>) -> Observable<T, E>
+    ///
+    /// The notifier accepts an [`ObservableInput`](crate::ObservableInput): an
+    /// [`Observable`], or a **future** that produces one — the shape of an
+    /// `async fn` call, so a stream can be stopped on an asynchronous signal:
+    /// ```rust
+    /// use ice_rpc_rx::{from, of, rt::block_on, Observable};
+    ///
+    /// async fn stop() -> Observable<(), String> {
+    ///     of(())
+    /// }
+    ///
+    /// let values = block_on(
+    ///     from::<i32, String, _>([1, 2, 3]).take_until(stop()).collect(),
+    /// )
+    /// .expect("a stop is a completion, not a failure");
+    /// assert!(values.is_empty());
+    /// ```
+    pub fn take_until<U, I>(self, notifier: I) -> Observable<T, E>
     where
+        I: ObservableInput<U, E>,
         U: Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
     {
-        Observable::from_stream(TakeUntil::new(self, notifier))
+        // The notifier is normalized here: `TakeUntil` only ever sees an
+        // `Observable`, whatever the caller handed in.
+        Observable::from_stream(TakeUntil::new(self, notifier.into_observable()))
     }
 
     /// Emits a technical [`RpcError::Cancelled`](crate::RpcError::Cancelled) and

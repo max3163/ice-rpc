@@ -12,7 +12,7 @@
 //! | `event` | [`Event`], [`ObservableError`] and the producer-side [`Sender`] |
 //! | `stream` | [`Observable`] and the local [`channel`] constructors |
 //! | `error` | [`RpcError`], the technical error of the whole stack |
-//! | `creation` | [`from`], [`of`], [`throw_error`] |
+//! | `creation` | [`from`], [`of`], [`throw_error`], [`defer`], [`from_future`], [`ObservableInput`] |
 //! | `subject` | [`Subject`], the multicast source |
 //! | `subscribe` | [`Subscription`], the cancellation handle — and the `Future` awaited to join it |
 //! | `transform` | the operators carried by [`Observable`] |
@@ -50,6 +50,9 @@
 //! - [`from`], [`of`], [`throw_error`] — channel-free local constructors;
 //!   [`defer`] and [`from_future`] defer their work to the first poll, so a
 //!   service call is only issued when someone consumes the stream.
+//! - [`ObservableInput`] — the bridge a projection uses to accept **either** an
+//!   `Observable` or a `Future` that produces one, so an `async fn` client call
+//!   composes without an explicit [`defer`] (RxJS `ObservableInput`).
 //!
 //! ## Operators
 //!
@@ -96,7 +99,7 @@ mod transform;
 #[cfg(test)]
 mod tests;
 
-pub use creation::{defer, from, from_future, of, throw_error};
+pub use creation::{defer, from, from_future, of, throw_error, ObservableInput};
 pub use error::RpcError;
 pub use event::{Event, ObservableError, Sender};
 pub use rt::CancellationToken;

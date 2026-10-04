@@ -12,6 +12,7 @@ use std::task::{Context, Poll};
 
 use crate::Event;
 use crate::Observable;
+use crate::ObservableInput;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::start_with`](crate::Observable::start_with).
@@ -211,15 +212,35 @@ impl<T, E> Observable<T, E> {
     /// assert_eq!(merged, vec![1, 10, 2, 20]);
     /// ```
     ///
+    /// The right operand accepts an [`ObservableInput`](crate::ObservableInput):
+    /// an [`Observable`], or a **future** that produces one — an `async fn` call:
+    /// ```rust
+    /// use ice_rpc_rx::{from, of, rt::block_on, Observable};
+    ///
+    /// async fn tail() -> Observable<i32, String> {
+    ///     of(10)
+    /// }
+    ///
+    /// let mut merged = block_on(
+    ///     from::<i32, String, _>([1, 2]).merge(tail()).collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// merged.sort_unstable();
+    /// assert_eq!(merged, vec![1, 2, 10]);
+    /// ```
+    ///
     /// # See also
     /// [`switch_map`](Observable::switch_map) projects to a *new* inner stream
     /// per value instead of merging two fixed ones.
-    pub fn merge(self, other: Observable<T, E>) -> Observable<T, E>
+    pub fn merge<I>(self, other: I) -> Observable<T, E>
     where
+        I: ObservableInput<T, E>,
         T: Send + 'static,
         E: Send + 'static,
     {
-        Observable::from_stream(Merge::new(self, other))
+        // The right operand is normalized here: `Merge` only ever sees
+        // `Observable`s, whatever the caller handed in.
+        Observable::from_stream(Merge::new(self, other.into_observable()))
     }
 }
 

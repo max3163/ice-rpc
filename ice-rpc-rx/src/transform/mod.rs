@@ -45,7 +45,7 @@
 //!
 //! | Category | Operators |
 //! |---|---|
-//! | Creating | [`of`](crate::of), [`from`](crate::from), [`throw_error`](crate::throw_error), [`defer`](crate::defer), [`from_future`](crate::from_future), [`channel`](crate::channel), [`Subject`](crate::Subject) |
+//! | Creating | [`of`](crate::of), [`from`](crate::from), [`throw_error`](crate::throw_error), [`defer`](crate::defer), [`from_future`](crate::from_future), [`ObservableInput`](crate::ObservableInput), [`channel`](crate::channel), [`Subject`](crate::Subject) |
 //! | Transforming | [`map`](crate::Observable::map), [`map_err`](crate::Observable::map_err), [`scan`](crate::Observable::scan), [`switch_map`](crate::Observable::switch_map) |
 //! | Filtering | [`filter`](crate::Observable::filter), [`take`](crate::Observable::take), [`distinct_until_changed`](crate::Observable::distinct_until_changed), [`skip`](crate::Observable::skip), [`first`](crate::Observable::first), [`first_with`](crate::Observable::first_with) |
 //! | Combining | [`merge`](crate::Observable::merge), [`start_with`](crate::Observable::start_with) |

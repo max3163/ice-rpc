@@ -13,6 +13,7 @@ use std::task::{Context, Poll};
 
 use crate::Event;
 use crate::Observable;
+use crate::ObservableInput;
 
 pin_project_lite::pin_project! {
     /// See [`Observable::map`](crate::Observable::map).
@@ -392,6 +393,8 @@ impl<T, E> Observable<T, E> {
     /// them.
     ///
     /// # Example
+    ///
+    /// A projection that returns an [`Observable`] directly:
     /// ```rust
     /// use ice_rpc_rx::{from, of, rt::block_on};
     ///
@@ -403,14 +406,40 @@ impl<T, E> Observable<T, E> {
     /// .expect("the stream completes cleanly");
     /// assert_eq!(values, vec!["value: 1", "value: 2"]);
     /// ```
-    pub fn switch_map<F, U>(self, f: F) -> Observable<U, E>
+    ///
+    /// A projection that returns a **future** — the shape of an `async fn` client
+    /// call — is accepted too, through
+    /// [`ObservableInput`](crate::ObservableInput):
+    /// ```rust
+    /// use ice_rpc_rx::{from, of, rt::block_on, Observable};
+    ///
+    /// async fn fetch(v: i32) -> Observable<String, String> {
+    ///     of(format!("value: {v}"))
+    /// }
+    ///
+    /// let values = block_on(
+    ///     from::<i32, String, _>([1, 2])
+    ///         .switch_map(|v| async move { fetch(v).await })
+    ///         .collect(),
+    /// )
+    /// .expect("the stream completes cleanly");
+    /// assert_eq!(values, vec!["value: 1", "value: 2"]);
+    /// ```
+    ///
+    /// The future is created by the closure and polled **once**, on the first poll
+    /// of the inner it produces: nothing runs before a consumer pulls the
+    /// pipeline.
+    pub fn switch_map<F, I, U>(self, mut f: F) -> Observable<U, E>
     where
-        F: FnMut(T) -> Observable<U, E> + Send + 'static,
+        F: FnMut(T) -> I + Send + 'static,
+        I: ObservableInput<U, E>,
         T: Send + 'static,
         U: Send + 'static,
         E: Send + 'static,
     {
-        Observable::from_stream(SwitchMap::new(self, f))
+        // The inner is always an `Observable`: the projection's output is
+        // normalized here, so `SwitchMap` itself never sees a future.
+        Observable::from_stream(SwitchMap::new(self, move |v| f(v).into_observable()))
     }
 }
 

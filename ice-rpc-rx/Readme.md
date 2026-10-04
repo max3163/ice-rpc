@@ -50,13 +50,25 @@ method carries its semantics and a runnable example in the crate documentation.
 
 | ReactiveX category | Operators |
 |---|---|
-| Transforming | `map`, `map_err`, `scan`, `switch_map` |
+| Transforming | `map`, `map_err`, `scan`, `switch_map` (projection: an `Observable` or a `Future` producing one) |
 | Filtering | `filter`, `take`, `distinct_until_changed`, `skip`, `first`, `first_with` |
 | Combining | `merge`, `start_with` |
 | Conditional / Boolean | `take_until`, `take_until_token` |
 | Error handling | `catch_error`, `retry_with` |
 | Utility | `tap`, `finalize`, `delay`, `timeout` |
 | Terminals (they end the chain) | `collect`, `first_value`, `last_value`, `for_each`, `subscribe`, `subscribe_all`, `next`, `recv` |
+
+A projection handed to `switch_map`, the right operand of `merge` and the
+`notifier` of `take_until` accept an **`ObservableInput`**: either an
+`Observable`, or a `Future` that produces one — the shape of an `async fn` client
+call. A future is turned into a **cold** `Observable`, so a service call composes
+without an explicit `defer`:
+
+```rust
+stream.switch_map(move |x| async move { proxy.get_other(x).await });
+stream.merge(async move { proxy.watch().await });
+stream.take_until(async move { proxy.stop_signal().await });
+```
 
 Two rules hold for every operator. It is **pull-based and lazy**: it only wraps
 its source in a boxed stream, so there is no intermediate channel and no spawned
@@ -75,7 +87,7 @@ implementation can recover from a transport, discovery or protocol failure.
 | `event` | `Event`, `ObservableError`, the producer-side `Sender` |
 | `stream` | `Observable`, `channel`, `unbounded_channel` |
 | `error` | `RpcError`, the technical error of the whole stack |
-| `creation` | `from`, `of`, `throw_error` |
+| `creation` | `from`, `of`, `throw_error`, `defer`, `from_future`, `ObservableInput` |
 | `subject` | `Subject`, the multicast source |
 | `subscribe` | `Subscription`, the cancellation handle — awaited to join the subscription (`sub.await`) |
 | `transform` | the operators, carried by `Observable` |

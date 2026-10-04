@@ -27,6 +27,9 @@ pub(super) fn run_receive_loop(
     stop: impl Fn() -> bool,
     mut handle: impl FnMut(&RpcHeader, &[u8]),
 ) {
+    // Setup is an I/O step: neither of the two `return`s below is provokable in a
+    // unit test (see the module documentation), so they are exercised by the
+    // integration suite rather than by `#[cfg(test)]`.
     let Ok(waitset) = WaitSetBuilder::new()
         .signal_handling_mode(crate::waitset_signal_handling_mode())
         .create::<Iox>()
@@ -72,6 +75,9 @@ pub(super) fn run_receive_loop(
                     idle_spins = if notified { 0 } else { IDLE_SPINS };
                 }
             }
+            // A transport-level receive failure, not provokable in a unit test
+            // (see the module documentation): report it, then yield so a
+            // persistent error cannot turn the loop into a busy spin.
             Err(e) => {
                 log::warn!(
                     "[transport] '{channel}': {} receive error: {e:?}",

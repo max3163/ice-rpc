@@ -229,3 +229,79 @@ fn switch_map_ignores_inner_complete() {
     assert!(matches!(&events[0], Event::Next(v) if *v == 20));
     assert!(matches!(&events[1], Event::Complete));
 }
+
+/// A projection may return a **future** — the shape of an `async fn` client
+/// call — thanks to `ObservableInput`; here it produces a value directly.
+#[test]
+fn switch_map_projects_to_a_future() {
+    let values = pollster::block_on(
+        local([1, 2])
+            .switch_map(|v| async move { crate::of::<i32, String>(v * 10) })
+            .collect(),
+    )
+    .expect("the stream completes cleanly");
+
+    assert_eq!(values, vec![10, 20]);
+}
+
+/// A future projection that streams several values: `switch_map` waits for the
+/// last inner, so every value travels.
+#[test]
+fn switch_map_future_may_stream_several_values() {
+    let values = pollster::block_on(
+        local([1, 2])
+            .switch_map(|v| async move { crate::from::<i32, String, _>([v, v * 10]) })
+            .collect(),
+    )
+    .expect("the stream completes cleanly");
+
+    assert_eq!(values, vec![1, 10, 2, 20]);
+}
+
+/// The future form and the explicit `defer` form are the same operator
+/// underneath: identical output.
+#[test]
+fn switch_map_future_matches_the_defer_form() {
+    let via_future = pollster::block_on(
+        local([1, 2, 3])
+            .switch_map(|v| async move { crate::of::<i32, String>(v + 1) })
+            .collect(),
+    )
+    .expect("clean");
+
+    let via_defer = pollster::block_on(
+        local([1, 2, 3])
+            .switch_map(|v| crate::defer(move || async move { crate::of::<i32, String>(v + 1) }))
+            .collect(),
+    )
+    .expect("clean");
+
+    assert_eq!(via_future, via_defer);
+}
+
+/// Laziness: the projection runs at the first poll, never when the pipeline is
+/// merely built — the promise `defer` makes, kept through `switch_map`.
+#[test]
+fn switch_map_future_is_not_projected_before_a_poll() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_in = Arc::clone(&calls);
+    let stream = local([1]).switch_map(move |v| {
+        calls_in.fetch_add(1, Ordering::SeqCst);
+        async move { crate::of::<i32, String>(v * 10) }
+    });
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "nothing runs before a poll"
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], Event::Next(v) if *v == 10));
+    assert!(matches!(&events[1], Event::Complete));
+}

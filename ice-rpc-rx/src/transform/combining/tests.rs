@@ -79,3 +79,65 @@ fn merge_forwards_the_other_source_when_one_is_empty() {
     assert!(matches!(&events[0], Event::Next(v) if *v == 5));
     assert!(matches!(&events[1], Event::Complete));
 }
+
+/// The right operand may be a **future** — an `async fn` client call — thanks to
+/// `ObservableInput`.
+#[test]
+fn merge_accepts_a_future() {
+    let values = pollster::block_on(
+        local([1, 2])
+            .merge(async { crate::of::<i32, String>(10) })
+            .collect(),
+    )
+    .expect("the stream completes cleanly");
+
+    let mut sorted = values;
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![1, 2, 10]);
+}
+
+/// The future form and the `Observable` form are the same operator underneath:
+/// identical output.
+#[test]
+fn merge_future_matches_the_observable_form() {
+    let mut via_future = pollster::block_on(
+        single(9)
+            .merge(async { crate::of::<i32, String>(3) })
+            .collect(),
+    )
+    .expect("clean");
+    let mut via_observable =
+        pollster::block_on(single(9).merge(crate::of::<i32, String>(3)).collect()).expect("clean");
+    via_future.sort_unstable();
+    via_observable.sort_unstable();
+
+    assert_eq!(via_future, via_observable);
+}
+
+/// Laziness: the future body runs at the first poll, never when the merge is
+/// merely built.
+#[test]
+fn merge_does_not_run_the_future_before_a_poll() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_in = Arc::clone(&calls);
+    let stream = local([1]).merge(async move {
+        calls_in.fetch_add(1, Ordering::SeqCst);
+        crate::of::<i32, String>(99)
+    });
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "nothing runs before a poll"
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::Next(v) if *v == 99)));
+    assert!(matches!(events.last(), Some(Event::Complete)));
+}

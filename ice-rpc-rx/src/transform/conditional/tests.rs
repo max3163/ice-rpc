@@ -93,3 +93,55 @@ fn take_until_forwards_a_notifier_error() {
         Event::Error(crate::ObservableError::Business(e)) if e == "stop failed"
     ));
 }
+
+/// The notifier may be a **future** — an `async fn` call — thanks to
+/// `ObservableInput`; its first value stops the source as usual.
+#[test]
+fn take_until_accepts_a_future_notifier() {
+    let events = pollster::block_on(drain(
+        local([1, 2, 3]).take_until(async { crate::of::<(), String>(()) }),
+    ));
+
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Event::Complete));
+}
+
+/// The future form and the `Observable` form are the same operator underneath.
+#[test]
+fn take_until_future_notifier_matches_the_observable_form() {
+    let via_future = pollster::block_on(drain(
+        local([1, 2, 3]).take_until(async { crate::of::<(), String>(()) }),
+    ));
+    let via_observable = pollster::block_on(drain(
+        local([1, 2, 3]).take_until(crate::of::<(), String>(())),
+    ));
+
+    assert_eq!(via_future.len(), via_observable.len());
+    assert!(matches!(&via_future[0], Event::Complete));
+    assert!(matches!(&via_observable[0], Event::Complete));
+}
+
+/// Laziness: the future body runs at the first poll, never when the pipeline is
+/// merely built.
+#[test]
+fn take_until_does_not_run_the_future_before_a_poll() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_in = Arc::clone(&calls);
+    let stream = local([1]).take_until(async move {
+        calls_in.fetch_add(1, Ordering::SeqCst);
+        crate::of::<(), String>(())
+    });
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "nothing runs before a poll"
+    );
+
+    let events = pollster::block_on(drain(stream));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(&events[0], Event::Complete));
+}

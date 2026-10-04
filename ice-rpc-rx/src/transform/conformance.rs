@@ -210,9 +210,9 @@ fn scan_conformance() {
 }
 
 /// `switch_map` matches `map`'s row for a one-value projection: the canonical
-/// cases are inline, so no inner is ever in flight when the outer ends. The rule
-/// that matters there — the outer's completion waits for the last inner — is
-/// exercised on channels in `transforming::tests`.
+/// cases are inline, so no projected stream is ever in flight when the source
+/// ends. The rule that matters there — the source's completion waits for the last
+/// projected stream — is exercised on channels in `transforming::tests`.
 #[test]
 fn switch_map_conformance() {
     assert_matrix(

@@ -230,8 +230,8 @@ impl<T, E> Observable<T, E> {
     /// ```
     ///
     /// # See also
-    /// [`switch_map`](Observable::switch_map) projects to a *new* inner stream
-    /// per value instead of merging two fixed ones.
+    /// [`switch_map`](Observable::switch_map) projects each value to its own
+    /// stream instead of merging two fixed ones.
     pub fn merge<I>(self, other: I) -> Observable<T, E>
     where
         I: ObservableInput<T, E>,

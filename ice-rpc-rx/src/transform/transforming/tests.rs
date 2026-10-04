@@ -69,21 +69,21 @@ fn scan_emits_running_accumulator() {
 }
 
 #[test]
-fn switch_map_switches_to_latest_inner_and_cancels_previous() {
+fn switch_map_switches_to_latest_projection_and_cancels_previous() {
     use std::sync::{Arc, Mutex};
 
-    let (outer_tx, outer_rx) = crate::channel::<i32, String>(8);
+    let (source_tx, source_rx) = crate::channel::<i32, String>(8);
     let senders: Arc<Mutex<Vec<crate::Sender<i32, String>>>> = Arc::new(Mutex::new(Vec::new()));
 
     let senders_for_task = senders.clone();
-    let stream = outer_rx.switch_map(move |_| {
+    let stream = source_rx.switch_map(move |_| {
         let (tx, rx) = crate::channel::<i32, String>(8);
         senders_for_task.lock().unwrap().push(tx);
         rx
     });
 
-    pollster::block_on(outer_tx.send_next(1)).unwrap();
-    pollster::block_on(outer_tx.send_next(2)).unwrap();
+    pollster::block_on(source_tx.send_next(1)).unwrap();
+    pollster::block_on(source_tx.send_next(2)).unwrap();
 
     let mut stream = Box::pin(stream);
     // A single poll drives the lazy combinator: it consumes both source
@@ -93,31 +93,31 @@ fn switch_map_switches_to_latest_inner_and_cancels_previous() {
     let _ = futures_lite::Stream::poll_next(stream.as_mut(), &mut cx);
     assert_eq!(senders.lock().unwrap().len(), 2);
 
-    let inner2_tx = senders.lock().unwrap()[1].clone();
-    pollster::block_on(inner2_tx.send_next(20)).unwrap();
+    let projected2_tx = senders.lock().unwrap()[1].clone();
+    pollster::block_on(projected2_tx.send_next(20)).unwrap();
 
     assert!(matches!(
         pollster::block_on(next_event(&mut stream)),
         Some(Event::Next(v)) if v == 20
     ));
 
-    let inner1_tx = senders.lock().unwrap()[0].clone();
-    assert!(pollster::block_on(inner1_tx.send_next(10)).is_err());
+    let projected1_tx = senders.lock().unwrap()[0].clone();
+    assert!(pollster::block_on(projected1_tx.send_next(10)).is_err());
 
-    pollster::block_on(outer_tx.send_complete()).unwrap();
+    pollster::block_on(source_tx.send_complete()).unwrap();
 
-    // RxJS: the outer's completion waits for the inner in flight, so the
-    // pipeline is not over while `inner2` is still open.
+    // RxJS: the source's completion waits for the projected stream in flight,
+    // so the pipeline is not over while `projected2` is still open.
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(matches!(
         futures_lite::Stream::poll_next(stream.as_mut(), &mut cx),
         std::task::Poll::Pending
     ));
 
-    let inner2_tx = senders.lock().unwrap()[1].clone();
-    pollster::block_on(inner2_tx.send_complete()).unwrap();
-    drop(inner2_tx);
-    drop(outer_tx);
+    let projected2_tx = senders.lock().unwrap()[1].clone();
+    pollster::block_on(projected2_tx.send_complete()).unwrap();
+    drop(projected2_tx);
+    drop(source_tx);
 
     assert!(matches!(
         pollster::block_on(next_event(&mut stream)),
@@ -125,26 +125,26 @@ fn switch_map_switches_to_latest_inner_and_cancels_previous() {
     ));
 }
 
-/// Regression for P0-2: the last inner must still deliver after the outer has
-/// completed — RxJS awaits it instead of dropping it.
+/// Regression for P0-2: the last projected stream must still deliver after the
+/// source has completed — RxJS awaits it instead of dropping it.
 #[test]
-fn switch_map_waits_for_the_in_flight_inner_before_completing() {
+fn switch_map_waits_for_the_in_flight_projection_before_completing() {
     use std::cell::RefCell;
 
-    let (outer_tx, outer_rx) = crate::channel::<i32, String>(8);
-    let (inner_tx, inner_rx) = crate::channel::<i32, String>(8);
+    let (source_tx, source_rx) = crate::channel::<i32, String>(8);
+    let (projected_tx, projected_rx) = crate::channel::<i32, String>(8);
 
-    let inner = RefCell::new(Some(inner_rx));
-    let mut stream = Box::pin(outer_rx.switch_map(move |_| {
-        inner
+    let projected = RefCell::new(Some(projected_rx));
+    let mut stream = Box::pin(source_rx.switch_map(move |_| {
+        projected
             .borrow_mut()
             .take()
-            .expect("the inner channel is subscribed once")
+            .expect("the projected channel is subscribed once")
     }));
 
-    pollster::block_on(outer_tx.send_next(1)).unwrap();
-    // The outer ends while the inner is still in flight.
-    pollster::block_on(outer_tx.send_complete()).unwrap();
+    pollster::block_on(source_tx.send_next(1)).unwrap();
+    // The source ends while the projected stream is still in flight.
+    pollster::block_on(source_tx.send_complete()).unwrap();
 
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(matches!(
@@ -152,16 +152,16 @@ fn switch_map_waits_for_the_in_flight_inner_before_completing() {
         std::task::Poll::Pending
     ));
 
-    // The last inner still delivers: nothing is lost.
-    pollster::block_on(inner_tx.send_next(10)).unwrap();
+    // The last projected stream still delivers: nothing is lost.
+    pollster::block_on(projected_tx.send_next(10)).unwrap();
     assert!(matches!(
         pollster::block_on(next_event(&mut stream)),
         Some(Event::Next(v)) if v == 10
     ));
 
-    pollster::block_on(inner_tx.send_complete()).unwrap();
-    drop(inner_tx);
-    drop(outer_tx);
+    pollster::block_on(projected_tx.send_complete()).unwrap();
+    drop(projected_tx);
+    drop(source_tx);
 
     assert!(matches!(
         pollster::block_on(next_event(&mut stream)),
@@ -170,25 +170,25 @@ fn switch_map_waits_for_the_in_flight_inner_before_completing() {
 }
 
 #[test]
-fn switch_map_forwards_inner_error() {
+fn switch_map_forwards_projected_error() {
     use std::cell::RefCell;
 
-    let (outer_tx, outer_rx) = crate::channel::<i32, String>(8);
-    let (inner_tx, inner_rx) = crate::channel::<i32, String>(8);
+    let (source_tx, source_rx) = crate::channel::<i32, String>(8);
+    let (projected_tx, projected_rx) = crate::channel::<i32, String>(8);
 
-    // Each source value subscribes to a fresh inner stream: hand it out once.
-    let inner = RefCell::new(Some(inner_rx));
-    let stream = outer_rx.switch_map(move |_| {
-        inner
+    // Each source value subscribes to a fresh projected stream: hand it out once.
+    let projected = RefCell::new(Some(projected_rx));
+    let stream = source_rx.switch_map(move |_| {
+        projected
             .borrow_mut()
             .take()
-            .expect("the inner channel is subscribed once")
+            .expect("the projected channel is subscribed once")
     });
 
-    pollster::block_on(outer_tx.send_next(1)).unwrap();
-    pollster::block_on(inner_tx.send_error("boom".to_string())).unwrap();
-    drop(outer_tx);
-    drop(inner_tx);
+    pollster::block_on(source_tx.send_next(1)).unwrap();
+    pollster::block_on(projected_tx.send_error("boom".to_string())).unwrap();
+    drop(source_tx);
+    drop(projected_tx);
 
     let events = pollster::block_on(drain(stream));
     assert_eq!(events.len(), 1);
@@ -199,30 +199,30 @@ fn switch_map_forwards_inner_error() {
 }
 
 #[test]
-fn switch_map_ignores_inner_complete() {
+fn switch_map_ignores_projected_complete() {
     use std::cell::RefCell;
 
-    let (outer_tx, outer_rx) = crate::channel::<i32, String>(8);
-    let (inner1_tx, inner1_rx) = crate::channel::<i32, String>(8);
-    let (inner2_tx, inner2_rx) = crate::channel::<i32, String>(8);
+    let (source_tx, source_rx) = crate::channel::<i32, String>(8);
+    let (projected1_tx, projected1_rx) = crate::channel::<i32, String>(8);
+    let (projected2_tx, projected2_rx) = crate::channel::<i32, String>(8);
 
-    let inner1 = RefCell::new(Some(inner1_rx));
-    let inner2 = RefCell::new(Some(inner2_rx));
-    let stream = outer_rx.switch_map(move |v| {
-        let slot = if v == 1 { &inner1 } else { &inner2 };
+    let projected1 = RefCell::new(Some(projected1_rx));
+    let projected2 = RefCell::new(Some(projected2_rx));
+    let stream = source_rx.switch_map(move |v| {
+        let slot = if v == 1 { &projected1 } else { &projected2 };
         slot.borrow_mut()
             .take()
-            .expect("each inner channel is subscribed once")
+            .expect("each projected channel is subscribed once")
     });
 
-    pollster::block_on(outer_tx.send_next(1)).unwrap();
-    pollster::block_on(inner1_tx.send_complete()).unwrap();
-    pollster::block_on(outer_tx.send_next(2)).unwrap();
-    pollster::block_on(inner2_tx.send_next(20)).unwrap();
-    pollster::block_on(outer_tx.send_complete()).unwrap();
-    drop(outer_tx);
-    drop(inner1_tx);
-    drop(inner2_tx);
+    pollster::block_on(source_tx.send_next(1)).unwrap();
+    pollster::block_on(projected1_tx.send_complete()).unwrap();
+    pollster::block_on(source_tx.send_next(2)).unwrap();
+    pollster::block_on(projected2_tx.send_next(20)).unwrap();
+    pollster::block_on(source_tx.send_complete()).unwrap();
+    drop(source_tx);
+    drop(projected1_tx);
+    drop(projected2_tx);
 
     let events = pollster::block_on(drain(stream));
     assert_eq!(events.len(), 2);
@@ -245,7 +245,7 @@ fn switch_map_projects_to_a_future() {
 }
 
 /// A future projection that streams several values: `switch_map` waits for the
-/// last inner, so every value travels.
+/// last projected stream, so every value travels.
 #[test]
 fn switch_map_future_may_stream_several_values() {
     let values = pollster::block_on(

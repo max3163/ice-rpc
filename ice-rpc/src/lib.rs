@@ -61,18 +61,26 @@
 //! }
 //! ```
 //!
-//! If an implementation calls `locator().get()` (cross-service dependency):
+//! If an implementation calls `locator().get()` on a service of the **same**
+//! process, declare it in `dependencies()`: the topological sort then initializes
+//! the dependency first.
 //!
 //! ```rust,ignore
 //! #[ice_rpc::main(tokio)]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // This provider also consumes services via locator().get().
+//!     // ServiceBImpl calls ServiceA via locator().get(); both are local, so
+//!     // `ServiceBImpl::dependencies()` lists "ServiceA" and the sort runs
+//!     // ServiceA first.
 //!     ice_rpc::run_provider!(
 //!         ServiceAProxy::provide_with_init(ServiceAImpl::new()),
-//!         ServiceBProxy::provide_with_init(ServiceBImpl::new()), // depends on ServiceA
+//!         ServiceBProxy::provide_with_init(ServiceBImpl::new()),
 //!     ).await
 //! }
 //! ```
+//!
+//! A dependency provided by **another process** is external and never blocks the
+//! startup: no discovery, no connection, no wait — see
+//! [`ServiceInit::dependencies`].
 //!
 //! ### 3. Call from a Consumer
 //!
@@ -90,6 +98,38 @@
 //!     Ok(()) // `#[ice_rpc::main]` shuts ice-rpc down on exit
 //! }
 //! ```
+//!
+//! ### 4. Provider *and* consumer in the same process
+//!
+//! `run_provider!` **never returns before shutdown**: it awaits
+//! `wait_for_shutdown()` and therefore blocks the task that calls it. Code
+//! written *after* its `.await`, in the same task, runs only once the process is
+//! stopping. To serve a provider and drive a Consumer (or any other work) in the
+//! same `main`, **spawn** the provider and keep the caller free:
+//!
+//! ```rust,ignore
+//! #[ice_rpc::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // `rt::spawn` works in every execution mode (rt-threads / tokio / smol);
+//!     // under `#[ice_rpc::main(tokio)]`, `tokio::spawn` is the equivalent.
+//!     ice_rpc::rt::spawn(async {
+//!         if let Err(error) = ice_rpc::run_provider!(
+//!             CoreServiceProxy::provide(Core),
+//!         ).await {
+//!             log::error!("provider stopped: {error}");
+//!         }
+//!     });
+//!
+//!     // Consumer side, on the main task.
+//!     let print = ice_rpc::locator().get::<PrintServiceProxy>().await.unwrap();
+//!     print.print().await.first_value().await?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! A `rt::block_on(run_provider!(..))` does **not** start the provider in the
+//! background: `block_on` runs a future to completion on the calling thread, and
+//! this future completes only on shutdown — such a call blocks until Ctrl+C.
 //!
 //! # Architecture
 //!
@@ -506,6 +546,15 @@ where
 /// clean shutdown) is owned by `#[ice_rpc::main]`. This function only starts the
 /// services and keeps the process alive until cancellation, so it **must** be
 /// awaited from within an `#[ice_rpc::main]` body.
+///
+/// # This future does not complete before shutdown
+///
+/// It awaits [`wait_for_shutdown`], so it stays pending for the whole process
+/// lifetime and returns only once the process is asked to stop. Any work placed
+/// **after** its `.await` in the same task therefore runs at shutdown, not while
+/// the services are serving. To also drive a Consumer (or anything else) in the
+/// same process, **spawn** the provider instead of awaiting it on the caller's
+/// task — see the third example of [`run_provider!`].
 #[doc(hidden)]
 pub async fn run_provider_inner(
     services: Vec<Box<dyn _ProviderService>>,
@@ -545,6 +594,22 @@ pub async fn run_provider_inner(
 ///
 /// Returns a `Future` — must be `.await`ed from an `#[ice_rpc::main]` body.
 ///
+/// # It does not return before shutdown
+///
+/// The returned future awaits [`wait_for_shutdown`] and stays pending for the
+/// whole process lifetime. Awaiting it **blocks the calling task** until Ctrl+C:
+/// any statement placed after the `.await` in that same task runs at shutdown,
+/// not while the services are serving. To run a provider *and* other work (a
+/// Consumer, for instance) in the same process, **spawn** it — see the third
+/// example.
+///
+/// # Dependencies are only ordered locally
+///
+/// `provide_with_init` declares [`ServiceInit::dependencies`],
+/// used **only** to order the services registered in this process. A dependency
+/// provided by another process is external and never blocks the startup — there
+/// is no discovery check.
+///
 /// # Example — Pure provider
 /// ```rust,ignore
 /// #[ice_rpc::main(tokio)]
@@ -558,16 +623,40 @@ pub async fn run_provider_inner(
 /// }
 /// ```
 ///
-/// # Example — Provider that also consumes external services
+/// # Example — Provider that consumes a service of its own process
 /// ```rust,ignore
 /// #[ice_rpc::main(tokio)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     env_logger::init();
-///     // DatabaseServiceImpl calls ConfigService via get()
+///     // DatabaseServiceImpl calls ConfigService via locator().get(); both are
+///     // local, so the topological sort initializes ConfigService first.
 ///     ice_rpc::run_provider!(
 ///         ConfigServiceProxy::provide_with_init(ConfigServiceImpl::new("config.json")),
 ///         DatabaseServiceProxy::provide_with_init(DatabaseServiceImpl::new()),
 ///     ).await
+/// }
+/// ```
+///
+/// # Example — Provider *and* consumer in the same process
+/// ```rust,ignore
+/// #[ice_rpc::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     env_logger::init();
+///     // `run_provider!` never returns before shutdown, so it must be spawned,
+///     // not awaited here. `rt::spawn` works in every execution mode; under
+///     // `#[ice_rpc::main(tokio)]`, `tokio::spawn` is the equivalent.
+///     ice_rpc::rt::spawn(async {
+///         if let Err(error) = ice_rpc::run_provider!(
+///             CoreServiceProxy::provide(Core),
+///         ).await {
+///             log::error!("provider stopped: {error}");
+///         }
+///     });
+///
+///     // Consumer side, on the main task.
+///     let print = ice_rpc::locator().get::<PrintServiceProxy>().await.unwrap();
+///     print.print().await.first_value().await?;
+///     Ok(())
 /// }
 /// ```
 #[macro_export]

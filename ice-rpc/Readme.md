@@ -8,7 +8,9 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 
 - **Zero-copy IPC transport** through iceoryx2 shared memory.
 - **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
-- **Service discovery** with a registry per node and dependency-aware topological initialization.
+- **Lazy consumer proxies** (discovery and connection handled by iceoryx2 on the
+  first call) and **dependency-aware topological initialization** of the local
+  services — a dependency provided by another process never blocks the startup.
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderJson` — the last one
   only when the `json` feature is on.
@@ -263,7 +265,8 @@ question rather than this table.
 
 ## Service initialization
 
-Implement `ServiceInit` on your service type to declare dependencies and run an initialization hook:
+Implement `ServiceInit` on your service type to declare dependencies and run an
+initialization hook:
 
 ```rust,ignore
 #[async_trait::async_trait]
@@ -273,19 +276,67 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
     }
 
     async fn on_init(&self) -> bool {
-        // Return false to trigger a retry.
+        // Return false to abort the provider startup with an error naming this
+        // service. There is no automatic retry.
         true
     }
 }
 ```
 
-For services that consume other services, register with `provide_with_init`. `#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and owns the clean shutdown, while `run_provider!` starts the services and waits for Ctrl+C:
+`dependencies()` feeds **only** the topological sort of the services registered
+in the **same** process: a service is initialized after the local services it
+lists. A dependency provided by **another process** is *external* and never
+blocks the startup — it is ignored by the sort, with no discovery, no connection
+and no wait. There is **no iceoryx2 discovery check** at initialization, so a
+provider reports itself ready even when a declared external dependency is not
+running. The coupling is resolved lazily, **at call time**: the first RPC opens
+the channel (creating it if no provider exists yet) and waits a **bounded**
+provider wait (30 s by default, `ICE_RPC_PROVIDER_WAIT_MS` overrides it) for a
+subscriber, then fails with a `TransportError` reading `no subscriber connected`.
+To require an external dependency at startup, run the check yourself in
+`on_init()` (a typed `ping` with a bounded retry) and return `false` when it is
+unreachable.
+
+For services that consume other services, register with `provide_with_init`.
+`#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and owns the clean
+shutdown, while `run_provider!` starts the services and waits for Ctrl+C:
 
 ```rust,ignore
 ice_rpc::run_provider!(
     MyServiceProxy::provide_with_init(MyServiceImpl),
 ).await
 ```
+
+### Provider and consumer in the same process
+
+`run_provider!` **never returns before shutdown**: it awaits
+`wait_for_shutdown()` and blocks the task that calls it, so code placed after its
+`.await` runs only when the process stops. To serve a provider and drive a
+consumer in the same `main`, **spawn** the provider and keep the caller free:
+
+```rust,ignore
+#[ice_rpc::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `rt::spawn` works in every execution mode; under
+    // `#[ice_rpc::main(tokio)]`, `tokio::spawn` is the equivalent.
+    ice_rpc::rt::spawn(async {
+        if let Err(error) = ice_rpc::run_provider!(
+            CoreServiceProxy::provide(Core),
+        ).await {
+            log::error!("provider stopped: {error}");
+        }
+    });
+
+    // Consumer side, on the main task.
+    let print = ice_rpc::locator().get::<PrintServiceProxy>().await.unwrap();
+    print.print().await.first_value().await?;
+    Ok(())
+}
+```
+
+A `rt::block_on(run_provider!(..))` does **not** start the provider in the
+background: `block_on` runs a future to completion on the calling thread, and
+this future completes only on shutdown — such a call blocks until Ctrl+C.
 
 ## Clean shutdown
 

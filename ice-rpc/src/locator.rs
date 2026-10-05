@@ -134,8 +134,16 @@ impl ServiceLocator {
 
     /// Initializes all the registered services, **in dependency order**.
     ///
-    /// A dependency that is not registered locally is treated as external and
-    /// never blocks. A cyclic graph falls back to the registration order.
+    /// The order comes from [`ServiceInit::dependencies`],
+    /// and it only concerns the services registered in **this** process: a
+    /// dependency that is not registered locally is treated as **external and
+    /// never blocks** — it is ignored by the sort, with no discovery, no
+    /// connection and no wait. A cyclic graph falls back to the registration
+    /// order.
+    ///
+    /// A service whose `init()` returns `false` aborts the whole startup: the
+    /// first failure is returned as `Err` and the remaining services are **not**
+    /// initialized. There is no automatic retry.
     pub async fn initialize_all(&self) -> Result<(), String> {
         let snapshot: Vec<(&'static str, Arc<dyn ServiceLifecycle>, Vec<&'static str>)> = {
             let entries = self.entries.read().await;

@@ -31,7 +31,11 @@ pub trait ServiceLifecycle: Send + Sync + 'static {
     ///
     /// # Returns
     /// - `true`  → the service is ready.
-    /// - `false` → initialization failed, a retry will be performed.
+    /// - `false` → the initialization of this service failed:
+    ///   [`initialize_all`](crate::ServiceLocator::initialize_all)
+    ///   **aborts the whole startup** with an error naming this service, and the
+    ///   remaining services are left uninitialized. There is **no automatic
+    ///   retry**: a `false` is a deterministic failure, not a transient one.
     async fn init(&self) -> bool;
 }
 
@@ -61,8 +65,9 @@ pub trait ServiceNamed: Send + Sync + 'static {
 /// Optional initialization trait that a business type can implement.
 ///
 /// - [`on_init`](ServiceInit::on_init) : hook called before the IPC server starts.
-/// - [`dependencies`](ServiceInit::dependencies) : declares the logical names
-///   of the required services for the topological sort and the IPC check.
+/// - [`dependencies`](ServiceInit::dependencies) : logical names of the services
+///   this one depends on, used **only to order the local initialization** — see
+///   the method for what it does *not* do.
 ///
 /// The service name itself is **not** to be provided here: it is injected
 /// automatically by the macro via [`ServiceNamed`].
@@ -72,17 +77,44 @@ pub trait ServiceInit: Send + Sync + 'static {
     ///
     /// # Returns
     /// - `true`  → success.
-    /// - `false` → failure (triggers a retry).
+    /// - `false` → failure: [`initialize_all`](crate::ServiceLocator::initialize_all)
+    ///   **aborts the whole startup** with an error naming this service. There is
+    ///   **no automatic retry**; return `false` only to fail the provider
+    ///   deterministically (a bad configuration file, for instance).
     async fn on_init(&self) -> bool {
         true
     }
 
     /// Declares the logical names of the services this service depends on.
     ///
-    /// Used by [`initialize_all`](crate::ServiceLocator::initialize_all) for:
-    /// - the topological sort (initialization order);
-    /// - the check via iceoryx2 discovery (dependency already active
-    ///   in IPC in another process).
+    /// # What it does
+    ///
+    /// The names feed the **topological sort** of
+    /// [`initialize_all`](crate::ServiceLocator::initialize_all):
+    /// among the services registered in **this** process, a service is
+    /// initialized after the ones it lists here.
+    ///
+    /// # What it does *not* do
+    ///
+    /// A dependency that is **not registered locally** — that is, provided by
+    /// another process — is treated as **external and never blocks**: it is
+    /// ignored by the sort, and no attempt is made to discover it, connect to it,
+    /// or wait for it. There is therefore **no iceoryx2 discovery check** at
+    /// initialization, and a provider reports itself ready even when a declared
+    /// external dependency is not running.
+    ///
+    /// # Where the coupling actually happens
+    ///
+    /// Lazily, **at call time**. `locator().get::<P>()` builds a Consumer proxy
+    /// without any connection; the first RPC then opens the channel — creating it
+    /// if no provider exists yet — and waits a **bounded** provider wait (30 s by
+    /// default, `ICE_RPC_PROVIDER_WAIT_MS` overrides it) for a subscriber before
+    /// failing with a [`TransportError`](crate::RpcError::TransportError) reading
+    /// `no subscriber connected`.
+    ///
+    /// To require an external dependency at startup, implement the check inside
+    /// [`on_init`](ServiceInit::on_init) yourself (a typed `ping` with a bounded
+    /// retry) and return `false` when it is not reachable.
     fn dependencies(&self) -> Vec<&'static str> {
         vec![]
     }

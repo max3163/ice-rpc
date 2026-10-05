@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 # True floor driven by the dependency tree, not by the local toolchain:
 # `trillium-http` 1.7.2 — reached only through the optional `http` features —
 # calls `usize::bit_width`, stable since 1.97, and declares **no** `rust-version`

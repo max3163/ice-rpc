@@ -1,6 +1,6 @@
 {
   "name": "gateway-nodejs",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "NAPI-RS gateway exposing ice-rpc services to Node.js: the business logic stays in JavaScript, the IPC transport stays in Rust",
   "license": "Apache-2.0",
   "repository": {

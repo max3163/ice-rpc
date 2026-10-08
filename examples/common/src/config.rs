@@ -4,10 +4,10 @@
 //! associated with a key of the form `"section.field"` (e.g. `"database.url"`).
 
 use ice_rpc::{service, Observable};
-use rkyv::{Archive, Deserialize, Serialize};
 
 /// Error returned when a key is not found in the configuration.
-#[derive(Debug, Archive, Deserialize, Serialize, Clone, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ConfigError {
     /// The requested key does not exist in the configuration.
     KeyNotFound,

@@ -74,7 +74,8 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// declare the same value; when omitted, the runtime default
 /// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
 ///
-/// Automatically injects `#[async_trait::async_trait]`, `Send + Sync + 'static`
+/// Automatically injects the async-trait attribute
+/// (`#[ice_rpc::gen::async_trait::async_trait]`), `Send + Sync + 'static`
 /// as supertraits, and generates:
 /// - The `{Trait}Request` enum (rkyv-serializable)
 /// - The `{Trait}Client` struct (IPC consumer)
@@ -326,7 +327,12 @@ fn expand_service_with(
 
     let generated = quote! {
         #[repr(u8)]
+        // The derives are named through the re-export, and `#[rkyv(crate = …)]`
+        // redirects their expansion to it as well: without that attribute the
+        // derive defaults to `::rkyv`, which would force every service crate to
+        // declare the dependency just to compile its own `{Trait}Request`.
         #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
+        #[rkyv(crate = ice_rpc::gen::rkyv)]
         #visibility enum #req_enum_name { #(#req_variants),* }
 
         impl #proxy_name {
@@ -374,16 +380,11 @@ fn expand_service_with(
     expanded
 }
 
-/// Adds what the generated wrappers rely on, and only what is missing.
-///
-/// The documented order is `#[service]` above `#[async_trait::async_trait]`,
-/// with the supertraits spelled out, so the annotated trait already carries both
-/// by the time the macro runs. Adding them unconditionally produced
-/// `pub trait Calculator: Send + Sync + 'static + Send + Sync + 'static` and a
-/// doubled `#[async_trait::async_trait]` — equivalent to the compiler, but the
-/// generated code is what a user reads to understand a misbehaving call, so it
-/// has to look like something a human wrote. Both duplicates were found by the
-/// golden test, not by a failing build.
+/// The injected path is `ice_rpc::gen::async_trait::async_trait`, not the bare
+/// `async_trait`, so the service crate needs no `async-trait` dependency. A trait
+/// that already names the attribute — either spelling — is left untouched: the
+/// detection reads the last path segment, so `#[async_trait::async_trait]` and
+/// `#[ice_rpc::async_trait]` are both recognized.
 fn inject_trait_requirements(input_trait: &mut ItemTrait) {
     let already_annotated = input_trait.attrs.iter().any(|attr| {
         attr.path()
@@ -394,7 +395,7 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
     if !already_annotated {
         input_trait
             .attrs
-            .push(syn::parse_quote! { #[async_trait::async_trait] });
+            .push(syn::parse_quote! { #[ice_rpc::gen::async_trait::async_trait] });
     }
 
     // Compared as rendered tokens: the bound must be recognized whatever the
@@ -441,6 +442,154 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     entry::expand_main(attr.into(), item.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
+}
+
+/// `#[payload]` attribute macro: derives the rkyv traits an ice-rpc service
+/// payload needs, **without the crate naming `rkyv`**.
+///
+/// Expands to the annotated item preceded by
+/// `#[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize)]`
+/// and `#[rkyv(crate = ice_rpc::gen::rkyv)]`. The second attribute is what makes
+/// the dependency disappear: without it the rkyv derive expands against the
+/// default `::rkyv` path, and the service crate would have to declare it.
+///
+/// Any `#[derive(..)]`, doc comment or other attribute already on the item is
+/// preserved — the generated derives are added in a **second** `#[derive(..)]`,
+/// which the compiler merges with the item's own.
+///
+/// Applies to a `struct` or an `enum` only, and refuses an item that already
+/// carries an rkyv `crate` attribute, since this macro sets that attribute
+/// itself.
+///
+/// ```rust,ignore
+/// #[ice_rpc::payload]
+/// #[derive(Debug, Clone)]
+/// pub struct Query {
+///     pub key: String,
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn payload(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_payload(item.into()).into()
+}
+
+/// Body of [`payload`], kept on `proc_macro2` so a unit test can call it: a
+/// `#[proc_macro_attribute]` function is only invocable from the compiler.
+fn expand_payload(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let parsed = match syn::parse2::<syn::Item>(item.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => return error.to_compile_error(),
+    };
+
+    let has_rkyv_crate = match &parsed {
+        syn::Item::Struct(item) => item.attrs.iter().any(is_rkyv_crate_attr),
+        syn::Item::Enum(item) => item.attrs.iter().any(is_rkyv_crate_attr),
+        other => {
+            return syn::Error::new_spanned(
+                other,
+                "#[ice_rpc::payload] may only be applied to a struct or an enum",
+            )
+            .to_compile_error();
+        }
+    };
+
+    if has_rkyv_crate {
+        return syn::Error::new_spanned(
+            &parsed,
+            "#[ice_rpc::payload] already sets `#[rkyv(crate = ..)]`; remove the one written on the item",
+        )
+        .to_compile_error();
+    }
+
+    quote! {
+        #[derive(
+            ice_rpc::gen::rkyv::Archive,
+            ice_rpc::gen::rkyv::Deserialize,
+            ice_rpc::gen::rkyv::Serialize,
+        )]
+        #[rkyv(crate = ice_rpc::gen::rkyv)]
+        #item
+    }
+}
+
+/// Whether one attribute is an rkyv `crate` attribute — `#[rkyv(crate = ..)]` or
+/// the bare `#[rkyv(crate)]` form.
+fn is_rkyv_crate_attr(attr: &syn::Attribute) -> bool {
+    if !attr.path().is_ident("rkyv") {
+        return false;
+    }
+    let mut found = false;
+    // A malformed attribute is left to the `rkyv` derive to diagnose; here only
+    // the presence of the `crate` key matters.
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("crate") {
+            found = true;
+            // Consume `= <path>` when present, so parsing does not stop early on
+            // the bare `#[rkyv(crate)]` form either.
+            let _ = meta.value().and_then(|value| value.parse::<syn::Path>());
+        }
+        Ok(())
+    });
+    found
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::expand_payload;
+    use quote::quote;
+
+    #[test]
+    fn payload_adds_the_rkyv_derives_and_redirects_the_crate() {
+        let out = expand_payload(quote! {
+            #[derive(Debug, Clone)]
+            pub struct Query {
+                pub key: String,
+            }
+        })
+        .to_string();
+        assert!(out.contains("ice_rpc :: gen :: rkyv :: Archive"), "{out}");
+        assert!(
+            out.contains("ice_rpc :: gen :: rkyv :: Deserialize"),
+            "{out}"
+        );
+        assert!(out.contains("ice_rpc :: gen :: rkyv :: Serialize"), "{out}");
+        assert!(
+            out.contains("rkyv (crate = ice_rpc :: gen :: rkyv)"),
+            "{out}"
+        );
+        // The item's own derive and declaration are preserved.
+        assert!(out.contains("derive (Debug , Clone)"), "{out}");
+        assert!(out.contains("pub struct Query"), "{out}");
+    }
+
+    #[test]
+    fn payload_works_on_an_enum() {
+        let out = expand_payload(quote! {
+            pub enum Status { Ok, Nok }
+        })
+        .to_string();
+        assert!(out.contains("ice_rpc :: gen :: rkyv :: Archive"), "{out}");
+        assert!(out.contains("pub enum Status"), "{out}");
+    }
+
+    #[test]
+    fn payload_refuses_a_non_struct_or_enum_item() {
+        let out = expand_payload(quote! { fn free() {} }).to_string();
+        assert!(
+            out.contains("may only be applied to a struct or an enum"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_refuses_an_item_that_already_sets_the_rkyv_crate() {
+        let out = expand_payload(quote! {
+            #[rkyv(crate = other::place)]
+            pub struct Query { pub key: String }
+        })
+        .to_string();
+        assert!(out.contains("already sets"), "{out}");
+    }
 }
 
 #[cfg(test)]

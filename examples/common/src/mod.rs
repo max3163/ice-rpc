@@ -103,6 +103,7 @@ mod linked_decoders {
                 "ContextService",
                 "DatabaseService",
                 "HttpService",
+                "MaskedService",
                 "NotificationService",
                 "WorkloadService",
             ],
@@ -159,5 +160,102 @@ mod linked_decoders {
             decoders.response(notification, "ping", &unit).as_deref(),
             Some("complete")
         );
+    }
+}
+
+/// The masking proof: a service, its payloads and its provider `impl` all
+/// compile in a crate that declares **no** `rkyv`, `log` or `async-trait`
+/// dependency of its own (see this crate's `Cargo.toml`).
+///
+/// Nothing here names any of the three: `#[ice_rpc::payload]` supplies the rkyv
+/// derives and redirects their expansion through `ice_rpc::gen::rkyv`,
+/// `#[ice_rpc::async_trait]` annotates the `impl`, and `#[service]` reaches the
+/// rest — including the `log` events and the generated `impl` attributes — the
+/// same way.
+#[cfg(test)]
+mod usage_without_direct_dependencies {
+    use ice_rpc::gen::{rkyv, WireEvent};
+    use ice_rpc::{service, Observable};
+
+    /// A payload used both as a request argument and as a response value.
+    ///
+    /// The `serde` derives are the ones the `json` / `http` features require on
+    /// a service type — see the rest of this crate. They are unrelated to the
+    /// masking: `#[ice_rpc::payload]` only supplies the rkyv derives.
+    #[ice_rpc::payload]
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct MaskedPayload {
+        /// A text field.
+        pub name: String,
+        /// A count the handler increments.
+        pub count: u32,
+    }
+
+    /// A service whose request and response exercise the generated derives.
+    #[service("MaskedService")]
+    pub trait MaskedService {
+        /// Echoes the payload, incremented so the round-trip is observable.
+        async fn echo(&self, payload: MaskedPayload) -> Observable<MaskedPayload, String>;
+    }
+
+    /// The provider implementation, annotated through the re-export.
+    struct MaskedImpl;
+
+    #[ice_rpc::async_trait]
+    impl MaskedService for MaskedImpl {
+        async fn echo(&self, mut payload: MaskedPayload) -> Observable<MaskedPayload, String> {
+            payload.count += 1;
+            ice_rpc::of(payload)
+        }
+    }
+
+    #[test]
+    fn the_generated_request_round_trips_through_the_rkyv_re_export() {
+        let request = MaskedServiceRequest::Echo {
+            payload: MaskedPayload {
+                name: "a".into(),
+                count: 1,
+            },
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&request).expect("encode request");
+        let decoded = rkyv::from_bytes::<MaskedServiceRequest, rkyv::rancor::Error>(&bytes)
+            .expect("decode request");
+        match decoded {
+            MaskedServiceRequest::Echo { payload } => assert_eq!(
+                payload,
+                MaskedPayload {
+                    name: "a".into(),
+                    count: 1,
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn the_payload_carried_by_a_response_decodes_back() {
+        let event = WireEvent::<MaskedPayload, String>::Next(MaskedPayload {
+            name: "b".into(),
+            count: 2,
+        });
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event).expect("encode response");
+        let decoded =
+            rkyv::from_bytes::<WireEvent<MaskedPayload, String>, rkyv::rancor::Error>(&bytes)
+                .expect("decode response");
+        match decoded {
+            WireEvent::Next(value) => assert_eq!(
+                value,
+                MaskedPayload {
+                    name: "b".into(),
+                    count: 2,
+                }
+            ),
+            other => panic!("expected a Next event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_masked_proxy_keeps_the_declared_name_and_can_be_built() {
+        assert_eq!(MaskedServiceProxy::SERVICE_NAME, "MaskedService");
+        let _provider = MaskedImpl;
     }
 }

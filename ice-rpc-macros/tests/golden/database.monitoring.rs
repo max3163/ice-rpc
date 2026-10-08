@@ -13,6 +13,7 @@ pub trait DatabaseApi: Send + Sync + 'static {
     ice_rpc::gen::rkyv::Serialize,
     Debug
 )]
+#[rkyv(crate = ice_rpc::gen::rkyv)]
 pub enum DatabaseApiRequest {
     Add { a: i32, b: i32 } = 0u8,
     Get { key: String } = 1u8,
@@ -71,7 +72,7 @@ impl DatabaseApiClient {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::gen::ServiceLifecycle for DatabaseApiClient {
     async fn init(&self) -> bool {
         true
@@ -282,7 +283,7 @@ impl DatabaseApiServer {
 #[allow(missing_docs)]
 struct __DatabaseApiServiceInitDefault(std::sync::Arc<dyn DatabaseApi>);
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for __DatabaseApiServiceInitDefault {}
 #[allow(missing_docs)]
 pub enum DatabaseApiMode {
@@ -347,7 +348,7 @@ impl DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl DatabaseApi for DatabaseApiProxy {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         let mode = self.mode.read().await;
@@ -402,7 +403,7 @@ impl ice_rpc::gen::ServiceConsumer for DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
     async fn init(&self) -> bool {
         let mut mode = self.mode.write().await;
@@ -410,7 +411,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
             DatabaseApiMode::Provider { local_impl, init_hook, server_started } => {
                 if !*server_started {
                     if !init_hook.on_init().await {
-                        ::log::warn!(
+                        ice_rpc::gen::log::warn!(
                             "[{}] on_init() failed, retrying...", stringify!(DatabaseApi)
                         );
                         return false;
@@ -423,14 +424,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                         "Database",
                         dispatcher,
                     ) {
-                        ::log::error!(
+                        ice_rpc::gen::log::error!(
                             "[{}] channel registration failed: {e:?}",
                             stringify!(DatabaseApi)
                         );
                         return false;
                     }
                     *server_started = true;
-                    ::log::info!(
+                    ice_rpc::gen::log::info!(
                         "[{}] native service registered on channel '{}'.",
                         stringify!(DatabaseApi), "db"
                     );
@@ -446,7 +447,7 @@ impl ice_rpc::gen::ServiceNamed for DatabaseApiProxy {
     const SERVICE_NAME: &'static str = "Database";
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for DatabaseApiProxy {
     async fn on_init(&self) -> bool {
         ice_rpc::gen::ServiceLifecycle::init(self).await

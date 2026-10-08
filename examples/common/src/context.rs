@@ -4,10 +4,10 @@
 //! Implemented in Node.js through the `ProviderJson` mode of the ice-rpc Proxy.
 
 use ice_rpc::{service, Observable};
-use rkyv::{Archive, Deserialize, Serialize};
 
 /// Context entry associating a key with its value.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContextEntry {
     /// Key of the entry.
     pub key: String,
@@ -22,7 +22,8 @@ impl std::fmt::Display for ContextEntry {
 }
 
 /// Error returned by the [`ContextService`] operations.
-#[derive(Debug, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContextError {
     /// The requested key does not exist in the context.
     KeyNotFound,

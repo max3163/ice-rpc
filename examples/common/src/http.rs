@@ -4,10 +4,10 @@
 //! shared memory without any superfluous copy (zero-copy).
 
 use ice_rpc::{service, Observable};
-use rkyv::{Archive, Deserialize, Serialize};
 
 /// Parameters of an HTTP request to transmit.
-#[derive(Debug, Archive, Deserialize, Serialize, Clone, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HttpRequestParams {
     /// HTTP method (`GET`, `POST`, `PUT`, etc.).
     pub method: String,
@@ -33,7 +33,8 @@ impl std::fmt::Display for HttpRequestParams {
 }
 
 /// HTTP response received after processing.
-#[derive(Debug, Archive, Deserialize, Serialize, Clone, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HttpResponseParams {
     /// HTTP status code (`200`, `404`, `500`, etc.).
     pub status_code: u16,
@@ -59,7 +60,8 @@ impl std::fmt::Display for HttpResponseParams {
 }
 
 /// Error returned by the [`HttpService`] operations.
-#[derive(Debug, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum HttpError {
     /// Internal error while processing the request.
     InternalError(String),

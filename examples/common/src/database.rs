@@ -4,10 +4,10 @@
 //! Depends on `ConfigService` for its connection configuration.
 
 use ice_rpc::{service, Observable};
-use rkyv::{Archive, Deserialize, Serialize};
 
 /// Error returned by the [`DatabaseService`] operations.
-#[derive(Debug, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DatabaseError {
     /// No record found for the query.
     NotFound,
@@ -25,7 +25,8 @@ impl std::fmt::Display for DatabaseError {
 }
 
 /// Search criteria for a person by their identity.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersonneQuery {
     /// Last name of the searched person.
     pub nom: String,
@@ -40,7 +41,8 @@ impl std::fmt::Display for PersonneQuery {
 }
 
 /// Full information about a person.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersonneInfo {
     /// Last name.
     pub nom: String,

@@ -13,9 +13,9 @@
 //!
 //! ```rust,ignore
 //! use ice_rpc::{service, Observable};
-//! use rkyv::{Archive, Deserialize, Serialize};
 //!
-//! #[derive(Debug, Archive, Deserialize, Serialize)]
+//! #[ice_rpc::payload]
+//! #[derive(Debug)]
 //! pub enum MyError {
 //!     NotFound,
 //! }
@@ -37,7 +37,7 @@
 //! ```rust,ignore
 //! struct MyServiceImpl;
 //!
-//! #[async_trait::async_trait]
+//! #[ice_rpc::async_trait]
 //! impl MyService for MyServiceImpl {
 //!     async fn hello(&self, name: String) -> Observable<String, MyError> {
 //!         // One value, then completion. A handler streaming several values uses
@@ -175,7 +175,16 @@
 //! | `gen` | Internal contract for the generated code: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
-pub use ice_rpc_macros::{main, service};
+pub use ice_rpc_macros::{main, payload, service};
+
+// The *macro* is re-exported, not the crate, so a service implementation can
+// annotate its `impl` block with the short `#[ice_rpc::async_trait]` — without
+// declaring the `async-trait` crate. The attribute expands to `::core::…` paths
+// only; the explicit `#[async_trait::async_trait]` keeps working for a crate
+// that already has the dependency.
+// (`ice_rpc::gen` re-exports the *crate* instead, because the generated `impl`
+// blocks name it as a path segment: `ice_rpc::gen::async_trait::async_trait`.)
+pub use async_trait::async_trait;
 
 // Dependency re-exports (`rkyv`, `serde_json`, `base64`, …) live in `ice_rpc::gen`.
 

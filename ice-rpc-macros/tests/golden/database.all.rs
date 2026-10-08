@@ -13,6 +13,7 @@ pub trait DatabaseApi: Send + Sync + 'static {
     ice_rpc::gen::rkyv::Serialize,
     Debug
 )]
+#[rkyv(crate = ice_rpc::gen::rkyv)]
 pub enum DatabaseApiRequest {
     Add { a: i32, b: i32 } = 0u8,
     Get { key: String } = 1u8,
@@ -71,7 +72,7 @@ impl DatabaseApiClient {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::gen::ServiceLifecycle for DatabaseApiClient {
     async fn init(&self) -> bool {
         true
@@ -282,7 +283,7 @@ impl DatabaseApiServer {
 #[allow(missing_docs)]
 struct __DatabaseApiServiceInitDefault(std::sync::Arc<dyn DatabaseApi>);
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for __DatabaseApiServiceInitDefault {}
 #[allow(missing_docs)]
 #[allow(dead_code)]
@@ -358,7 +359,7 @@ impl DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl DatabaseApi for DatabaseApiProxy {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         let mode = self.mode.read().await;
@@ -434,7 +435,7 @@ impl ice_rpc::gen::ServiceConsumer for DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
     async fn init(&self) -> bool {
         let mut mode = self.mode.write().await;
@@ -466,7 +467,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ::log::error!(
+                                            ice_rpc::gen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "add"
                                             );
@@ -486,7 +487,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ::log::error!(
+                                                ice_rpc::gen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "add", e
                                                 );
@@ -501,7 +502,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                             let value = match event {
                                                 ice_rpc::gen::JsonCallEvent::Event(value) => value,
                                                 ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "add", message
                                                     );
@@ -520,7 +521,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "add"
                                                     );
@@ -560,7 +561,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ::log::error!(
+                                            ice_rpc::gen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "get"
                                             );
@@ -580,7 +581,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ::log::error!(
+                                                ice_rpc::gen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "get", e
                                                 );
@@ -595,7 +596,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                             let value = match event {
                                                 ice_rpc::gen::JsonCallEvent::Event(value) => value,
                                                 ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "get", message
                                                     );
@@ -614,7 +615,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "get"
                                                     );
@@ -654,7 +655,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ::log::error!(
+                                            ice_rpc::gen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "put"
                                             );
@@ -674,7 +675,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ::log::error!(
+                                                ice_rpc::gen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "put", e
                                                 );
@@ -689,7 +690,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                             let value = match event {
                                                 ice_rpc::gen::JsonCallEvent::Event(value) => value,
                                                 ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "put", message
                                                     );
@@ -708,7 +709,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ::log::error!(
+                                                    ice_rpc::gen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "put"
                                                     );
@@ -731,10 +732,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                     "Database",
                     dispatcher,
                 ) {
-                    ::log::error!("[{}] channel registration failed: {e:?}", "Database");
+                    ice_rpc::gen::log::error!(
+                        "[{}] channel registration failed: {e:?}", "Database"
+                    );
                     return false;
                 }
-                ::log::info!(
+                ice_rpc::gen::log::info!(
                     "[{}] JSON provider registered on channel '{}'.", "Database", "db"
                 );
                 true
@@ -742,7 +745,7 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
             DatabaseApiMode::Provider { local_impl, init_hook, server_started } => {
                 if !*server_started {
                     if !init_hook.on_init().await {
-                        ::log::warn!(
+                        ice_rpc::gen::log::warn!(
                             "[{}] on_init() failed, retrying...", stringify!(DatabaseApi)
                         );
                         return false;
@@ -755,14 +758,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                         "Database",
                         dispatcher,
                     ) {
-                        ::log::error!(
+                        ice_rpc::gen::log::error!(
                             "[{}] channel registration failed: {e:?}",
                             stringify!(DatabaseApi)
                         );
                         return false;
                     }
                     *server_started = true;
-                    ::log::info!(
+                    ice_rpc::gen::log::info!(
                         "[{}] native service registered on channel '{}'.",
                         stringify!(DatabaseApi), "db"
                     );
@@ -778,7 +781,7 @@ impl ice_rpc::gen::ServiceNamed for DatabaseApiProxy {
     const SERVICE_NAME: &'static str = "Database";
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for DatabaseApiProxy {
     async fn on_init(&self) -> bool {
         ice_rpc::gen::ServiceLifecycle::init(self).await
@@ -1095,7 +1098,7 @@ impl DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-#[async_trait::async_trait]
+#[ice_rpc::gen::async_trait::async_trait]
 impl ice_rpc::gen::JsonInvoker for DatabaseApiProxy {
     fn service_name(&self) -> &'static str {
         <DatabaseApiProxy as ice_rpc::gen::ServiceNamed>::SERVICE_NAME

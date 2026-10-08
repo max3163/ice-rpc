@@ -266,7 +266,7 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
             #(#helpers)*
         }
 
-        #[async_trait::async_trait]
+        #[ice_rpc::gen::async_trait::async_trait]
         impl ice_rpc::gen::JsonInvoker for #proxy_name {
             fn service_name(&self) -> &'static str {
                 <#proxy_name as ice_rpc::gen::ServiceNamed>::SERVICE_NAME
@@ -497,7 +497,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                             let mut emitter = emitter;
                             let Some(args) = args
                             else {
-                                ::log::error!(
+                                ice_rpc::gen::log::error!(
                                     "[{}::{}] Failed to deserialize the request",
                                     <#proxy_name>::SERVICE_NAME,
                                     #method_name_str
@@ -520,7 +520,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                             {
                                 Ok(events) => events,
                                 Err(e) => {
-                                    ::log::error!(
+                                    ice_rpc::gen::log::error!(
                                         "[{}::{}] JSON dispatch failed: {}",
                                         <#proxy_name>::SERVICE_NAME,
                                         #method_name_str,
@@ -544,7 +544,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                                 let value = match event {
                                     ice_rpc::gen::JsonCallEvent::Event(value) => value,
                                     ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                        ::log::error!(
+                                        ice_rpc::gen::log::error!(
                                             "[{}::{}] JSON call failed: {}",
                                             <#proxy_name>::SERVICE_NAME,
                                             #method_name_str,
@@ -565,7 +565,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                                     // call unanswered: it is reported instead of
                                     // dropped, and the stream stops here.
                                     None => {
-                                        ::log::error!(
+                                        ice_rpc::gen::log::error!(
                                             "[{}::{}] Failed to serialize the JSON response",
                                             <#proxy_name>::SERVICE_NAME,
                                             #method_name_str

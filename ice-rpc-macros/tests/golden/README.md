@@ -67,9 +67,9 @@ the code a deployment that never speaks Node.js or HTTP no longer compiles:
 
 | Reference | Lines |
 |---|---|
-| `database.rs` | 461 |
-| `database.monitoring.rs` | 571 |
-| `database.all.rs` | 1230 |
+| `database.rs` | 462 |
+| `database.monitoring.rs` | 572 |
+| `database.all.rs` | 1233 |
 
 These files are **not** rustfmt output and must not be reformatted by hand:
 `cargo fmt` ignores them (they are data, not targets), and running `rustfmt` over

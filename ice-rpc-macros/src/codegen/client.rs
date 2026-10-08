@@ -41,7 +41,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput { client_name, .. } = input;
 
     quote! {
-        #[async_trait::async_trait]
+        #[ice_rpc::gen::async_trait::async_trait]
         impl ice_rpc::gen::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
                 // The native transport connects lazily on the first call.

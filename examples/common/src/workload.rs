@@ -22,10 +22,10 @@
 //! structure on purpose: it is the case that prices the response side.
 
 use ice_rpc::{service, Observable};
-use rkyv::{Archive, Deserialize, Serialize};
 
 /// One filter of a workload query.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkloadFilter {
     /// Field name the filter applies to.
     pub field: String,
@@ -38,7 +38,8 @@ pub struct WorkloadFilter {
 /// What matters to the wire is the shape, not the type: `search` sends the same
 /// request declared **flat** (`&str` plus three `&[&str]`), so nothing new has to
 /// be declared, documented or maintained on this side.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkloadQuery {
     /// Primary key of the query.
     pub key: String,
@@ -52,9 +53,8 @@ pub struct WorkloadQuery {
 ///
 /// Named `WorkloadProfile` (not `WorkloadKind`) so the benchmark's own
 /// case-selection enum keeps its name.
-#[derive(
-    Debug, Clone, Copy, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize,
-)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum WorkloadProfile {
     /// No preference.
     Fast,
@@ -65,7 +65,8 @@ pub enum WorkloadProfile {
 }
 
 /// Every scalar family, plus `Option` and an enum, in one struct.
-#[derive(Debug, Clone, Archive, Deserialize, Serialize, serde::Serialize, serde::Deserialize)]
+#[ice_rpc::payload]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkloadScalars {
     /// A boolean flag.
     pub flag: bool,

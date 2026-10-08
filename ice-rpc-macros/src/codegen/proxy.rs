@@ -75,7 +75,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
     quote! {
         struct #init_default_name(std::sync::Arc<dyn #trait_name>);
 
-        #[async_trait::async_trait]
+        #[ice_rpc::gen::async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
         #json_allow
@@ -147,7 +147,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #provide_json
         }
 
-        #[async_trait::async_trait]
+        #[ice_rpc::gen::async_trait::async_trait]
         impl #trait_name for #proxy_name {
             #(#node_methods)*
         }

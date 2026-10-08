@@ -24,9 +24,12 @@ http = ["ice-rpc/http"]
 monitoring = ["ice-rpc/monitoring"]
 
 [dependencies]
+# `#[ice_rpc::payload]` supplies the rkyv derives and redirects their expansion to
+# `ice_rpc::gen::rkyv`, and `#[service]` injects the async-trait attribute through
+# `ice_rpc::gen` as well: this crate therefore needs neither `rkyv`, `log` nor
+# `async-trait` of its own.
 ice-rpc = { path = "../../ice-rpc" }
-log = { workspace = true }
-rkyv = { workspace = true }
+# Kept for the `serde::Serialize` / `serde::Deserialize` derives the JSON features
+# (`napi`, `http`) require on the service types.
 serde = { workspace = true }
 serde_json = { workspace = true }
-async-trait = { workspace = true }

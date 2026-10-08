@@ -73,6 +73,11 @@ pub use crate::transport::{
 // used to provide now lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
+// Re-exported so the generated `impl` blocks (and the injection on the annotated
+// trait) can name `ice_rpc::gen::async_trait::async_trait`: the attribute macro
+// expands to `::core::…` only, so reaching it through this path needs no
+// `async-trait` dependency in the service crate.
+pub use async_trait;
 // The JSON converters are the only generated code that names `base64`. The
 // request builder is emitted under `json` alone, but the invoker both JSON
 // bridges dispatch to is emitted under `json` **or** `http` — the gateway needs

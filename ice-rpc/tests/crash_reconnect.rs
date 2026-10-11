@@ -48,12 +48,12 @@ fn child_provider_until_killed() {
     }
 }
 
-/// Child role: create an iceoryx2 Node, then drop it (the clean shutdown the
-/// watcher must detect).
+/// Child role: create an iceoryx2 Node, then drop it (the clean shutdown a peer
+/// must detect).
 fn child_provider_clean_shutdown() {
     let node = NodeBuilder::new().create::<Service>().expect("create node");
     announce_ready();
-    // Give the parent time to register its watcher and observe the node alive.
+    // Give the parent time to observe the node alive.
     std::thread::sleep(Duration::from_millis(2000));
     drop(node);
 }
@@ -94,14 +94,13 @@ fn run_scenario(clean: bool) -> Duration {
     // test harness abort on `BrokenPipe`, which would kill the provider.
     let (pid, _child_stdout) = read_ready_pid(&mut child);
 
-    // Register the native liveness watcher and wait until the node is observed.
-    ice_rpc::codegen::register_node_liveness_watcher(ice_rpc::codegen::NodeId(pid));
+    // Wait until the native node scan observes the child as alive.
     let alive_deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < alive_deadline && !ice_rpc::codegen::is_pid_alive(pid) {
+    while Instant::now() < alive_deadline && !node_alive(pid) {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        ice_rpc::codegen::is_pid_alive(pid),
+        node_alive(pid),
         "child node (pid {pid}) was never observed alive; nodes={:?} (parent global_root={})",
         dump_nodes(),
         root_string()
@@ -117,13 +116,13 @@ fn run_scenario(clean: bool) -> Duration {
 
     // The native monitoring must report the node as gone.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while ice_rpc::codegen::is_pid_alive(pid) && Instant::now() < deadline {
+    while node_alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 
     let kind = if clean { "clean shutdown" } else { "SIGKILL" };
     assert!(
-        !ice_rpc::codegen::is_pid_alive(pid),
+        !node_alive(pid),
         "the node is still reported alive after {kind}"
     );
 
@@ -152,6 +151,30 @@ fn dump_nodes() -> Vec<(u32, &'static str)> {
         CallbackProgression::Continue
     });
     rows
+}
+
+/// Whether `pid` currently owns an `Alive` iceoryx2 node.
+///
+/// Mirrors what an observer does with `Node::list`; conservative on a failed
+/// scan (reports "alive"), so a transient error never looks like a death.
+fn node_alive(pid: u32) -> bool {
+    let mut alive = false;
+    let result = Node::<Service>::list(Config::global_config(), |state| {
+        if matches!(state, NodeState::Alive(_)) {
+            let state_pid = state
+                .node_id()
+                .pid::<Service>()
+                .ok()
+                .map(|p| raw_pid_to_u32(p.value()))
+                .unwrap_or(0);
+            if state_pid == pid {
+                alive = true;
+                return CallbackProgression::Stop;
+            }
+        }
+        CallbackProgression::Continue
+    });
+    result.is_err() || alive
 }
 
 /// Reads the `READY <pid>` line printed by the child.

@@ -19,9 +19,6 @@
 //! | Consumer ports per channel | `transport::client`, [`Locked`] | channel name | `consumer_ports` | `native_call` | never (one set per channel) |
 //! | Pending channels | `transport::server`, [`Locked`] | channel name | `register_native_service` | `start_registered_channels` | drained at the end of initialization |
 //! | Channels sealed flag | `transport::server`, `AtomicBool` | — | `start_registered_channels` | `register_native_service` | not applicable |
-//! | Watched PIDs (liveness) | `node_liveness`, [`Registry`] | pid | `register_node_liveness_watcher` | the shared poller | `unregister_…` or on confirmed death |
-//! | Liveness poll interval | `node_liveness`, [`Global`] | — | first read of the env var | every poller tick | never |
-//! | Liveness poller started | `node_liveness`, [`Global`] | — | first watcher registration | every registration | never |
 //! | IPC cleanup resources | `shutdown`, [`Locked`] | — | `register_ipc_cleanup` | `clear_ipc_cleanup` | at shutdown |
 //! | Service locator | `locator`, [`Global`] | — | first `locator()` call | everywhere | never |
 //! | JSON host pointer | `json`, [`Global`] | — | gateway startup | JSON dispatch | never |

@@ -5,14 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use ice_rpc::codegen::{
-    CORRELATION_ID_LEN, EventKind, RpcHeader, fmt_correlation_id, is_pid_alive,
-};
+use ice_rpc::codegen::{CORRELATION_ID_LEN, EventKind, RpcHeader, fmt_correlation_id};
 use ice_rpc::monitor::{Direction, DirectionView, Emitter, discover_channels};
 
 use crate::config::Config;
 use crate::correlate::{Correlate, PendingCall, Resolution};
 use crate::health::{ChannelHealth, Scanner};
+use crate::liveness::is_pid_alive;
 use crate::loss::LossTracker;
 use crate::metrics::Metrics;
 use crate::traces::{RecentBuffer, TraceRecord, TraceSink};

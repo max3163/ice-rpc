@@ -171,7 +171,6 @@
 //! | `types` | Protocol types (`RpcHeader`, `EventKind`, `WireEvent`) and the reactive vocabulary re-exported from `ice-rpc-rx` |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
-//! | `node_liveness` | Crash detection through iceoryx2's native node monitoring |
 //! | `codegen` | Internal contract for the generated code: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
@@ -193,7 +192,6 @@ mod global;
 mod hash;
 mod labels;
 mod locator;
-mod node_liveness;
 mod service_traits;
 mod shutdown;
 mod sync;

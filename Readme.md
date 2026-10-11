@@ -47,19 +47,25 @@ sequenceDiagram
 
 ### Crash detection and restart
 
+There is no in-process crash poller. Liveness is a **pull**: iceoryx2's native
+node monitoring exposes each node as `Alive`/`Dead`, and a peer (the
+`ice-rpc-monitor` health view, a diagnostic probe, or any caller of
+`is_pid_alive`) asks `Node::list` when it wants to know. Recovery never depends
+on it — a call re-opens its service by name.
+
 ```mermaid
 sequenceDiagram
     participant P as Provider (PID=2000)
     participant Kernel as OS Kernel
-    participant WL as NodeLivenessPoller (Consumer)
+    participant Obs as Observer (Node::list / is_pid_alive)
 
     P->>Kernel: Node creation → monitoring lock held
     Note over P: Hard crash (SIGKILL)
     Kernel->>Kernel: automatic release of the monitoring lock
-    WL->>Kernel: Node::list → pid gone / NodeState::Dead
-    WL-->>WL: log the confirmed crash
-    Note over WL: the next call re-opens the service, so calls resume as soon as
-    Note over WL: the provider restarts — there is no cache to invalidate
+    Obs->>Kernel: Node::list → the pid is no longer listed
+    Note over Obs: no shared poller is started by the library
+    Note over P: the next call re-opens the service, so calls resume as soon
+    Note over P: as the provider restarts — there is no cache to invalidate
 ```
 
 ---
@@ -140,8 +146,6 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   │   ├── header.rs           ← RpcHeader (zero-copy) + EventKind
 │   │   ├── context.rs          ← CallContext (the call being served, read-only)
 │   │   └── consts.rs           ← name-length limits shared with the macros
-│   ├── node_liveness.rs        ← Native iceoryx2 node monitoring (Node::list,
-│   │                              NodeState::Alive/Dead), single shared poller
 │   ├── monitor.rs              ← Read-only observation surface for ice-rpc-monitor
 │   │   │                          (ServiceDecoder, Decoders::linked)
 │   │   ├── decode.rs           ← payload rendering + the link-time decoder registry
@@ -475,8 +479,8 @@ One cached publisher and one dispatch thread per **channel**:
 ### 4.6. NodeId
 
 `NodeId` is the process PID (`std::process::id()`). It is no longer a routing key
-(the service name is); it is used by the liveness monitor to attribute a live
-iceoryx2 node to its process.
+(the service name is); it is used to attribute a live iceoryx2 node to its
+process.
 
 ---
 
@@ -575,10 +579,11 @@ There is no registry: a consumer opens the service by name on the first call, so
 addressing is entirely static. What remains is **liveness**:
 
 - each process owns one iceoryx2 `Node`; the OS releases its monitoring lock when
-  the process dies;
-- a single shared poller (started by the first `register_node_liveness_watcher`)
-  runs one `Node::list` per tick for every watched PID and reports a confirmed
-  death (a `Dead` node, or a node that disappeared after a clean shutdown);
+  the process dies, so `Node::list` stops reporting it;
+- liveness is **pulled**, not polled: the observer's
+  [`is_pid_alive`](ice-rpc-monitor/src/liveness.rs:1) runs one `Node::list` on
+  demand and answers for a given PID (conservatively — a failed scan counts as
+  "alive");
 - because a call re-opens its service on demand, a restarted provider is picked
   up by the next call — there is no discovery cache to invalidate.
 
@@ -821,31 +826,29 @@ state to repair and no cache to invalidate:
   `Event::Error(ObservableError::Technical(RpcError::TransportError(_)))`;
 - once the provider restarts (same service name), the next call simply opens the
   service again and succeeds;
-- the liveness poller (§11) reports the crash for observability, but the recovery
-  does not depend on it.
+- an observer can see the node go away through `Node::list` / `is_pid_alive`
+  (§11), but the recovery does not depend on it.
 
 ---
 
-## 11. Crash monitoring — native iceoryx2 node monitoring
+## 11. Node liveness — native iceoryx2 node monitoring
 
-There is **no hand-written kernel lock**. iceoryx2's node monitoring
-(`<ipc_threadsafe::Service as Service>::Monitoring`) is a file lock held by the
-node and released by the OS when the process dies. `Node::list` exposes it as
-`NodeState::Alive` / `NodeState::Dead`, and `UniqueNodeId::pid()` maps a node back
-to its process — which is ice-rpc's `NodeId`.
+There is **no hand-written kernel lock**, and no in-process poller either.
+iceoryx2's node monitoring (`<ipc_threadsafe::Service as Service>::Monitoring`)
+is a file lock held by the node and released by the OS when the process dies.
+`Node::list` exposes it as `NodeState::Alive` / `NodeState::Dead`, and
+`UniqueNodeId::pid()` maps a node back to its process — which is ice-rpc's
+`NodeId`. Liveness is read **on demand** through `alive_pids()` / `is_pid_alive()`.
 
 | Aspect | Behaviour |
 |---|---|
 | **Provider** | The iceoryx2 `Node` created at init already holds the monitoring lock; no extra lock is acquired. |
-| **Clean shutdown** | `release_node()` drops the `Node` (releasing the lock), so peers do not mistake it for a crash. |
-| **Watcher** | A **single** background poller serves the whole process: one `Node::list` per tick for *every* watched PID. |
-| **Interval** | `LIVENESS_POLL_MS = 500` ms, overridable with `ICE_RPC_LIVENESS_POLL_MS`. |
-| **Why one shared poller** | A single `Node::list` costs ~475–680 µs (versus ~3 µs for a bare `flock` check). Calling it once per watched node — or at 100 ms — perturbs the shared-memory notifier path, so the cost is amortised across all watched nodes. |
-| **On detection** | the confirmed death is logged (`[node_liveness] CRASH DETECTED`) and the entry is removed from the watched set. |
-| **Crash vs clean shutdown** | A clean shutdown removes the node entirely, so the poller confirms with a targeted query before declaring a crash. |
-| **Failure policy** | Conservative: a failed or inconclusive scan never declares a node dead. |
+| **Clean shutdown** | `transport::release_shared_node()` drops the `Node` (releasing the lock), after the ports; a peer then stops seeing it. |
+| **Read path** | `is_pid_alive(pid)` runs one `Node::list` and reports whether that PID owns an `Alive` node. No background poller is started by the library. |
+| **Cost** | A single `Node::list` costs ~475–680 µs, so it is pulled when observed (e.g. by the monitor's health view) rather than ticked continuously. |
+| **Failure policy** | Conservative: a failed or inconclusive scan reports the node as **alive**, never as a spurious death. |
 
-See [`ice-rpc/src/node_liveness.rs`](ice-rpc/src/node_liveness.rs:1) for the
+See [`ice-rpc-monitor/src/liveness.rs`](ice-rpc-monitor/src/liveness.rs:1) for the
 implementation, [`ice-rpc/examples/node_liveness_probe.rs`](ice-rpc/examples/node_liveness_probe.rs:1)
 for the diagnostic harness, and [`scripts/validate-node-liveness.sh`](scripts/validate-node-liveness.sh:1)
 for the automated validation (clean shutdown vs `SIGKILL`).

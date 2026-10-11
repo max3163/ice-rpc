@@ -34,6 +34,7 @@ pub mod traces;
 
 mod collector;
 mod correlate;
+mod liveness;
 mod loss;
 
 pub use collector::Monitor;

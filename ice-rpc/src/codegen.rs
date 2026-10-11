@@ -5,12 +5,6 @@
 //! part of the public API: its symbols are semver-exempt for the consumers of
 //! `ice-rpc`, but **not** for `ice-rpc-macros`.
 
-// ── Node liveness ───────────────────────────────────────────────────
-pub use crate::node_liveness::{
-    LIVENESS_POLL_MS, is_pid_alive, is_provider, mark_provider, register_node_liveness_watcher,
-    unregister_node_liveness_watcher,
-};
-
 // ── Shutdown ────────────────────────────────────────────────────────
 pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 

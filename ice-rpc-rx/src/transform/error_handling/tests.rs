@@ -24,8 +24,8 @@ fn catch_error_switches_to_the_recovery_stream() {
 
 #[test]
 fn catch_error_forwards_technical_error_unchanged() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let called = Arc::new(AtomicBool::new(false));
@@ -49,8 +49,8 @@ fn catch_error_forwards_technical_error_unchanged() {
 
 #[test]
 fn catch_error_passthrough_when_no_error() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let called = Arc::new(AtomicBool::new(false));
@@ -93,8 +93,8 @@ fn catch_error_can_rethrow() {
 /// caught a second time.
 #[test]
 fn catch_error_does_not_catch_the_recovery_error() {
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let calls = Arc::new(AtomicI32::new(0));
@@ -121,8 +121,8 @@ fn catch_error_does_not_catch_the_recovery_error() {
 #[test]
 fn catch_error_does_not_repoll_a_closed_source() {
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
     use std::task::{Context, Poll};
 
     struct Closing {
@@ -168,8 +168,8 @@ fn catch_error_does_not_repoll_a_closed_source() {
 /// failing are kept and followed by the next attempt's — the RxJS rule.
 #[test]
 fn retry_with_keeps_the_values_of_a_failed_attempt() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let attempt = calls.clone();
@@ -204,8 +204,8 @@ fn retry_with_keeps_the_values_of_a_failed_attempt() {
 /// Once the policy gives up, the last error travels downstream unchanged.
 #[test]
 fn retry_with_forwards_the_last_error_when_it_gives_up() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let attempt = calls.clone();
@@ -236,8 +236,8 @@ fn retry_with_forwards_the_last_error_when_it_gives_up() {
 /// A completion is final: `retry` only acts on errors (RxJS).
 #[test]
 fn retry_with_does_not_retry_a_completion() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let attempt = calls.clone();
@@ -262,8 +262,8 @@ fn retry_with_does_not_retry_a_completion() {
 /// `only_retryable` refuses what `RpcError::is_retryable` refuses.
 #[test]
 fn retry_with_only_retryable_refuses_a_business_error() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let attempt = calls.clone();
@@ -295,8 +295,8 @@ fn retry_with_only_retryable_refuses_a_business_error() {
 /// …and retries a technical failure `is_retryable` accepts.
 #[test]
 fn retry_with_only_retryable_retries_a_transport_failure() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let attempt = calls.clone();
@@ -328,8 +328,8 @@ fn retry_with_only_retryable_retries_a_transport_failure() {
 /// The policy's delay is observed before each re-attempt.
 #[test]
 fn retry_with_waits_the_policy_delay_before_retrying() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     let calls = Arc::new(AtomicUsize::new(0));

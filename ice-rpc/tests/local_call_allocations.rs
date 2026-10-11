@@ -28,13 +28,13 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_lite::future::poll_fn;
-use ice_rpc::gen::RpcHeader;
+use ice_rpc::codegen::RpcHeader;
 use ice_rpc::rt::block_on;
-use ice_rpc::{service, CallContext, Observable};
+use ice_rpc::{CallContext, Observable, service};
 
 /// Counts the allocations the calling thread makes inside its window.
 struct CountingAlloc;
@@ -125,7 +125,7 @@ const CALLS: usize = 1_000;
 fn local_context() -> CallContext {
     let header = RpcHeader::request(
         "echo",
-        ice_rpc::gen::service_id_of(LocalEchoProxy::SERVICE_NAME),
+        ice_rpc::codegen::service_id_of(LocalEchoProxy::SERVICE_NAME),
         1,
     );
     CallContext::new(&header, LocalEchoProxy::SERVICE_NAME, "echo")
@@ -246,7 +246,7 @@ fn wrapped_generic(proxy: &Arc<LocalEchoProxy>, value: i32) -> i32 {
 fn wrapped_boxed(proxy: &Arc<LocalEchoProxy>) {
     let ctx = local_context();
     let proxy = Arc::clone(proxy);
-    let future = ice_rpc::gen::call_scoped(ctx, async move {
+    let future = ice_rpc::codegen::call_scoped(ctx, async move {
         let stream = proxy.echo(VALUE).await;
         let _ = stream.first_value().await;
     });

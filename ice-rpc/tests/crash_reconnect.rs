@@ -10,11 +10,11 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::iceoryx2::prelude::{
+use ice_rpc::codegen::iceoryx2::prelude::{
     CallbackProgression, Config, Node, NodeBuilder, NodeState, SemanticString,
 };
-use ice_rpc::gen::iceoryx2::service::ipc_threadsafe::Service;
-use ice_rpc::gen::raw_pid_to_u32;
+use ice_rpc::codegen::iceoryx2::service::ipc_threadsafe::Service;
+use ice_rpc::codegen::raw_pid_to_u32;
 
 /// Set in the child process to make it act as the provider.
 const CHILD_ENV: &str = "ICE_RPC_C7_CHILD";
@@ -95,13 +95,13 @@ fn run_scenario(clean: bool) -> Duration {
     let (pid, _child_stdout) = read_ready_pid(&mut child);
 
     // Register the native liveness watcher and wait until the node is observed.
-    ice_rpc::gen::register_node_liveness_watcher(ice_rpc::gen::NodeId(pid));
+    ice_rpc::codegen::register_node_liveness_watcher(ice_rpc::codegen::NodeId(pid));
     let alive_deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < alive_deadline && !ice_rpc::gen::is_pid_alive(pid) {
+    while Instant::now() < alive_deadline && !ice_rpc::codegen::is_pid_alive(pid) {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        ice_rpc::gen::is_pid_alive(pid),
+        ice_rpc::codegen::is_pid_alive(pid),
         "child node (pid {pid}) was never observed alive; nodes={:?} (parent global_root={})",
         dump_nodes(),
         root_string()
@@ -117,13 +117,13 @@ fn run_scenario(clean: bool) -> Duration {
 
     // The native monitoring must report the node as gone.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while ice_rpc::gen::is_pid_alive(pid) && Instant::now() < deadline {
+    while ice_rpc::codegen::is_pid_alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 
     let kind = if clean { "clean shutdown" } else { "SIGKILL" };
     assert!(
-        !ice_rpc::gen::is_pid_alive(pid),
+        !ice_rpc::codegen::is_pid_alive(pid),
         "the node is still reported alive after {kind}"
     );
 

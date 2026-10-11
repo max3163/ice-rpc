@@ -110,10 +110,10 @@ fn terminal_lines() -> usize {
 /// When neither is available the width is treated as unbounded, so a message is
 /// never truncated on a guess.
 fn terminal_columns() -> usize {
-    if std::io::stdout().is_terminal() {
-        if let Some(columns) = console_columns() {
-            return columns;
-        }
+    if std::io::stdout().is_terminal()
+        && let Some(columns) = console_columns()
+    {
+        return columns;
     }
     std::env::var("COLUMNS")
         .ok()
@@ -151,7 +151,7 @@ fn console_columns() -> Option<usize> {
         maximum_window_size: Coord,
     }
 
-    extern "system" {
+    unsafe extern "system" {
         fn GetConsoleScreenBufferInfo(
             console: *mut core::ffi::c_void,
             info: *mut ScreenBufferInfo,
@@ -183,7 +183,7 @@ fn console_columns() -> Option<usize> {
         y_pixels: u16,
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn ioctl(fd: i32, request: u64, ...) -> i32;
     }
     // TIOCGWINSZ on Linux.
@@ -313,16 +313,15 @@ fn truncate_width(line: &str, max_width: usize) -> String {
 /// Builds one frame: the metrics block, then the most recent messages.
 pub fn frame(metrics: &Metrics, recent: Option<&RecentBuffer>) -> String {
     let mut frame = metrics.render_console();
-    if let Some(recent) = recent {
-        if let Ok(lines) = recent.lock() {
-            if !lines.is_empty() {
-                frame.push_str(MESSAGES_MARKER);
-                frame.push('\n');
-                for line in lines.iter() {
-                    frame.push_str(line);
-                    frame.push('\n');
-                }
-            }
+    if let Some(recent) = recent
+        && let Ok(lines) = recent.lock()
+        && !lines.is_empty()
+    {
+        frame.push_str(MESSAGES_MARKER);
+        frame.push('\n');
+        for line in lines.iter() {
+            frame.push_str(line);
+            frame.push('\n');
         }
     }
     frame
@@ -340,6 +339,23 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: Mutex<()> = Mutex::new(());
         &LOCK
+    }
+
+    /// Sets a process-global environment variable.
+    ///
+    /// `std::env::set_var` is `unsafe` since edition 2024: it is not
+    /// thread-safe, which is exactly why every test touching one holds
+    /// `env_lock`.
+    fn set_env(key: &str, value: &str) {
+        // SAFETY: the caller holds `env_lock`, so no other test reads or writes
+        // the environment concurrently.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    /// Removes a process-global environment variable.
+    fn unset_env(key: &str) {
+        // SAFETY: the caller holds `env_lock`.
+        unsafe { std::env::remove_var(key) };
     }
 
     #[test]
@@ -407,18 +423,18 @@ mod tests {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("LINES").ok();
 
-        std::env::set_var("LINES", "42");
+        set_env("LINES", "42");
         assert_eq!(terminal_lines(), 42);
         // A frame taller than the screen is worse than no frame at all, so an
         // unusable value falls back to the conservative default.
-        std::env::set_var("LINES", "4");
+        set_env("LINES", "4");
         assert_eq!(terminal_lines(), 24);
-        std::env::set_var("LINES", "not-a-number");
+        set_env("LINES", "not-a-number");
         assert_eq!(terminal_lines(), 24);
 
         match previous {
-            Some(value) => std::env::set_var("LINES", value),
-            None => std::env::remove_var("LINES"),
+            Some(value) => set_env("LINES", &value),
+            None => unset_env("LINES"),
         }
     }
 
@@ -463,7 +479,7 @@ mod tests {
         // expectation follows rather than assuming a piped harness.
         let tty = std::io::stdout().is_terminal();
 
-        std::env::set_var("COLUMNS", "100");
+        set_env("COLUMNS", "100");
         if tty {
             let console = console_columns().expect("a terminal answers TIOCGWINSZ");
             assert_eq!(terminal_columns(), console);
@@ -474,7 +490,7 @@ mod tests {
         // Too narrow to be trusted: with a console to ask, its real width wins;
         // with none (a piped or CI run) the width is treated as unbounded, so
         // nothing is truncated on a guess.
-        std::env::set_var("COLUMNS", "5");
+        set_env("COLUMNS", "5");
         if tty {
             let console = console_columns().expect("a terminal answers TIOCGWINSZ");
             assert_eq!(terminal_columns(), console);
@@ -483,8 +499,8 @@ mod tests {
         }
 
         match previous {
-            Some(value) => std::env::set_var("COLUMNS", value),
-            None => std::env::remove_var("COLUMNS"),
+            Some(value) => set_env("COLUMNS", &value),
+            None => unset_env("COLUMNS"),
         }
     }
 

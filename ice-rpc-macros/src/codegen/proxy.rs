@@ -64,7 +64,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #visibility fn provide_json() -> std::sync::Arc<Self> {
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::ProviderJson),
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::ProviderJson),
                 })
             }
         }
@@ -75,7 +75,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
     quote! {
         struct #init_default_name(std::sync::Arc<dyn #trait_name>);
 
-        #[ice_rpc::gen::async_trait::async_trait]
+        #[ice_rpc::codegen::async_trait::async_trait]
         impl ice_rpc::ServiceInit for #init_default_name {}
 
         #json_allow
@@ -90,7 +90,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         }
 
         #visibility struct #proxy_name {
-            mode: ice_rpc::gen::async_lock::RwLock<#mode_name>,
+            mode: ice_rpc::codegen::async_lock::RwLock<#mode_name>,
             deps: Vec<&'static str>,
         }
 
@@ -108,7 +108,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 ));
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Provider {
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Provider {
                         local_impl:     arc       as std::sync::Arc<dyn #trait_name>,
                         init_hook:      init_hook as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                         server_started: false,
@@ -123,7 +123,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 let deps = arc.dependencies();
                 std::sync::Arc::new(Self {
                     deps,
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Provider {
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Provider {
                         local_impl:     arc.clone() as std::sync::Arc<dyn #trait_name>,
                         init_hook:      arc         as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                         server_started: false,
@@ -135,10 +135,10 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 // The channel's publishers are sized from this declaration; being
                 // a property of the channel, it is recorded once here rather than
                 // carried by every call.
-                ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::gen::async_lock::RwLock::new(#mode_name::Consumer {
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Consumer {
                         ipc_client: #client_name::new(),
                     }),
                 })
@@ -147,12 +147,12 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             #provide_json
         }
 
-        #[ice_rpc::gen::async_trait::async_trait]
+        #[ice_rpc::codegen::async_trait::async_trait]
         impl #trait_name for #proxy_name {
             #(#node_methods)*
         }
 
-        impl ice_rpc::gen::ServiceConsumer for #proxy_name {
+        impl ice_rpc::codegen::ServiceConsumer for #proxy_name {
             fn consume_proxy() -> std::sync::Arc<Self> {
                 #proxy_name::consume()
             }
@@ -183,7 +183,7 @@ pub struct ProxyMethodGenInput<'a> {
 /// Generates the body of a proxy delegation method.
 ///
 /// In Provider mode, calls the local implementation (in-process) through
-/// `ice_rpc::gen::local_call_scoped`: a plain `.await` unless the `tracing`
+/// `ice_rpc::codegen::local_call_scoped`: a plain `.await` unless the `tracing`
 /// feature is on, in which case the callee gets its own `CallContext` and a span
 /// parented on the caller's. The `#[cfg]` lives in that helper, never here — this
 /// file is compiled by `ice-rpc-macros`, which does not carry the feature.
@@ -224,7 +224,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
                 #mode_name::Provider { local_impl, .. } => {
                     // A direct call carries no wire, so its context is built here
                     // from the callee's own identity
-                    ice_rpc::gen::local_call_scoped(
+                    ice_rpc::codegen::local_call_scoped(
                         #service_ref,
                         #service_name,
                         #method_name_str,

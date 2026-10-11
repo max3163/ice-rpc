@@ -13,7 +13,7 @@ use std::time::Duration;
 use iceoryx2::prelude::*;
 
 use crate::global::{Global, Locked};
-use crate::types::{node_pid_to_u32, NodeId};
+use crate::types::{NodeId, node_pid_to_u32};
 
 /// Polling interval of the liveness poller (ms).
 ///
@@ -180,21 +180,21 @@ fn poller_loop() {
 
         let watched: Vec<u32> = watched_nodes().with(|nodes| nodes.iter().copied().collect());
 
-        if !watched.is_empty() {
-            if let Some(alive) = alive_pids() {
-                for pid in watched {
-                    if alive.contains(&pid) {
-                        continue;
-                    }
-                    // Confirm with a targeted query: absence alone is ambiguous
-                    // between a crash and a clean shutdown.
-                    if !is_confirmed_dead(pid) {
-                        continue;
-                    }
-
-                    log::warn!("[node_liveness] CRASH DETECTED for Node {}", pid);
-                    watched_nodes().with(|nodes| nodes.remove(&pid));
+        if !watched.is_empty()
+            && let Some(alive) = alive_pids()
+        {
+            for pid in watched {
+                if alive.contains(&pid) {
+                    continue;
                 }
+                // Confirm with a targeted query: absence alone is ambiguous
+                // between a crash and a clean shutdown.
+                if !is_confirmed_dead(pid) {
+                    continue;
+                }
+
+                log::warn!("[node_liveness] CRASH DETECTED for Node {}", pid);
+                watched_nodes().with(|nodes| nodes.remove(&pid));
             }
         }
 

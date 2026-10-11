@@ -88,7 +88,7 @@ mod utility;
 // A factory-based retry cannot be an inherent method: it re-runs the *source*
 // instead of wrapping the stream it was called on, and an `Observable` is
 // single-subscription. It is therefore a free function of the crate.
-pub use error_handling::{retry_with, RetryPolicy};
+pub use error_handling::{RetryPolicy, retry_with};
 
 #[cfg(test)]
 mod test_support;

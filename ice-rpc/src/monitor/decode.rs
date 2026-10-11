@@ -114,9 +114,9 @@ pub fn decode_response<T, E>(
 where
     crate::types::WireEvent<T, E>: rkyv::Archive,
     <crate::types::WireEvent<T, E> as rkyv::Archive>::Archived: rkyv::Deserialize<
-        crate::types::WireEvent<T, E>,
-        rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
-    >,
+            crate::types::WireEvent<T, E>,
+            rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
+        >,
     for<'a> <crate::types::WireEvent<T, E> as rkyv::Archive>::Archived:
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
@@ -139,9 +139,9 @@ pub fn decode_response_unit<E>(payload: &[u8], render_err: impl Fn(&E) -> String
 where
     crate::types::WireEvent<(), E>: rkyv::Archive,
     <crate::types::WireEvent<(), E> as rkyv::Archive>::Archived: rkyv::Deserialize<
-        crate::types::WireEvent<(), E>,
-        rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
-    >,
+            crate::types::WireEvent<(), E>,
+            rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
+        >,
     for<'a> <crate::types::WireEvent<(), E> as rkyv::Archive>::Archived:
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
@@ -395,15 +395,15 @@ mod tests {
     fn encode<T>(value: &T) -> Vec<u8>
     where
         T: for<'a> rkyv::Serialize<
-            rkyv::rancor::Strategy<
-                rkyv::ser::Serializer<
-                    rkyv::util::AlignedVec,
-                    rkyv::ser::allocator::ArenaHandle<'a>,
-                    rkyv::ser::sharing::Share,
+                rkyv::rancor::Strategy<
+                    rkyv::ser::Serializer<
+                        rkyv::util::AlignedVec,
+                        rkyv::ser::allocator::ArenaHandle<'a>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                    rkyv::rancor::Error,
                 >,
-                rkyv::rancor::Error,
             >,
-        >,
     {
         rkyv::to_bytes::<rkyv::rancor::Error>(value)
             .expect("encode")

@@ -48,7 +48,7 @@
 
 use std::time::Duration;
 
-use ice_rpc::{service, CallContext, Observable};
+use ice_rpc::{CallContext, Observable, service};
 
 /// Delay between two report lines: long enough for the caller to walk away
 /// mid-report, short enough to watch.
@@ -97,7 +97,7 @@ impl ReportService for ReportServiceImpl {
         // it on the dropped reader instead — back-pressure, not cancellation — and
         // the demo would prove nothing.
         let capacity = REPORT_LINES as usize + 1;
-        let (tx, rx) = ice_rpc::gen::channel::<String, String>(capacity);
+        let (tx, rx) = ice_rpc::codegen::channel::<String, String>(capacity);
 
         // The work runs as a task of its own, holding the token. This is the
         // shape of any real report: the handler returns a stream immediately and

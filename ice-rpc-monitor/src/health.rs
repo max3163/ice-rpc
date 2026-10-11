@@ -127,10 +127,10 @@ impl Scanner {
     /// to the metrics registry.
     pub fn refresh_if_due(&mut self) -> bool {
         let now = Instant::now();
-        if let Some(last) = self.last {
-            if now.duration_since(last) < self.interval {
-                return false;
-            }
+        if let Some(last) = self.last
+            && now.duration_since(last) < self.interval
+        {
+            return false;
         }
         self.last = Some(now);
         self.refresh();

@@ -10,7 +10,7 @@
 //!
 //! `cleanup_dead_nodes` cannot reach those markers — it removes the *service and
 //! port tags* of a dead node, never the dynamic storage of an event service — so
-//! [`ice_rpc::gen::sweep_orphan_shm_markers`] is the other half, and this test is
+//! [`ice_rpc::codegen::sweep_orphan_shm_markers`] is the other half, and this test is
 //! its guard. It is the leak the `*.event_mgmt.shm_state` files of `C:\Temp`
 //! accumulate: the `_mgmt` storage of an event service, and nothing else.
 //!
@@ -34,8 +34,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::iceoryx2::prelude::ServiceName;
-use ice_rpc::gen::iceoryx2::service::ipc_threadsafe::Service;
+use ice_rpc::codegen::iceoryx2::prelude::ServiceName;
+use ice_rpc::codegen::iceoryx2::service::ipc_threadsafe::Service;
 
 /// Set in the child process to make it create the event service and wait.
 const CHILD_ENV: &str = "ICE_RPC_ORPHAN_CHILD";
@@ -81,7 +81,7 @@ fn wait_for_new_markers(before: &[String], timeout: Duration) -> Vec<String> {
 fn wait_until_swept(orphans: &[String], timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        ice_rpc::gen::sweep_orphan_shm_markers();
+        ice_rpc::codegen::sweep_orphan_shm_markers();
         let present = markers();
         if orphans.iter().all(|orphan| !present.contains(orphan)) {
             return true;
@@ -96,7 +96,7 @@ fn wait_until_swept(orphans: &[String], timeout: Duration) -> bool {
 /// Child role: create an event service, then hold it until the parent kills the
 /// process — no destructor ever runs.
 fn child_creates_event_and_waits() -> ! {
-    let node = ice_rpc::gen::iceoryx2::node::NodeBuilder::new()
+    let node = ice_rpc::codegen::iceoryx2::node::NodeBuilder::new()
         .create::<Service>()
         .expect("create node");
     let name = ServiceName::new(EVENT).expect("valid service name");

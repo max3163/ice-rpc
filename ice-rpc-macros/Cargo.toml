@@ -2,7 +2,7 @@
 name = "ice-rpc-macros"
 version.workspace = true
 rust-version.workspace = true
-edition = "2021"
+edition = "2024"
 description = "Procedural macros for ice-rpc: generates client, server, proxy and lifecycle from a #[service] trait"
 license = "Apache-2.0"
 repository = "https://github.com/max3163/ice-rpc"

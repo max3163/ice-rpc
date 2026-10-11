@@ -27,11 +27,11 @@ mod tuning;
 mod waitset;
 
 pub use bridge::{
-    emit_rpc_error, observable_to_responses, BoxResponseFuture, CollectEmitter, OwnedEmitter,
-    ResponseEmitter, ServiceDispatcher,
+    BoxResponseFuture, CollectEmitter, OwnedEmitter, ResponseEmitter, ServiceDispatcher,
+    emit_rpc_error, observable_to_responses,
 };
 pub use client::{native_call, serialize_and_call};
-pub use monitor::{discover_channels, DirectionView, Emitter};
+pub use monitor::{DirectionView, Emitter, discover_channels};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
 // The transport reads its tunables through these names, so `tuning.rs` stays the

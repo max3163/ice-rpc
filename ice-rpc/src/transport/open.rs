@@ -20,9 +20,9 @@ use iceoryx2::service::builder::publish_subscribe::{
     PublishSubscribeCreateError, PublishSubscribeOpenError, PublishSubscribeOpenOrCreateError,
 };
 
-use super::{transport_error, IoxEvent, IoxNode, IoxPubSub, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT};
-use crate::types::{RpcError, RpcHeader};
+use super::{IoxEvent, IoxNode, IoxPubSub, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT, transport_error};
 use crate::CancellationToken;
+use crate::types::{RpcError, RpcHeader};
 
 /// Whether opening a service may create it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub(super) fn retry_open<T>(
         match attempt_open() {
             Ok(opened) => return Ok(opened),
             Err(e) if !e.is_retryable() || attempt >= attempts || stop.is_cancelled() => {
-                return Err(e)
+                return Err(e);
             }
             Err(e) => {
                 attempt += 1;

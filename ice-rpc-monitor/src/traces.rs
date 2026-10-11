@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, TrySendError};
+use std::sync::mpsc::{TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -24,7 +24,7 @@ pub const RECENT_KEEP: usize = 10;
 /// instead of letting the stream scroll.
 pub type RecentBuffer = Arc<Mutex<VecDeque<String>>>;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Output format of the trace stream.
 ///

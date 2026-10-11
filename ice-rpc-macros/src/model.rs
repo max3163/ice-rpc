@@ -15,8 +15,8 @@
 use proc_macro2::{Ident, Span};
 use syn::{ItemTrait, LitInt, LitStr, TraitItem, Type, Visibility};
 
-use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name};
 use crate::SERVICE_NAME_LEN;
+use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name};
 
 /// Optional parameters of the `#[service]` macro.
 ///
@@ -175,16 +175,16 @@ fn validate_name(kind: NameKind, name: &str, span: Span) -> syn::Result<()> {
         ));
     }
 
-    if let Some(first) = name.chars().next() {
-        if !first.is_ascii_alphanumeric() {
-            return Err(syn::Error::new(
-                span,
-                format!(
-                    "Invalid {} '{name}': must start with a letter or a digit.",
-                    kind.label().to_lowercase()
-                ),
-            ));
-        }
+    if let Some(first) = name.chars().next()
+        && !first.is_ascii_alphanumeric()
+    {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "Invalid {} '{name}': must start with a letter or a digit.",
+                kind.label().to_lowercase()
+            ),
+        ));
     }
 
     Ok(())
@@ -304,11 +304,11 @@ impl ServiceModel {
         let mut arg_names = Vec::new();
         let mut arg_types = Vec::new();
         for arg in method.sig.inputs.iter().skip(1) {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                    arg_names.push(pat_ident.ident.clone());
-                    arg_types.push((*pat_type.ty).clone());
-                }
+            if let syn::FnArg::Typed(pat_type) = arg
+                && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
+            {
+                arg_names.push(pat_ident.ident.clone());
+                arg_types.push((*pat_type.ty).clone());
             }
         }
 
@@ -318,7 +318,7 @@ impl ServiceModel {
                 return Err(syn::Error::new_spanned(
                     &method.sig,
                     "RPC methods must declare a return type, e.g. `-> Observable<T, E>`",
-                ))
+                ));
             }
         };
         let (ok_type, err_type) = extract_rpc_result_types(&output_type)?;

@@ -6,7 +6,7 @@
 //! the same way — as inherent methods — and because `subscribe` spawns a task,
 //! which is the one place the execution facade is required.
 
-use crate::subscribe::{spawn_push, ObserverFns};
+use crate::subscribe::{ObserverFns, spawn_push};
 use crate::{Observable, ObservableError, Subscription};
 
 impl<T, E> Observable<T, E> {

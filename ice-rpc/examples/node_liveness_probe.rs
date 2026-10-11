@@ -21,7 +21,7 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::raw_pid_to_u32;
+use ice_rpc::codegen::raw_pid_to_u32;
 use iceoryx2::prelude::*;
 
 fn label<S: Service>(state: &NodeState<S>) -> &'static str {

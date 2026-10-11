@@ -44,7 +44,7 @@ pub const MAX_PENDING_CALLS: usize = 4096;
 /// native JS value.
 pub type NodeJsCallback = ThreadsafeFunction<Value>;
 
-type PendingSender = ice_rpc::gen::async_channel::Sender<Value>;
+type PendingSender = ice_rpc::codegen::async_channel::Sender<Value>;
 
 /// Bookkeeping of the calls JavaScript has not closed yet.
 ///
@@ -78,7 +78,7 @@ impl PendingCalls {
                 GatewayErrorCode::DuplicateCid,
                 format!(
                     "correlation id '{}' is already in flight",
-                    ice_rpc::gen::fmt_correlation_id(&cid)
+                    ice_rpc::codegen::fmt_correlation_id(&cid)
                 ),
             ));
         }
@@ -166,7 +166,7 @@ impl NodeJsBridge {
         self.pending().insert(cid, sender)?;
 
         let call_data = serde_json::json!({
-            "correlationId": ice_rpc::gen::fmt_correlation_id(&cid),
+            "correlationId": ice_rpc::codegen::fmt_correlation_id(&cid),
             "service": service,
             "method": method,
             "args": args,
@@ -250,7 +250,7 @@ impl JsonDispatcher for GatewayJsonDispatcher {
 
 /// Parses a correlation id, reporting the failure with its own code.
 fn parse_cid(correlation_id_hex: &str) -> Result<CorrelationId, GatewayError> {
-    ice_rpc::gen::parse_correlation_id(correlation_id_hex).ok_or_else(|| {
+    ice_rpc::codegen::parse_correlation_id(correlation_id_hex).ok_or_else(|| {
         GatewayError::new(
             GatewayErrorCode::InvalidCid,
             format!("'{correlation_id_hex}' is not a hexadecimal correlation id"),
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
 
     fn sender() -> PendingSender {
-        let (tx, rx) = ice_rpc::gen::async_channel::unbounded::<Value>();
+        let (tx, rx) = ice_rpc::codegen::async_channel::unbounded::<Value>();
         // The receiver is kept alive by leaking it: `insert` only needs a live
         // sender, and a dropped receiver would turn every send into a no-op.
         Box::leak(Box::new(rx));

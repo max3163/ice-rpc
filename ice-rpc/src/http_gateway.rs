@@ -27,14 +27,14 @@
 //! fn main() {
 //!     // Initializes the framework (without a global service registry). The
 //!     // returned guard must stay alive for the whole process lifetime.
-//!     let _guard = ice_rpc::gen::init();
+//!     let _guard = ice_rpc::codegen::init();
 //!
 //!     smol::block_on(async {
 //!         // Starts the HTTP gateway exposing the chosen services.
 //!         ice_rpc::start_http_gateway!(8080, DatabaseServiceProxy, ConfigServiceProxy).await;
 //!
 //!         // The server runs until Ctrl+C
-//!         ice_rpc::gen::wait_for_shutdown().await;
+//!         ice_rpc::codegen::wait_for_shutdown().await;
 //!     });
 //! }
 //! ```
@@ -146,26 +146,26 @@ impl Handler for HttpGateway {
     async fn run(&self, mut conn: Conn) -> Conn {
         // Origin check.
         let origin_header = conn.request_headers().get_str("origin").map(str::to_string);
-        if let Some(origin) = origin_header {
-            if !is_origin_allowed(&origin) {
-                log::warn!(
-                    "Origin rejected: '{}' (allowed domain: *.{})",
-                    origin,
-                    allowed_origin_domain()
-                );
-                return json_response(
-                    conn,
-                    403,
-                    serde_json::json!({
-                        "status": "error",
-                        "error": format!(
-                            "Origin '{}' is not allowed. Only the domain '{}' is accepted.",
-                            origin,
-                            allowed_origin_domain()
-                        )
-                    }),
-                );
-            }
+        if let Some(origin) = origin_header
+            && !is_origin_allowed(&origin)
+        {
+            log::warn!(
+                "Origin rejected: '{}' (allowed domain: *.{})",
+                origin,
+                allowed_origin_domain()
+            );
+            return json_response(
+                conn,
+                403,
+                serde_json::json!({
+                    "status": "error",
+                    "error": format!(
+                        "Origin '{}' is not allowed. Only the domain '{}' is accepted.",
+                        origin,
+                        allowed_origin_domain()
+                    )
+                }),
+            );
         }
 
         let Some((service, method)) = split_path(conn.path()) else {
@@ -332,12 +332,11 @@ fn parse_scalar(s: &str) -> Value {
     if let Ok(n) = s.parse::<i64>() {
         return Value::Number(n.into());
     }
-    if let Ok(n) = s.parse::<f64>() {
-        if n.is_finite() {
-            if let Some(num) = serde_json::Number::from_f64(n) {
-                return Value::Number(num);
-            }
-        }
+    if let Ok(n) = s.parse::<f64>()
+        && n.is_finite()
+        && let Some(num) = serde_json::Number::from_f64(n)
+    {
+        return Value::Number(num);
     }
     Value::String(s.to_string())
 }

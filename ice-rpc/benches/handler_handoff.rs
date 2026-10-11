@@ -41,11 +41,11 @@
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
 
-use ice_rpc::gen::{EventKind, OwnedEmitter, ResponseEmitter, RpcHeader};
+use ice_rpc::codegen::{EventKind, OwnedEmitter, ResponseEmitter, RpcHeader};
 
 /// The header travels **inline** in the emitter, so its size is the copy the
 /// builder pays per request. Pinned: the bench's model would be wrong otherwise.

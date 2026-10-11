@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::{rkyv, service_id_of, EventKind, ServiceDispatcher, ServiceRef, WireEvent};
-use ice_rpc::transport::{native_call, spawn_native_service, Direction, DirectionView};
+use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
+use ice_rpc::transport::{Direction, DirectionView, native_call, spawn_native_service};
 use ice_rpc::{CallContext, CancellationToken};
 
 /// Time a channel needs to appear on the bus before a caller or an observer can

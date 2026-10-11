@@ -21,7 +21,7 @@
 //! **response** cannot be the cause, except `fetch`, whose response is a
 //! structure on purpose: it is the case that prices the response side.
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// One filter of a workload query.
 #[ice_rpc::payload]

@@ -37,7 +37,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use ice_rpc::{service, Event, Observable};
+use ice_rpc::{Event, Observable, service};
 
 /// In-flight time of the deliberately slow method.
 const SLOW_MS: i32 = 400;
@@ -156,8 +156,8 @@ impl SerialProbe for ProbeImpl {
 
 /// Boots ice-rpc once for the whole test binary.
 fn init_global() {
-    static GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> = std::sync::OnceLock::new();
-    GUARD.get_or_init(ice_rpc::gen::init_without_ctrl_c);
+    static GUARD: std::sync::OnceLock<ice_rpc::codegen::ShutdownGuard> = std::sync::OnceLock::new();
+    GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
 /// One synchronous call, returning its latency and its values.

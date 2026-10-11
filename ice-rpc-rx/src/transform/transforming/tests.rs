@@ -283,8 +283,8 @@ fn switch_map_future_matches_the_defer_form() {
 /// merely built — the promise `defer` makes, kept through `switch_map`.
 #[test]
 fn switch_map_future_is_not_projected_before_a_poll() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_in = Arc::clone(&calls);

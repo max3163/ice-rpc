@@ -11,23 +11,23 @@ use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
 
-use super::bridge::{emit_rpc_error, OwnedEmitter, ResponseEmitter, ServiceDispatcher};
+use super::bridge::{OwnedEmitter, ResponseEmitter, ServiceDispatcher, emit_rpc_error};
 use super::notify::Coalescer;
-use super::open::{open_event_service, open_service, retry_open, OpenMode};
+use super::open::{OpenMode, open_event_service, open_service, retry_open};
 use super::publish::publish_until_delivered;
 use super::{
-    shared_node, transport_error, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub,
-    IoxPublisher, IoxSubscriber, CONSUMER_WAIT_TIMEOUT, OPEN_RETRY_ATTEMPTS, REQUEST_NOTIFY_SUFFIX,
-    REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    CONSUMER_WAIT_TIMEOUT, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher,
+    IoxSubscriber, OPEN_RETRY_ATTEMPTS, REQUEST_NOTIFY_SUFFIX, REQUEST_SUFFIX,
+    RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, shared_node, transport_error,
 };
+use crate::CancellationToken;
 use crate::global::Locked;
 use crate::hash::{FastMap, IdMap};
 use crate::sync::lock;
 use crate::types::{
-    fmt_correlation_id, install_call_cancellation, BoxResponseFuture, EventKind, RpcError,
-    RpcHeader, CORRELATION_ID_LEN, PROTOCOL_VERSION,
+    BoxResponseFuture, CORRELATION_ID_LEN, EventKind, PROTOCOL_VERSION, RpcError, RpcHeader,
+    fmt_correlation_id, install_call_cancellation,
 };
-use crate::CancellationToken;
 
 /// The ports of one channel, provider side.
 ///
@@ -134,7 +134,8 @@ pub fn spawn_native_service(
     // `tokio` facade — because the channel thread has no runtime context, and the
     // handler tasks are spawned from it.
     let spawner = crate::rt::Spawner::capture();
-    let handle = std::thread::spawn(move || {
+
+    std::thread::spawn(move || {
         // Any port that cannot be opened makes the whole channel useless: log it
         // and stop the thread. A transient failure is retried first — a channel
         // must not be lost to a race, see `open_with_retries`.
@@ -174,9 +175,7 @@ pub fn spawn_native_service(
             |header, payload| handle_request(&channel, &table, &hub, &spawner, header, payload),
         );
         log::info!("[transport] channel '{channel}' stopped");
-    });
-
-    handle
+    })
 }
 
 /// Opens the ports of one channel, retrying the failures that are worth retrying.
@@ -786,7 +785,7 @@ pub fn start_registered_channels() {
 mod tests {
     use super::*;
     use crate::transport::CollectEmitter;
-    use crate::types::{method_id_of, next_correlation_id, ServiceRef};
+    use crate::types::{ServiceRef, method_id_of, next_correlation_id};
     use std::sync::Mutex;
 
     #[test]
@@ -857,11 +856,13 @@ mod tests {
         assert_eq!(sink.take().len(), 1);
 
         // The second dispatcher has no `echo` method: no task, nothing emitted.
-        assert!(table
-            .get(&9)
-            .unwrap()
-            .dispatch(method_id_of("echo"), header, b"x", Box::new(sink.clone()))
-            .is_none());
+        assert!(
+            table
+                .get(&9)
+                .unwrap()
+                .dispatch(method_id_of("echo"), header, b"x", Box::new(sink.clone()))
+                .is_none()
+        );
         assert!(sink.take().is_empty());
 
         assert!(!table.contains_key(&11));
@@ -903,22 +904,26 @@ mod tests {
         });
 
         let header = RpcHeader::request(method_id_of("echo"), 7, 1);
-        assert!(dispatcher
-            .dispatch(
-                method_id_of("echo"),
-                header,
-                b"x",
-                Box::new(CollectEmitter::new())
-            )
-            .is_some());
-        assert!(dispatcher
-            .dispatch(
-                method_id_of("missing"),
-                header,
-                b"x",
-                Box::new(CollectEmitter::new())
-            )
-            .is_none());
+        assert!(
+            dispatcher
+                .dispatch(
+                    method_id_of("echo"),
+                    header,
+                    b"x",
+                    Box::new(CollectEmitter::new())
+                )
+                .is_some()
+        );
+        assert!(
+            dispatcher
+                .dispatch(
+                    method_id_of("missing"),
+                    header,
+                    b"x",
+                    Box::new(CollectEmitter::new())
+                )
+                .is_none()
+        );
     }
 
     /// A peer whose framing differs must be rejected, not dispatched: the rest of

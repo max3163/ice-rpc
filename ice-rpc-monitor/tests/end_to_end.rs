@@ -8,11 +8,11 @@
 
 #![allow(clippy::unwrap_used)] // tests may panic
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ice_rpc::gen::{service_id_of, ServiceDispatcher, ServiceRef};
+use ice_rpc::codegen::{ServiceDispatcher, ServiceRef, service_id_of};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 use ice_rpc_monitor::config::{Config, Mode};
@@ -234,11 +234,11 @@ fn the_detail_mode_captures_the_payloads() {
     // Wait until the completed call has been traced.
     let mut recorded = String::new();
     for _ in 0..40 {
-        if let Ok(content) = std::fs::read_to_string(&trace_path) {
-            if content.contains("\"call_id\"") {
-                recorded = content;
-                break;
-            }
+        if let Ok(content) = std::fs::read_to_string(&trace_path)
+            && content.contains("\"call_id\"")
+        {
+            recorded = content;
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -309,11 +309,11 @@ fn the_stats_mode_never_emits_payloads() {
 
     let mut recorded = String::new();
     for _ in 0..40 {
-        if let Ok(content) = std::fs::read_to_string(&trace_path) {
-            if content.contains("\"call_id\"") {
-                recorded = content;
-                break;
-            }
+        if let Ok(content) = std::fs::read_to_string(&trace_path)
+            && content.contains("\"call_id\"")
+        {
+            recorded = content;
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }

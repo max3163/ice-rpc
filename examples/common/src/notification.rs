@@ -4,7 +4,7 @@
 //! `subscribe` was designed for: the consumer subscribes once and receives
 //! `next` calls until `complete`.
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// Streams notifications to whoever subscribes to `watch`.
 #[service("NotificationService")]

@@ -384,8 +384,11 @@ mod tests {
         metrics.on_latency("c", 1, "m", 0.002);
 
         let text = metrics.render_prometheus();
-        assert!(text
-            .contains("ice_rpc_latency_seconds_count{channel=\"c\",service=\"1\",method=\"m\"} 2"));
+        assert!(
+            text.contains(
+                "ice_rpc_latency_seconds_count{channel=\"c\",service=\"1\",method=\"m\"} 2"
+            )
+        );
         assert!(text.contains("le=\"+Inf\""));
     }
 

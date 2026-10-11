@@ -29,17 +29,17 @@ use crate::model::{ServiceAttr, ServiceModel};
 
 use crate::codegen::{
     client::{
-        gen_client_lifecycle, gen_client_method, gen_client_struct, ClientGenInput,
-        ClientMethodGenInput,
+        ClientGenInput, ClientMethodGenInput, gen_client_lifecycle, gen_client_method,
+        gen_client_struct,
     },
-    decoder::{gen_decoder, DecoderGenInput, DecoderMethod},
+    decoder::{DecoderGenInput, DecoderMethod, gen_decoder},
     json::{
-        gen_json_invoker_impl, gen_json_provider_from_request_fn,
-        gen_json_provider_from_response_fn, gen_json_provider_method, JsonGenInput, JsonMethod,
+        JsonGenInput, JsonMethod, gen_json_invoker_impl, gen_json_provider_from_request_fn,
+        gen_json_provider_from_response_fn, gen_json_provider_method,
     },
-    lifecycle::{gen_lifecycle, LifecycleGenInput},
-    proxy::{gen_proxy, gen_proxy_method, ProxyGenInput, ProxyMethodGenInput},
-    server::{gen_native_method, gen_server, ServerGenInput},
+    lifecycle::{LifecycleGenInput, gen_lifecycle},
+    proxy::{ProxyGenInput, ProxyMethodGenInput, gen_proxy, gen_proxy_method},
+    server::{ServerGenInput, gen_native_method, gen_server},
 };
 
 /// The JSON view of the model's methods.
@@ -75,7 +75,7 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
 ///
 /// Automatically injects the async-trait attribute
-/// (`#[ice_rpc::gen::async_trait::async_trait]`), `Send + Sync + 'static`
+/// (`#[ice_rpc::codegen::async_trait::async_trait]`), `Send + Sync + 'static`
 /// as supertraits, and generates:
 /// - The `{Trait}Request` enum (rkyv-serializable)
 /// - The `{Trait}Client` struct (IPC consumer)
@@ -138,7 +138,7 @@ fn expand_service_with(
     // two crates cannot drift apart.
     let max_slice_len = match model.max_slice_len {
         Some(value) => quote! { #value },
-        None => quote! { ice_rpc::gen::DEFAULT_MAX_SLICE_LEN },
+        None => quote! { ice_rpc::codegen::DEFAULT_MAX_SLICE_LEN },
     };
 
     let req_enum_name = &model.req_enum_name;
@@ -331,17 +331,17 @@ fn expand_service_with(
         // redirects their expansion to it as well: without that attribute the
         // derive defaults to `::rkyv`, which would force every service crate to
         // declare the dependency just to compile its own `{Trait}Request`.
-        #[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize, Debug)]
-        #[rkyv(crate = ice_rpc::gen::rkyv)]
+        #[derive(ice_rpc::codegen::rkyv::Archive, ice_rpc::codegen::rkyv::Deserialize, ice_rpc::codegen::rkyv::Serialize, Debug)]
+        #[rkyv(crate = ice_rpc::codegen::rkyv)]
         #visibility enum #req_enum_name { #(#req_variants),* }
 
         impl #proxy_name {
             /// Identity of this service contract: its id inside the channel and
             /// its interface version, declared once and shared by the generated
             /// client and provider so the version cannot be lost between them.
-            #visibility const SERVICE: ice_rpc::gen::ServiceRef =
-                ice_rpc::gen::ServiceRef::new(
-                    ice_rpc::gen::service_id_of(#logical_name_lit),
+            #visibility const SERVICE: ice_rpc::codegen::ServiceRef =
+                ice_rpc::codegen::ServiceRef::new(
+                    ice_rpc::codegen::service_id_of(#logical_name_lit),
                     #service_version,
                 );
         }
@@ -362,7 +362,7 @@ fn expand_service_with(
         #decoder_output
 
         #[doc(hidden)]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         static #collision_symbol: u8 = 0;
     };
 
@@ -380,7 +380,7 @@ fn expand_service_with(
     expanded
 }
 
-/// The injected path is `ice_rpc::gen::async_trait::async_trait`, not the bare
+/// The injected path is `ice_rpc::codegen::async_trait::async_trait`, not the bare
 /// `async_trait`, so the service crate needs no `async-trait` dependency. A trait
 /// that already names the attribute — either spelling — is left untouched: the
 /// detection reads the last path segment, so `#[async_trait::async_trait]` and
@@ -395,7 +395,7 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
     if !already_annotated {
         input_trait
             .attrs
-            .push(syn::parse_quote! { #[ice_rpc::gen::async_trait::async_trait] });
+            .push(syn::parse_quote! { #[ice_rpc::codegen::async_trait::async_trait] });
     }
 
     // Compared as rendered tokens: the bound must be recognized whatever the
@@ -448,8 +448,8 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// payload needs, **without the crate naming `rkyv`**.
 ///
 /// Expands to the annotated item preceded by
-/// `#[derive(ice_rpc::gen::rkyv::Archive, ice_rpc::gen::rkyv::Deserialize, ice_rpc::gen::rkyv::Serialize)]`
-/// and `#[rkyv(crate = ice_rpc::gen::rkyv)]`. The second attribute is what makes
+/// `#[derive(ice_rpc::codegen::rkyv::Archive, ice_rpc::codegen::rkyv::Deserialize, ice_rpc::codegen::rkyv::Serialize)]`
+/// and `#[rkyv(crate = ice_rpc::codegen::rkyv)]`. The second attribute is what makes
 /// the dependency disappear: without it the rkyv derive expands against the
 /// default `::rkyv` path, and the service crate would have to declare it.
 ///
@@ -503,11 +503,11 @@ fn expand_payload(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
 
     quote! {
         #[derive(
-            ice_rpc::gen::rkyv::Archive,
-            ice_rpc::gen::rkyv::Deserialize,
-            ice_rpc::gen::rkyv::Serialize,
+            ice_rpc::codegen::rkyv::Archive,
+            ice_rpc::codegen::rkyv::Deserialize,
+            ice_rpc::codegen::rkyv::Serialize,
         )]
-        #[rkyv(crate = ice_rpc::gen::rkyv)]
+        #[rkyv(crate = ice_rpc::codegen::rkyv)]
         #item
     }
 }
@@ -547,14 +547,20 @@ mod payload_tests {
             }
         })
         .to_string();
-        assert!(out.contains("ice_rpc :: gen :: rkyv :: Archive"), "{out}");
         assert!(
-            out.contains("ice_rpc :: gen :: rkyv :: Deserialize"),
+            out.contains("ice_rpc :: codegen :: rkyv :: Archive"),
             "{out}"
         );
-        assert!(out.contains("ice_rpc :: gen :: rkyv :: Serialize"), "{out}");
         assert!(
-            out.contains("rkyv (crate = ice_rpc :: gen :: rkyv)"),
+            out.contains("ice_rpc :: codegen :: rkyv :: Deserialize"),
+            "{out}"
+        );
+        assert!(
+            out.contains("ice_rpc :: codegen :: rkyv :: Serialize"),
+            "{out}"
+        );
+        assert!(
+            out.contains("rkyv (crate = ice_rpc :: codegen :: rkyv)"),
             "{out}"
         );
         // The item's own derive and declaration are preserved.
@@ -568,7 +574,10 @@ mod payload_tests {
             pub enum Status { Ok, Nok }
         })
         .to_string();
-        assert!(out.contains("ice_rpc :: gen :: rkyv :: Archive"), "{out}");
+        assert!(
+            out.contains("ice_rpc :: codegen :: rkyv :: Archive"),
+            "{out}"
+        );
         assert!(out.contains("pub enum Status"), "{out}");
     }
 
@@ -611,7 +620,7 @@ mod entry_tests {
             quote! { async fn main() -> Result<(), String> { Ok(()) } },
         );
         assert!(out.contains("ice_rpc :: rt :: block_on"), "{out}");
-        assert!(out.contains("ice_rpc :: gen :: init ()"), "{out}");
+        assert!(out.contains("ice_rpc :: codegen :: init ()"), "{out}");
         assert!(out.contains("-> Result < () , String >"), "{out}");
         assert!(
             out.starts_with("fn main"),

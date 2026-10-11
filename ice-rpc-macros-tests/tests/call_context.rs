@@ -9,14 +9,14 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ice_rpc::gen::{rkyv, service_id_of, EventKind, ServiceDispatcher, ServiceRef, WireEvent};
+use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
 use ice_rpc::transport::{native_call, spawn_native_service};
-use ice_rpc::{service, CallContext, CancellationToken, Event, Observable, TraceContext};
+use ice_rpc::{CallContext, CancellationToken, Event, Observable, TraceContext, service};
 
 /// Boots ice-rpc once for the whole test binary.
 fn init_global() {
-    static GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> = std::sync::OnceLock::new();
-    GUARD.get_or_init(ice_rpc::gen::init_without_ctrl_c);
+    static GUARD: std::sync::OnceLock<ice_rpc::codegen::ShutdownGuard> = std::sync::OnceLock::new();
+    GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
 /// What a handler observed, for the test to assert on.
@@ -49,7 +49,7 @@ fn the_handler_receives_the_request_header() {
         // through `CallContext::current`.
         let ctx = CallContext::new(&header, "CallContextSocle", "echo");
         let captured = Arc::clone(&captured);
-        ice_rpc::gen::call_scoped(ctx, async move {
+        ice_rpc::codegen::call_scoped(ctx, async move {
             let ctx = CallContext::current().expect("the ambient context is installed per poll");
             *captured.lock().unwrap() = Some(Observed {
                 method: ctx.method(),
@@ -142,7 +142,7 @@ impl AmbientContextDemo for Impl {
         // Forces a second poll of the handler's task, with no timer involved —
         // the first `Pending` of the task, and on a multi-threaded runtime a
         // chance to be resumed on another thread.
-        ice_rpc::gen::futures_lite::future::yield_now().await;
+        ice_rpc::codegen::futures_lite::future::yield_now().await;
         let after = observe();
         *SEEN.lock().unwrap() = Some(Probe { before, after });
         Observable::from_events([Event::Next(value + 1), Event::Complete])

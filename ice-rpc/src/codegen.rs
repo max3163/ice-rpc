@@ -7,8 +7,8 @@
 
 // ── Node liveness ───────────────────────────────────────────────────
 pub use crate::node_liveness::{
-    is_pid_alive, is_provider, mark_provider, register_node_liveness_watcher,
-    unregister_node_liveness_watcher, LIVENESS_POLL_MS,
+    LIVENESS_POLL_MS, is_pid_alive, is_provider, mark_provider, register_node_liveness_watcher,
+    unregister_node_liveness_watcher,
 };
 
 // ── Shutdown ────────────────────────────────────────────────────────
@@ -16,10 +16,10 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 
 // ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
-    call_scoped, channel, fmt_correlation_id, local_call_scoped, method_id_of, next_correlation_id,
-    now_ns, parse_correlation_id, raw_pid_to_u32, service_id_of, unbounded_channel, CallContext,
-    EventKind, NodeId, RpcError, RpcHeader, Sender, ServiceRef, WireEvent, CORRELATION_ID_LEN,
-    PROTOCOL_VERSION, SERVICE_NAME_LEN,
+    CORRELATION_ID_LEN, CallContext, EventKind, NodeId, PROTOCOL_VERSION, RpcError, RpcHeader,
+    SERVICE_NAME_LEN, Sender, ServiceRef, WireEvent, call_scoped, channel, fmt_correlation_id,
+    local_call_scoped, method_id_of, next_correlation_id, now_ns, parse_correlation_id,
+    raw_pid_to_u32, service_id_of, unbounded_channel,
 };
 
 // The hashers the transport's own maps use, re-exported so `benches/hash_map.rs`
@@ -37,9 +37,9 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 // One view per service: the macro implements the caller side and calls the host
 // side, which registers itself once with `set_json_dispatcher`.
 pub use crate::json::{
-    dispatch_json, json_dispatcher, read_json, set_json_dispatcher, JsonCallError, JsonCallEvent,
-    JsonCallStream, JsonDispatcher, JsonInvoker, JsonOutcome, JsonResult, ReadMode,
-    JSON_CALL_TIMEOUT,
+    JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonInvoker,
+    JsonOutcome, JsonResult, ReadMode, dispatch_json, json_dispatcher, read_json,
+    set_json_dispatcher,
 };
 
 // ── Diagnostics ─────────────────────────────────────────────────────
@@ -49,8 +49,8 @@ pub use crate::VERSION;
 // ── Lifecycle ───────────────────────────────────────────────────────
 // Escape hatch for contexts the macros cannot cover (N-API gateway, tests).
 pub use crate::{
-    global_cancel_token, init, init_without_ctrl_c, shutdown_and_release, wait_for_shutdown,
-    ShutdownGuard,
+    ShutdownGuard, global_cancel_token, init, init_without_ctrl_c, shutdown_and_release,
+    wait_for_shutdown,
 };
 
 // ── Plumbing invoked by the generated entry points ──────────────────
@@ -62,10 +62,10 @@ pub use crate::start_http_server;
 // ── Publish/subscribe transport ─────────────────────────────────────
 // Entry points used by the generated client/server.
 pub use crate::transport::{
-    declare_channel_max_slice_len, decode_aligned, emit_rpc_error, native_call,
+    BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, OwnedEmitter, ResponseEmitter,
+    ServiceDispatcher, declare_channel_max_slice_len, decode_aligned, emit_rpc_error, native_call,
     observable_to_responses, register_native_service, serialize_and_call, spawn_native_service,
-    start_registered_channels, sweep_orphan_shm_markers, BoxResponseFuture, CollectEmitter,
-    OwnedEmitter, ResponseEmitter, ServiceDispatcher, DEFAULT_MAX_SLICE_LEN,
+    start_registered_channels, sweep_orphan_shm_markers,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────
@@ -74,7 +74,7 @@ pub use crate::transport::{
 pub use async_channel;
 pub use async_lock;
 // Re-exported so the generated `impl` blocks (and the injection on the annotated
-// trait) can name `ice_rpc::gen::async_trait::async_trait`: the attribute macro
+// trait) can name `ice_rpc::codegen::async_trait::async_trait`: the attribute macro
 // expands to `::core::…` only, so reaching it through this path needs no
 // `async-trait` dependency in the service crate.
 pub use async_trait;

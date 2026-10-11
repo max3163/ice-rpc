@@ -41,7 +41,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use super::header::{
-    fmt_correlation_id, next_correlation_id, RpcHeader, ServiceRef, CORRELATION_ID_LEN,
+    CORRELATION_ID_LEN, RpcHeader, ServiceRef, fmt_correlation_id, next_correlation_id,
 };
 use crate::CancellationToken;
 
@@ -599,7 +599,7 @@ impl Future for CallScope {
 mod span_fields {
     use std::fmt;
 
-    use crate::types::header::{fmt_correlation_id, CORRELATION_ID_LEN};
+    use crate::types::header::{CORRELATION_ID_LEN, fmt_correlation_id};
 
     /// Correlation id, rendered as the UUID-like string an observer logs.
     pub(super) struct Correlation<'a>(pub(super) &'a [u8; CORRELATION_ID_LEN]);
@@ -942,8 +942,8 @@ mod tests {
     #[cfg(feature = "tracing")]
     #[test]
     fn the_call_scope_emits_and_enters_a_span() {
-        use std::sync::atomic::Ordering;
         use std::sync::Arc;
+        use std::sync::atomic::Ordering;
 
         let recorder = Arc::new(SpanRecorder::default());
         let dispatch = tracing::Dispatch::new(Arc::clone(&recorder));
@@ -979,8 +979,8 @@ mod tests {
     #[cfg(feature = "tracing")]
     #[test]
     fn the_call_scope_enters_one_span_per_poll() {
-        use std::sync::atomic::Ordering;
         use std::sync::Arc;
+        use std::sync::atomic::Ordering;
 
         /// Yields once: the task is polled twice, like one that awaits.
         async fn yields_once() {

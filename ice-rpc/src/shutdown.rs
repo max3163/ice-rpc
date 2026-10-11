@@ -170,8 +170,8 @@ mod tests {
     /// registered resource that is merely forgotten would leak its segment.
     #[test]
     fn the_registered_ipc_resources_are_dropped_by_the_cleanup() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         struct Marker(Arc<AtomicBool>);
 

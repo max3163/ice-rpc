@@ -81,11 +81,10 @@ pin_project_lite::pin_project! {
             // Read before the cleanup is taken: an answered call and an abandoned
             // one are not the same drop.
             let terminated = *this.terminated;
-            if let StreamInnerProj::Channel { _cleanup, .. } = this.inner.project() {
-                if let Some(action) = _cleanup.take() {
+            if let StreamInnerProj::Channel { _cleanup, .. } = this.inner.project()
+                && let Some(action) = _cleanup.take() {
                     action(terminated);
                 }
-            }
         }
     }
 }
@@ -185,10 +184,10 @@ impl<T, E> Observable<T, E> {
             }
         };
 
-        if let Ok(delivered) = &event {
-            if delivered.is_terminal() {
-                self.terminated = true;
-            }
+        if let Ok(delivered) = &event
+            && delivered.is_terminal()
+        {
+            self.terminated = true;
         }
         event
     }
@@ -267,7 +266,7 @@ impl<T, E> Observable<T, E> {
 /// living in a free function lets the generated code and the operators reuse it
 /// on a raw `futures_lite::Stream`.
 ///
-/// Reachable as `ice_rpc::gen::first_event`.
+/// Reachable as `ice_rpc::codegen::first_event`.
 #[doc(hidden)]
 pub async fn first_event<S, T, E>(stream: S) -> Result<T, ObservableError<E>>
 where
@@ -323,7 +322,7 @@ where
 ///
 /// This is the **single** implementation behind [`Observable::collect`].
 ///
-/// Reachable as `ice_rpc::gen::collect_values`.
+/// Reachable as `ice_rpc::codegen::collect_values`.
 #[doc(hidden)]
 pub async fn collect_values<S, T, E>(stream: S) -> Result<Vec<T>, ObservableError<E>>
 where
@@ -364,10 +363,10 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
         // Keep `terminated` in sync for the callers that poll the stream
         // directly — an operator pipeline and the `Subject` relay both wrap it
         // as a `futures_lite::Stream` — before they fall back to `recv`/`next`.
-        if let Poll::Ready(Some(event)) = &polled {
-            if event.is_terminal() {
-                *this.terminated = true;
-            }
+        if let Poll::Ready(Some(event)) = &polled
+            && event.is_terminal()
+        {
+            *this.terminated = true;
         }
         polled
     }
@@ -411,8 +410,8 @@ pub fn unbounded_channel<T, E>() -> (Sender<T, E>, Observable<T, E>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A cleanup attached to a channel observable runs when it is dropped.
     #[test]

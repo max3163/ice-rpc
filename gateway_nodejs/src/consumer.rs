@@ -28,8 +28,8 @@
 
 use crate::error::{GatewayError, GatewayErrorCode};
 use crate::services;
-use ice_rpc::gen::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
 use ice_rpc::ServiceLocator;
+use ice_rpc::codegen::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
 use serde_json::Value;
 
 /// Dispatch arm over the services this gateway maintains.

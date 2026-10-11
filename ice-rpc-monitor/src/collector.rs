@@ -1,12 +1,14 @@
 //! Acquisition loop: channel discovery, read-only draining and aggregation.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::{fmt_correlation_id, is_pid_alive, EventKind, RpcHeader, CORRELATION_ID_LEN};
-use ice_rpc::monitor::{discover_channels, Direction, DirectionView, Emitter};
+use ice_rpc::codegen::{
+    CORRELATION_ID_LEN, EventKind, RpcHeader, fmt_correlation_id, is_pid_alive,
+};
+use ice_rpc::monitor::{Direction, DirectionView, Emitter, discover_channels};
 
 use crate::config::Config;
 use crate::correlate::{Correlate, PendingCall, Resolution};
@@ -289,10 +291,8 @@ impl Monitor {
             .map(Scanner::refresh_if_due)
             .unwrap_or(false);
 
-        if due {
-            if let Some(snapshot) = self.health.as_ref().map(Scanner::snapshot) {
-                self.metrics.set_health(snapshot);
-            }
+        if due && let Some(snapshot) = self.health.as_ref().map(Scanner::snapshot) {
+            self.metrics.set_health(snapshot);
         }
         // The per-channel block is built from the observer's own views, so it is
         // published on every pass: the inventory scan is throttled, the truth
@@ -558,18 +558,16 @@ impl Monitor {
         emitter: Emitter,
         sample: &Sample,
     ) {
-        if self.deferred.len() >= MAX_DEFERRED {
-            if let Some(oldest) = self
+        if self.deferred.len() >= MAX_DEFERRED
+            && let Some(oldest) = self
                 .deferred
                 .iter()
                 .min_by_key(|(_, entry)| entry.since)
                 .map(|(cid, _)| *cid)
-            {
-                if let Some(entry) = self.deferred.remove(&oldest) {
-                    for _ in 0..entry.samples.len() {
-                        self.metrics.on_orphan_response(&entry.channel);
-                    }
-                }
+            && let Some(entry) = self.deferred.remove(&oldest)
+        {
+            for _ in 0..entry.samples.len() {
+                self.metrics.on_orphan_response(&entry.channel);
             }
         }
 
@@ -1008,7 +1006,7 @@ mod tests {
         // The wire carries only the method id, so the header must carry the id
         // the registry was told about.
         let mut request = header(0x66, EventKind::Request, 1_000);
-        request.method_id = ice_rpc::gen::method_id_of("echo");
+        request.method_id = ice_rpc::codegen::method_id_of("echo");
         monitor.on_request(
             "C",
             &request,
@@ -1106,9 +1104,11 @@ mod tests {
         let request = header(0x99, EventKind::Request, 1);
         monitor.on_request("C", &request, &Sample::Meta { payload_len: 1 });
         assert_eq!(monitor.correlate.len(), 1);
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_requests_total{channel=\"C\""));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_requests_total{channel=\"C\"")
+        );
     }
 
     #[test]
@@ -1135,9 +1135,11 @@ mod tests {
         let response = header(0xBB, EventKind::Next, 1_000);
         monitor.on_response("C", &response, emitter(), &Sample::Meta { payload_len: 1 });
 
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_clock_skew_total 1"));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_clock_skew_total 1")
+        );
     }
 
     #[test]
@@ -1163,9 +1165,11 @@ mod tests {
             Sample::Meta { payload_len: 4 },
         );
 
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_observer_gaps_total 4"));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_observer_gaps_total 4")
+        );
     }
 
     #[test]
@@ -1182,9 +1186,11 @@ mod tests {
         monitor.resolve_deferred();
 
         assert!(monitor.deferred.is_empty());
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_orphan_responses_total{channel=\"C\"} 1"));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_orphan_responses_total{channel=\"C\"} 1")
+        );
     }
 
     #[test]
@@ -1220,9 +1226,11 @@ mod tests {
             MAX_DEFERRED,
             "the table stays bounded"
         );
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_orphan_responses_total{channel=\"C\"} 1"));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_orphan_responses_total{channel=\"C\"} 1")
+        );
     }
 
     #[test]
@@ -1287,9 +1295,11 @@ mod tests {
 
         // It stays dead: the crash must not be counted twice.
         monitor.check_liveness();
-        assert!(metrics
-            .render_prometheus()
-            .contains("ice_rpc_node_crashes_total 1"));
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("ice_rpc_node_crashes_total 1")
+        );
     }
 
     #[test]

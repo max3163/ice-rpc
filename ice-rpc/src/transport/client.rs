@@ -11,20 +11,20 @@ use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
 use super::notify::Coalescer;
-use super::open::{open_event_service, open_service, retry_open, OpenMode};
+use super::open::{OpenMode, open_event_service, open_service, retry_open};
 use super::publish::{publish_until_delivered, try_publish};
 use super::{
-    shared_node, transport_error, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub,
-    IoxPublisher, IoxSubscriber, OPEN_RETRY_ATTEMPTS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT,
-    REQUEST_NOTIFY_SUFFIX, REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
-    RESPONSE_SUFFIX,
+    Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher, IoxSubscriber,
+    OPEN_RETRY_ATTEMPTS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
+    REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX, shared_node,
+    transport_error,
 };
 use crate::global::Locked;
 use crate::sync::lock;
 use crate::types::{
-    fmt_correlation_id, next_span_id, normalize_wire_event, unbounded_channel, CallContext, Event,
-    EventKind, MethodId, Observable, ObservableError, RpcError, RpcHeader, ServiceRef,
-    TraceContext, WireEvent, CORRELATION_ID_LEN,
+    CORRELATION_ID_LEN, CallContext, Event, EventKind, MethodId, Observable, ObservableError,
+    RpcError, RpcHeader, ServiceRef, TraceContext, WireEvent, fmt_correlation_id, next_span_id,
+    normalize_wire_event, unbounded_channel,
 };
 
 /// Handler of one in-flight call: the sample's [`EventKind`] and its rkyv payload.
@@ -303,9 +303,9 @@ where
     E: Send + 'static,
     WireEvent<T, E>: rkyv::Archive,
     <WireEvent<T, E> as rkyv::Archive>::Archived: rkyv::Deserialize<
-        WireEvent<T, E>,
-        rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
-    >,
+            WireEvent<T, E>,
+            rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
+        >,
     for<'a> <WireEvent<T, E> as rkyv::Archive>::Archived:
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
 {
@@ -454,21 +454,21 @@ where
     E: Send + 'static,
     WireEvent<T, E>: rkyv::Archive,
     <WireEvent<T, E> as rkyv::Archive>::Archived: rkyv::Deserialize<
-        WireEvent<T, E>,
-        rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
-    >,
+            WireEvent<T, E>,
+            rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>,
+        >,
     for<'a> <WireEvent<T, E> as rkyv::Archive>::Archived:
         rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>,
     for<'a> V: rkyv::Serialize<
-        rkyv::rancor::Strategy<
-            rkyv::ser::Serializer<
-                rkyv::util::AlignedVec,
-                rkyv::ser::allocator::ArenaHandle<'a>,
-                rkyv::ser::sharing::Share,
+            rkyv::rancor::Strategy<
+                rkyv::ser::Serializer<
+                    rkyv::util::AlignedVec,
+                    rkyv::ser::allocator::ArenaHandle<'a>,
+                    rkyv::ser::sharing::Share,
+                >,
+                rkyv::rancor::Error,
             >,
-            rkyv::rancor::Error,
         >,
-    >,
 {
     REQUEST_SCRATCH.with(|cell| {
         // The buffer is taken for the whole call: a re-entrant serialization

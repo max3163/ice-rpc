@@ -41,8 +41,8 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
     let ClientGenInput { client_name, .. } = input;
 
     quote! {
-        #[ice_rpc::gen::async_trait::async_trait]
-        impl ice_rpc::gen::ServiceLifecycle for #client_name {
+        #[ice_rpc::codegen::async_trait::async_trait]
+        impl ice_rpc::codegen::ServiceLifecycle for #client_name {
             async fn init(&self) -> bool {
                 // The native transport connects lazily on the first call.
                 true
@@ -53,7 +53,7 @@ pub fn gen_client_lifecycle(input: &ClientGenInput<'_>) -> TokenStream {
 
 /// Client method generation parameters.
 ///
-/// The generated body is one call to `ice_rpc::gen::serialize_and_call`, which
+/// The generated body is one call to `ice_rpc::codegen::serialize_and_call`, which
 /// encodes the request into a reusable per-thread buffer and publishes it,
 /// streaming the responses back as an [`Observable`](ice_rpc).
 pub struct ClientMethodGenInput<'a> {
@@ -93,10 +93,10 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
             // Encoding and publishing are one call: the request buffer is the
             // thread's, so a call no longer allocates one.
-            ice_rpc::gen::serialize_and_call::<#ok_type, #err_type, _>(
+            ice_rpc::codegen::serialize_and_call::<#ok_type, #err_type, _>(
                 #group,
                 #service_ref,
-                ice_rpc::gen::method_id_of(#method_name_str),
+                ice_rpc::codegen::method_id_of(#method_name_str),
                 &req_val,
             )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)

@@ -84,8 +84,8 @@ pub use workload::*;
 /// this crate) is what anchors it.
 #[cfg(all(test, feature = "monitoring"))]
 mod linked_decoders {
-    use ice_rpc::gen::{rkyv, service_id_of, WireEvent};
-    use ice_rpc::monitor::{Decoders, DECODERS};
+    use ice_rpc::codegen::{WireEvent, rkyv, service_id_of};
+    use ice_rpc::monitor::{DECODERS, Decoders};
 
     /// Every `#[service]` of this crate must be in the slice — that is the guard
     /// the hand-written inventory used to be, now checked against the mechanism.
@@ -118,15 +118,15 @@ mod linked_decoders {
         fn encode<T>(value: &T) -> Vec<u8>
         where
             T: for<'a> rkyv::Serialize<
-                rkyv::rancor::Strategy<
-                    rkyv::ser::Serializer<
-                        rkyv::util::AlignedVec,
-                        rkyv::ser::allocator::ArenaHandle<'a>,
-                        rkyv::ser::sharing::Share,
+                    rkyv::rancor::Strategy<
+                        rkyv::ser::Serializer<
+                            rkyv::util::AlignedVec,
+                            rkyv::ser::allocator::ArenaHandle<'a>,
+                            rkyv::ser::sharing::Share,
+                        >,
+                        rkyv::rancor::Error,
                     >,
-                    rkyv::rancor::Error,
                 >,
-            >,
         {
             rkyv::to_bytes::<rkyv::rancor::Error>(value)
                 .expect("encode")
@@ -168,14 +168,14 @@ mod linked_decoders {
 /// dependency of its own (see this crate's `Cargo.toml`).
 ///
 /// Nothing here names any of the three: `#[ice_rpc::payload]` supplies the rkyv
-/// derives and redirects their expansion through `ice_rpc::gen::rkyv`,
+/// derives and redirects their expansion through `ice_rpc::codegen::rkyv`,
 /// `#[ice_rpc::async_trait]` annotates the `impl`, and `#[service]` reaches the
 /// rest — including the `log` events and the generated `impl` attributes — the
 /// same way.
 #[cfg(test)]
 mod usage_without_direct_dependencies {
-    use ice_rpc::gen::{rkyv, WireEvent};
-    use ice_rpc::{service, Observable};
+    use ice_rpc::codegen::{WireEvent, rkyv};
+    use ice_rpc::{Observable, service};
 
     /// A payload used both as a request argument and as a response value.
     ///

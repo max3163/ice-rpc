@@ -55,8 +55,8 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
             /// the channel's thread before detaching it: a handler that answers
             /// without yielding runs on that thread, one that `await`s runs as a
             /// task and cannot hold back the next request.
-            fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
+            fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::codegen::ServiceDispatcher {
+                let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(#service_ref);
                 #(#server_native_methods)*
                 dispatcher
             }
@@ -101,16 +101,16 @@ pub fn gen_native_method(
         {
             let service_impl = self.service_impl.clone();
             dispatcher.method(
-                ice_rpc::gen::method_id_of(#method_name_str),
-                move |header: ice_rpc::gen::RpcHeader,
+                ice_rpc::codegen::method_id_of(#method_name_str),
+                move |header: ice_rpc::codegen::RpcHeader,
                       payload: &[u8],
-                      emitter: ice_rpc::gen::OwnedEmitter|
-                      -> ice_rpc::gen::BoxResponseFuture {
+                      emitter: ice_rpc::codegen::OwnedEmitter|
+                      -> ice_rpc::codegen::BoxResponseFuture {
                     // Built before the coroutine: it is copied into the task, and
                     // the header itself is not needed past this point. The service
                     // name is the constant the proxy declares, so the span shows it
                     // instead of the 4-byte hash the header carries.
-                    let ctx = ice_rpc::gen::CallContext::new(
+                    let ctx = ice_rpc::codegen::CallContext::new(
                         &header,
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
@@ -121,22 +121,22 @@ pub fn gen_native_method(
                     // Decoded **here**, while the sample is borrowed: the future is
                     // `'static` and may not hold the slice. The sample is aligned by
                     // construction, so this reads it where it lies.
-                    let request = match ice_rpc::gen::decode_aligned::<#req_enum_name>(payload) {
+                    let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
                         Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
                         // Fail-fast: a payload that does not decode is answered at
                         // once with a technical error, never dropped — silence
                         // would leave the caller waiting for a transport timeout
                         // that names nothing.
                         Err(e) => {
-                            ice_rpc::gen::log::error!(
+                            ice_rpc::codegen::log::error!(
                                 "[{}::{}] request payload decoding failed: {:?}",
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str,
                                 e
                             );
                             let mut emitter = emitter;
-                            let _ = ice_rpc::gen::emit_rpc_error(
-                                ice_rpc::gen::RpcError::SerializationError,
+                            let _ = ice_rpc::codegen::emit_rpc_error(
+                                ice_rpc::codegen::RpcError::SerializationError,
                                 &mut *emitter,
                             );
                             return Box::pin(async {});
@@ -146,14 +146,14 @@ pub fn gen_native_method(
                         // like a decoding failure rather than silently. The log
                         // line tells the two cases apart.
                         Ok(_) => {
-                            ice_rpc::gen::log::error!(
+                            ice_rpc::codegen::log::error!(
                                 "[{}::{}] request payload is another method's variant",
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str
                             );
                             let mut emitter = emitter;
-                            let _ = ice_rpc::gen::emit_rpc_error(
-                                ice_rpc::gen::RpcError::SerializationError,
+                            let _ = ice_rpc::codegen::emit_rpc_error(
+                                ice_rpc::codegen::RpcError::SerializationError,
                                 &mut *emitter,
                             );
                             return Box::pin(async {});
@@ -162,7 +162,7 @@ pub fn gen_native_method(
                     // Installed around each poll rather than around the whole
                     // call: the tasks of one channel are polled interleaved, so a
                     // context held across an await would label the wrong call.
-                    ice_rpc::gen::call_scoped(
+                    ice_rpc::codegen::call_scoped(
                         ctx,
                         async move {
                             let mut emitter = emitter;
@@ -170,7 +170,7 @@ pub fn gen_native_method(
                             let stream = impl_ref.#fn_name(#(#arg_names),*).await;
                             // Awaited, never blocked on: the other calls of the
                             // channel run meanwhile.
-                            ice_rpc::gen::observable_to_responses(stream, &mut *emitter).await;
+                            ice_rpc::codegen::observable_to_responses(stream, &mut *emitter).await;
                         },
                     )
                 },

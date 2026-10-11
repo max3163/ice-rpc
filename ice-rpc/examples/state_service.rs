@@ -22,7 +22,7 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use ice_rpc::Subject;
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// Status of a service or component.

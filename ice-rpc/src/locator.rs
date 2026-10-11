@@ -212,8 +212,8 @@ fn topological_order(names: &[&'static str], deps: &[Vec<&'static str>]) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 

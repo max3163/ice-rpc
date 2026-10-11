@@ -33,14 +33,14 @@
 
 use std::future::Future;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use futures_lite::future::poll_fn;
-use ice_rpc::gen::RpcHeader;
+use ice_rpc::codegen::RpcHeader;
 use ice_rpc::rt::block_on;
-use ice_rpc::{service, CallContext, Observable};
+use ice_rpc::{CallContext, Observable, service};
 
 /// The service every variant calls.
 ///
@@ -85,7 +85,7 @@ static SINK: AtomicUsize = AtomicUsize::new(0);
 fn local_context() -> CallContext {
     let header = RpcHeader::request(
         METHOD,
-        ice_rpc::gen::service_id_of(LocalEchoProxy::SERVICE_NAME),
+        ice_rpc::codegen::service_id_of(LocalEchoProxy::SERVICE_NAME),
         1,
     );
     CallContext::new(&header, LocalEchoProxy::SERVICE_NAME, METHOD)
@@ -94,7 +94,7 @@ fn local_context() -> CallContext {
 /// The zero-allocation envelope: the context is entered around each `poll`.
 ///
 /// `pin!` on a local of an `async` block is what removes the second `Box::pin` of
-/// [`call_scoped`](ice_rpc::gen::call_scoped); the `#[cfg]` lives in this function
+/// [`call_scoped`](ice_rpc::codegen::call_scoped); the `#[cfg]` lives in this function
 /// rather than in a struct field, which is the shape `pin_project_lite` cannot
 /// express.
 async fn local_scope<F>(ctx: CallContext, future: F) -> F::Output
@@ -150,7 +150,7 @@ fn wrapped_generic(proxy: &Arc<LocalEchoProxy>, value: i32) -> i32 {
 fn wrapped_boxed(proxy: &Arc<LocalEchoProxy>, value: i32) {
     let ctx = local_context();
     let proxy = Arc::clone(proxy);
-    let future = ice_rpc::gen::call_scoped(ctx, async move {
+    let future = ice_rpc::codegen::call_scoped(ctx, async move {
         let stream = proxy.echo(value).await;
         let value = stream.first_value().await.unwrap();
         SINK.store(value as usize, Ordering::Relaxed);
@@ -259,16 +259,18 @@ fn bench_primitives(c: &mut Criterion) {
     let mut group = c.benchmark_group("local_call_primitives");
 
     group.bench_function("next_correlation_id", |b| {
-        b.iter(|| black_box(ice_rpc::gen::next_correlation_id()))
+        b.iter(|| black_box(ice_rpc::codegen::next_correlation_id()))
     });
 
-    group.bench_function("now_ns", |b| b.iter(|| black_box(ice_rpc::gen::now_ns())));
+    group.bench_function("now_ns", |b| {
+        b.iter(|| black_box(ice_rpc::codegen::now_ns()))
+    });
 
     group.bench_function("header_and_context", |b| {
         b.iter(|| {
             let header = RpcHeader::request(
                 METHOD,
-                ice_rpc::gen::service_id_of(LocalEchoProxy::SERVICE_NAME),
+                ice_rpc::codegen::service_id_of(LocalEchoProxy::SERVICE_NAME),
                 1,
             );
             black_box(CallContext::new(
@@ -292,7 +294,7 @@ fn bench_primitives(c: &mut Criterion) {
 
     group.bench_function("call_scoped_empty", |b| {
         b.iter(|| {
-            let future = ice_rpc::gen::call_scoped(black_box(ctx), async {});
+            let future = ice_rpc::codegen::call_scoped(black_box(ctx), async {});
             block_on(future);
         })
     });

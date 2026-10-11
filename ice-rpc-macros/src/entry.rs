@@ -70,7 +70,7 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
     // it returns from *that* block, so the shutdown below always runs.
     let wrapped = quote! {
         async {
-            let __ice_rpc_guard = ice_rpc::gen::init();
+            let __ice_rpc_guard = ice_rpc::codegen::init();
             let __ice_rpc_result = async #body .await;
             __ice_rpc_guard.shutdown().await;
             __ice_rpc_result

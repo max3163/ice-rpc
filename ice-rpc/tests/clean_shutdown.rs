@@ -14,7 +14,7 @@
 //! one node per run for the *next* process to reap.
 //!
 //! Waiting for the threads and releasing both caches is what
-//! [`ice_rpc::gen::shutdown_and_release`] does, and this test is the guard of
+//! [`ice_rpc::codegen::shutdown_and_release`] does, and this test is the guard of
 //! that behaviour — it asserts the services *and* the node are gone.
 //!
 //! It shuts down **programmatically** rather than by signal on purpose:
@@ -24,8 +24,8 @@
 
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::iceoryx2::prelude::SemanticString;
-use ice_rpc::gen::{service_id_of, spawn_native_service, ServiceDispatcher, ServiceRef};
+use ice_rpc::codegen::iceoryx2::prelude::SemanticString;
+use ice_rpc::codegen::{ServiceDispatcher, ServiceRef, service_id_of, spawn_native_service};
 
 /// Channel — and service name — the test creates on the bus.
 const SERVICE: &str = "CleanShutdownProbeService";
@@ -61,7 +61,7 @@ fn probe_services() -> usize {
 /// the count before and after rather than asserting it is empty: an observer or
 /// another provider may own entries of its own.
 fn node_entries() -> usize {
-    let config = ice_rpc::gen::iceoryx2::config::Config::global_config();
+    let config = ice_rpc::codegen::iceoryx2::config::Config::global_config();
     // Bound first: `node_dir` returns the path by value, and `as_bytes` borrows it.
     let node_dir = config.global.node_dir();
     let dir = std::str::from_utf8(node_dir.as_bytes()).unwrap_or_default();
@@ -86,7 +86,7 @@ fn wait_until(condition: impl Fn() -> bool, expectation: &str) {
 /// what it was: nothing left behind — neither its services nor its node.
 #[test]
 fn a_clean_shutdown_releases_what_this_process_created() {
-    let _guard = ice_rpc::gen::init();
+    let _guard = ice_rpc::codegen::init();
 
     assert_eq!(
         probe_services(),
@@ -115,7 +115,7 @@ fn a_clean_shutdown_releases_what_this_process_created() {
 
     // The path `#[ice_rpc::main]` takes at the end of `main`, and the one Ctrl+C
     // takes: cancel, join the dispatch threads, release the cached ports.
-    pollster::block_on(ice_rpc::gen::shutdown_and_release());
+    pollster::block_on(ice_rpc::codegen::shutdown_and_release());
 
     wait_until(
         || probe_services() == 0,

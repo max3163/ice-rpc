@@ -33,12 +33,12 @@
 #![allow(clippy::unwrap_used)] // an example is allowed to panic
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use common::{DatabaseError, DatabaseServiceRequest};
-use ice_rpc::gen::{decode_aligned, rkyv, service_id_of, ServiceDispatcher, ServiceRef};
+use ice_rpc::codegen::{ServiceDispatcher, ServiceRef, decode_aligned, rkyv, service_id_of};
 use ice_rpc::transport::{native_call, observable_to_responses, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
@@ -325,10 +325,10 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     // Expose the same registry over HTTP when an address is configured; the
     // serving thread is detached (dropping the handle does not stop it).
-    if let Some(addr) = prometheus_addr {
-        if let Err(e) = ice_rpc_monitor::prometheus::serve(addr, metrics.clone()) {
-            eprintln!("failed to start the Prometheus endpoint: {e}");
-        }
+    if let Some(addr) = prometheus_addr
+        && let Err(e) = ice_rpc_monitor::prometheus::serve(addr, metrics.clone())
+    {
+        eprintln!("failed to start the Prometheus endpoint: {e}");
     }
 
     // Opt-in: heal a bus polluted by killed runs before observing it. Without

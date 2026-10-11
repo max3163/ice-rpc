@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ice_rpc::gen::CORRELATION_ID_LEN;
+use ice_rpc::codegen::CORRELATION_ID_LEN;
 
 /// A call awaiting its response stream.
 #[derive(Debug, Clone)]
@@ -98,17 +98,15 @@ impl Correlate {
     /// Registers a new call; returns the calls evicted to stay under capacity.
     pub fn insert(&mut self, cid: [u8; CORRELATION_ID_LEN], call: PendingCall) -> Vec<PendingCall> {
         let mut evicted = Vec::new();
-        if self.entries.len() >= self.max {
-            if let Some(oldest) = self
+        if self.entries.len() >= self.max
+            && let Some(oldest) = self
                 .entries
                 .iter()
                 .min_by_key(|(_, call)| call.started)
                 .map(|(cid, _)| *cid)
-            {
-                if let Some(call) = self.entries.remove(&oldest) {
-                    evicted.push(call);
-                }
-            }
+            && let Some(call) = self.entries.remove(&oldest)
+        {
+            evicted.push(call);
         }
         self.entries.insert(cid, call);
         evicted

@@ -8,12 +8,12 @@ pub trait DatabaseApi: Send + Sync + 'static {
 #[allow(missing_docs)]
 #[repr(u8)]
 #[derive(
-    ice_rpc::gen::rkyv::Archive,
-    ice_rpc::gen::rkyv::Deserialize,
-    ice_rpc::gen::rkyv::Serialize,
+    ice_rpc::codegen::rkyv::Archive,
+    ice_rpc::codegen::rkyv::Deserialize,
+    ice_rpc::codegen::rkyv::Serialize,
     Debug
 )]
-#[rkyv(crate = ice_rpc::gen::rkyv)]
+#[rkyv(crate = ice_rpc::codegen::rkyv)]
 pub enum DatabaseApiRequest {
     Add { a: i32, b: i32 } = 0u8,
     Get { key: String } = 1u8,
@@ -24,8 +24,8 @@ impl DatabaseApiProxy {
     /// Identity of this service contract: its id inside the channel and
     /// its interface version, declared once and shared by the generated
     /// client and provider so the version cannot be lost between them.
-    pub const SERVICE: ice_rpc::gen::ServiceRef = ice_rpc::gen::ServiceRef::new(
-        ice_rpc::gen::service_id_of("Database"),
+    pub const SERVICE: ice_rpc::codegen::ServiceRef = ice_rpc::codegen::ServiceRef::new(
+        ice_rpc::codegen::service_id_of("Database"),
         2u16,
     );
 }
@@ -38,20 +38,30 @@ impl DatabaseApiClient {
     }
     pub async fn add(&self, a: i32, b: i32) -> ice_rpc::Observable<i32, String> {
         let req_val = DatabaseApiRequest::Add { a, b };
-        ice_rpc::gen::serialize_and_call::<
+        ice_rpc::codegen::serialize_and_call::<
             i32,
             String,
             _,
-        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("add"), &req_val)
+        >(
+                "db",
+                <DatabaseApiProxy>::SERVICE,
+                ice_rpc::codegen::method_id_of("add"),
+                &req_val,
+            )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
     pub async fn get(&self, key: String) -> ice_rpc::Observable<String, String> {
         let req_val = DatabaseApiRequest::Get { key };
-        ice_rpc::gen::serialize_and_call::<
+        ice_rpc::codegen::serialize_and_call::<
             String,
             String,
             _,
-        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("get"), &req_val)
+        >(
+                "db",
+                <DatabaseApiProxy>::SERVICE,
+                ice_rpc::codegen::method_id_of("get"),
+                &req_val,
+            )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
     pub async fn put(
@@ -63,17 +73,22 @@ impl DatabaseApiClient {
             key,
             value,
         };
-        ice_rpc::gen::serialize_and_call::<
+        ice_rpc::codegen::serialize_and_call::<
             (),
             String,
             _,
-        >("db", <DatabaseApiProxy>::SERVICE, ice_rpc::gen::method_id_of("put"), &req_val)
+        >(
+                "db",
+                <DatabaseApiProxy>::SERVICE,
+                ice_rpc::codegen::method_id_of("put"),
+                &req_val,
+            )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
     }
 }
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
-impl ice_rpc::gen::ServiceLifecycle for DatabaseApiClient {
+#[ice_rpc::codegen::async_trait::async_trait]
+impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiClient {
     async fn init(&self) -> bool {
         true
     }
@@ -99,62 +114,67 @@ impl DatabaseApiServer {
     /// the channel's thread before detaching it: a handler that answers
     /// without yielding runs on that thread, one that `await`s runs as a
     /// task and cannot hold back the next request.
-    fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::gen::ServiceDispatcher {
-        let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
+    fn native_dispatcher(
+        self: std::sync::Arc<Self>,
+    ) -> ice_rpc::codegen::ServiceDispatcher {
+        let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(
             <DatabaseApiProxy>::SERVICE,
         );
         {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    ice_rpc::gen::method_id_of("add"),
+                    ice_rpc::codegen::method_id_of("add"),
                     move |
-                        header: ice_rpc::gen::RpcHeader,
+                        header: ice_rpc::codegen::RpcHeader,
                         payload: &[u8],
-                        emitter: ice_rpc::gen::OwnedEmitter,
-                    | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(
+                        emitter: ice_rpc::codegen::OwnedEmitter,
+                    | -> ice_rpc::codegen::BoxResponseFuture {
+                        let ctx = ice_rpc::codegen::CallContext::new(
                             &header,
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "add",
                         );
                         let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::gen::decode_aligned::<
+                        let request = match ice_rpc::codegen::decode_aligned::<
                             DatabaseApiRequest,
                         >(payload) {
                             Ok(DatabaseApiRequest::Add { a, b }) => (a, b),
                             Err(e) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload decoding failed: {:?}", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "add", e
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload is another method's variant", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "add"
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                         };
-                        ice_rpc::gen::call_scoped(
+                        ice_rpc::codegen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
                                 let (a, b) = request;
                                 let stream = impl_ref.add(a, b).await;
-                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                ice_rpc::codegen::observable_to_responses(
+                                        stream,
+                                        &mut *emitter,
+                                    )
                                     .await;
                             },
                         )
@@ -165,54 +185,57 @@ impl DatabaseApiServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    ice_rpc::gen::method_id_of("get"),
+                    ice_rpc::codegen::method_id_of("get"),
                     move |
-                        header: ice_rpc::gen::RpcHeader,
+                        header: ice_rpc::codegen::RpcHeader,
                         payload: &[u8],
-                        emitter: ice_rpc::gen::OwnedEmitter,
-                    | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(
+                        emitter: ice_rpc::codegen::OwnedEmitter,
+                    | -> ice_rpc::codegen::BoxResponseFuture {
+                        let ctx = ice_rpc::codegen::CallContext::new(
                             &header,
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "get",
                         );
                         let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::gen::decode_aligned::<
+                        let request = match ice_rpc::codegen::decode_aligned::<
                             DatabaseApiRequest,
                         >(payload) {
                             Ok(DatabaseApiRequest::Get { key }) => (key),
                             Err(e) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload decoding failed: {:?}", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "get", e
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload is another method's variant", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "get"
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                         };
-                        ice_rpc::gen::call_scoped(
+                        ice_rpc::codegen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
                                 let (key) = request;
                                 let stream = impl_ref.get(key).await;
-                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                ice_rpc::codegen::observable_to_responses(
+                                        stream,
+                                        &mut *emitter,
+                                    )
                                     .await;
                             },
                         )
@@ -223,54 +246,57 @@ impl DatabaseApiServer {
             let service_impl = self.service_impl.clone();
             dispatcher
                 .method(
-                    ice_rpc::gen::method_id_of("put"),
+                    ice_rpc::codegen::method_id_of("put"),
                     move |
-                        header: ice_rpc::gen::RpcHeader,
+                        header: ice_rpc::codegen::RpcHeader,
                         payload: &[u8],
-                        emitter: ice_rpc::gen::OwnedEmitter,
-                    | -> ice_rpc::gen::BoxResponseFuture {
-                        let ctx = ice_rpc::gen::CallContext::new(
+                        emitter: ice_rpc::codegen::OwnedEmitter,
+                    | -> ice_rpc::codegen::BoxResponseFuture {
+                        let ctx = ice_rpc::codegen::CallContext::new(
                             &header,
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "put",
                         );
                         let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::gen::decode_aligned::<
+                        let request = match ice_rpc::codegen::decode_aligned::<
                             DatabaseApiRequest,
                         >(payload) {
                             Ok(DatabaseApiRequest::Put { key, value }) => (key, value),
                             Err(e) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload decoding failed: {:?}", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "put", e
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}::{}] request payload is another method's variant", <
                                     DatabaseApiProxy > ::SERVICE_NAME, "put"
                                 );
                                 let mut emitter = emitter;
-                                let _ = ice_rpc::gen::emit_rpc_error(
-                                    ice_rpc::gen::RpcError::SerializationError,
+                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                    ice_rpc::codegen::RpcError::SerializationError,
                                     &mut *emitter,
                                 );
                                 return Box::pin(async {});
                             }
                         };
-                        ice_rpc::gen::call_scoped(
+                        ice_rpc::codegen::call_scoped(
                             ctx,
                             async move {
                                 let mut emitter = emitter;
                                 let (key, value) = request;
                                 let stream = impl_ref.put(key, value).await;
-                                ice_rpc::gen::observable_to_responses(stream, &mut *emitter)
+                                ice_rpc::codegen::observable_to_responses(
+                                        stream,
+                                        &mut *emitter,
+                                    )
                                     .await;
                             },
                         )
@@ -283,7 +309,7 @@ impl DatabaseApiServer {
 #[allow(missing_docs)]
 struct __DatabaseApiServiceInitDefault(std::sync::Arc<dyn DatabaseApi>);
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
+#[ice_rpc::codegen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for __DatabaseApiServiceInitDefault {}
 #[allow(missing_docs)]
 #[allow(dead_code)]
@@ -298,7 +324,7 @@ pub enum DatabaseApiMode {
 }
 #[allow(missing_docs)]
 pub struct DatabaseApiProxy {
-    mode: ice_rpc::gen::async_lock::RwLock<DatabaseApiMode>,
+    mode: ice_rpc::codegen::async_lock::RwLock<DatabaseApiMode>,
     deps: Vec<&'static str>,
 }
 #[allow(missing_docs)]
@@ -318,7 +344,7 @@ impl DatabaseApiProxy {
         );
         std::sync::Arc::new(Self {
             deps: vec![],
-            mode: ice_rpc::gen::async_lock::RwLock::new(DatabaseApiMode::Provider {
+            mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Provider {
                 local_impl: arc as std::sync::Arc<dyn DatabaseApi>,
                 init_hook: init_hook as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                 server_started: false,
@@ -333,7 +359,7 @@ impl DatabaseApiProxy {
         let deps = arc.dependencies();
         std::sync::Arc::new(Self {
             deps,
-            mode: ice_rpc::gen::async_lock::RwLock::new(DatabaseApiMode::Provider {
+            mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Provider {
                 local_impl: arc.clone() as std::sync::Arc<dyn DatabaseApi>,
                 init_hook: arc as std::sync::Arc<dyn ice_rpc::ServiceInit>,
                 server_started: false,
@@ -341,10 +367,10 @@ impl DatabaseApiProxy {
         })
     }
     pub fn consume() -> std::sync::Arc<Self> {
-        ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
+        ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
         std::sync::Arc::new(Self {
             deps: vec![],
-            mode: ice_rpc::gen::async_lock::RwLock::new(DatabaseApiMode::Consumer {
+            mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Consumer {
                 ipc_client: DatabaseApiClient::new(),
             }),
         })
@@ -354,18 +380,20 @@ impl DatabaseApiProxy {
     pub fn provide_json() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             deps: vec![],
-            mode: ice_rpc::gen::async_lock::RwLock::new(DatabaseApiMode::ProviderJson),
+            mode: ice_rpc::codegen::async_lock::RwLock::new(
+                DatabaseApiMode::ProviderJson,
+            ),
         })
     }
 }
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
+#[ice_rpc::codegen::async_trait::async_trait]
 impl DatabaseApi for DatabaseApiProxy {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String> {
         let mode = self.mode.read().await;
         match &*mode {
             DatabaseApiMode::Provider { local_impl, .. } => {
-                ice_rpc::gen::local_call_scoped(
+                ice_rpc::codegen::local_call_scoped(
                         <DatabaseApiProxy>::SERVICE,
                         <DatabaseApiProxy>::SERVICE_NAME,
                         "add",
@@ -387,7 +415,7 @@ impl DatabaseApi for DatabaseApiProxy {
         let mode = self.mode.read().await;
         match &*mode {
             DatabaseApiMode::Provider { local_impl, .. } => {
-                ice_rpc::gen::local_call_scoped(
+                ice_rpc::codegen::local_call_scoped(
                         <DatabaseApiProxy>::SERVICE,
                         <DatabaseApiProxy>::SERVICE_NAME,
                         "get",
@@ -409,7 +437,7 @@ impl DatabaseApi for DatabaseApiProxy {
         let mode = self.mode.read().await;
         match &*mode {
             DatabaseApiMode::Provider { local_impl, .. } => {
-                ice_rpc::gen::local_call_scoped(
+                ice_rpc::codegen::local_call_scoped(
                         <DatabaseApiProxy>::SERVICE,
                         <DatabaseApiProxy>::SERVICE_NAME,
                         "put",
@@ -429,31 +457,31 @@ impl DatabaseApi for DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-impl ice_rpc::gen::ServiceConsumer for DatabaseApiProxy {
+impl ice_rpc::codegen::ServiceConsumer for DatabaseApiProxy {
     fn consume_proxy() -> std::sync::Arc<Self> {
         DatabaseApiProxy::consume()
     }
 }
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
-impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
+#[ice_rpc::codegen::async_trait::async_trait]
+impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
     async fn init(&self) -> bool {
         let mut mode = self.mode.write().await;
         match &mut *mode {
             DatabaseApiMode::ProviderJson => {
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(
+                let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(
                     <DatabaseApiProxy>::SERVICE,
                 );
                 {
                     dispatcher
                         .method(
-                            ice_rpc::gen::method_id_of("add"),
+                            ice_rpc::codegen::method_id_of("add"),
                             move |
-                                header: ice_rpc::gen::RpcHeader,
+                                header: ice_rpc::codegen::RpcHeader,
                                 payload: &[u8],
-                                emitter: ice_rpc::gen::OwnedEmitter,
-                            | -> ice_rpc::gen::BoxResponseFuture {
-                                let ctx = ice_rpc::gen::CallContext::new(
+                                emitter: ice_rpc::codegen::OwnedEmitter,
+                            | -> ice_rpc::codegen::BoxResponseFuture {
+                                let ctx = ice_rpc::codegen::CallContext::new(
                                     &header,
                                     <DatabaseApiProxy>::SERVICE_NAME,
                                     "add",
@@ -462,22 +490,22 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     "add",
                                     payload,
                                 );
-                                ice_rpc::gen::call_scoped(
+                                ice_rpc::codegen::call_scoped(
                                     ctx,
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ice_rpc::gen::log::error!(
+                                            ice_rpc::codegen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "add"
                                             );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::SerializationError,
+                                            let _ = ice_rpc::codegen::emit_rpc_error(
+                                                ice_rpc::codegen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
                                             return;
                                         };
-                                        let mut events = match ice_rpc::gen::dispatch_json(
+                                        let mut events = match ice_rpc::codegen::dispatch_json(
                                                 header.correlation_id,
                                                 <DatabaseApiProxy>::SERVICE_NAME,
                                                 "add",
@@ -487,12 +515,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "add", e
                                                 );
-                                                let _ = ice_rpc::gen::emit_rpc_error(
-                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                                    ice_rpc::codegen::RpcError::Internal(e),
                                                     &mut *emitter,
                                                 );
                                                 return;
@@ -500,14 +528,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         };
                                         while let Some(event) = events.next().await {
                                             let value = match event {
-                                                ice_rpc::gen::JsonCallEvent::Event(value) => value,
-                                                ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::JsonCallEvent::Event(value) => value,
+                                                ice_rpc::codegen::JsonCallEvent::Failed(message) => {
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "add", message
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::Internal(message),
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::Internal(message),
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -521,12 +549,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ice_rpc::gen::log::error!(
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "add"
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::SerializationError,
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::SerializationError,
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -541,13 +569,13 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                 {
                     dispatcher
                         .method(
-                            ice_rpc::gen::method_id_of("get"),
+                            ice_rpc::codegen::method_id_of("get"),
                             move |
-                                header: ice_rpc::gen::RpcHeader,
+                                header: ice_rpc::codegen::RpcHeader,
                                 payload: &[u8],
-                                emitter: ice_rpc::gen::OwnedEmitter,
-                            | -> ice_rpc::gen::BoxResponseFuture {
-                                let ctx = ice_rpc::gen::CallContext::new(
+                                emitter: ice_rpc::codegen::OwnedEmitter,
+                            | -> ice_rpc::codegen::BoxResponseFuture {
+                                let ctx = ice_rpc::codegen::CallContext::new(
                                     &header,
                                     <DatabaseApiProxy>::SERVICE_NAME,
                                     "get",
@@ -556,22 +584,22 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     "get",
                                     payload,
                                 );
-                                ice_rpc::gen::call_scoped(
+                                ice_rpc::codegen::call_scoped(
                                     ctx,
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ice_rpc::gen::log::error!(
+                                            ice_rpc::codegen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "get"
                                             );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::SerializationError,
+                                            let _ = ice_rpc::codegen::emit_rpc_error(
+                                                ice_rpc::codegen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
                                             return;
                                         };
-                                        let mut events = match ice_rpc::gen::dispatch_json(
+                                        let mut events = match ice_rpc::codegen::dispatch_json(
                                                 header.correlation_id,
                                                 <DatabaseApiProxy>::SERVICE_NAME,
                                                 "get",
@@ -581,12 +609,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "get", e
                                                 );
-                                                let _ = ice_rpc::gen::emit_rpc_error(
-                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                                    ice_rpc::codegen::RpcError::Internal(e),
                                                     &mut *emitter,
                                                 );
                                                 return;
@@ -594,14 +622,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         };
                                         while let Some(event) = events.next().await {
                                             let value = match event {
-                                                ice_rpc::gen::JsonCallEvent::Event(value) => value,
-                                                ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::JsonCallEvent::Event(value) => value,
+                                                ice_rpc::codegen::JsonCallEvent::Failed(message) => {
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "get", message
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::Internal(message),
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::Internal(message),
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -615,12 +643,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ice_rpc::gen::log::error!(
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "get"
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::SerializationError,
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::SerializationError,
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -635,13 +663,13 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                 {
                     dispatcher
                         .method(
-                            ice_rpc::gen::method_id_of("put"),
+                            ice_rpc::codegen::method_id_of("put"),
                             move |
-                                header: ice_rpc::gen::RpcHeader,
+                                header: ice_rpc::codegen::RpcHeader,
                                 payload: &[u8],
-                                emitter: ice_rpc::gen::OwnedEmitter,
-                            | -> ice_rpc::gen::BoxResponseFuture {
-                                let ctx = ice_rpc::gen::CallContext::new(
+                                emitter: ice_rpc::codegen::OwnedEmitter,
+                            | -> ice_rpc::codegen::BoxResponseFuture {
+                                let ctx = ice_rpc::codegen::CallContext::new(
                                     &header,
                                     <DatabaseApiProxy>::SERVICE_NAME,
                                     "put",
@@ -650,22 +678,22 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                     "put",
                                     payload,
                                 );
-                                ice_rpc::gen::call_scoped(
+                                ice_rpc::codegen::call_scoped(
                                     ctx,
                                     async move {
                                         let mut emitter = emitter;
                                         let Some(args) = args else {
-                                            ice_rpc::gen::log::error!(
+                                            ice_rpc::codegen::log::error!(
                                                 "[{}::{}] Failed to deserialize the request", <
                                                 DatabaseApiProxy > ::SERVICE_NAME, "put"
                                             );
-                                            let _ = ice_rpc::gen::emit_rpc_error(
-                                                ice_rpc::gen::RpcError::SerializationError,
+                                            let _ = ice_rpc::codegen::emit_rpc_error(
+                                                ice_rpc::codegen::RpcError::SerializationError,
                                                 &mut *emitter,
                                             );
                                             return;
                                         };
-                                        let mut events = match ice_rpc::gen::dispatch_json(
+                                        let mut events = match ice_rpc::codegen::dispatch_json(
                                                 header.correlation_id,
                                                 <DatabaseApiProxy>::SERVICE_NAME,
                                                 "put",
@@ -675,12 +703,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         {
                                             Ok(events) => events,
                                             Err(e) => {
-                                                ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::log::error!(
                                                     "[{}::{}] JSON dispatch failed: {}", < DatabaseApiProxy >
                                                     ::SERVICE_NAME, "put", e
                                                 );
-                                                let _ = ice_rpc::gen::emit_rpc_error(
-                                                    ice_rpc::gen::RpcError::Internal(e),
+                                                let _ = ice_rpc::codegen::emit_rpc_error(
+                                                    ice_rpc::codegen::RpcError::Internal(e),
                                                     &mut *emitter,
                                                 );
                                                 return;
@@ -688,14 +716,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                         };
                                         while let Some(event) = events.next().await {
                                             let value = match event {
-                                                ice_rpc::gen::JsonCallEvent::Event(value) => value,
-                                                ice_rpc::gen::JsonCallEvent::Failed(message) => {
-                                                    ice_rpc::gen::log::error!(
+                                                ice_rpc::codegen::JsonCallEvent::Event(value) => value,
+                                                ice_rpc::codegen::JsonCallEvent::Failed(message) => {
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] JSON call failed: {}", < DatabaseApiProxy >
                                                         ::SERVICE_NAME, "put", message
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::Internal(message),
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::Internal(message),
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -709,12 +737,12 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                                                     emitter.emit(kind, &sample);
                                                 }
                                                 None => {
-                                                    ice_rpc::gen::log::error!(
+                                                    ice_rpc::codegen::log::error!(
                                                         "[{}::{}] Failed to serialize the JSON response", <
                                                         DatabaseApiProxy > ::SERVICE_NAME, "put"
                                                     );
-                                                    let _ = ice_rpc::gen::emit_rpc_error(
-                                                        ice_rpc::gen::RpcError::SerializationError,
+                                                    let _ = ice_rpc::codegen::emit_rpc_error(
+                                                        ice_rpc::codegen::RpcError::SerializationError,
                                                         &mut *emitter,
                                                     );
                                                     return;
@@ -726,18 +754,18 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
                             },
                         );
                 }
-                ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
-                if let Err(e) = ice_rpc::gen::register_native_service(
+                ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
+                if let Err(e) = ice_rpc::codegen::register_native_service(
                     "db",
                     "Database",
                     dispatcher,
                 ) {
-                    ice_rpc::gen::log::error!(
+                    ice_rpc::codegen::log::error!(
                         "[{}] channel registration failed: {e:?}", "Database"
                     );
                     return false;
                 }
-                ice_rpc::gen::log::info!(
+                ice_rpc::codegen::log::info!(
                     "[{}] JSON provider registered on channel '{}'.", "Database", "db"
                 );
                 true
@@ -745,27 +773,27 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
             DatabaseApiMode::Provider { local_impl, init_hook, server_started } => {
                 if !*server_started {
                     if !init_hook.on_init().await {
-                        ice_rpc::gen::log::warn!(
+                        ice_rpc::codegen::log::warn!(
                             "[{}] on_init() failed, retrying...", stringify!(DatabaseApi)
                         );
                         return false;
                     }
                     let dispatcher = DatabaseApiServer::new(local_impl.clone())
                         .native_dispatcher();
-                    ice_rpc::gen::declare_channel_max_slice_len("db", 4096usize);
-                    if let Err(e) = ice_rpc::gen::register_native_service(
+                    ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
+                    if let Err(e) = ice_rpc::codegen::register_native_service(
                         "db",
                         "Database",
                         dispatcher,
                     ) {
-                        ice_rpc::gen::log::error!(
+                        ice_rpc::codegen::log::error!(
                             "[{}] channel registration failed: {e:?}",
                             stringify!(DatabaseApi)
                         );
                         return false;
                     }
                     *server_started = true;
-                    ice_rpc::gen::log::info!(
+                    ice_rpc::codegen::log::info!(
                         "[{}] native service registered on channel '{}'.",
                         stringify!(DatabaseApi), "db"
                     );
@@ -777,14 +805,14 @@ impl ice_rpc::gen::ServiceLifecycle for DatabaseApiProxy {
     }
 }
 #[allow(missing_docs)]
-impl ice_rpc::gen::ServiceNamed for DatabaseApiProxy {
+impl ice_rpc::codegen::ServiceNamed for DatabaseApiProxy {
     const SERVICE_NAME: &'static str = "Database";
 }
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
+#[ice_rpc::codegen::async_trait::async_trait]
 impl ice_rpc::ServiceInit for DatabaseApiProxy {
     async fn on_init(&self) -> bool {
-        ice_rpc::gen::ServiceLifecycle::init(self).await
+        ice_rpc::codegen::ServiceLifecycle::init(self).await
     }
     fn dependencies(&self) -> Vec<&'static str> {
         self.deps.clone()
@@ -796,19 +824,19 @@ impl DatabaseApiProxy {
     pub fn deserialize_request_to_value(
         method: &str,
         bytes: &[u8],
-    ) -> Option<ice_rpc::gen::serde_json::Value> {
+    ) -> Option<ice_rpc::codegen::serde_json::Value> {
         match method {
             "add" => {
-                let req: DatabaseApiRequest = ice_rpc::gen::decode_aligned::<
+                let req: DatabaseApiRequest = ice_rpc::codegen::decode_aligned::<
                     DatabaseApiRequest,
                 >(bytes)
                     .ok()?;
                 match req {
                     DatabaseApiRequest::Add { a, b } => {
                         Some(
-                            ice_rpc::gen::serde_json::json!(
-                                { "a" : ice_rpc::gen::serde_json::to_value(a).ok() ?, "b" :
-                                ice_rpc::gen::serde_json::to_value(b).ok() ? }
+                            ice_rpc::codegen::serde_json::json!(
+                                { "a" : ice_rpc::codegen::serde_json::to_value(a).ok() ?,
+                                "b" : ice_rpc::codegen::serde_json::to_value(b).ok() ? }
                             ),
                         )
                     }
@@ -816,31 +844,32 @@ impl DatabaseApiProxy {
                 }
             }
             "get" => {
-                let req: DatabaseApiRequest = ice_rpc::gen::decode_aligned::<
+                let req: DatabaseApiRequest = ice_rpc::codegen::decode_aligned::<
                     DatabaseApiRequest,
                 >(bytes)
                     .ok()?;
                 match req {
                     DatabaseApiRequest::Get { key } => {
-                        Some(ice_rpc::gen::serde_json::to_value(key).ok()?)
+                        Some(ice_rpc::codegen::serde_json::to_value(key).ok()?)
                     }
                     _ => None,
                 }
             }
             "put" => {
-                let req: DatabaseApiRequest = ice_rpc::gen::decode_aligned::<
+                let req: DatabaseApiRequest = ice_rpc::codegen::decode_aligned::<
                     DatabaseApiRequest,
                 >(bytes)
                     .ok()?;
                 match req {
                     DatabaseApiRequest::Put { key, value } => {
                         Some(
-                            ice_rpc::gen::serde_json::json!(
-                                { "key" : ice_rpc::gen::serde_json::to_value(key).ok() ?,
-                                "value" : { use ice_rpc::gen::base64::Engine; let encoded =
-                                ice_rpc::gen::base64::engine::general_purpose::STANDARD
+                            ice_rpc::codegen::serde_json::json!(
+                                { "key" : ice_rpc::codegen::serde_json::to_value(key).ok()
+                                ?, "value" : { use ice_rpc::codegen::base64::Engine; let
+                                encoded =
+                                ice_rpc::codegen::base64::engine::general_purpose::STANDARD
                                 .encode(& value);
-                                ice_rpc::gen::serde_json::Value::String(encoded) } }
+                                ice_rpc::codegen::serde_json::Value::String(encoded) } }
                             ),
                         )
                     }
@@ -856,8 +885,8 @@ impl DatabaseApiProxy {
 impl DatabaseApiProxy {
     pub fn serialize_response_from_value(
         method: &str,
-        value: ice_rpc::gen::serde_json::Value,
-    ) -> Option<(ice_rpc::gen::EventKind, Vec<u8>)> {
+        value: ice_rpc::codegen::serde_json::Value,
+    ) -> Option<(ice_rpc::codegen::EventKind, Vec<u8>)> {
         match method {
             "add" => {
                 let event_type = value
@@ -868,45 +897,47 @@ impl DatabaseApiProxy {
                     "next" => {
                         let data: i32 = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Next(data)
+                        ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
                         match value.get("data") {
                             Some(d) => {
-                                let data: i32 = match ice_rpc::gen::serde_json::from_value(
+                                let data: i32 = match ice_rpc::codegen::serde_json::from_value(
                                     d.clone(),
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                ice_rpc::gen::WireEvent::CompleteWith(data)
+                                ice_rpc::codegen::WireEvent::CompleteWith(data)
                             }
-                            None => ice_rpc::gen::WireEvent::Complete,
+                            None => ice_rpc::codegen::WireEvent::Complete,
                         }
                     }
                     "error" => {
                         let err: String = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Error(err)
+                        ice_rpc::codegen::WireEvent::Error(err)
                     }
                     _ => return None,
                 };
                 let kind = event.kind();
-                ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                ice_rpc::codegen::rkyv::to_bytes::<
+                    ice_rpc::codegen::rkyv::rancor::Error,
+                >(&event)
                     .ok()
                     .map(|aligned| (kind, aligned.to_vec()))
             }
@@ -919,45 +950,47 @@ impl DatabaseApiProxy {
                     "next" => {
                         let data: String = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Next(data)
+                        ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
                         match value.get("data") {
                             Some(d) => {
-                                let data: String = match ice_rpc::gen::serde_json::from_value(
+                                let data: String = match ice_rpc::codegen::serde_json::from_value(
                                     d.clone(),
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                ice_rpc::gen::WireEvent::CompleteWith(data)
+                                ice_rpc::codegen::WireEvent::CompleteWith(data)
                             }
-                            None => ice_rpc::gen::WireEvent::Complete,
+                            None => ice_rpc::codegen::WireEvent::Complete,
                         }
                     }
                     "error" => {
                         let err: String = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Error(err)
+                        ice_rpc::codegen::WireEvent::Error(err)
                     }
                     _ => return None,
                 };
                 let kind = event.kind();
-                ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                ice_rpc::codegen::rkyv::to_bytes::<
+                    ice_rpc::codegen::rkyv::rancor::Error,
+                >(&event)
                     .ok()
                     .map(|aligned| (kind, aligned.to_vec()))
             }
@@ -970,45 +1003,47 @@ impl DatabaseApiProxy {
                     "next" => {
                         let data: () = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Next(data)
+                        ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
                         match value.get("data") {
                             Some(d) => {
-                                let data: () = match ice_rpc::gen::serde_json::from_value(
+                                let data: () = match ice_rpc::codegen::serde_json::from_value(
                                     d.clone(),
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
-                                ice_rpc::gen::WireEvent::CompleteWith(data)
+                                ice_rpc::codegen::WireEvent::CompleteWith(data)
                             }
-                            None => ice_rpc::gen::WireEvent::Complete,
+                            None => ice_rpc::codegen::WireEvent::Complete,
                         }
                     }
                     "error" => {
                         let err: String = match value.get("data") {
                             Some(d) => {
-                                match ice_rpc::gen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
                             }
                             None => return None,
                         };
-                        ice_rpc::gen::WireEvent::Error(err)
+                        ice_rpc::codegen::WireEvent::Error(err)
                     }
                     _ => return None,
                 };
                 let kind = event.kind();
-                ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&event)
+                ice_rpc::codegen::rkyv::to_bytes::<
+                    ice_rpc::codegen::rkyv::rancor::Error,
+                >(&event)
                     .ok()
                     .map(|aligned| (kind, aligned.to_vec()))
             }
@@ -1021,17 +1056,17 @@ impl DatabaseApiProxy {
     /// The JSON view of `add`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
     async fn json_view_of_add(
         &self,
-        args: ice_rpc::gen::serde_json::Value,
-        read: ice_rpc::gen::ReadMode,
-    ) -> ice_rpc::gen::JsonResult {
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
         let a: i32 = {
             let __value = args
                 .get("a")
                 .cloned()
-                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
-            ice_rpc::gen::serde_json::from_value(__value)
+                .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
+            ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {
-                    ice_rpc::gen::JsonCallError::InvalidArgs(
+                    ice_rpc::codegen::JsonCallError::InvalidArgs(
                         format!("invalid parameter 'a' for 'add': {e}"),
                     )
                 })?
@@ -1040,75 +1075,75 @@ impl DatabaseApiProxy {
             let __value = args
                 .get("b")
                 .cloned()
-                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
-            ice_rpc::gen::serde_json::from_value(__value)
+                .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
+            ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {
-                    ice_rpc::gen::JsonCallError::InvalidArgs(
+                    ice_rpc::codegen::JsonCallError::InvalidArgs(
                         format!("invalid parameter 'b' for 'add': {e}"),
                     )
                 })?
         };
-        ice_rpc::gen::read_json(self.add(a, b).await, read).await
+        ice_rpc::codegen::read_json(self.add(a, b).await, read).await
     }
     /// The JSON view of `get`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
     async fn json_view_of_get(
         &self,
-        args: ice_rpc::gen::serde_json::Value,
-        read: ice_rpc::gen::ReadMode,
-    ) -> ice_rpc::gen::JsonResult {
-        let key: String = ice_rpc::gen::serde_json::from_value(args)
-            .map_err(|e| ice_rpc::gen::JsonCallError::InvalidArgs(
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
+        let key: String = ice_rpc::codegen::serde_json::from_value(args)
+            .map_err(|e| ice_rpc::codegen::JsonCallError::InvalidArgs(
                 format!("invalid parameter for 'get': {e}"),
             ))?;
-        ice_rpc::gen::read_json(self.get(key).await, read).await
+        ice_rpc::codegen::read_json(self.get(key).await, read).await
     }
     /// The JSON view of `put`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
     async fn json_view_of_put(
         &self,
-        args: ice_rpc::gen::serde_json::Value,
-        read: ice_rpc::gen::ReadMode,
-    ) -> ice_rpc::gen::JsonResult {
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
         let key: String = {
             let __value = args
                 .get("key")
                 .cloned()
-                .unwrap_or(ice_rpc::gen::serde_json::Value::Null);
-            ice_rpc::gen::serde_json::from_value(__value)
+                .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
+            ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {
-                    ice_rpc::gen::JsonCallError::InvalidArgs(
+                    ice_rpc::codegen::JsonCallError::InvalidArgs(
                         format!("invalid parameter 'key' for 'put': {e}"),
                     )
                 })?
         };
         let value: Vec<u8> = {
-            use ice_rpc::gen::base64::Engine;
+            use ice_rpc::codegen::base64::Engine;
             let __text = args
                 .get("value")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| ice_rpc::gen::JsonCallError::InvalidArgs(
+                .ok_or_else(|| ice_rpc::codegen::JsonCallError::InvalidArgs(
                     "missing base64 string parameter 'value'".to_string(),
                 ))?;
-            ice_rpc::gen::base64::engine::general_purpose::STANDARD
+            ice_rpc::codegen::base64::engine::general_purpose::STANDARD
                 .decode(__text)
-                .map_err(|e| ice_rpc::gen::JsonCallError::InvalidArgs(
+                .map_err(|e| ice_rpc::codegen::JsonCallError::InvalidArgs(
                     format!("invalid base64 parameter 'value': {e}"),
                 ))?
         };
-        ice_rpc::gen::read_json(self.put(key, value).await, read).await
+        ice_rpc::codegen::read_json(self.put(key, value).await, read).await
     }
 }
 #[allow(missing_docs)]
-#[ice_rpc::gen::async_trait::async_trait]
-impl ice_rpc::gen::JsonInvoker for DatabaseApiProxy {
+#[ice_rpc::codegen::async_trait::async_trait]
+impl ice_rpc::codegen::JsonInvoker for DatabaseApiProxy {
     fn service_name(&self) -> &'static str {
-        <DatabaseApiProxy as ice_rpc::gen::ServiceNamed>::SERVICE_NAME
+        <DatabaseApiProxy as ice_rpc::codegen::ServiceNamed>::SERVICE_NAME
     }
     async fn invoke_json(
         &self,
         method: &str,
-        args: ice_rpc::gen::serde_json::Value,
-        read: ice_rpc::gen::ReadMode,
-    ) -> Option<ice_rpc::gen::JsonResult> {
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> Option<ice_rpc::codegen::JsonResult> {
         match method {
             "add" => Some(self.json_view_of_add(args, read).await),
             "get" => Some(self.json_view_of_get(args, read).await),
@@ -1155,13 +1190,16 @@ impl DatabaseApiDecoder {
     /// Registers this decoder into an observer registry.
     pub fn register(decoders: &mut ice_rpc::monitor::Decoders) {
         decoders
-            .register(ice_rpc::gen::service_id_of(Self::SERVICE_NAME), Self::build());
+            .register(
+                ice_rpc::codegen::service_id_of(Self::SERVICE_NAME),
+                Self::build(),
+            );
     }
 }
 #[allow(missing_docs)]
 #[allow(dead_code)]
-#[ice_rpc::gen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
-#[linkme(crate = ice_rpc::gen::linkme)]
+#[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
+#[linkme(crate = ice_rpc::codegen::linkme)]
 static __ICE_RPC_DECODER_DATABASEAPI: ice_rpc::monitor::DecoderRegistration = ice_rpc::monitor::DecoderRegistration {
     service_name: "Database",
     build: DatabaseApiDecoder::build,
@@ -1215,13 +1253,13 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
         }
     }
     fn method_name(&self, method_id: u32) -> ::std::option::Option<&'static str> {
-        if method_id == ice_rpc::gen::method_id_of("add") {
+        if method_id == ice_rpc::codegen::method_id_of("add") {
             return ::std::option::Option::Some("add");
         }
-        if method_id == ice_rpc::gen::method_id_of("get") {
+        if method_id == ice_rpc::codegen::method_id_of("get") {
             return ::std::option::Option::Some("get");
         }
-        if method_id == ice_rpc::gen::method_id_of("put") {
+        if method_id == ice_rpc::codegen::method_id_of("put") {
             return ::std::option::Option::Some("put");
         }
         ::std::option::Option::None
@@ -1229,5 +1267,5 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
 }
 #[allow(missing_docs)]
 #[doc(hidden)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 static __ICE_RPC_SVC_Database: u8 = 0;

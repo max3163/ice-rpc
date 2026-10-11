@@ -28,15 +28,15 @@
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]
 
-use ice_rpc::{service, Event, Observable, ObservableError, RpcError};
+use ice_rpc::{Event, Observable, ObservableError, RpcError, service};
 
 /// Boots ice-rpc once for the whole test binary.
 ///
 /// A per-test `ShutdownGuard` would cancel the global token when the first test
 /// ends, stopping the transport threads of every following test.
 fn init_global() {
-    static GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> = std::sync::OnceLock::new();
-    GUARD.get_or_init(ice_rpc::gen::init_without_ctrl_c);
+    static GUARD: std::sync::OnceLock<ice_rpc::codegen::ShutdownGuard> = std::sync::OnceLock::new();
+    GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
 /// Channel of this service: `#[service]` defaults the group to the logical name.
@@ -85,7 +85,7 @@ fn start_provider() {
 /// the **already framed** payload, which is exactly what a malformed peer would
 /// put on the wire.
 fn call_with_raw_payload(method: &str, payload: &[u8]) -> ObservableError<String> {
-    let stream = ice_rpc::gen::native_call::<i32, String>(
+    let stream = ice_rpc::codegen::native_call::<i32, String>(
         CHANNEL,
         <InvalidPayloadServiceProxy>::SERVICE,
         method,
@@ -116,8 +116,9 @@ fn an_undecodable_or_mismatched_payload_is_answered_immediately() {
     // only the routing knows it cannot serve this call; it must still be
     // answered rather than dropped.
     let request = InvalidPayloadServiceRequest::Other { value: 7 };
-    let payload = ice_rpc::gen::rkyv::to_bytes::<ice_rpc::gen::rkyv::rancor::Error>(&request)
-        .expect("the request is encodable");
+    let payload =
+        ice_rpc::codegen::rkyv::to_bytes::<ice_rpc::codegen::rkyv::rancor::Error>(&request)
+            .expect("the request is encodable");
 
     let mismatched = call_with_raw_payload("echo", &payload);
     assert_eq!(

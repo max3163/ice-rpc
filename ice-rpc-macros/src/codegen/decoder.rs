@@ -25,7 +25,7 @@ use super::helpers::is_unit_type;
 
 /// One RPC method, as needed by the decoder.
 pub struct DecoderMethod {
-    /// Method name; the wire carries its [`method_id_of`](ice_rpc::gen::method_id_of) only.
+    /// Method name; the wire carries its [`method_id_of`](ice_rpc::codegen::method_id_of) only.
     pub method_name: String,
     /// Generated request-enum variant of this method.
     pub var_name: Ident,
@@ -90,7 +90,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         // the name through this generated table, the same way it resolves a
         // service id through the decoder registry.
         method_name_arms.push(quote! {
-            if method_id == ice_rpc::gen::method_id_of(#method_lit) {
+            if method_id == ice_rpc::codegen::method_id_of(#method_lit) {
                 return ::std::option::Option::Some(#method_lit);
             }
         });
@@ -170,7 +170,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
 
             /// Registers this decoder into an observer registry.
             pub fn register(decoders: &mut ice_rpc::monitor::Decoders) {
-                decoders.register(ice_rpc::gen::service_id_of(Self::SERVICE_NAME), Self::build());
+                decoders.register(ice_rpc::codegen::service_id_of(Self::SERVICE_NAME), Self::build());
             }
         }
 
@@ -179,8 +179,8 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         // its symbols from its own crate path, so the generated code hands it the
         // facade's re-export — the service crate does not depend on `linkme`.
         #[allow(dead_code)]
-        #[ice_rpc::gen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
-        #[linkme(crate = ice_rpc::gen::linkme)]
+        #[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
+        #[linkme(crate = ice_rpc::codegen::linkme)]
         static #registration_name: ice_rpc::monitor::DecoderRegistration =
             ice_rpc::monitor::DecoderRegistration {
                 service_name: #logical_name_lit,

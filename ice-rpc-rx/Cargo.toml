@@ -2,7 +2,7 @@
 name = "ice-rpc-rx"
 version.workspace = true
 rust-version.workspace = true
-edition = "2021"
+edition = "2024"
 description = "Reactive stream layer of ice-rpc: Observable, operators, Subject and the execution facade"
 license = "Apache-2.0"
 repository = "https://github.com/max3163/ice-rpc"

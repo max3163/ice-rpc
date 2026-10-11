@@ -3,7 +3,7 @@
 //! Exposes a single method [`ConfigService::get`] returning the value
 //! associated with a key of the form `"section.field"` (e.g. `"database.url"`).
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// Error returned when a key is not found in the configuration.
 #[ice_rpc::payload]

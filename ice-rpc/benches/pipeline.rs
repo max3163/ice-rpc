@@ -17,11 +17,11 @@
 //! Run with: `cargo bench -p ice-rpc --bench pipeline`.
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use ice_rpc::rt::block_on;
 use ice_rpc::Observable;
+use ice_rpc::rt::block_on;
 
 /// Events pushed through every variant.
 const EVENTS: u32 = 100_000;

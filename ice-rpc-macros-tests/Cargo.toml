@@ -2,7 +2,7 @@
 name = "ice-rpc-macros-tests"
 version.workspace = true
 rust-version.workspace = true
-edition = "2021"
+edition = "2024"
 description = "Integration tests for the ice-rpc-macros procedural macros (not published)"
 license = "Apache-2.0"
 publish = false

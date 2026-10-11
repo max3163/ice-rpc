@@ -78,12 +78,14 @@ impl Termination {
 /// The historical mechanism, kept only as a fallback: it loses the signal to any
 /// other reader, which is exactly why the callback is preferred.
 fn spawn_polling_fallback() {
-    std::thread::spawn(|| loop {
-        if SignalHandler::termination_requested() {
-            request();
-            return;
+    std::thread::spawn(|| {
+        loop {
+            if SignalHandler::termination_requested() {
+                request();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     });
 }
 

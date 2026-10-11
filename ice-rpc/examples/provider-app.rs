@@ -41,8 +41,8 @@ use common::{
     WorkloadFilter, WorkloadProfile, WorkloadQuery, WorkloadScalars, WorkloadService,
     WorkloadServiceProxy,
 };
-use ice_rpc::{from, of, throw_error};
 use ice_rpc::{Observable, ObservableError, ServiceInit};
+use ice_rpc::{from, of, throw_error};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

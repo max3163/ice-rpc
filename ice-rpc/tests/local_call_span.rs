@@ -17,9 +17,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ice_rpc::gen::RpcHeader;
+use ice_rpc::codegen::RpcHeader;
 use ice_rpc::rt::block_on;
-use ice_rpc::{service, CallContext, Observable, TraceContext};
+use ice_rpc::{CallContext, Observable, TraceContext, service};
 
 /// The leaf the caller delegates to.
 #[service("DirectSpanLeaf")]
@@ -59,7 +59,7 @@ impl DirectSpanLeaf for Leaf {
 
         // The context is installed around **every** poll, not around the call: a
         // yield must not cost the leaf the identity of the call it is serving.
-        ice_rpc::gen::futures_lite::future::yield_now().await;
+        ice_rpc::codegen::futures_lite::future::yield_now().await;
         assert_eq!(
             CallContext::current().map(|ctx| ctx.method()),
             Some("reserve"),
@@ -156,7 +156,7 @@ fn a_direct_call_gets_its_own_context_and_a_span_parented_on_the_caller() {
     let seen = SEEN.lock().unwrap().expect("the leaf ran");
     assert_eq!(
         seen.service_id,
-        ice_rpc::gen::service_id_of("DirectSpanLeaf"),
+        ice_rpc::codegen::service_id_of("DirectSpanLeaf"),
         "the context names the callee's service"
     );
     assert_eq!(seen.method, "reserve", "and the callee's method");

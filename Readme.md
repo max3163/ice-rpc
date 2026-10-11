@@ -158,7 +158,7 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── sync.rs                 ← Poisoning-tolerant lock helper
 │   ├── config.rs               ← iceoryx2 effective configuration (inherits the
 │   │                              global one resolved by iceoryx2)
-│   ├── gen.rs                  ← Internal facade for the generated code (doc-hidden)
+│   ├── codegen.rs              ← Internal facade for the generated code (doc-hidden)
 │   └── json.rs                 ← the JSON contract: caller side + host side
 │
 ice-rpc-macros/                 ← Procedural macros crate
@@ -1116,7 +1116,7 @@ The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro genera
 1. **Match on the method name** → branches to the corresponding RPC method
 2. **JSON deserialization** → conversion of the parameters to the expected Rust types, reported as `JsonCallError::InvalidArgs` when they do not fit
 3. **RPC call** → call of the method on the proxy (local or IPC depending on the mode)
-4. **Reading** → `ice_rpc::gen::read_json(call, read)`: the one helper carrying the `First` / `All` policy and mapping a business failure onto `JsonCallError::Business`
+4. **Reading** → `ice_rpc::codegen::read_json(call, read)`: the one helper carrying the `First` / `All` policy and mapping a business failure onto `JsonCallError::Business`
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐

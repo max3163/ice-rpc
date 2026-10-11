@@ -25,15 +25,15 @@ mod wire;
 
 pub use consts::*;
 pub use context::{
-    call_scoped, local_call_scoped, next_span_id, BoxResponseFuture, CallContext, TraceContext,
+    BoxResponseFuture, CallContext, TraceContext, call_scoped, local_call_scoped, next_span_id,
 };
 
 // The transport installs the token of a call around every poll of its task; the
 // accessor itself is public, the installer stays inside the crate.
 pub(crate) use context::install_call_cancellation;
 pub use header::{
-    fmt_correlation_id, method_id_of, next_correlation_id, now_ns, parse_correlation_id,
-    service_id_of, EventKind, MethodId, RpcHeader, ServiceRef, CORRELATION_ID_LEN,
+    CORRELATION_ID_LEN, EventKind, MethodId, RpcHeader, ServiceRef, fmt_correlation_id,
+    method_id_of, next_correlation_id, now_ns, parse_correlation_id, service_id_of,
 };
 pub use node::*;
 pub use wire::WireEvent;
@@ -45,8 +45,8 @@ pub(crate) use wire::normalize_wire_event;
 // from which the transport and the generated code name their types.
 //
 // The two canonical terminals are a codegen seam: they are named through the
-// hidden `gen` module of `ice-rpc-rx`, not through its crate root.
-pub use ice_rpc_rx::gen::{collect_values, first_event};
+// hidden `codegen` module of `ice-rpc-rx`, not through its crate root.
+pub use ice_rpc_rx::codegen::{collect_values, first_event};
 pub use ice_rpc_rx::{
-    channel, unbounded_channel, Event, Observable, ObservableError, RpcError, Sender,
+    Event, Observable, ObservableError, RpcError, Sender, channel, unbounded_channel,
 };

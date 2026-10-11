@@ -35,7 +35,7 @@ pub enum Phase {
 struct Inner {
     phase: Phase,
     bridge: Option<Arc<NodeJsBridge>>,
-    guard: Option<ice_rpc::gen::ShutdownGuard>,
+    guard: Option<ice_rpc::codegen::ShutdownGuard>,
 }
 
 static STATE: Mutex<Inner> = Mutex::new(Inner {
@@ -92,7 +92,7 @@ pub fn begin_start() -> Result<(), GatewayError> {
 }
 
 /// Hands the resources to a reserved start. Call only after [`begin_start`].
-pub fn complete_start(bridge: Arc<NodeJsBridge>, guard: ice_rpc::gen::ShutdownGuard) {
+pub fn complete_start(bridge: Arc<NodeJsBridge>, guard: ice_rpc::codegen::ShutdownGuard) {
     let mut inner = lock();
     inner.bridge = Some(bridge);
     inner.guard = Some(guard);
@@ -116,7 +116,7 @@ pub fn bridge() -> Result<Arc<NodeJsBridge>, GatewayError> {
 /// The guard is *taken out* rather than dropped under the lock: the caller
 /// decides when the cancellation happens, so the lock is never held across an
 /// await point and a failed shutdown can still be retried.
-pub fn stop() -> Option<ice_rpc::gen::ShutdownGuard> {
+pub fn stop() -> Option<ice_rpc::codegen::ShutdownGuard> {
     let mut inner = lock();
     let guard = inner.guard.take();
     inner.bridge = None;

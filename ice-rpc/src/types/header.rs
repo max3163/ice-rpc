@@ -437,7 +437,24 @@ pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
 
 /// Formats a correlation id as a UUID-like hexadecimal string.
 pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
-    let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = cid;
+    let [
+        b0,
+        b1,
+        b2,
+        b3,
+        b4,
+        b5,
+        b6,
+        b7,
+        b8,
+        b9,
+        b10,
+        b11,
+        b12,
+        b13,
+        b14,
+        b15,
+    ] = cid;
     format!(
         "{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}-{b6:02x}{b7:02x}-\
          {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"

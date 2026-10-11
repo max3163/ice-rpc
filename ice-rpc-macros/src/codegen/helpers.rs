@@ -118,10 +118,10 @@ pub fn extract_rpc_result_types(ty: &Type) -> syn::Result<(Box<Type>, Box<Type>)
 pub fn extract_first_generic_arg(ty: &Type) -> Option<&Type> {
     if let Type::Path(type_path) = ty {
         let last_seg = type_path.path.segments.last()?;
-        if let PathArguments::AngleBracketed(ref args) = last_seg.arguments {
-            if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                return Some(inner);
-            }
+        if let PathArguments::AngleBracketed(ref args) = last_seg.arguments
+            && let Some(GenericArgument::Type(inner)) = args.args.first()
+        {
+            return Some(inner);
         }
     }
     None

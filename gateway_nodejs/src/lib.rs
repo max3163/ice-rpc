@@ -97,7 +97,7 @@ pub fn init(callback: Function<'_, Value, Unknown<'static>>) -> napi::Result<()>
     // `ShutdownGuard` cancels the ice-rpc tokens, which must not happen to a
     // gateway that is already running.
     state::begin_start().map_err(napi::Error::from)?;
-    let guard = ice_rpc::gen::init_without_ctrl_c();
+    let guard = ice_rpc::codegen::init_without_ctrl_c();
     state::complete_start(bridge, guard);
 
     // Registered once: the host reads the *running* bridge from the state on
@@ -275,7 +275,7 @@ impl napi::Task for ShutdownTask {
         // Take the guard out first: the gateway is no longer running, and
         // releasing the resources must not race a new `init`.
         let guard = state::stop();
-        ice_rpc::rt::block_on(ice_rpc::gen::shutdown_and_release());
+        ice_rpc::rt::block_on(ice_rpc::codegen::shutdown_and_release());
         drop(guard);
         Ok(())
     }
@@ -344,7 +344,7 @@ pub fn version() -> String {
     format!(
         "gateway-nodejs v{} (ice-rpc v{}, protocol v{})",
         env!("CARGO_PKG_VERSION"),
-        ice_rpc::gen::VERSION,
-        ice_rpc::gen::PROTOCOL_VERSION,
+        ice_rpc::codegen::VERSION,
+        ice_rpc::codegen::PROTOCOL_VERSION,
     )
 }

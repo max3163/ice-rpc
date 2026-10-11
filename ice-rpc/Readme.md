@@ -60,7 +60,7 @@ facade:
 - a service implementation is annotated with `#[ice_rpc::async_trait]`, the
   re-exported `async-trait` attribute — no `async-trait` dependency of your own;
 - everything `#[service]` generates names `log` (and the rest) through
-  `ice_rpc::gen`, so no `log` dependency of your own either.
+  `ice_rpc::codegen`, so no `log` dependency of your own either.
 
 **Backward compatible.** A crate that already depends on `rkyv` may keep
 `#[derive(rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]`, and one that
@@ -107,7 +107,7 @@ with `ice_rpc::rt::block_on` (no runtime required, any mode),
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
   stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
-  provider may use the raw channel via `ice_rpc::gen::channel::<T, E>(capacity)`.
+  provider may use the raw channel via `ice_rpc::codegen::channel::<T, E>(capacity)`.
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `blocking_call`, `sleep`,
   `block_on`, `oneshot` and `CancellationToken`. A **response deadline** is not
   one of them: it is the `timeout` operator on the stream a call returns.
@@ -156,7 +156,7 @@ impl MyService for MyServiceImpl {
         // Single response: this is just
         //     ice_rpc::of(format!("Hello {name} !"))
         // The raw channel stays available for long-lived push streams:
-        let (tx, rx) = ice_rpc::gen::channel::<String, MyError>(1);
+        let (tx, rx) = ice_rpc::codegen::channel::<String, MyError>(1);
         ice_rpc::rt::spawn(async move {
             let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
         });
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderJson`). |
 
 Internal concepts (`NodeId`, `WireEvent`, the transport entry points, …) are
-exposed through the doc-hidden `ice_rpc::gen` module and used by
+exposed through the doc-hidden `ice_rpc::codegen` module and used by
 `ice-rpc-macros`. The transport itself is a publish/subscribe pair of channels
 per service, correlated by a 16-byte id: see `ice_rpc::transport`.
 
@@ -365,7 +365,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 For a hand-written `main` (one calling `std::process::exit`, the N-API gateway,
-tests), the lifecycle lives in `ice_rpc::gen`: `let guard = ice_rpc::gen::init();`
+tests), the lifecycle lives in `ice_rpc::codegen`: `let guard = ice_rpc::codegen::init();`
 … `guard.shutdown().await;`.
 
 ## HTTP gateway (optional)

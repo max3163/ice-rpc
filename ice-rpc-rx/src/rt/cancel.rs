@@ -146,10 +146,10 @@ impl CancellationToken {
         }
         // The fast path: the waker is the one this task already registered, so
         // the list cannot tell us anything the flag above did not.
-        if let Some(cached) = registered.as_ref() {
-            if cached.will_wake(cx.waker()) {
-                return Poll::Pending;
-            }
+        if let Some(cached) = registered.as_ref()
+            && cached.will_wake(cx.waker())
+        {
+            return Poll::Pending;
         }
         // First poll of this task, or a different waker: the lock is paid here.
         let ready = self.poll_cancelled(cx);
@@ -309,9 +309,11 @@ mod tests {
         let mut registered = None;
 
         for _ in 0..5 {
-            assert!(token
-                .poll_cancelled_cached(&mut cx, &mut registered)
-                .is_pending());
+            assert!(
+                token
+                    .poll_cancelled_cached(&mut cx, &mut registered)
+                    .is_pending()
+            );
         }
         assert!(registered.is_some(), "the first poll must cache the waker");
         assert_eq!(counter.0.load(Ordering::SeqCst), 0, "nothing has fired yet");
@@ -322,9 +324,11 @@ mod tests {
             1,
             "one wake for the task, whatever the number of polls"
         );
-        assert!(token
-            .poll_cancelled_cached(&mut cx, &mut registered)
-            .is_ready());
+        assert!(
+            token
+                .poll_cancelled_cached(&mut cx, &mut registered)
+                .is_ready()
+        );
     }
 
     /// A **changed** waker is registered, and wakes the task that owns it.
@@ -341,17 +345,21 @@ mod tests {
 
         // First poll, with a no-op waker: the inline poll of `run_or_spawn`.
         let mut inline_cx = Context::from_waker(Waker::noop());
-        assert!(token
-            .poll_cancelled_cached(&mut inline_cx, &mut registered)
-            .is_pending());
+        assert!(
+            token
+                .poll_cancelled_cached(&mut inline_cx, &mut registered)
+                .is_pending()
+        );
 
         // The task is then polled by the executor, which hands it another waker.
         let counter = Arc::new(CountWakes::default());
         let waker = Waker::from(Arc::clone(&counter));
         let mut cx = Context::from_waker(&waker);
-        assert!(token
-            .poll_cancelled_cached(&mut cx, &mut registered)
-            .is_pending());
+        assert!(
+            token
+                .poll_cancelled_cached(&mut cx, &mut registered)
+                .is_pending()
+        );
 
         token.cancel();
         assert_eq!(
@@ -370,9 +378,11 @@ mod tests {
 
         let mut cx = Context::from_waker(Waker::noop());
         let mut registered = None;
-        assert!(token
-            .poll_cancelled_cached(&mut cx, &mut registered)
-            .is_ready());
+        assert!(
+            token
+                .poll_cancelled_cached(&mut cx, &mut registered)
+                .is_ready()
+        );
         assert!(
             registered.is_none(),
             "a cancelled token has nothing to cache"

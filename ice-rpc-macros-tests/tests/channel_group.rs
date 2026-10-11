@@ -8,12 +8,12 @@
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]
 
-use ice_rpc::{service, Event, Observable};
+use ice_rpc::{Event, Observable, service};
 
 /// Boots ice-rpc once for the whole test binary.
 fn init_global() {
-    static GUARD: std::sync::OnceLock<ice_rpc::gen::ShutdownGuard> = std::sync::OnceLock::new();
-    GUARD.get_or_init(ice_rpc::gen::init_without_ctrl_c);
+    static GUARD: std::sync::OnceLock<ice_rpc::codegen::ShutdownGuard> = std::sync::OnceLock::new();
+    GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
 #[service("GroupAlpha", group = "sharedchannel")]

@@ -15,8 +15,8 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
-use ice_rpc::gen::{
-    decode_aligned, serde_json, EventKind, JsonCallError, JsonInvoker, ReadMode, WireEvent,
+use ice_rpc::codegen::{
+    EventKind, JsonCallError, JsonInvoker, ReadMode, WireEvent, decode_aligned, serde_json,
 };
 use ice_rpc::{Observable, ServiceInit};
 use ice_rpc_macros::service;

@@ -1,21 +1,45 @@
-//! Contract test for the `#[doc(hidden)] pub mod gen` facade of `ice-rpc`.
+//! Contract test for the `#[doc(hidden)] pub mod codegen` facade of `ice-rpc`.
 //!
 //! `ice-rpc-macros` emits code that references every symbol below. Importing each
 //! one explicitly makes the test fail to compile as soon as one is renamed or
-//! removed: `gen` is semver-exempt for the consumers of `ice-rpc`, but **not**
+//! removed: `codegen` is semver-exempt for the consumers of `ice-rpc`, but **not**
 //! for `ice-rpc-macros`.
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 /// Referencing each symbol pins it in the compilation unit: a rename or a
-/// removal in `ice_rpc::gen` turns this function into a compile error.
+/// removal in `ice_rpc::codegen` turns this function into a compile error.
 #[test]
 fn gen_facade_symbols_resolve() {
     // Compiling this import list *is* the assertion: `allow(unused_imports)` is
     // required because pinning the symbols, not using them, is the point.
     #[allow(unused_imports)]
-    use ice_rpc::gen::{
+    use ice_rpc::codegen::{
         _ProviderService,
+        CollectEmitter,
+        DEFAULT_MAX_SLICE_LEN,
+        EventKind,
+        JSON_CALL_TIMEOUT,
+        JsonCallError,
+        JsonCallEvent,
+        JsonCallStream,
+        JsonInvoker,
+        JsonOutcome,
+        JsonResult,
+        LIVENESS_POLL_MS,
+        NodeId,
+        PROTOCOL_VERSION,
+        ReadMode,
+        ResponseEmitter,
+        RpcHeader,
+        SERVICE_NAME_LEN,
+        Sender,
+        ServiceConsumer,
+        ServiceDispatcher,
+        ServiceLifecycle,
+        ServiceNamed,
+        ShutdownGuard,
+        WireEvent,
         // Plumbing invoked by the generated entry points
         channel,
         clear_ipc_cleanup,
@@ -48,30 +72,6 @@ fn gen_facade_symbols_resolve() {
         unbounded_channel,
         unregister_node_liveness_watcher,
         wait_for_shutdown,
-        CollectEmitter,
-        EventKind,
-        JsonCallError,
-        JsonCallEvent,
-        JsonCallStream,
-        JsonInvoker,
-        JsonOutcome,
-        JsonResult,
-        NodeId,
-        ReadMode,
-        ResponseEmitter,
-        RpcHeader,
-        Sender,
-        ServiceConsumer,
-        ServiceDispatcher,
-        ServiceLifecycle,
-        ServiceNamed,
-        ShutdownGuard,
-        WireEvent,
-        DEFAULT_MAX_SLICE_LEN,
-        JSON_CALL_TIMEOUT,
-        LIVENESS_POLL_MS,
-        PROTOCOL_VERSION,
-        SERVICE_NAME_LEN,
     };
 
     // The symbols above are only valid as a set; no runtime behaviour is
@@ -82,12 +82,12 @@ fn gen_facade_symbols_resolve() {
 /// `rkyv`, `serde_json`, `base64`, `async_channel`, … itself.
 #[test]
 fn gen_dependency_reexports_resolve() {
-    let _ = core::any::type_name::<ice_rpc::gen::async_channel::Sender<u8>>();
-    let _ = core::any::type_name::<ice_rpc::gen::async_lock::Mutex<u8>>();
-    let _ = core::any::type_name::<ice_rpc::gen::futures_lite::future::Pending<()>>();
-    let _ = core::any::type_name::<ice_rpc::gen::iceoryx2::config::Config>();
-    let _ = core::any::type_name::<ice_rpc::gen::log::Level>();
-    let _ = core::any::type_name::<ice_rpc::gen::rkyv::rancor::Error>();
-    let _ = core::any::type_name::<ice_rpc::gen::serde_json::Value>();
-    let _ = ice_rpc::gen::base64::engine::general_purpose::STANDARD;
+    let _ = core::any::type_name::<ice_rpc::codegen::async_channel::Sender<u8>>();
+    let _ = core::any::type_name::<ice_rpc::codegen::async_lock::Mutex<u8>>();
+    let _ = core::any::type_name::<ice_rpc::codegen::futures_lite::future::Pending<()>>();
+    let _ = core::any::type_name::<ice_rpc::codegen::iceoryx2::config::Config>();
+    let _ = core::any::type_name::<ice_rpc::codegen::log::Level>();
+    let _ = core::any::type_name::<ice_rpc::codegen::rkyv::rancor::Error>();
+    let _ = core::any::type_name::<ice_rpc::codegen::serde_json::Value>();
+    let _ = ice_rpc::codegen::base64::engine::general_purpose::STANDARD;
 }

@@ -152,7 +152,7 @@ impl Config {
                         other => {
                             return Err(format!(
                                 "invalid --mode '{other}' (expected 'stats' or 'detail')"
-                            ))
+                            ));
                         }
                     };
                 }
@@ -177,7 +177,7 @@ impl Config {
                         other => {
                             return Err(format!(
                                 "invalid --trace-format '{other}' (expected 'json' or 'human')"
-                            ))
+                            ));
                         }
                     };
                 }

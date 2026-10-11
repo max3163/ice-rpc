@@ -96,10 +96,10 @@ where
         let mut this = self.project();
         match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
             Poll::Ready(Some(event)) => {
-                if event.is_terminal() {
-                    if let Some(f) = this.f.take() {
-                        f();
-                    }
+                if event.is_terminal()
+                    && let Some(f) = this.f.take()
+                {
+                    f();
                 }
                 Poll::Ready(Some(event))
             }

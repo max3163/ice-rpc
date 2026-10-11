@@ -3,7 +3,7 @@
 //! Provides people lookup queries (by last name/first name, by age).
 //! Depends on `ConfigService` for its connection configuration.
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// Error returned by the [`DatabaseService`] operations.
 #[ice_rpc::payload]

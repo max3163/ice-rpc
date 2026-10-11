@@ -193,14 +193,14 @@ fn wait_for_clean_exit(child: &mut Child) {
 fn child_provider() {
     // `init()` selects iceoryx2's native SIGINT/SIGTERM handling for the
     // transport `WaitSet`s. The returned guard must stay alive for the process.
-    let _guard = ice_rpc::gen::init();
+    let _guard = ice_rpc::codegen::init();
 
     // Start one real channel: spawning its dispatch thread is what creates the
     // `WaitSet` that arms iceoryx2's signal handler.
-    let _handle = ice_rpc::gen::spawn_native_service(
+    let _handle = ice_rpc::codegen::spawn_native_service(
         CHILD_SERVICE,
-        vec![ice_rpc::gen::ServiceDispatcher::new(
-            ice_rpc::gen::ServiceRef::new(ice_rpc::gen::service_id_of(CHILD_SERVICE), 1),
+        vec![ice_rpc::codegen::ServiceDispatcher::new(
+            ice_rpc::codegen::ServiceRef::new(ice_rpc::codegen::service_id_of(CHILD_SERVICE), 1),
         )],
         ice_rpc::global_cancel_token().clone(),
     );
@@ -212,7 +212,7 @@ fn child_provider() {
     println!("READY {}", std::process::id());
     let _ = std::io::stdout().flush();
 
-    pollster::block_on(ice_rpc::gen::wait_for_shutdown());
+    pollster::block_on(ice_rpc::codegen::wait_for_shutdown());
 
     println!("SHUTDOWN OK");
     let _ = std::io::stdout().flush();

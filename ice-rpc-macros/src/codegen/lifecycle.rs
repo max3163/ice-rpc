@@ -52,25 +52,25 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             #mode_name::ProviderJson => {
                 // The Node.js host implements the methods: each RPC method
                 // is bridged to the injected dispatch callback.
-                let mut dispatcher = ice_rpc::gen::ServiceDispatcher::new(#service_ref);
+                let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(#service_ref);
                 #(#json_provider_methods)*
                 // Registered on the channel: the channel thread starts
                 // once every provider of the process is registered.
                 // The channel's publishers are sized from this declaration; being
                 // a property of the channel, it is recorded once here.
-                ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
-                if let Err(e) = ice_rpc::gen::register_native_service(
+                ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                if let Err(e) = ice_rpc::codegen::register_native_service(
                     #group_lit,
                     #logical_name_lit,
                     dispatcher,
                 ) {
-                    ice_rpc::gen::log::error!(
+                    ice_rpc::codegen::log::error!(
                         "[{}] channel registration failed: {e:?}",
                         #logical_name_lit
                     );
                     return false;
                 }
-                ice_rpc::gen::log::info!(
+                ice_rpc::codegen::log::info!(
                     "[{}] JSON provider registered on channel '{}'.",
                     #logical_name_lit,
                     #group_lit
@@ -83,8 +83,8 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
     };
 
     quote! {
-        #[ice_rpc::gen::async_trait::async_trait]
-        impl ice_rpc::gen::ServiceLifecycle for #proxy_name {
+        #[ice_rpc::codegen::async_trait::async_trait]
+        impl ice_rpc::codegen::ServiceLifecycle for #proxy_name {
             async fn init(&self) -> bool {
                 let mut mode = self.mode.write().await;
                 match &mut *mode {
@@ -92,7 +92,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                     #mode_name::Provider { local_impl, init_hook, server_started } => {
                         if !*server_started {
                             if !init_hook.on_init().await {
-                                ice_rpc::gen::log::warn!("[{}] on_init() failed, retrying...",
+                                ice_rpc::codegen::log::warn!("[{}] on_init() failed, retrying...",
                                     stringify!(#trait_name));
                                 return false;
                             }
@@ -100,13 +100,13 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             // Registered on the channel; the channel thread starts
                             // in `initialize_all`, once every provider registered.
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
-                            ice_rpc::gen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
-                            if let Err(e) = ice_rpc::gen::register_native_service(
+                            ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                            if let Err(e) = ice_rpc::codegen::register_native_service(
                                 #group_lit,
                                 #logical_name_lit,
                                 dispatcher,
                             ) {
-                                ice_rpc::gen::log::error!(
+                                ice_rpc::codegen::log::error!(
                                     "[{}] channel registration failed: {e:?}",
                                     stringify!(#trait_name)
                                 );
@@ -114,7 +114,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             }
 
                             *server_started = true;
-                            ice_rpc::gen::log::info!(
+                            ice_rpc::codegen::log::info!(
                                 "[{}] native service registered on channel '{}'.",
                                 stringify!(#trait_name),
                                 #group_lit
@@ -127,14 +127,14 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
             }
         }
 
-        impl ice_rpc::gen::ServiceNamed for #proxy_name {
+        impl ice_rpc::codegen::ServiceNamed for #proxy_name {
             const SERVICE_NAME: &'static str = #logical_name_lit;
         }
 
-        #[ice_rpc::gen::async_trait::async_trait]
+        #[ice_rpc::codegen::async_trait::async_trait]
         impl ice_rpc::ServiceInit for #proxy_name {
             async fn on_init(&self) -> bool {
-                ice_rpc::gen::ServiceLifecycle::init(self).await
+                ice_rpc::codegen::ServiceLifecycle::init(self).await
             }
             fn dependencies(&self) -> Vec<&'static str> {
                 self.deps.clone()

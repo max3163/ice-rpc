@@ -8,8 +8,8 @@
 
 use iceoryx2::node::{NodeState as IoxNodeState, NodeView};
 use iceoryx2::prelude::*;
-use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::ServiceDetails;
+use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 
 use crate::labels::impl_labels;
 use crate::types::RpcError;

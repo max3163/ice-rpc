@@ -74,7 +74,7 @@ impl ServiceType {
 }
 
 async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
-    let cancel = ice_rpc::gen::global_cancel_token();
+    let cancel = ice_rpc::codegen::global_cancel_token();
 
     macro_rules! run_query {
         ($label:expr, $query:expr, $handler:expr) => {{
@@ -227,7 +227,7 @@ async fn run_database_queries(db: &DatabaseServiceProxy) -> bool {
 }
 
 async fn run_context_queries(ctx: &ContextServiceProxy) -> bool {
-    let cancel = ice_rpc::gen::global_cancel_token();
+    let cancel = ice_rpc::codegen::global_cancel_token();
 
     macro_rules! run_query {
         ($label:expr, $query:expr, $handler:expr) => {{
@@ -548,7 +548,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let cancel = ice_rpc::gen::global_cancel_token();
+    let cancel = ice_rpc::codegen::global_cancel_token();
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
 

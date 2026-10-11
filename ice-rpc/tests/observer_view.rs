@@ -14,14 +14,14 @@
 
 use std::time::Duration;
 
-use ice_rpc::gen::{
-    rkyv, serialize_and_call, service_id_of, EventKind, RpcHeader, ServiceDispatcher, ServiceRef,
-    WireEvent,
+use ice_rpc::CancellationToken;
+use ice_rpc::codegen::{
+    EventKind, RpcHeader, ServiceDispatcher, ServiceRef, WireEvent, rkyv, serialize_and_call,
+    service_id_of,
 };
 use ice_rpc::transport::{
-    discover_channels, native_call, spawn_native_service, Direction, DirectionView, Emitter,
+    Direction, DirectionView, Emitter, discover_channels, native_call, spawn_native_service,
 };
-use ice_rpc::CancellationToken;
 
 /// Encodes one `Next` sample the way a provider does.
 fn encode_next(value: i32) -> Vec<u8> {

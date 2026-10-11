@@ -313,7 +313,7 @@ fn collect_values_gathers_values_and_reports_business_error() {
 }
 
 use super::{from, of, throw_error};
-use crate::gen::{collect_values, first_event};
+use crate::codegen::{collect_values, first_event};
 use crate::{Event, ObservableError};
 use std::convert::Infallible;
 
@@ -492,8 +492,8 @@ fn throw_error_emits_business_error() {
 /// `defer` runs its factory at the first poll, never before, and only once.
 #[test]
 fn defer_defers_its_factory_to_the_first_poll() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();

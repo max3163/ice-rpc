@@ -1,7 +1,7 @@
 //! Tests for pipelines that cross operator categories.
 
-use crate::transform::test_support::{drain, local};
 use crate::Event;
+use crate::transform::test_support::{drain, local};
 
 #[test]
 fn map_filter_take_pipeline() {

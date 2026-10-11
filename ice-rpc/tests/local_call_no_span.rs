@@ -15,9 +15,9 @@
 
 use std::sync::Mutex;
 
-use ice_rpc::gen::RpcHeader;
+use ice_rpc::codegen::RpcHeader;
 use ice_rpc::rt::block_on;
-use ice_rpc::{service, CallContext, Observable};
+use ice_rpc::{CallContext, Observable, service};
 
 /// The leaf the caller delegates to.
 #[service("DirectPlainLeaf")]

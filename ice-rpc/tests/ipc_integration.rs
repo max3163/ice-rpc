@@ -4,7 +4,7 @@
 //! iceoryx2 node and the global lock do not conflict with the unit tests.
 
 #![allow(clippy::unwrap_used)]
-use ice_rpc::gen::{rkyv, service_id_of, EventKind, ServiceDispatcher, ServiceRef, WireEvent};
+use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
 use ice_rpc::transport::{native_call, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
@@ -61,7 +61,7 @@ fn native_request_response_streams_then_completes() {
 /// channel into `Next` followed by `Complete`.
 #[test]
 fn stream_recv_normalizes_complete_with_as_next_then_complete() {
-    let (tx, mut rx) = ice_rpc::gen::channel::<i32, String>(4);
+    let (tx, mut rx) = ice_rpc::codegen::channel::<i32, String>(4);
     pollster::block_on(tx.send_complete_with(42)).unwrap();
     drop(tx);
 

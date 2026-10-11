@@ -1,7 +1,7 @@
 //! Command-line entry point of the ice-rpc out-of-band observer.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ice_rpc_monitor::cleanup;
@@ -9,7 +9,7 @@ use ice_rpc_monitor::config::{Config, HELP};
 use ice_rpc_monitor::console::{self, LiveConsole};
 use ice_rpc_monitor::metrics::Metrics;
 use ice_rpc_monitor::shutdown::{self, Termination};
-use ice_rpc_monitor::{prometheus, Monitor};
+use ice_rpc_monitor::{Monitor, prometheus};
 
 /// Refresh interval of the live console view.
 const LIVE_REFRESH: Duration = Duration::from_millis(1000);
@@ -57,10 +57,10 @@ fn main() {
     }
 
     let metrics = Arc::new(Metrics::new());
-    if let Some(addr) = config.prometheus_addr {
-        if let Err(e) = prometheus::serve(addr, metrics.clone()) {
-            eprintln!("failed to start the Prometheus endpoint: {e}");
-        }
+    if let Some(addr) = config.prometheus_addr
+        && let Err(e) = prometheus::serve(addr, metrics.clone())
+    {
+        eprintln!("failed to start the Prometheus endpoint: {e}");
     }
 
     // A persistent signal callback sets the shutdown flag once, so the loops no

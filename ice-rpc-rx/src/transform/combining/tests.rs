@@ -118,8 +118,8 @@ fn merge_future_matches_the_observable_form() {
 /// merely built.
 #[test]
 fn merge_does_not_run_the_future_before_a_poll() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_in = Arc::clone(&calls);
@@ -136,8 +136,10 @@ fn merge_does_not_run_the_future_before_a_poll() {
 
     let events = pollster::block_on(drain(stream));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::Next(v) if *v == 99)));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Next(v) if *v == 99))
+    );
     assert!(matches!(events.last(), Some(Event::Complete)));
 }

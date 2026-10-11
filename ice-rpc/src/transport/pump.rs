@@ -11,7 +11,7 @@ use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::signal::SignalHandler;
 
 use super::waitset::wait_for_wakeup;
-use super::{Direction, Iox, IoxListener, IoxSubscriber, IDLE_SPINS, SIGNAL_CHECK_SAMPLES};
+use super::{Direction, IDLE_SPINS, Iox, IoxListener, IoxSubscriber, SIGNAL_CHECK_SAMPLES};
 use crate::types::RpcHeader;
 
 /// Drains `subscriber` until `stop` returns `true` or the process is asked to

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use ice_rpc::monitor::Direction;
 
-use super::{direction_label, Histogram};
+use super::{Histogram, direction_label};
 
 /// Sums several histograms into one, sharing the same bounds.
 pub(super) fn merge<'a>(

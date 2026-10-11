@@ -36,11 +36,11 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use iceoryx2::prelude::*;
 use iceoryx2::service::{ipc, ipc_threadsafe};
 
-use ice_rpc::gen::RpcHeader;
+use ice_rpc::codegen::RpcHeader;
 
 /// The alignment the transport requests for its payloads.
 const PAYLOAD_ALIGNMENT: usize = 16;

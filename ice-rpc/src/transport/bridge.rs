@@ -160,15 +160,15 @@ where
     T: Send + 'static,
     E: Send + 'static,
     for<'a> WireEvent<T, E>: rkyv::Serialize<
-        rkyv::rancor::Strategy<
-            rkyv::ser::Serializer<
-                rkyv::util::AlignedVec,
-                rkyv::ser::allocator::ArenaHandle<'a>,
-                rkyv::ser::sharing::Share,
+            rkyv::rancor::Strategy<
+                rkyv::ser::Serializer<
+                    rkyv::util::AlignedVec,
+                    rkyv::ser::allocator::ArenaHandle<'a>,
+                    rkyv::ser::sharing::Share,
+                >,
+                rkyv::rancor::Error,
             >,
-            rkyv::rancor::Error,
         >,
-    >,
 {
     let mut scratch = AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY);
     // Pinned on the stack: `Observable` is not `Unpin`, and this costs no

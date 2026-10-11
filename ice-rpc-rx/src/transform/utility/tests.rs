@@ -5,8 +5,8 @@ use crate::{Event, ObservableError};
 
 #[test]
 fn finalize_runs_on_complete() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
@@ -26,8 +26,8 @@ fn finalize_runs_on_complete() {
 
 #[test]
 fn finalize_runs_on_source_channel_close() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
@@ -45,8 +45,8 @@ fn finalize_runs_on_source_channel_close() {
 
 #[test]
 fn finalize_runs_on_error() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let finalized = Arc::new(AtomicBool::new(false));
@@ -67,8 +67,8 @@ fn finalize_runs_on_error() {
 
 #[test]
 fn tap_runs_side_effect() {
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let seen = Arc::new(AtomicI32::new(0));
@@ -88,8 +88,8 @@ fn tap_runs_side_effect() {
 
 #[test]
 fn tap_does_not_touch_terminal_events() {
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let (tx, rx) = crate::channel::<i32, String>(8);
     let seen = Arc::new(AtomicI32::new(0));

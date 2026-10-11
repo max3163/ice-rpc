@@ -17,7 +17,7 @@ const ABSENT_CHANNEL: &str = "IceRpcAbsentProvider";
 
 #[test]
 fn a_call_waiting_for_an_absent_provider_aborts_on_shutdown() {
-    let cancel: &'static CancellationToken = ice_rpc::gen::global_cancel_token();
+    let cancel: &'static CancellationToken = ice_rpc::codegen::global_cancel_token();
     let watcher = cancel.clone();
     std::thread::spawn(move || {
         // Long enough for the call to be well inside the wait loop, short enough
@@ -27,9 +27,9 @@ fn a_call_waiting_for_an_absent_provider_aborts_on_shutdown() {
     });
 
     let started = Instant::now();
-    let result = ice_rpc::gen::native_call::<i32, String>(
+    let result = ice_rpc::codegen::native_call::<i32, String>(
         ABSENT_CHANNEL,
-        ice_rpc::gen::ServiceRef::new(0xDEAD_BEEF, 1),
+        ice_rpc::codegen::ServiceRef::new(0xDEAD_BEEF, 1),
         "ping",
         b"go",
     );

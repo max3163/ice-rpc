@@ -74,7 +74,7 @@ fn fmt_bytes(bytes: usize) -> String {
 }
 
 async fn run_http_query(http: &HttpServiceProxy, label: &str, payload_size: usize) -> bool {
-    let cancel = ice_rpc::gen::global_cancel_token();
+    let cancel = ice_rpc::codegen::global_cancel_token();
 
     let body = generate_payload(payload_size, label);
     let request = HttpRequestParams {
@@ -282,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("╚══════════════════════════════════════════════════════════════╝");
     log::info!("");
 
-    let cancel = ice_rpc::gen::global_cancel_token();
+    let cancel = ice_rpc::codegen::global_cancel_token();
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
 

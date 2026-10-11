@@ -3,7 +3,7 @@
 //! Stores metadata, environment variables and session tokens.
 //! Implemented in Node.js through the `ProviderJson` mode of the ice-rpc Proxy.
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// Context entry associating a key with its value.
 #[ice_rpc::payload]

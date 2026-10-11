@@ -28,7 +28,7 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
 - With the `json` feature only: the rkyv ↔ `serde_json::Value` converters
   (`deserialize_request_to_value`, `serialize_response_from_value`), the
   `ProviderJson` mode of the proxy and its `provide_json()` constructor;
-- With the `json` **or** `http` feature: `impl ice_rpc::gen::JsonInvoker for
+- With the `json` **or** `http` feature: `impl ice_rpc::codegen::JsonInvoker for
   DatabaseServiceProxy` — the single JSON view every JSON transport dispatches
   to. The reading mode (`ReadMode::First` / `ReadMode::All`) is an argument of
   `invoke_json`, so one match table serves the single-value and the streaming

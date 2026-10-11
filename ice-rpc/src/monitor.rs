@@ -29,10 +29,10 @@
 mod decode;
 mod inventory;
 
-pub use crate::transport::{decode_aligned, discover_channels, Direction, DirectionView, Emitter};
+pub use crate::transport::{Direction, DirectionView, Emitter, decode_aligned, discover_channels};
 
 pub use decode::{
-    decode_request, decode_response, decode_response_unit, ClosureDecoder, Decoders, ServiceDecoder,
+    ClosureDecoder, Decoders, ServiceDecoder, decode_request, decode_response, decode_response_unit,
 };
 
 // The link-time registration surface: `#[service]` submits one entry per service
@@ -40,10 +40,10 @@ pub use decode::{
 // reads the slice back. Both names are that feature's, so they are re-exported
 // under the same condition.
 #[cfg(feature = "monitoring")]
-pub use decode::{DecoderRegistration, DECODERS};
+pub use decode::{DECODERS, DecoderRegistration};
 pub use inventory::{
-    iceoryx2_layout, list_nodes, list_services, Iceoryx2Layout, NodeHealth, NodeInfo, ServiceInfo,
-    ServiceRole,
+    Iceoryx2Layout, NodeHealth, NodeInfo, ServiceInfo, ServiceRole, iceoryx2_layout, list_nodes,
+    list_services,
 };
 
 // Plumbing of the code generated with the `monitoring` feature: `render_value!`

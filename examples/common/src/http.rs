@@ -3,7 +3,7 @@
 //! Illustrates iceoryx2's ability to transfer several megabytes through
 //! shared memory without any superfluous copy (zero-copy).
 
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
 /// Parameters of an HTTP request to transmit.
 #[ice_rpc::payload]

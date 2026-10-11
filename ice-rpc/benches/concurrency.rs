@@ -7,15 +7,15 @@
 //! Run with: `cargo bench -p ice-rpc`.
 
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::{Arc, Barrier};
 
-use ice_rpc::gen::async_lock::Mutex as AsyncMutex;
-use ice_rpc::gen::futures_lite::future::block_on;
-use ice_rpc::gen::rkyv::api::high::to_bytes_in;
-use ice_rpc::gen::rkyv::rancor::Error as RkyvError;
-use ice_rpc::gen::rkyv::util::AlignedVec;
-use ice_rpc::gen::rkyv::{Archive, Deserialize, Serialize};
+use ice_rpc::codegen::async_lock::Mutex as AsyncMutex;
+use ice_rpc::codegen::futures_lite::future::block_on;
+use ice_rpc::codegen::rkyv::api::high::to_bytes_in;
+use ice_rpc::codegen::rkyv::rancor::Error as RkyvError;
+use ice_rpc::codegen::rkyv::util::AlignedVec;
+use ice_rpc::codegen::rkyv::{Archive, Deserialize, Serialize};
 
 /// Serializations executed per thread in each iteration.
 const PER_THREAD: usize = 10_000;

@@ -20,10 +20,10 @@ use iceoryx2::service::header::publish_subscribe::Header as SampleHeader;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::{Service, ServiceDetails};
 
-use super::open::{open_event_service, open_service, OpenMode};
+use super::open::{OpenMode, open_event_service, open_service};
 use super::{
-    shared_node, transport_error, Direction, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber,
-    REQUEST_SUFFIX, RESPONSE_SUFFIX,
+    Direction, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber, REQUEST_SUFFIX,
+    RESPONSE_SUFFIX, shared_node, transport_error,
 };
 use crate::types::{RpcError, RpcHeader};
 
@@ -244,10 +244,9 @@ pub fn discover_channels() -> Result<Vec<String>, RpcError> {
         if matches!(
             details.static_details.messaging_pattern(),
             MessagingPattern::PublishSubscribe(_)
-        ) {
-            if let Some(channel) = strip_direction_suffix(details.static_details.name().as_str()) {
-                channels.insert(channel.to_owned());
-            }
+        ) && let Some(channel) = strip_direction_suffix(details.static_details.name().as_str())
+        {
+            channels.insert(channel.to_owned());
         }
         CallbackProgression::Continue
     })

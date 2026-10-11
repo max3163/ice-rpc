@@ -2,7 +2,7 @@
 name = "ice-rpc-monitor"
 version.workspace = true
 rust-version.workspace = true
-edition = "2021"
+edition = "2024"
 description = "Out-of-band observer for ice-rpc: Prometheus metrics and correlation-id traces"
 license = "Apache-2.0"
 publish = false

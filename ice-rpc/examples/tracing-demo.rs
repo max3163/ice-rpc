@@ -77,11 +77,11 @@
 #![allow(missing_docs)] // test/example target: documented by Readme.md, not part of a published API
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 use async_trait::async_trait;
-use ice_rpc::{service, CallContext, Observable, ServiceInit};
+use ice_rpc::{CallContext, Observable, ServiceInit, service};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 /// Acknowledgment returned by [`OrderService::place_order`].
 #[derive(

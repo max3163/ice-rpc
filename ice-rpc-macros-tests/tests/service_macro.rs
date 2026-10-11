@@ -6,7 +6,7 @@
 // `#[service]` MUST be placed before `#[async_trait::async_trait]`, and the
 // trait MUST have `Send + Sync + 'static` as supertraits.
 
-use ice_rpc::gen::ServiceNamed;
+use ice_rpc::codegen::ServiceNamed;
 use ice_rpc::{self, Observable, ServiceInit};
 use ice_rpc_macros::service;
 

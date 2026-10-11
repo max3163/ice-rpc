@@ -16,18 +16,18 @@ pub(super) fn render(inner: &Inner) -> String {
     out.push_str("# TYPE ice_rpc_requests_total counter\n");
     for ((channel, service, method), value) in &inner.requests {
         let _ = writeln!(
-                out,
-                "ice_rpc_requests_total{{channel=\"{channel}\",service=\"{service}\",method=\"{method}\"}} {value}"
-            );
+            out,
+            "ice_rpc_requests_total{{channel=\"{channel}\",service=\"{service}\",method=\"{method}\"}} {value}"
+        );
     }
 
     out.push_str("# HELP ice_rpc_responses_total Response samples observed on the bus\n");
     out.push_str("# TYPE ice_rpc_responses_total counter\n");
     for ((channel, service, kind), value) in &inner.responses {
         let _ = writeln!(
-                out,
-                "ice_rpc_responses_total{{channel=\"{channel}\",service=\"{service}\",kind=\"{kind}\"}} {value}"
-            );
+            out,
+            "ice_rpc_responses_total{{channel=\"{channel}\",service=\"{service}\",kind=\"{kind}\"}} {value}"
+        );
     }
 
     out.push_str("# HELP ice_rpc_latency_seconds Exact request-to-first-response latency\n");
@@ -107,9 +107,9 @@ pub(super) fn render(inner: &Inner) -> String {
     out.push_str("# TYPE ice_rpc_node_info gauge\n");
     for ((pid, state, executable), value) in &inner.node_info {
         let _ = writeln!(
-                out,
-                "ice_rpc_node_info{{pid=\"{pid}\",state=\"{state}\",executable=\"{executable}\"}} {value}"
-            );
+            out,
+            "ice_rpc_node_info{{pid=\"{pid}\",state=\"{state}\",executable=\"{executable}\"}} {value}"
+        );
     }
 
     out.push_str(

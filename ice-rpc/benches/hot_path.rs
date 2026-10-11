@@ -29,7 +29,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rkyv::api::high::to_bytes_in;
 use rkyv::rancor::Error;
 use rkyv::util::AlignedVec;
@@ -159,7 +159,7 @@ fn bench_response_decoding(c: &mut Criterion) {
 fn bench_per_poll(c: &mut Criterion) {
     use std::task::{Context, Waker};
 
-    let header = ice_rpc::gen::RpcHeader::request("get_user_age", 7, 1);
+    let header = ice_rpc::codegen::RpcHeader::request("get_user_age", 7, 1);
     let ctx = ice_rpc::CallContext::new(&header, "Calculator", "get_user_age");
 
     let token = ice_rpc::CancellationToken::new();
@@ -239,7 +239,7 @@ fn bench_misc(c: &mut Criterion) {
     // otherwise apply, so this is the cost of the call **before** optimization:
     // an upper bound for the call sites of the generated code.
     group.bench_function("service_id_of_literal_call", |b| {
-        b.iter(|| black_box(ice_rpc::gen::service_id_of("calculator")))
+        b.iter(|| black_box(ice_rpc::codegen::service_id_of("calculator")))
     });
     group.finish();
 }

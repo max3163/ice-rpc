@@ -1,7 +1,7 @@
 //! Tests for the conditional operators.
 
-use crate::transform::test_support::{drain, is_technical, local};
 use crate::Event;
+use crate::transform::test_support::{drain, is_technical, local};
 
 #[test]
 fn take_until_token_emits_cancelled_when_the_token_fires() {
@@ -125,8 +125,8 @@ fn take_until_future_notifier_matches_the_observable_form() {
 /// merely built.
 #[test]
 fn take_until_does_not_run_the_future_before_a_poll() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_in = Arc::clone(&calls);

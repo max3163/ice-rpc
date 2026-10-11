@@ -15,7 +15,7 @@
 //! - `fx`  — [`FxHasher`], one rotate/xor/multiply per 64-bit word;
 //! - `id`  — [`IdentityHasher`], valid only for the small integral `u32` keys.
 //!
-//! `fx` and `id` are the **shipped** hashers, imported from `ice_rpc::gen`
+//! `fx` and `id` are the **shipped** hashers, imported from `ice_rpc::codegen`
 //! (the crate's internal facade), so this bench prices the real implementation
 //! rather than a copy of it: a change to `src/hash.rs` moves these numbers.
 //!
@@ -40,8 +40,8 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault};
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use ice_rpc::gen::{FxHasher, IdentityHasher};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use ice_rpc::codegen::{FxHasher, IdentityHasher};
 
 /// The map types the three candidates stand for.
 type SipMap<K, V> = HashMap<K, V>;

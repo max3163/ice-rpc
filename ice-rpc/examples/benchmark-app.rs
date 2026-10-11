@@ -933,37 +933,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         failed = true;
     }
 
-    if !cfg.json {
-        if let Some(db) = &db_proxy {
-            log::info!("");
-            log::info!("=== get_person DEMO (3 calls) ===");
-            let demo_queries: &[(&str, &str)] = &[
-                ("Dupont", "Jean"),
-                ("Martin", "Marie"),
-                ("Bernard", "Pierre"),
-            ];
-            for (nom, prenom) in demo_queries {
-                let query = PersonneQuery {
-                    nom: nom.to_string(),
-                    prenom: prenom.to_string(),
-                };
-                let mut rx = db.get_person(query).await;
-                match rx.recv().await {
-                    Ok(ice_rpc::Event::Next(info)) => {
-                        log::info!(
-                            "  {} {} — {} years old, {}, {}",
-                            info.nom,
-                            info.prenom,
-                            info.age,
-                            info.ville,
-                            info.profession
-                        );
-                    }
-                    Ok(ice_rpc::Event::Error(e)) => {
-                        log::warn!("  {} {} — Error: {}", nom, prenom, e);
-                    }
-                    _ => log::warn!("  {} {} — No response", nom, prenom),
+    if !cfg.json
+        && let Some(db) = &db_proxy
+    {
+        log::info!("");
+        log::info!("=== get_person DEMO (3 calls) ===");
+        let demo_queries: &[(&str, &str)] = &[
+            ("Dupont", "Jean"),
+            ("Martin", "Marie"),
+            ("Bernard", "Pierre"),
+        ];
+        for (nom, prenom) in demo_queries {
+            let query = PersonneQuery {
+                nom: nom.to_string(),
+                prenom: prenom.to_string(),
+            };
+            let mut rx = db.get_person(query).await;
+            match rx.recv().await {
+                Ok(ice_rpc::Event::Next(info)) => {
+                    log::info!(
+                        "  {} {} — {} years old, {}, {}",
+                        info.nom,
+                        info.prenom,
+                        info.age,
+                        info.ville,
+                        info.profession
+                    );
                 }
+                Ok(ice_rpc::Event::Error(e)) => {
+                    log::warn!("  {} {} — Error: {}", nom, prenom, e);
+                }
+                _ => log::warn!("  {} {} — No response", nom, prenom),
             }
         }
     }

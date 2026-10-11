@@ -219,7 +219,7 @@ fn the_default_naming_of_a_bare_trait_is_pinned() {
     // `prettyplease` decides where to break the call and whether it needs a
     // trailing comma, but it cannot invent the `u16` suffix nor the version.
     assert!(
-        compact(&rendered).contains("ice_rpc::gen::service_id_of(\"calculator\"),1u16"),
+        compact(&rendered).contains("ice_rpc::codegen::service_id_of(\"calculator\"),1u16"),
         "the identity must be built from the fallback name and version: {rendered}"
     );
 }
@@ -268,7 +268,7 @@ fn every_optional_block_follows_its_own_flag() {
                 );
                 // One JSON view per service, whichever JSON feature asked for it.
                 assert_eq!(
-                    rendered.contains("impl ice_rpc::gen::JsonInvoker"),
+                    rendered.contains("impl ice_rpc::codegen::JsonInvoker"),
                     json || http,
                     "the JsonInvoker implementation must follow `json` or `http`, in {features}"
                 );

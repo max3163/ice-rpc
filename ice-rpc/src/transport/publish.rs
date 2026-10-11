@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::signal::SignalHandler;
 
-use super::{transport_error, IoxPubSub, IoxPublisher, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS};
+use super::{IoxPubSub, IoxPublisher, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, transport_error};
 use crate::types::{RpcError, RpcHeader};
 
 /// Publishes `header ++ payload` on `publisher`, retrying until at least one
@@ -119,8 +119,8 @@ pub(super) fn try_publish(
 
 #[cfg(test)]
 mod tests {
-    use super::super::open::{open_service, OpenMode};
-    use super::super::{shared_node, DEFAULT_MAX_SLICE_LEN, REQUEST_SUFFIX};
+    use super::super::open::{OpenMode, open_service};
+    use super::super::{DEFAULT_MAX_SLICE_LEN, REQUEST_SUFFIX, shared_node};
     use super::*;
 
     /// `try_publish` answers "did anyone take it?", and both answers matter:

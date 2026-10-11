@@ -20,8 +20,9 @@ use iceoryx2::service::builder::publish_subscribe::{
     PublishSubscribeCreateError, PublishSubscribeOpenError, PublishSubscribeOpenOrCreateError,
 };
 
-use super::{transport_error, IoxEvent, IoxNode, IoxPubSub, PAYLOAD_ALIGNMENT};
+use super::{transport_error, IoxEvent, IoxNode, IoxPubSub, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT};
 use crate::types::{RpcError, RpcHeader};
+use crate::CancellationToken;
 
 /// Whether opening a service may create it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +112,40 @@ pub(super) fn open_event_service(
         OpenMode::ReadOnly => builder
             .open()
             .map_err(|e| event_open_error("open event service (read-only)", e)),
+    }
+}
+
+/// Retries `attempt_open` while it fails with a retryable error, until it
+/// succeeds, the budget runs out, or `stop` is cancelled.
+///
+/// iceoryx2 classifies the transient races — `SystemInFlux`, and the
+/// `InternalFailure` a concurrent create yields on Windows — as retryable; this
+/// loop is what makes that true, for the provider opening on its own thread and
+/// the consumer opening on its first call. A non-retryable failure returns at
+/// once, remedy included, and a cancelled `stop` returns after the sleep in
+/// progress.
+pub(super) fn retry_open<T>(
+    channel: &str,
+    attempts: u32,
+    stop: &CancellationToken,
+    mut attempt_open: impl FnMut() -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    let mut attempt = 0;
+    loop {
+        match attempt_open() {
+            Ok(opened) => return Ok(opened),
+            Err(e) if !e.is_retryable() || attempt >= attempts || stop.is_cancelled() => {
+                return Err(e)
+            }
+            Err(e) => {
+                attempt += 1;
+                log::warn!(
+                    "[transport] '{channel}': {e} — attempt {attempt}/{attempts}, retrying in {:?}",
+                    OPEN_RETRY_SLEEP
+                );
+                std::thread::sleep(OPEN_RETRY_SLEEP);
+            }
+        }
     }
 }
 
@@ -411,5 +446,72 @@ mod tests {
             matches!(&event_transient, RpcError::TransportError(_)),
             "{event_transient:?}"
         );
+    }
+
+    /// A token nobody cancelled: the retries run their course.
+    fn running() -> CancellationToken {
+        CancellationToken::new()
+    }
+
+    /// The race `SystemInFlux` describes is transient: it must be retried, and
+    /// the loop must return what the successful attempt produced.
+    #[test]
+    fn a_retryable_open_failure_is_retried_until_it_succeeds() {
+        let mut attempts = 0;
+        let opened = retry_open("chan", 5, &running(), || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(RpcError::TransportError("SystemInFlux".to_string()))
+            } else {
+                Ok(attempts)
+            }
+        });
+
+        assert_eq!(opened.unwrap(), 3);
+        assert_eq!(attempts, 3, "two failures then one success");
+    }
+
+    /// A service left behind by another build cannot be fixed by retrying: the
+    /// caller must get the error — and the remedy it carries — immediately.
+    #[test]
+    fn a_stale_open_failure_is_not_retried() {
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 5, &running(), || {
+            attempts += 1;
+            Err(RpcError::ProtocolMismatch("stale service".to_string()))
+        });
+
+        assert!(opened.is_err());
+        assert_eq!(attempts, 1, "not one wasted attempt on a stale service");
+    }
+
+    /// The budget is a budget: it is spent, then the error comes out.
+    #[test]
+    fn the_retry_budget_is_finite() {
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 2, &running(), || {
+            attempts += 1;
+            Err(RpcError::TransportError("SystemInFlux".to_string()))
+        });
+
+        assert!(matches!(opened, Err(RpcError::TransportError(_))));
+        assert_eq!(attempts, 3, "the first attempt plus the two retries");
+    }
+
+    /// A shutdown request ends the wait at once: the worst case of a Ctrl+C is
+    /// the sleep in progress, not the whole budget.
+    #[test]
+    fn a_cancelled_shutdown_stops_the_retries() {
+        let stop = CancellationToken::new();
+        stop.cancel();
+
+        let mut attempts = 0;
+        let opened = retry_open::<()>("chan", 5, &stop, || {
+            attempts += 1;
+            Err(RpcError::TransportError("SystemInFlux".to_string()))
+        });
+
+        assert!(opened.is_err());
+        assert_eq!(attempts, 1, "a cancelled token stops before any retry");
     }
 }

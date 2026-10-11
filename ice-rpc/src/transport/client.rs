@@ -11,12 +11,13 @@ use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
 
 use super::notify::Coalescer;
-use super::open::{open_event_service, open_service, OpenMode};
+use super::open::{open_event_service, open_service, retry_open, OpenMode};
 use super::publish::{publish_until_delivered, try_publish};
 use super::{
     shared_node, transport_error, Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub,
-    IoxPublisher, IoxSubscriber, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
-    REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
+    IoxPublisher, IoxSubscriber, OPEN_RETRY_ATTEMPTS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT,
+    REQUEST_NOTIFY_SUFFIX, REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX,
+    RESPONSE_SUFFIX,
 };
 use crate::global::Locked;
 use crate::sync::lock;
@@ -176,7 +177,15 @@ fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         if let Some(ports) = cache.get(channel) {
             return Ok(ports.clone());
         }
-        let ports = open_consumer_ports(channel)?;
+        // The first call opens — and possibly creates — the services, like the
+        // provider on its own thread: a transient open failure is retried, not
+        // surfaced; a non-retryable one still returns at once, remedy included.
+        let ports = retry_open(
+            channel,
+            OPEN_RETRY_ATTEMPTS,
+            crate::global_cancel_token(),
+            || open_consumer_ports(channel),
+        )?;
         cache.insert(channel.to_owned(), ports.clone());
         Ok(ports)
     })

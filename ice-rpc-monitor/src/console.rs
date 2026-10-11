@@ -369,7 +369,8 @@ mod tests {
     #[test]
     fn a_disabled_console_never_switches_screen() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // Not a terminal in the test harness: the live mode must stay off.
+        // Disabled is disabled whatever stdout is (TTY or pipe): the live mode
+        // must stay off.
         let console = LiveConsole::new(false);
         assert!(!console.is_active());
     }
@@ -377,9 +378,16 @@ mod tests {
     #[test]
     fn the_live_mode_needs_a_terminal_even_when_requested() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // Requested explicitly, but the test harness pipes stdout: it stays off,
-        // so the frames are appended instead of redrawn in place.
-        let console = LiveConsole::new(true);
+        // The live mode is opt-in *and* requires a terminal. Whether stdout is a
+        // TTY depends on how the tests are launched: `cargo test` in a terminal
+        // leaves fd 1 attached to it (libtest only captures the output at the
+        // application level, it does not detach the descriptor), whereas a piped
+        // or CI run has none. The two must agree — requested but no terminal
+        // means the frames are appended instead of redrawn in place.
+        let mut console = LiveConsole::new(true);
+        assert_eq!(console.is_active(), std::io::stdout().is_terminal());
+        // Restore the terminal so an active console leaves no escape codes behind.
+        console.leave();
         assert!(!console.is_active());
     }
 
@@ -449,12 +457,30 @@ mod tests {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("COLUMNS").ok();
 
+        // `COLUMNS` is only a fallback: when stdout is a terminal the console is
+        // asked directly and the environment value is deliberately ignored.
+        // Whether stdout is a TTY depends on how the tests are launched, so the
+        // expectation follows rather than assuming a piped harness.
+        let tty = std::io::stdout().is_terminal();
+
         std::env::set_var("COLUMNS", "100");
-        assert_eq!(terminal_columns(), 100);
-        // Too narrow to be trusted, and no console to ask (the test harness pipes
-        // stdout): the width is treated as unbounded, so nothing is truncated.
+        if tty {
+            let console = console_columns().expect("a terminal answers TIOCGWINSZ");
+            assert_eq!(terminal_columns(), console);
+        } else {
+            assert_eq!(terminal_columns(), 100);
+        }
+
+        // Too narrow to be trusted: with a console to ask, its real width wins;
+        // with none (a piped or CI run) the width is treated as unbounded, so
+        // nothing is truncated on a guess.
         std::env::set_var("COLUMNS", "5");
-        assert_eq!(terminal_columns(), usize::MAX);
+        if tty {
+            let console = console_columns().expect("a terminal answers TIOCGWINSZ");
+            assert_eq!(terminal_columns(), console);
+        } else {
+            assert_eq!(terminal_columns(), usize::MAX);
+        }
 
         match previous {
             Some(value) => std::env::set_var("COLUMNS", value),

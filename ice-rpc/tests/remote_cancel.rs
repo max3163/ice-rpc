@@ -27,10 +27,6 @@ use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv
 use ice_rpc::transport::{Direction, DirectionView, native_call, spawn_native_service};
 use ice_rpc::{CallContext, CancellationToken};
 
-/// Time a channel needs to appear on the bus before a caller or an observer can
-/// open it.
-const CHANNEL_STARTUP: Duration = Duration::from_millis(300);
-
 /// Longest wait for something this test cannot schedule itself.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -100,6 +96,24 @@ fn open_view(channel: &str, direction: Direction) -> DirectionView {
     }
 }
 
+/// Opens the request-side observer once **both** directions of `channel` exist.
+///
+/// `native_call` and the provider open their ports with `open_or_create`: a caller
+/// that reaches a service before the provider has created it creates it too, and
+/// iceoryx2 0.10 can abort the whole process on that double registration
+/// (`RegisteredServices::insert()`, exit `0xc0000409` on Windows). A read-only view
+/// never creates anything, so opening both directions is a readiness barrier: when
+/// it returns, the provider has created all four iceoryx2 services (the two pub/sub
+/// and the two event ones), and the caller can only open what already exists — it
+/// never races the provider on a creation.
+fn open_ready_view(channel: &str) -> DirectionView {
+    // The request side is what the caller observes; the response side is opened
+    // only to prove the provider finished creating, and dropped right away.
+    let request = open_view(channel, Direction::Request);
+    drop(open_view(channel, Direction::Response));
+    request
+}
+
 /// Drains an observer, returning the kind and the correlation id of every sample
 /// it has seen.
 fn drain(view: &DirectionView) -> Vec<(EventKind, [u8; 16])> {
@@ -159,7 +173,9 @@ fn dropping_a_stream_cancels_the_call_on_the_provider() {
 
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
 
-    let observer = open_view(&channel, Direction::Request);
+    // Wait for the whole channel before calling: opening the caller's ports while
+    // the provider is still creating them is what makes iceoryx2 abort.
+    let observer = open_ready_view(&channel);
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "report", b"")
@@ -222,7 +238,8 @@ fn a_completed_call_is_not_cancelled() {
     });
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
 
-    let observer = open_view(&channel, Direction::Request);
+    // Same barrier as above: the caller must not race the provider's creation.
+    let observer = open_ready_view(&channel);
 
     // `collect` consumes the stream, so its drop happens as the call completes —
     // the case that must stay silent.
@@ -265,7 +282,9 @@ fn dropping_a_stream_without_a_provider_does_not_block() {
     });
 
     let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
-    std::thread::sleep(CHANNEL_STARTUP);
+    // Wait for the whole channel to exist before calling it: a caller that races
+    // the provider's creation is what makes iceoryx2 abort (see `open_ready_view`).
+    drop(open_ready_view(&channel));
 
     let stream =
         native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "report", b"")

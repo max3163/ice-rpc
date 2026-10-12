@@ -1,4 +1,4 @@
-error: #[ice_rpc::main] must be applied to an `async fn main`
+error: #[ice_rpc::main] must be applied to an `async fn main` (use `#[ice_rpc::main(rt-none)]` for a synchronous one)
  --> tests/compile_fail/ice_rpc_main_not_async.rs:5:1
   |
 5 | fn main() {}

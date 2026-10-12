@@ -23,7 +23,7 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
   what keeps `serde_json`'s conversion code out of a binary that never speaks JSON.
 - **Optional JSON host surface** (`json` feature): `#[service]` also generates the
   rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode a JSON host
-  dispatches to — the `gateway_nodejs` bridge today. Off by default: a Rust-only
+  dispatches to — the `ice-rpc-nodejs` bridge today. Off by default: a Rust-only
   deployment does not carry them, and they are about half of the generated code
   of a service.
 - **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also

@@ -192,15 +192,26 @@ examples/common/                ← Example service definitions (not shipped)
 │       ├── http.rs             ← HttpService
 │       ├── notification.rs     ← NotificationService (push/stream demo)
 │       └── workload.rs         ← WorkloadService (benchmark payload shapes)
-gateway_nodejs/                 ← NAPI-RS gateway : one bridge + the generated JSON views
-│   ├── build.rs                ← N-API build script
-│   └── src/
-│       ├── lib.rs              ← N-API surface : registerService/init/callService/…
-│       ├── state.rs            ← Lifecycle (Idle/Configured/Running), replayable
-│       ├── error.rs            ← Stable error codes, rendered as message prefixes
-│       ├── nodejs_bridge.rs    ← The bridge : ThreadsafeFunction + pending calls table
-│       ├── services.rs         ← The gateway's own list of maintained services
-│       └── consumer.rs         ← Consumer helpers (JsonInvoker dispatch)
+
+ice-rpc-nodejs/                 ← Reusable Node.js engine (NAPI-RS): the bridge, the lifecycle, the codes
+├── src/
+│   ├── lib.rs                  ← Public API, module list, re-exports
+│   ├── macros.rs               ← The gateway! macro : service table + the eight N-API functions
+│   ├── bridge.rs               ← The JS dispatcher : ThreadsafeFunction + pending-calls table
+│   ├── napi_api.rs             ← The N-API implementations the gateway! macro wraps
+│   ├── services.rs             ← The GatewayService table + provider registration
+│   ├── consumer.rs             ← Consumer dispatch over the table (JsonInvoker)
+│   ├── state.rs                ← Lifecycle (Idle/Configured/Running), replayable
+│   └── error.rs                ← GatewayError and the stable codes
+
+gateway_nodejs/                 ← Reference addon : it names the services it serves, and carries no logic
+├── build.rs                    ← N-API build script
+├── src/
+│   └── lib.rs                  ← The whole addon : one `gateway! { … }` invocation
+├── types/
+│   └── gateway.d.ts            ← Typed TypeScript binding (template)
+├── examples/                   ← Provider, consumer and multi-value examples
+└── test/                       ← Surface checks, two-process round-trips, benchmarks
 ```
 
 ### 2.1. Code generation modules (codegen/)
@@ -674,8 +685,8 @@ dispatcher bridges each RPC method to the JS host:
    rkyv `WireEvent` sample.
 
 `ice_rpc::json` holds an `Arc<dyn JsonDispatcher>` registered at startup
-by the JSON host (`gateway_nodejs` calls `set_json_dispatcher`), which avoids a
-circular `common` → `gateway_nodejs` dependency and lets any other host — a Rust
+by the JSON host (`ice-rpc-nodejs` calls `set_json_dispatcher`), which avoids a
+circular `common` → `ice-rpc-nodejs` dependency and lets any other host — a Rust
 test today, a future WASM bridge — implement that same trait.
 
 ---
@@ -864,9 +875,21 @@ declared with `#[service]` is not implemented in Rust at all — the generated
 dispatcher, and the generated consumer entry points let JavaScript call any other
 ice-rpc service of the machine.
 
+The implementation is split in two crates:
+
+- [`ice-rpc-nodejs`](ice-rpc-nodejs/Readme.md) — the **reusable engine** (bridge,
+  lifecycle, dispatch, stable error codes). It knows **no service**: the list is a
+  compile-time parameter of the addon, supplied through the `gateway!` macro,
+  which also emits the eight N-API functions.
+- [`gateway_nodejs`](gateway_nodejs/Readme.md) — the **reference addon**, and the
+  template for your own: it names the services it serves (`common`'s) and carries
+  no logic of its own.
+
 The full contract — signatures, argument convention, event envelope, error codes,
-lifecycle — is in [`docs/nodejs-gateway-api-v2.md`](docs/nodejs-gateway-api-v2.md),
-and the user-facing guide is [`gateway_nodejs/Readme.md`](gateway_nodejs/Readme.md).
+lifecycle — is in [`docs/nodejs-gateway-api-v2.md`](docs/nodejs-gateway-api-v2.md).
+An addon built around **your** services is described in
+[`ice-rpc-nodejs/Readme.md`](ice-rpc-nodejs/Readme.md); the reference addon's own
+guide is [`gateway_nodejs/Readme.md`](gateway_nodejs/Readme.md).
 
 ### 12.1. Flow of an incoming IPC call
 
@@ -927,8 +950,8 @@ one, which also closes the call.
 | **Single bridge** | One `NodeJsBridge` per gateway, owning the calls JavaScript has not closed yet |
 | **Zero-copy JS** | No `JSON.parse`/`JSON.stringify`: NAPI serde-json converts `Value` and native JS objects |
 | **Single callback** | One JS dispatcher `(err, call)` for every service and method |
-| **Generated surface** | `#[service]` emits the provider converters **and** the consumer entry points, so neither can drift from the declaration |
-| **No direct iceoryx2** | `gateway_nodejs` never depends on `iceoryx2`: everything goes through `ice-rpc` |
+| **Generated surface** | `#[service]` emits the provider converters and the `JsonInvoker` the consumer side dispatches to; `gateway!` emits the eight N-API functions, so neither can drift from the declaration |
+| **No direct iceoryx2** | Neither `ice-rpc-nodejs` nor an addon depends on `iceoryx2`: everything goes through `ice-rpc` |
 | **Non-blocking calls** | `callService` and `callServiceStream` run on the libuv thread pool; the Node.js event loop is never blocked |
 | **Stable codes** | Every failure starts with a documented code (`E_NO_PROVIDER`, `E_TIMEOUT`, `E_BUSINESS`, …) |
 | **Bounded waits** | The transport thread waits for the first event at most 30 s, and the pending table is capped |

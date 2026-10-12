@@ -20,7 +20,9 @@ flowchart LR
         App[Application JavaScript]
     end
     subgraph GW[gateway-nodejs addon]
-        API[lib.rs surface N-API]
+        API["lib.rs : macro gateway!"]
+    end
+    subgraph ENG[ice-rpc-nodejs engine]
         BR[bridge.rs calls ouvertes]
         PR[services.rs providers]
         CO[consumer.rs dispatch]
@@ -32,10 +34,11 @@ flowchart LR
         TR[transport iceoryx2]
     end
     App -->|registerService init callService shutdown| API
-    API --> PR
-    API --> CO
-    API --> BR
-    API --> ER
+    API --> ENG
+    ENG --> PR
+    ENG --> CO
+    ENG --> BR
+    ENG --> ER
     BR -->|ThreadsafeFunction| App
     PR --> LOC
     CO --> LOC
@@ -139,10 +142,10 @@ several turns of the event loop.
 
 Nothing to declare: the consumer proxy is created on demand, and the methods it
 answers to are the ones `#[service]` generated for the service. The **services**
-this gateway serves are the list in
-[`src/services.rs`](src/services.rs:36) (`maintained_services!`) — its own, not
-`common`'s, so a process that maintains a subset says which subset, and the
-compiler checks each name against the generated proxies.
+this gateway serves are the ones listed in [`src/lib.rs`](src/lib.rs:31), through
+the `gateway!` macro — its own list, not `common`'s, so a process that maintains a
+subset says which subset, and the compiler checks each name against the generated
+proxies.
 
 ```javascript
 gateway.init(() => {});   // nothing to dispatch in a pure consumer
@@ -196,7 +199,7 @@ so they do.
 ## Tests and benchmark
 
 ```bash
-cargo test -p gateway-nodejs   # the Rust units: bridge table, codes, lifecycle
+cargo test -p gateway-nodejs -p ice-rpc-nodejs   # the addon's list + the engine units (bridge, codes, lifecycle)
 npm test                       # the addon's surface, without a bus (7 checks)
 npm run test:e2e               # two processes, real IPC round trip (8 checks)
 npm run bench                  # latency and throughput of a served call
@@ -246,18 +249,25 @@ provider first.
 The service is provided by this very process. A service that needs its own values
 is a two-process design.
 
+## This addon is the reference one
+
+The reusable engine — the bridge, the lifecycle, the dispatch and the error
+codes — lives in [`ice-rpc-nodejs`](../ice-rpc-nodejs/Readme.md). This crate only
+**names the services it serves**, through the `gateway!` macro, so it doubles as
+the template for your own addon. See that Readme for building an addon around
+**your** services.
+
 ## Layout
 
 ```text
-src/lib.rs            N-API surface: the whole public contract
-src/state.rs          lifecycle: phase, bridge, shutdown guard
-src/nodejs_bridge.rs  the pending table and the JS dispatcher
-src/services.rs       the maintained list + provider registration
-src/consumer.rs       consumer dispatch, driven by that list
-src/error.rs          GatewayError and the stable codes
+src/lib.rs            the whole addon: one `gateway! { … }` invocation
+types/gateway.d.ts    a simple typed TypeScript binding (template)
 test/provider-child.mjs  the provider used by the two-process checks
 test/contract.test.mjs   surface checks, no bus, no spawn
 test/e2e-roundtrip.mjs   real round trips, two processes
 test/bench-bridge.mjs    latency and throughput
 examples/             provider, consumer and multi-value examples
 ```
+
+The engine this addon uses lives in [`ice-rpc-nodejs`](../ice-rpc-nodejs):
+`bridge.rs`, `services.rs`, `consumer.rs`, `state.rs`, `error.rs` and `macros.rs`.

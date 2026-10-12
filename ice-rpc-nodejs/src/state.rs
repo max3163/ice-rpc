@@ -17,8 +17,8 @@
 //! refused `init` must never build one: reservation is what keeps a rejected
 //! double `init` from killing an already running gateway.
 
+use crate::bridge::NodeJsBridge;
 use crate::error::{GatewayError, GatewayErrorCode};
-use crate::nodejs_bridge::NodeJsBridge;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Where the gateway stands in its lifecycle.

@@ -26,7 +26,8 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      # The Node.js gateway is excluded: it requires the N-API/Node toolchain.
+      # The Node.js gateway and its engine crate are excluded: both require the
+      # N-API/Node toolchain.
       # `tokio,http-tokio,json` covers the tokio execution mode, the HTTP
       # gateway on its tokio adapter and the JSON host codegen. `json` matters
       # here precisely because the gateway is excluded: it is the only consumer
@@ -35,16 +36,16 @@ jobs:
       # `http-tokio` rather than `http`: the gateway needs one adapter per mode,
       # and the manifest refuses to pick one on its own.
       - name: Check (workspace, excluding the Node.js gateway)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,json,tracing
+        run: cargo check --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs --all-targets --features tokio,http-tokio,json,tracing
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude gateway-nodejs --all-targets --features tokio,http-tokio,json,tracing -- -D warnings
+        run: cargo clippy --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs --all-targets --features tokio,http-tokio,json,tracing -- -D warnings
 
       # The default workspace run exercises the `rt-threads` mode, the fallback
       # facade (an `async-executor` instance on OS threads, `futures-timer` for
       # the timers, `blocking` for the pool).
       - name: Test (workspace, default mode)
-        run: cargo test --workspace --exclude gateway-nodejs
+        run: cargo test --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs
 
       # One full mode per host runtime. The facade, and the operators that need
       # it (`delay`, `timeout`, `subscribe`), live in `ice-rpc-rx`, which drives
@@ -153,7 +154,7 @@ jobs:
       # observer for `ice-rpc-monitor`. This is what a user who names no feature
       # at all compiles, so it is the floor that matters most.
       - name: Check (workspace, default features)
-        run: cargo check --workspace --exclude gateway-nodejs --all-targets
+        run: cargo check --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs --all-targets
 
       # Then the optional surface — the part nothing ever built on a floor, and
       # the part that actually decides what the floor is.
@@ -187,7 +188,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --exclude gateway-nodejs --exclude ice-rpc-macros-tests --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs --exclude ice-rpc-macros-tests --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -250,10 +251,10 @@ jobs:
         working-directory: gateway_nodejs
 
       - name: Clippy (deny warnings)
-        run: cargo clippy -p gateway-nodejs --all-targets -- -D warnings
+        run: cargo clippy -p gateway-nodejs -p ice-rpc-nodejs --all-targets -- -D warnings
 
       - name: Rust unit tests
-        run: cargo test -p gateway-nodejs
+        run: cargo test -p gateway-nodejs -p ice-rpc-nodejs
 
       - name: Addon surface checks
         run: npm test

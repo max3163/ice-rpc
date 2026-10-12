@@ -23,19 +23,18 @@ pre-release-replacements = [
 crate-type = ["cdylib"]
 
 [dependencies]
-# `dyn-symbols` resolves the `napi_*` symbols at load time instead of link time.
-# A cdylib tolerates the unresolved references, but the `cargo test` executable
-# does not: without it, linking the unit-test binary fails on Linux with
-# `undefined symbol: napi_release_threadsafe_function`. It is a default feature
-# of `napi`, so it must be named explicitly because `default-features` is off.
-napi = { version = "3", default-features = false, features = ["napi4", "napi8", "serde-json", "compat-mode", "dyn-symbols"] }
-napi-derive = "3"
-log = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-async-trait = { workspace = true }
-ice-rpc = { path = "../ice-rpc" }
+# The reusable engine: the bridge, the lifecycle, the dispatch and the error
+# codes all live there. This crate only names the services it serves. The version
+# requirement lives in `[workspace.dependencies]`, so a bump updates it there.
+ice-rpc-nodejs = { workspace = true }
+# `napi` and `napi-derive` are declared directly because the `gateway!` macro
+# emits `#[napi]` attributes and `::napi::…` paths, which resolve against the
+# addon's own extern prelude. The engine re-exports both for everything else.
+napi = { workspace = true }
+napi-derive = { workspace = true }
+# The example services this reference addon serves, with their JSON view on
+# (`napi` -> `ice-rpc/json`), which every callable `#[service]` needs.
 common = { path = "../examples/common", features = ["napi"] }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = { workspace = true }

@@ -1294,7 +1294,7 @@ so an unstaged edit is never swept into the commit. Undo with
 
 ## Release (version bump)
 
-The project version lives in a single place: the `[workspace.package]` section of the root `Cargo.toml`. Every Rust crate inherits it through `version.workspace = true`, and the `ice-rpc` → `ice-rpc-macros` dependency version is shared via `[workspace.dependencies]`. The Node.js gateway version (`gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`) is kept in sync by `cargo release` through `pre-release-replacements`.
+The project version lives in a single place: the `[workspace.package]` section of the root `Cargo.toml`. Every Rust crate inherits it through `version.workspace = true` — `ice-rpc-nodejs`, the Node.js engine, included — and every inter-crate **dependency requirement** (`ice-rpc` → `ice-rpc-macros`, `ice-rpc-nodejs` → `ice-rpc`, an addon → `ice-rpc-nodejs`) is shared via `[workspace.dependencies]`. The Node.js gateway version (`gateway_nodejs/package.json` and `gateway_nodejs/package-lock.json`) is kept in sync by `cargo release` through `pre-release-replacements`.
 
 ### Prerequisites
 
@@ -1323,7 +1323,7 @@ cargo release major --workspace --no-publish --no-confirm --execute
 
 This:
 
-1. bumps the Rust version (single source in `[workspace.package]`) and the `ice-rpc-macros` dependency requirement;
+1. bumps the Rust version (single source in `[workspace.package]`, inherited by `ice-rpc-nodejs` too) and every inter-crate dependency requirement declared in `[workspace.dependencies]` (`ice-rpc-macros`, `ice-rpc-rx`, `ice-rpc`, `ice-rpc-nodejs`);
 2. refreshes `Cargo.lock`;
 3. commits **everything** with the message configured in `[workspace.metadata.release]`;
 4. creates the git tag `vX.Y.Z`.
@@ -1340,8 +1340,8 @@ cargo release patch --workspace --no-publish --no-confirm
 
 ### Publish to crates.io
 
-Publish the three crates **in dependency order** (`ice-rpc` depends on both
-`ice-rpc-rx` and `ice-rpc-macros` by version):
+Publish the crates **in dependency order** (`ice-rpc` depends on both `ice-rpc-rx`
+and `ice-rpc-macros` by version; `ice-rpc-nodejs` depends on `ice-rpc`):
 
 ```bash
 cargo login                       # once per machine
@@ -1349,9 +1349,12 @@ cargo login                       # once per machine
 cargo publish -p ice-rpc-rx       # the reactive layer, without iceoryx2
 cargo publish -p ice-rpc-macros
 cargo publish -p ice-rpc
+cargo publish -p ice-rpc-nodejs   # the Node.js engine addons build on
 ```
 
-Do **not** publish `gateway_nodejs`, `examples/common` or `ice-rpc-macros-tests`.
+Do **not** publish `gateway_nodejs` (the reference addon), `examples/common` or
+`ice-rpc-macros-tests`. `gateway_nodejs` stays in the repository: an addon is built
+and published by whoever owns the services it serves.
 
 ### Push the commit and the tag
 

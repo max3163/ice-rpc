@@ -1,0 +1,29 @@
+[package]
+name = "ice-rpc-nodejs"
+version.workspace = true
+rust-version.workspace = true
+edition = "2024"
+description = "Reusable Node.js (N-API) engine for ice-rpc: provides and consumes ice-rpc services from JavaScript, with the service list supplied by the addon"
+license = "Apache-2.0"
+repository = "https://github.com/max3163/ice-rpc"
+homepage = "https://github.com/max3163/ice-rpc"
+documentation = "https://docs.rs/ice-rpc-nodejs"
+keywords = ["rpc", "ipc", "napi", "nodejs", "iceoryx"]
+categories = ["api-bindings", "network-programming"]
+readme = "Readme.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `json` is the JSON host surface the bridge dispatches to: the rkyv <-> JSON
+# converters and the `ProviderJson` mode any JSON host serves from. The version
+# requirement lives in `[workspace.dependencies]`, so a bump updates it there.
+ice-rpc = { workspace = true, features = ["json"] }
+# The N-API family. Declared once in the workspace: an addon built on this crate
+# must resolve to the very same version and feature set.
+napi = { workspace = true }
+napi-derive = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }

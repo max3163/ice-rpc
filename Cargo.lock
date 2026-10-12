@@ -920,15 +920,11 @@ dependencies = [
 name = "gateway-nodejs"
 version = "0.3.4"
 dependencies = [
- "async-trait",
  "common",
- "ice-rpc",
- "log",
+ "ice-rpc-nodejs",
  "napi",
  "napi-build",
  "napi-derive",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1058,6 +1054,18 @@ dependencies = [
  "pollster",
  "serde_json",
  "sysinfo",
+]
+
+[[package]]
+name = "ice-rpc-nodejs"
+version = "0.3.4"
+dependencies = [
+ "async-trait",
+ "ice-rpc",
+ "log",
+ "napi",
+ "napi-derive",
+ "serde_json",
 ]
 
 [[package]]

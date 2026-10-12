@@ -110,7 +110,7 @@
 //! ```rust,ignore
 //! #[ice_rpc::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // `rt::spawn` works in every execution mode (rt-threads / tokio / smol);
+//!     // `rt::spawn` works in every execution mode (rt-async / tokio / smol);
 //!     // under `#[ice_rpc::main(tokio)]`, `tokio::spawn` is the equivalent.
 //!     ice_rpc::rt::spawn(async {
 //!         if let Err(error) = ice_rpc::run_provider!(
@@ -130,6 +130,33 @@
 //! A `rt::block_on(run_provider!(..))` does **not** start the provider in the
 //! background: `block_on` runs a future to completion on the calling thread, and
 //! this future completes only on shutdown — such a call blocks until Ctrl+C.
+//!
+//! ### 5. A blocking consumer, with no runtime at all
+//!
+//! A small consumer that only issues a call needs neither an executor nor an
+//! async `main`: `#[ice_rpc::main(rt-none)]` bootstraps ice-rpc around a plain
+//! **synchronous** `fn main` and shuts it down with `shutdown_blocking` on exit.
+//! The additive blocking surface — [`ServiceLocator::get_blocking`],
+//! [`Observable::first_value_blocking`] and the `{method}_blocking` twins a
+//! `#[service(..., blocking)]` generates — needs neither `.await` nor
+//! [`rt::block_on`]. The only auxiliary thread is the transport's own response
+//! dispatcher.
+//!
+//! ```rust,ignore
+//! #[ice_rpc::main(rt-none)] // init + shutdown_blocking around a sync main
+//! fn main() {
+//!     let proxy = ice_rpc::locator()
+//!         .get_blocking::<MyServiceProxy>()
+//!         .expect("the locator builds the proxy");
+//!
+//!     match proxy.hello_blocking("Alice".into()).first_value_blocking() {
+//!         Ok(value) => log::info!("Response: {value}"),
+//!         Err(e) => log::error!("call failed: {e}"),
+//!     }
+//! }
+//! ```
+//!
+//! A complete program lives in `examples/blocking-consumer-app.rs`.
 //!
 //! # Architecture
 //!
@@ -208,6 +235,11 @@ pub mod codegen;
 /// One [`JsonInvoker`](json::JsonInvoker) per service (the caller side, generated
 /// by `#[service]`) and one [`JsonDispatcher`](json::JsonDispatcher) per process
 /// (the host side, registered by the gateway).
+///
+/// Gated behind `json`: a Rust-to-Rust deployment never speaks JSON, so the
+/// converters and their `serde` cost stay out of the build. The HTTP gateway
+/// needs it, so `http` enables `json`.
+#[cfg(feature = "json")]
 pub mod json;
 
 /// Publish/subscribe transport (one channel per service, correlated by id).
@@ -225,9 +257,11 @@ pub use service_traits::ServiceInit;
 // Defined by `ice-rpc-rx` and re-exported unchanged: the crate keeps one single
 // stream type, and a consumer never has to name the stream crate.
 pub use ice_rpc_rx::{
-    CancellationToken, Event, Observable, ObservableError, RetryPolicy, RpcError, Subject,
-    Subscription, defer, from, from_future, of, retry_with, throw_error,
+    CancellationToken, Event, Observable, ObservableError, RpcError, defer, from, from_future, of,
+    throw_error,
 };
+#[cfg(feature = "operators")]
+pub use ice_rpc_rx::{RetryPolicy, Subject, Subscription, retry_with};
 
 // Wire-level items live in `ice_rpc::codegen`; the protocol types come from `types`.
 pub use types::{CallContext, TraceContext};
@@ -244,7 +278,7 @@ pub mod rx {
 ///
 /// `spawn`, `sleep`, `block_on` and the cancellation token live in
 /// [`ice_rpc_rx::rt`]; the transport and the examples keep using them here. The
-/// facade has one full mode per host runtime — `rt-threads` (the default),
+/// facade has one full mode per host runtime — `rt-async` (the default),
 /// `tokio`, `smol` — and the modes are exclusive.
 pub mod rt {
     pub use ice_rpc_rx::rt::*;
@@ -356,6 +390,23 @@ impl ShutdownGuard {
             return;
         }
         shutdown_and_release().await;
+    }
+
+    /// Clean shutdown, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`ShutdownGuard::shutdown`], for a `fn main` that runs
+    /// no async runtime: it drives the same idempotent shutdown without an
+    /// `.await`, so a blocking program keeps one single shape from the call to
+    /// the exit.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let guard = ice_rpc::codegen::init_without_ctrl_c();
+    /// // ... use ice-rpc ...
+    /// guard.shutdown_blocking();
+    /// ```
+    pub fn shutdown_blocking(&self) {
+        crate::rt::block_on(self.shutdown());
     }
 }
 
@@ -761,6 +812,16 @@ mod tests {
         // ...the second is a no-op, and `Drop` then does nothing either (the flag
         // is already set), so the node is never released twice.
         crate::rt::test_block_on(guard.shutdown());
+        drop(guard);
+    }
+
+    /// The blocking twin drives the same idempotent shutdown, and needs no
+    /// runtime: it is the entry point a plain `fn main` uses.
+    #[test]
+    fn the_guard_shuts_down_once_blocking() {
+        let guard = ShutdownGuard::new();
+        guard.shutdown_blocking();
+        guard.shutdown_blocking();
         drop(guard);
     }
 

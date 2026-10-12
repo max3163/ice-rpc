@@ -276,3 +276,36 @@ fn every_optional_block_follows_its_own_flag() {
         }
     }
 }
+
+/// The `blocking` parameter decides, per service, whether the synchronous twin of
+/// each method is generated — and nowhere else.
+///
+/// This is exactly why the twin is an attribute parameter rather than a Cargo
+/// feature: the codegen is expanded in the **consumer's** crate and reads no
+/// feature, so a service that declares `blocking` gets its twins whatever the
+/// build, and a service that does not pays nothing.
+#[test]
+fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
+    let without = render(NONE, quote! { "Calc" }, CALCULATOR());
+    assert!(
+        !without.contains("add_blocking"),
+        "a service without `blocking` must not carry the twin: {without}"
+    );
+
+    let with = render(NONE, quote! { "Calc", blocking }, CALCULATOR());
+    assert_eq!(
+        with.matches("fn add_blocking").count(),
+        2,
+        "the twin is generated on both the client and the proxy: {with}"
+    );
+    // The proxy twin reads the mode lock blocking instead of awaiting it, and
+    // the client twin publishes through the already-synchronous call path.
+    assert!(
+        with.contains("read_blocking"),
+        "the proxy twin must read the mode without an await: {with}"
+    );
+    assert!(
+        with.contains("serialize_and_call"),
+        "the client twin publishes through the synchronous call path: {with}"
+    );
+}

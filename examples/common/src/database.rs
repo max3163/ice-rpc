@@ -70,7 +70,7 @@ impl std::fmt::Display for PersonneInfo {
 ///
 /// Depends on `ConfigService` to obtain the connection parameters
 /// (connection string, credentials, etc.).
-#[service("DatabaseService")]
+#[service("DatabaseService", blocking)]
 pub trait DatabaseService {
     /// Returns the age associated with a person's name.
     ///

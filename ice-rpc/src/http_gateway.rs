@@ -10,7 +10,7 @@
 //!
 //! | Feature | Adapter | Mode |
 //! |---|---|---|
-//! | `http-threads` | `trillium-smol` | `rt-threads` (the default) |
+//! | `http-threads` | `trillium-smol` | `rt-async` (the default) |
 //! | `http-smol` | `trillium-smol` | `smol` |
 //! | `http-tokio` | `trillium-tokio` | `tokio` |
 //!

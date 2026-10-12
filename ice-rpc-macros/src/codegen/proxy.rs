@@ -1,7 +1,7 @@
 //! Codegen: `{Trait}Proxy` struct with Provider, Consumer, ProviderJson modes.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Ident, Visibility};
 
 /// Proxy generation parameters.
@@ -19,6 +19,9 @@ pub struct ProxyGenInput<'a> {
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
     pub node_methods: &'a [TokenStream],
+    /// Blocking twins (`{method}_blocking`) emitted on the **inherent** impl, one
+    /// per method when the `blocking` parameter of `#[service]` is set.
+    pub blocking_methods: &'a [TokenStream],
     /// Whether the `ProviderJson` mode and its constructor belong to the
     /// expansion (the `json` feature).
     pub json_provider: bool,
@@ -38,6 +41,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         group_lit,
         max_slice_len,
         node_methods,
+        blocking_methods,
         json_provider,
     } = input;
 
@@ -145,6 +149,8 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             }
 
             #provide_json
+
+            #(#blocking_methods)*
         }
 
         #[ice_rpc::codegen::async_trait::async_trait]
@@ -176,6 +182,8 @@ pub struct ProxyMethodGenInput<'a> {
     pub service_ref: &'a TokenStream,
     /// The service **name** constant: `<Proxy>::SERVICE_NAME`.
     pub service_name: &'a TokenStream,
+    /// Visibility of the proxy type, carried onto the inherent blocking twin.
+    pub visibility: &'a Visibility,
     /// Whether the `ProviderJson` arm belongs to the expansion.
     pub json_provider: bool,
 }
@@ -200,6 +208,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
         mode_name,
         service_ref,
         service_name,
+        visibility: _,
         json_provider,
     } = input;
 
@@ -234,6 +243,68 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
                 },
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#fn_name(#(#arg_names),*).await
+                }
+                #json_arm
+            }
+        }
+    }
+}
+
+/// Generates the **inherent** blocking twin of a proxy method.
+///
+/// It reads the mode with `read_blocking` — the lock read is the only reason the
+/// delegating method was `async` — and returns the `Observable` directly: the
+/// Consumer arm calls the client's blocking twin, which publishes with no
+/// future, and the Provider arm drives the in-process call with
+/// [`ice_rpc::rt::block_on`], the one future the light facade keeps.
+pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
+    let ProxyMethodGenInput {
+        fn_name,
+        arg_names,
+        arg_types,
+        output_type,
+        mode_name,
+        service_ref,
+        service_name,
+        visibility,
+        json_provider,
+    } = input;
+
+    let method_name_str = fn_name.to_string();
+    let blocking_name = format_ident!("{}_blocking", fn_name);
+    let blocking_doc = format!(
+        "Blocking twin of [`{fn_name}`]: reads the mode without an `.await` and \
+         returns the response stream directly, for a caller that runs no async \
+         runtime."
+    );
+
+    let json_arm = if *json_provider {
+        quote! {
+            #mode_name::ProviderJson => {
+                ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
+                    "ProviderJson: direct calls are not supported — use IPC".into()
+                ))
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        #[doc = #blocking_doc]
+        #visibility fn #blocking_name(&self, #(#arg_names: #arg_types),*) -> #output_type {
+            let mode = self.mode.read_blocking();
+            match &*mode {
+                #mode_name::Provider { local_impl, .. } => {
+                    ice_rpc::rt::block_on(ice_rpc::codegen::local_call_scoped(
+                        #service_ref,
+                        #service_name,
+                        #method_name_str,
+                        local_impl.#fn_name(#(#arg_names),*),
+                    ))
+                },
+                #mode_name::Consumer { ipc_client } => {
+                    ipc_client.#blocking_name(#(#arg_names),*)
                 }
                 #json_arm
             }

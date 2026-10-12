@@ -1,7 +1,7 @@
 //! Codegen: `{Trait}Client` struct and its IPC consumption methods.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Ident, Type, Visibility};
 
 /// Client generation parameters.
@@ -69,6 +69,9 @@ pub struct ClientMethodGenInput<'a> {
     pub group: &'a str,
     /// Expression of the shared [`ServiceRef`] of the service (id + version).
     pub service_ref: &'a TokenStream,
+    /// Whether the blocking twin `{fn_name}_blocking` is generated too (the
+    /// `blocking` parameter of `#[service]`).
+    pub blocking: bool,
 }
 
 pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
@@ -85,7 +88,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
 
     let method_name_str = fn_name.to_string();
 
-    quote! {
+    let async_method = quote! {
         #visibility async fn #fn_name(&self, #(#arg_names: #arg_types),*)
             -> ice_rpc::Observable<#ok_type, #err_type>
         {
@@ -101,6 +104,40 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
             )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
         }
+    };
 
+    // The blocking twin: the same body without `async`, because the call path is
+    // already synchronous (`serialize_and_call` is a `pub fn`). This is what lets
+    // a `fn main` issue the call without an executor — and without even
+    // `block_on`, since no future is created here.
+    let blocking_method = if input.blocking {
+        let blocking_name = format_ident!("{}_blocking", fn_name);
+        let blocking_doc = format!(
+            "Blocking twin of [`{fn_name}`]: publishes the call and returns the \
+             response stream directly, with no `.await`, for a consumer that runs \
+             no async runtime."
+        );
+        quote! {
+            #[doc = #blocking_doc]
+            #visibility fn #blocking_name(&self, #(#arg_names: #arg_types),*)
+                -> ice_rpc::Observable<#ok_type, #err_type>
+            {
+                let req_val = #req_enum_name::#var_name { #(#arg_names),* };
+                ice_rpc::codegen::serialize_and_call::<#ok_type, #err_type, _>(
+                    #group,
+                    #service_ref,
+                    ice_rpc::codegen::method_id_of(#method_name_str),
+                    &req_val,
+                )
+                .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        #async_method
+        #blocking_method
     }
 }

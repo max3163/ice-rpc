@@ -258,6 +258,149 @@ impl<T, E> Observable<T, E> {
     pub async fn collect(self) -> Result<Vec<T>, ObservableError<E>> {
         collect_values(self).await
     }
+
+    /// Receives the next event, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`Observable::recv`], for a consumer that runs no
+    /// async runtime: a plain `fn main` pulls a response without an executor.
+    ///
+    /// The three sources are served without starting any executor:
+    ///
+    /// - `Channel` (the RPC response path) uses the channel's own
+    ///   `recv_blocking`: the dispatcher thread wakes this one, no polling;
+    /// - `Inline` (`of`/`from`) drains its queue directly;
+    /// - `Pipeline` (an operator chain) is driven through
+    ///   [`futures_lite::future::block_on`], which parks the thread until the
+    ///   source produces — expected on a chain, absent on a plain call.
+    ///
+    /// Like [`recv`](Self::recv), a terminal event sets the stream's terminated
+    /// flag, so an abrupt close stays distinguishable from a normal end.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::{channel, Event};
+    ///
+    /// let (tx, mut rx) = channel::<i32, String>(2);
+    /// tx.try_send_next(7).expect("the channel has room");
+    /// tx.try_send_complete().expect("the channel has room");
+    ///
+    /// assert_eq!(rx.recv_blocking(), Ok(Event::Next(7)));
+    /// assert_eq!(rx.recv_blocking(), Ok(Event::Complete));
+    /// ```
+    pub fn recv_blocking(&mut self) -> Result<Event<T, E>, async_channel::RecvError> {
+        let event = match &mut self.inner {
+            StreamInner::Channel { rx, .. } => rx.recv_blocking(),
+            StreamInner::Inline { queue } => match queue.pop_front() {
+                Some(event) => Ok(event),
+                None => Err(async_channel::RecvError),
+            },
+            StreamInner::Pipeline { stream } => {
+                match futures_lite::future::block_on(futures_lite::future::poll_fn(|cx| {
+                    futures_lite::Stream::poll_next(stream.as_mut(), cx)
+                })) {
+                    Some(event) => Ok(event),
+                    None => Err(async_channel::RecvError),
+                }
+            }
+        };
+
+        if let Ok(delivered) = &event
+            && delivered.is_terminal()
+        {
+            self.terminated = true;
+        }
+        event
+    }
+
+    /// Awaits the next emitted value, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`Observable::next`], with the same mapping
+    /// (`Next(v)` → `Some(Ok(v))`, `Error(e)` → `Some(Err(e))`, `Complete` →
+    /// `None`) and the same report of a source that closes without a terminal
+    /// event.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::channel;
+    ///
+    /// let (tx, mut rx) = channel::<i32, String>(2);
+    /// tx.try_send_next(3).expect("the channel has room");
+    /// tx.try_send_complete().expect("the channel has room");
+    ///
+    /// assert_eq!(rx.next_blocking(), Some(Ok(3)));
+    /// assert_eq!(rx.next_blocking(), None);
+    /// ```
+    pub fn next_blocking(&mut self) -> Option<Result<T, ObservableError<E>>> {
+        match self.recv_blocking() {
+            Ok(Event::Next(v)) => Some(Ok(v)),
+            Ok(Event::Error(e)) => Some(Err(e)),
+            Ok(Event::Complete) => None,
+            Err(_) if self.terminated => None,
+            Err(_) => {
+                // Abrupt end: report it once, then treat the stream as over.
+                self.terminated = true;
+                Some(Err(ObservableError::Technical(RpcError::TransportError(
+                    "stream closed before completion".to_string(),
+                ))))
+            }
+        }
+    }
+
+    /// Returns the first emitted value, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`Observable::first_value`]: `Next(v)` → `Ok(v)`,
+    /// `Error(e)` → `Err(e)`, `Complete`/closed → `Err(ObservableError::Empty)`.
+    /// Shares the `Pipeline` caveat of [`recv_blocking`](Self::recv_blocking).
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::from;
+    ///
+    /// let first = from::<i32, String, _>([1, 2, 3])
+    ///     .first_value_blocking()
+    ///     .expect("the stream starts with a value");
+    /// assert_eq!(first, 1);
+    /// ```
+    pub fn first_value_blocking(self) -> Result<T, ObservableError<E>> {
+        futures_lite::future::block_on(first_event(self))
+    }
+
+    /// Returns the **last** emitted value, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`Observable::last_value`], with the same
+    /// `ObservableError::Empty` answer on a stream that carries no value and the
+    /// same precedence of a terminal error over a value already read.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::from;
+    ///
+    /// let last = from::<i32, String, _>([1, 2, 3])
+    ///     .last_value_blocking()
+    ///     .expect("the stream ends with a value");
+    /// assert_eq!(last, 3);
+    /// ```
+    pub fn last_value_blocking(self) -> Result<T, ObservableError<E>> {
+        futures_lite::future::block_on(last_event(self))
+    }
+
+    /// Collects every emitted value, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`Observable::collect`]: drains until `Complete` (or a
+    /// close) and discards the values gathered so far on a terminal `Error`.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ice_rpc_rx::from;
+    ///
+    /// let values = from::<i32, String, _>([1, 2, 3])
+    ///     .collect_blocking()
+    ///     .expect("the stream completes cleanly");
+    /// assert_eq!(values, vec![1, 2, 3]);
+    /// ```
+    pub fn collect_blocking(self) -> Result<Vec<T>, ObservableError<E>> {
+        futures_lite::future::block_on(collect_values(self))
+    }
 }
 
 /// Awaits the first event of any stream of [`Event`].
@@ -577,5 +720,56 @@ mod tests {
         let last = crate::rt::block_on(rx.last_value());
 
         assert_eq!(last.expect("the value read before the close is kept"), 7);
+    }
+
+    /// The channel source is the RPC response path: the blocking read must use
+    /// the channel's own primitive, without an executor.
+    #[test]
+    fn recv_blocking_reads_a_channel_source() {
+        let (tx, mut rx) = unbounded_channel::<i32, String>();
+        tx.try_send_event(Event::Next(1)).expect("unbounded");
+        tx.try_send_event(Event::Complete).expect("unbounded");
+
+        assert_eq!(rx.recv_blocking(), Ok(Event::Next(1)));
+        assert_eq!(rx.recv_blocking(), Ok(Event::Complete));
+    }
+
+    /// `next_blocking` mirrors `next`: a value, then the clean end.
+    #[test]
+    fn next_blocking_mirrors_next() {
+        let (tx, mut rx) = unbounded_channel::<i32, String>();
+        tx.try_send_event(Event::Next(5)).expect("unbounded");
+        tx.try_send_event(Event::Complete).expect("unbounded");
+
+        assert_eq!(rx.next_blocking(), Some(Ok(5)));
+        assert_eq!(rx.next_blocking(), None);
+    }
+
+    /// The inline source (`from`) drains without ever blocking on I/O.
+    #[test]
+    fn first_value_blocking_reads_an_inline_source() {
+        let first = crate::from::<i32, String, _>([1, 2, 3]).first_value_blocking();
+
+        assert_eq!(first.expect("the stream starts with a value"), 1);
+    }
+
+    /// The pipeline source is driven through `block_on`, and `collect_blocking`
+    /// drains it the same way the async terminal does.
+    #[test]
+    #[cfg(feature = "operators")]
+    fn collect_blocking_drains_a_pipeline_source() {
+        let values = crate::from::<i32, String, _>([1, 2, 3])
+            .map(|value| value * 2)
+            .collect_blocking();
+
+        assert_eq!(values.expect("the stream completes cleanly"), vec![2, 4, 6]);
+    }
+
+    /// A blocking terminal reports `Empty` exactly like its async twin.
+    #[test]
+    fn last_value_blocking_is_empty_without_any_value() {
+        let last = crate::from::<i32, String, _>([]).last_value_blocking();
+
+        assert!(matches!(last, Err(ObservableError::Empty)));
     }
 }

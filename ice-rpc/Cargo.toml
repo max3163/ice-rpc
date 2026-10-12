@@ -27,7 +27,7 @@ features = ["tokio", "http-tokio", "monitoring", "json", "tracing"]
 [features]
 # One full execution mode per host runtime, plus a fallback for a deployment
 # that has none:
-# - `rt-threads` (default) — the crate's own executor on OS threads;
+# - `rt-async` (default) — the crate's own executor on OS threads;
 # - `tokio` — tokio only;
 # - `smol` — smol only, sharing the global executor of the application.
 # `ice-rpc-rx` owns the facade, so the choice is forwarded there: enabling
@@ -36,8 +36,16 @@ features = ["tokio", "http-tokio", "monitoring", "json", "tracing"]
 # `smol` is a compile error). Enabling a mode does not remove the fallback from
 # the dependency graph, because Cargo features are additive: a build with no
 # residue of the other modes uses `default-features = false`.
-default = ["rt-threads"]
-rt-threads = ["ice-rpc-rx/rt-threads"]
+default = ["rt-async", "operators"]
+rt-async = ["ice-rpc-rx/rt-async"]
+# The lightest client: `rt-none` (no pool, no async runtime) without the
+# reactive operators. This is the build a pure blocking consumer selects:
+# `default-features = false, features = ["client"]`.
+client = ["ice-rpc-rx/rt-none"]
+# The reactive operators, the `Subject` and the push-based `Subscription`. Off
+# removes them (and their `rt::spawn`/`rt::sleep` usage) from the build; the
+# wire, the `Observable` type and the blocking terminals stay.
+operators = ["ice-rpc-rx/operators"]
 tokio = ["dep:tokio", "ice-rpc-rx/tokio"]
 smol = ["ice-rpc-rx/smol"]
 # Generates, from `#[service]`, the `{Service}Decoder` and the `Display` impl an
@@ -81,8 +89,8 @@ tracing = ["dep:tracing"]
 # names. Without it, a service with a `Vec<u8>` argument would not compile in a
 # gateway that never speaks Node.js: the invoker is emitted for `http` too, and
 # the symbol would be missing.
-http = ["dep:base64", "dep:trillium", "ice-rpc-macros/http"]
-http-threads = ["http", "rt-threads", "dep:trillium-smol"]
+http = ["json", "dep:base64", "dep:trillium", "ice-rpc-macros/http"]
+http-threads = ["http", "rt-async", "dep:trillium-smol"]
 http-smol = ["http", "smol", "dep:trillium-smol"]
 http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 # The JSON host surface: the rkyv ↔ `serde_json::Value` converters and the
@@ -91,14 +99,14 @@ http-tokio = ["http", "tokio", "dep:trillium-tokio"]
 json = ["ice-rpc-macros/json", "dep:base64"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
 # N-API), not another way of serving the same process.
-full = ["http", "tokio", "http-tokio"]
+full = ["http", "tokio", "http-tokio", "operators"]
 
 [dependencies]
 # The reactive layer: the stream type, the operators, the multicast primitive
 # and the execution facade. It knows nothing about the wire; this crate
 # re-exports its items unchanged, at their historical paths.
 # `default-features = false`: the fallback facade is a feature of its own
-# (`rt-threads`), so a deployment that picks `tokio` or `smol` can build without
+# (`rt-async`), so a deployment that picks `tokio` or `smol` can build without
 # compiling it at all.
 ice-rpc-rx = { workspace = true, default-features = false }
 ice-rpc-macros = { workspace = true }
@@ -263,3 +271,9 @@ required-features = ["tokio"]
 [[example]]
 name = "tracing-demo"
 required-features = ["tokio", "tracing"]
+
+# The blocking consumer: a plain `fn main`, no async runtime. Built for the
+# fallback `rt-async` mode, whose blocking primitives it demonstrates.
+[[example]]
+name = "blocking-consumer-app"
+required-features = ["rt-async"]

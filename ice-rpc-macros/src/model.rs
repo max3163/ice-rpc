@@ -32,6 +32,12 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name};
 ///   channel's publishers, in payload elements. It is a property of the
 ///   **channel**, so every service of a group must declare the same value; when
 ///   omitted, the runtime default (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
+/// - `#[service(..., blocking)]` → also generate a **blocking** twin of every
+///   method (`{method}_blocking`) on both the `{Trait}Client` and the
+///   `{Trait}Proxy`, for a consumer that runs no async runtime: the twin returns
+///   the `Observable` directly instead of a future, so the caller never spells
+///   `block_on` for the call. Off by default — a service that does not need it
+///   pays neither the method nor its documentation.
 /// - `#[service("MyService", version = 2, group = "db")]` → all.
 #[derive(Debug)]
 pub struct ServiceAttr {
@@ -43,6 +49,8 @@ pub struct ServiceAttr {
     pub service_version: u16,
     /// Initial slice length of the channel's publishers, when declared.
     pub max_slice_len: Option<usize>,
+    /// Whether a blocking twin of every method is generated (`blocking`).
+    pub blocking: bool,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -51,6 +59,7 @@ impl syn::parse::Parse for ServiceAttr {
         let mut group: Option<String> = None;
         let mut service_version: u16 = 1;
         let mut max_slice_len: Option<usize> = None;
+        let mut blocking: bool = false;
 
         if input.is_empty() {
             return Ok(Self {
@@ -58,6 +67,7 @@ impl syn::parse::Parse for ServiceAttr {
                 group,
                 service_version,
                 max_slice_len,
+                blocking,
             });
         }
 
@@ -67,7 +77,11 @@ impl syn::parse::Parse for ServiceAttr {
                 logical_name = Some(name.value());
             } else {
                 let ident: Ident = input.parse()?;
-                if ident == "group" {
+                if ident == "blocking" {
+                    // A bare flag: no `= value`. The loop below still consumes the
+                    // separating comma, so `#[service("S", blocking)]` is accepted.
+                    blocking = true;
+                } else if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitStr = input.parse()?;
                     group = Some(lit.value());
@@ -107,6 +121,7 @@ impl syn::parse::Parse for ServiceAttr {
             group,
             service_version,
             max_slice_len,
+            blocking,
         })
     }
 }

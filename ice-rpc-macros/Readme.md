@@ -77,7 +77,7 @@ pub trait MyService: Send + Sync + 'static {
 `#[service]` accepts optional parameters, combinable in any order:
 
 ```rust,ignore
-#[service("MyService", version = 1, group = "db")]
+#[service("MyService", version = 1, group = "db", blocking)]
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
@@ -87,6 +87,7 @@ pub trait MyService: Send + Sync + 'static {
 |---|---|---|---|
 | `version` | integer | `1` | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`. |
 | `group` | string | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id. |
+| `blocking` | flag | off | Generates a synchronous twin `{method}_blocking` of **every** method, on both the `{Trait}Client` and the `{Trait}Proxy`. It returns the `Observable` directly, so a consumer with no async runtime calls the service without `.await` or `block_on`. |
 
 The macro does not bound the response wait: use the `Observable` operators
 (`timeout`, `take_until`) to bound the latency, or the silence between two values

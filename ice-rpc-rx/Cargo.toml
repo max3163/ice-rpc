@@ -18,27 +18,39 @@ workspace = true
 [package.metadata.docs.rs]
 # Deliberately not `all-features = true`: the execution modes are mutually
 # exclusive (see this crate's `rt` module), so the documented build picks one.
-features = ["tokio"]
+# `operators` is added back so the documented surface is the full stream API.
+features = ["tokio", "operators"]
 
 [features]
 # One full execution facade per host runtime, plus a fallback for a deployment
 # that has none. `ice-rpc` forwards these features, so a consumer never names
 # this crate to pick a runtime.
 #
-# - `rt-threads` (default) — owned `async-executor` instance run by OS threads,
+# - `rt-async` (default) — owned `async-executor` instance run by OS threads,
 #   `blocking` for the pool, `futures-timer` for the timers. No third-party
 #   runtime and no I/O reactor: the core does no async I/O.
 # - `tokio` — tokio only (`spawn`, `time`, `spawn_blocking`).
 # - `smol` — smol only (its global executor, its `Timer`, its `unblock`), so the
 #   tasks share the executor of the application that already runs smol.
 #
-# The modes are exclusive by priority (`tokio` > `smol` > `rt-threads`) and
+# The modes are exclusive by priority (`tokio` > `smol` > `rt-async`) and
 # `tokio` + `smol` together is a compile error: a process must not run two full
 # runtimes. Enabling a mode does not remove the fallback from the graph, because
 # Cargo features are additive; for a build with no residue of the other modes,
 # use `default-features = false, features = ["tokio"]`.
-default = ["rt-threads"]
-rt-threads = ["dep:async-executor", "dep:blocking", "dep:futures-timer"]
+# - `rt-none` — the lightest facade: no pool, no timer and no third-party
+#   runtime. `block_on` and the dedicated-thread `spawn_blocking` cover a pure
+#   consumer; the occasional `spawn`/`sleep` run on plain OS threads. This is the
+#   mode a blocking consumer selects, and the only one that pulls no async
+#   runtime at all.
+default = ["rt-async", "operators"]
+rt-none = []
+rt-async = ["dep:async-executor", "dep:blocking", "dep:futures-timer"]
+# The reactive operators (`transform`), the multicast `Subject` and the
+# push-based `Subscription` (with its `Observable::subscribe` terminals). Turning
+# it off removes that machinery and its `rt::spawn`/`rt::sleep` usage from the
+# build; the wire, the `Observable` type and the blocking terminals stay.
+operators = []
 tokio = ["dep:tokio"]
 smol = ["dep:smol"]
 

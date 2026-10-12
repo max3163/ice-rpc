@@ -29,7 +29,9 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 
 // ── The JSON contract, both sides ────────────────────────────────────
 // One view per service: the macro implements the caller side and calls the host
-// side, which registers itself once with `set_json_dispatcher`.
+// side, which registers itself once with `set_json_dispatcher`. Gated behind
+// `json` alongside the module itself.
+#[cfg(feature = "json")]
 pub use crate::json::{
     JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonInvoker,
     JsonOutcome, JsonResult, ReadMode, dispatch_json, json_dispatcher, read_json,

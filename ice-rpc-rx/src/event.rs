@@ -210,7 +210,9 @@ impl<T, E> Sender<T, E> {
     /// Returns `true` once the receiving end is gone.
     ///
     /// A multicast relay uses it to drop the subscribers that stopped
-    /// listening, instead of keeping a sender that can deliver nothing.
+    /// listening, instead of keeping a sender that can deliver nothing. Gated
+    /// behind `operators`: only the `Subject` relay calls it.
+    #[cfg(feature = "operators")]
     #[inline]
     pub(crate) fn is_closed(&self) -> bool {
         self.inner.is_closed()

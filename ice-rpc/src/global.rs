@@ -53,6 +53,10 @@ impl<T> Global<T> {
     }
 
     /// Returns the value, or `None` while it has not been initialized.
+    ///
+    /// Its only production caller is the JSON dispatcher, so a build without the
+    /// `json` feature (the light client) leaves it unused outside tests.
+    #[cfg_attr(not(feature = "json"), allow(dead_code))]
     pub fn get(&self) -> Option<&T> {
         self.0.get()
     }

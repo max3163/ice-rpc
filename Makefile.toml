@@ -497,7 +497,7 @@ args = ["clippy", "-p", "ice-rpc-monitor", "--all-targets"]
 # =============================================================================
 
 [tasks.rx-test]
-description = "Run the reactive layer tests (default mode: rt-threads)"
+description = "Run the reactive layer tests (default mode: rt-async)"
 command = "cargo"
 args = ["test", "-p", "ice-rpc-rx"]
 

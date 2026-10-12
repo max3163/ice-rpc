@@ -38,7 +38,9 @@ use crate::codegen::{
         gen_json_provider_from_response_fn, gen_json_provider_method,
     },
     lifecycle::{LifecycleGenInput, gen_lifecycle},
-    proxy::{ProxyGenInput, ProxyMethodGenInput, gen_proxy, gen_proxy_method},
+    proxy::{
+        ProxyGenInput, ProxyMethodGenInput, gen_proxy, gen_proxy_blocking_method, gen_proxy_method,
+    },
     server::{ServerGenInput, gen_native_method, gen_server},
 };
 
@@ -127,6 +129,10 @@ fn expand_service_with(
         Err(e) => return e.to_compile_error(),
     };
 
+    // Whether the `blocking` parameter asked for a synchronous twin of every
+    // method, on both the client and the proxy.
+    let blocking = service_attr.blocking;
+
     let trait_name = &model.trait_name;
     let visibility = &model.visibility;
     let logical_name_lit = model.logical_name.clone();
@@ -158,6 +164,7 @@ fn expand_service_with(
 
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
+    let mut proxy_blocking_methods = Vec::new();
     let mut server_native_methods = Vec::new();
     let mut json_provider_methods = Vec::new();
     let mut node_methods = Vec::new();
@@ -186,6 +193,7 @@ fn expand_service_with(
             req_enum_name,
             group: &group_lit,
             service_ref: &service_ref,
+            blocking,
         }));
 
         server_native_methods.push(gen_native_method(
@@ -200,7 +208,7 @@ fn expand_service_with(
             json_provider_methods.push(gen_json_provider_method(proxy_name, fn_name));
         }
 
-        node_methods.push(gen_proxy_method(&ProxyMethodGenInput {
+        let proxy_method_input = ProxyMethodGenInput {
             fn_name,
             arg_names: &arg_names,
             arg_types: &arg_types,
@@ -208,8 +216,13 @@ fn expand_service_with(
             mode_name,
             service_ref: &service_ref,
             service_name: &service_name,
+            visibility,
             json_provider: features.json,
-        }));
+        };
+        node_methods.push(gen_proxy_method(&proxy_method_input));
+        if blocking {
+            proxy_blocking_methods.push(gen_proxy_blocking_method(&proxy_method_input));
+        }
 
         // Collects the data for the generated decoder (`Display` + decoder).
         if features.monitoring {
@@ -251,6 +264,7 @@ fn expand_service_with(
         group_lit: &group_lit,
         max_slice_len: &max_slice_len,
         node_methods: &node_methods,
+        blocking_methods: &proxy_blocking_methods,
         json_provider: features.json,
     };
     let proxy_output = gen_proxy(&proxy_input);
@@ -424,11 +438,25 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
 ///
 /// No runtime is hard-coded:
 /// - `#[ice_rpc::main]` → driven by `ice_rpc::rt::block_on`, which requires no
-///   runtime and suits every execution mode (`rt-threads`, `tokio`, `smol`);
+///   runtime and suits every execution mode (`rt-async`, `tokio`, `smol`);
 /// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime;
-/// - `#[ice_rpc::main(pollster::block_on)]` → any user-provided `fn(Future) -> T`.
+/// - `#[ice_rpc::main(pollster::block_on)]` → any user-provided `fn(Future) -> T`;
+/// - `#[ice_rpc::main(rt-none)]` → **no runtime at all**: the annotated function
+///   is a plain synchronous `fn main`, the body runs blocking, and ice-rpc is
+///   shut down with `shutdown_blocking` on the way out.
 ///
-/// # Example
+/// # Example (blocking main)
+/// ```rust,ignore
+/// #[ice_rpc::main(rt-none)]
+/// fn main() {
+///     let proxy = ice_rpc::locator()
+///         .get_blocking::<MyServiceProxy>()
+///         .expect("the locator builds the proxy");
+///     let value = proxy.hello_blocking("Alice".into()).first_value_blocking();
+/// }
+/// ```
+///
+/// # Example Async main
 /// ```rust,ignore
 /// #[ice_rpc::main(tokio)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -656,6 +684,23 @@ mod entry_tests {
     fn main_rejects_a_synchronous_function() {
         let err = expand_main(quote! {}, quote! { fn main() {} }).unwrap_err();
         assert!(err.to_string().contains("async fn main"));
+    }
+
+    #[test]
+    fn main_rt_none_wraps_a_synchronous_main() {
+        let out = expand(quote! { rt-none }, quote! { fn main() {} });
+        assert!(out.contains("ice_rpc :: codegen :: init ()"), "{out}");
+        assert!(out.contains("shutdown_blocking"), "{out}");
+        assert!(out.starts_with("fn main"), "{out}");
+        // No runtime, no future: nothing `async`, nothing `block_on`.
+        assert!(!out.contains("async"), "{out}");
+        assert!(!out.contains("block_on"), "{out}");
+    }
+
+    #[test]
+    fn main_rt_none_rejects_an_async_function() {
+        let err = expand_main(quote! { rt-none }, quote! { async fn main() {} }).unwrap_err();
+        assert!(err.to_string().contains("synchronous"), "{err}");
     }
 }
 

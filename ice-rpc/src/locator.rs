@@ -78,6 +78,15 @@ impl ServiceLocator {
         self.shutdown_registry.join_all().await;
     }
 
+    /// Waits for the registered IPC threads, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`release_node`](Self::release_node), for a consumer
+    /// that runs no async runtime: it joins the dispatch threads at exit so the
+    /// iceoryx2 ports are dropped and their shared-memory files unlinked.
+    pub fn release_node_blocking(&self) {
+        crate::rt::block_on(self.release_node());
+    }
+
     /// Retrieves a proxy by its **type** and returns it ready to use.
     ///
     /// If the proxy is not yet cached, it is instantiated via
@@ -107,6 +116,45 @@ impl ServiceLocator {
         self.lazy_cache
             .write()
             .await
+            .entry(name)
+            .or_insert_with(|| proxy.clone() as Arc<dyn Any + Send + Sync>);
+
+        Some(proxy)
+    }
+
+    /// Retrieves a proxy by its **type**, **blocking the current thread**.
+    ///
+    /// Synchronous twin of [`get`](Self::get): the same two fast paths (registered
+    /// provider, then lazy cache) and the same lazy build through
+    /// [`ServiceConsumer::consume_proxy`], with
+    /// [`async_lock::RwLock::read_blocking`] / `write_blocking` in place of the
+    /// awaited guards.
+    ///
+    /// Blocks on the locator's lock, so call it from a synchronous entry point (a
+    /// `fn main` with no runtime) rather than from inside an async task.
+    pub fn get_blocking<T: ServiceConsumer>(&self) -> Option<Arc<T>> {
+        let name = T::SERVICE_NAME;
+
+        // Fast-path 1: already registered as a Provider.
+        {
+            let entries = self.entries.read_blocking();
+            if let Some(entry) = entries.get(name) {
+                return entry.instance.clone().downcast::<T>().ok();
+            }
+        }
+
+        // Fast-path 2: already in the lazy cache.
+        {
+            let cache = self.lazy_cache.read_blocking();
+            if let Some(instance) = cache.get(name) {
+                return instance.clone().downcast::<T>().ok();
+            }
+        }
+
+        // Slow-path: instantiate the Consumer proxy and cache it.
+        let proxy: Arc<T> = T::consume_proxy();
+        self.lazy_cache
+            .write_blocking()
             .entry(name)
             .or_insert_with(|| proxy.clone() as Arc<dyn Any + Send + Sync>);
 
@@ -501,5 +549,40 @@ mod tests {
     #[test]
     fn an_empty_registry_orders_nothing() {
         assert!(topological_order(&[], &[]).is_empty());
+    }
+
+    /// The blocking twin returns the very same registered instance, without
+    /// entering a runtime.
+    #[test]
+    fn get_blocking_hands_back_the_registered_provider() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+
+        let provider = Arc::new(EchoService(MockState::default()));
+        pollster::block_on(locator.register(provider.clone()));
+
+        let fetched = locator
+            .get_blocking::<EchoService>()
+            .expect("a registered provider is returned");
+        assert!(Arc::ptr_eq(&fetched, &provider));
+    }
+
+    /// The blocking twin builds a consumer proxy lazily, then serves it from the
+    /// cache — a lazily built proxy is never a registered provider.
+    #[test]
+    fn get_blocking_builds_and_caches_a_consumer_proxy() {
+        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let locator = ServiceLocator::global();
+
+        let first = locator
+            .get_blocking::<ConfigService>()
+            .expect("a proxy is built");
+        let second = locator
+            .get_blocking::<ConfigService>()
+            .expect("the cache answers");
+
+        assert!(Arc::ptr_eq(&first, &second), "the cached proxy is reused");
+        assert_eq!(first.service_name(), "LocatorConfig");
+        assert!(!locator.service_names().contains(&"LocatorConfig"));
     }
 }

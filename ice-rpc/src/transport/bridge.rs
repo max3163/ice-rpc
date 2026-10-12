@@ -375,6 +375,7 @@ mod tests {
     /// The fold is the last step of a pipeline: an operator in front of the
     /// source must not cost the single-sample optimization.
     #[test]
+    #[cfg(feature = "operators")]
     fn a_pipeline_single_value_keeps_one_wire_sample() {
         let samples = fold(
             Observable::<i32, String>::from_events([Event::Next(7), Event::Complete])

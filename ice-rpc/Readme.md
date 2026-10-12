@@ -79,14 +79,14 @@ plus a fallback for a deployment that has none. "Full" means the process then
 runs **one** pool, not three.
 
 ```toml
-ice-rpc = { version = "0.3" }                              # rt-threads (default)
+ice-rpc = { version = "0.3" }                              # rt-async (default)
 ice-rpc = { version = "0.3", features = ["tokio"] }        # tokio only
 ice-rpc = { version = "0.3", features = ["smol"] }         # smol only
 ```
 
 | Mode | Task spawning, timers, blocking pool |
 |---|---|
-| `rt-threads` (default) | an `async-executor` instance owned by the crate, run by `available_parallelism()` OS threads (`ICE_RPC_THREADS` overrides the count), `futures-timer` for `sleep`, `blocking` for the pool. No third-party runtime, and **no I/O reactor**: the core performs no async I/O. |
+| `rt-async` (default) | an `async-executor` instance owned by the crate, run by `available_parallelism()` OS threads (`ICE_RPC_THREADS` overrides the count), `futures-timer` for `sleep`, `blocking` for the pool. No third-party runtime, and **no I/O reactor**: the core performs no async I/O. |
 | `tokio` | `tokio::spawn`, `tokio::time::sleep`, tokio's blocking pool |
 | `smol` | `smol::spawn` on smol's global executor — so the tasks share the pool of an application that already runs smol — `smol::Timer`, `smol::unblock`. Set `SMOL_THREADS`: that executor runs **one** thread by default. |
 
@@ -239,6 +239,43 @@ let all   = proxy.list().await.collect().await?; // Vec<T>
   read is released silently — nothing is sent. The implementation honours the
   signal by reading `CallContext::cancellation()`;
   [`examples/remote_cancel.rs`](examples/remote_cancel.rs) shows both halves.
+
+### Blocking consumer (no runtime)
+
+A small consumer that only issues calls needs neither an executor nor an async
+`main`: `#[ice_rpc::main(rt-none)]` bootstraps ice-rpc around a plain
+**synchronous** `fn main` and shuts it down on exit. The blocking surface mirrors
+the async one.
+
+```rust,ignore
+#[ice_rpc::main(rt-none)] // init + shutdown_blocking around a sync main
+fn main() {
+    let proxy = ice_rpc::locator().get_blocking::<MyServiceProxy>().unwrap();
+
+    // `#[service(..., blocking)]` generated a synchronous twin of the method:
+    // no `.await`, and no `block_on` at the call site.
+    let value = proxy
+        .hello_blocking("Alice".into())
+        .first_value_blocking()
+        .unwrap();
+}
+```
+
+- `#[ice_rpc::main(rt-none)]` wraps a **synchronous** `fn main` (no `async`):
+  `init()` before the body, `shutdown_blocking()` after — the same guarantees as
+  `#[ice_rpc::main]`, without a runtime;
+- `ServiceLocator::get_blocking` and
+  `Observable::{recv,next,first_value,last_value,collect}_blocking` are the
+  synchronous twins of the awaited ones;
+- `#[service(..., blocking)]` also generates a synchronous twin
+  `{method}_blocking` on both the client and the proxy, so the call itself needs
+  neither `.await` nor `block_on`;
+- `ShutdownGuard::shutdown_blocking()` is the synchronous twin of `shutdown()`,
+  so the program keeps one shape from the call to the exit;
+- `first_value_blocking` pulls the response with no executor;
+- the only auxiliary thread is the transport's own response dispatcher;
+- a full program lives in
+  [`examples/blocking-consumer-app.rs`](examples/blocking-consumer-app.rs).
 
 ## Error semantics
 

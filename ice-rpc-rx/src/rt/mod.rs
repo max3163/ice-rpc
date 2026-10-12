@@ -11,9 +11,10 @@
 //!
 //! | Mode | `spawn` | `sleep` | blocking pool |
 //! |---|---|---|---|
-//! | `rt-threads` (default) | owned `async-executor` instance on OS threads | `futures-timer` | `blocking` |
+//! | `rt-async` (default) | owned `async-executor` instance on OS threads | `futures-timer` | `blocking` |
 //! | `tokio` | `tokio::spawn` | `tokio::time::sleep` | tokio's pool |
 //! | `smol` | `smol::spawn` (its global executor) | `smol::Timer` | `smol::unblock` |
+//! | `rt-none` | *absent* — no executor | *absent* — no timer | dedicated-thread [`spawn_blocking`] |
 //!
 //! The two long-lived IPC loops do not go through a runtime at all: they own a
 //! `std::thread` and block on an iceoryx2 `WaitSet` (see [`spawn_blocking`]).
@@ -21,9 +22,15 @@
 //! no I/O reactor.
 //!
 //! The modes are selected by feature, by priority: `tokio` > `smol` >
-//! `rt-threads`. Enabling a mode does not remove the fallback from the
-//! dependency graph, because Cargo features are additive; a build with no
+//! `rt-async` > `rt-none`. Enabling a mode does not remove the fallback from
+//! the dependency graph, because Cargo features are additive; a build with no
 //! residue of the other modes uses `default-features = false`.
+//!
+//! [`rt-none`](crate::rt) is the lightest mode and the only one that pulls no
+//! async runtime: it keeps [`block_on`], the dedicated-thread [`spawn_blocking`],
+//! cancellation and the oneshot channel, and provides no `spawn`/`sleep`. A pure
+//! consumer needs nothing more; a detached task, when one is asked for, runs on
+//! its own OS thread through [`Spawner`].
 
 // Cargo features are additive and cannot express "if tokio then not smol", so
 // the exclusivity the modes require is enforced here rather than in the
@@ -35,9 +42,14 @@ compile_error!(
      The `ice-rpc` crate exposes both under the same names."
 );
 
-#[cfg(not(any(feature = "tokio", feature = "smol", feature = "rt-threads")))]
+#[cfg(not(any(
+    feature = "tokio",
+    feature = "smol",
+    feature = "rt-async",
+    feature = "rt-none"
+)))]
 compile_error!(
-    "no execution facade selected: enable `rt-threads` (the default), `tokio` or `smol`."
+    "no execution facade selected: enable `rt-async` (the default), `rt-none`, `tokio` or `smol`."
 );
 
 mod cancel;
@@ -47,6 +59,7 @@ pub use cancel::{CancellationToken, WaitForCancel};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 use std::time::Duration;
 
 /// Error returned by [`timeout`] when the deadline elapses first.
@@ -182,7 +195,7 @@ mod imp {
 }
 
 // ── Mode 3: OS threads (the fallback) ─────────────────────────────────────
-#[cfg(all(feature = "rt-threads", not(feature = "tokio"), not(feature = "smol")))]
+#[cfg(all(feature = "rt-async", not(feature = "tokio"), not(feature = "smol")))]
 mod imp {
     use super::*;
     use std::sync::{Arc, OnceLock};
@@ -273,10 +286,13 @@ mod imp {
 
 /// Spawns a future onto the configured runtime.
 ///
-/// The task is detached: its result is discarded. Under the `rt-threads` and
+/// The task is detached: its result is discarded. Under the `rt-async` and
 /// `smol` facades this works from any context, including one without an active
 /// async runtime: those executors start lazily and accept a spawn from any
 /// thread. Under the `tokio` facade an active runtime is required.
+///
+/// Absent under `rt-none`, which owns no executor.
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -291,7 +307,7 @@ where
 /// without one. The transport boots its channel threads with `std::thread` —
 /// they never run inside a runtime — so it captures a [`Spawner`] on the thread
 /// that starts the channel (which is inside the runtime) and moves it into the
-/// channel thread. Under the `rt-threads` and `smol` facades nothing is
+/// channel thread. Under the `rt-async` and `smol` facades nothing is
 /// captured: both executors accept a spawn from any thread.
 #[derive(Clone, Default)]
 pub struct Spawner {
@@ -325,8 +341,18 @@ impl Spawner {
                 fallback_runtime().spawn(future);
             }
         }
-        #[cfg(not(feature = "tokio"))]
+        // A full non-tokio facade owns an executor that accepts a spawn from any
+        // thread.
+        #[cfg(all(not(feature = "tokio"), any(feature = "smol", feature = "rt-async")))]
         spawn(future);
+        // The light client owns no executor: a detached task runs on its own OS
+        // thread. A pure consumer never takes this path.
+        #[cfg(all(
+            not(feature = "tokio"),
+            not(feature = "smol"),
+            not(feature = "rt-async")
+        ))]
+        std::thread::spawn(move || futures_lite::future::block_on(future));
     }
 
     /// Runs `future` on the calling thread when it completes without yielding,
@@ -371,19 +397,44 @@ impl Spawner {
     /// second indirection on the path of every request.
     ///
     /// [`Waker`]: std::task::Waker
-    pub fn run_or_spawn(&self, mut task: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+    #[allow(unused_mut)] // the light-client arm moves the task without polling it
+    pub fn run_or_spawn(&self, task: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
         #[cfg(feature = "tokio")]
-        let _entered = match &self.handle {
-            Some(handle) => handle.enter(),
-            None => {
-                self.spawn(task);
-                return;
-            }
-        };
+        {
+            let mut task = task;
+            let _entered = match &self.handle {
+                Some(handle) => handle.enter(),
+                None => {
+                    self.spawn(task);
+                    return;
+                }
+            };
 
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        if task.as_mut().poll(&mut cx).is_pending() {
-            self.spawn(task);
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            if task.as_mut().poll(&mut cx).is_pending() {
+                self.spawn(task);
+            }
+        }
+
+        // A full non-tokio facade: poll inline, spawn at the first `Pending`.
+        #[cfg(all(not(feature = "tokio"), any(feature = "smol", feature = "rt-async")))]
+        {
+            let mut task = task;
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            if task.as_mut().poll(&mut cx).is_pending() {
+                self.spawn(task);
+            }
+        }
+
+        // The light client owns no executor to hand a pending task to: run it to
+        // completion on a dedicated OS thread.
+        #[cfg(all(
+            not(feature = "tokio"),
+            not(feature = "smol"),
+            not(feature = "rt-async")
+        ))]
+        {
+            std::thread::spawn(move || futures_lite::future::block_on(task));
         }
     }
 }
@@ -429,9 +480,10 @@ where
 /// Runs a short blocking closure on the runtime's **bounded** thread pool and
 /// returns an awaitable handle.
 ///
-/// The pool belongs to the mode: `blocking` in the `rt-threads` and `smol`
+/// The pool belongs to the mode: `blocking` in the `rt-async` and `smol`
 /// facades, tokio's blocking pool under the `tokio` feature. A panicking closure
 /// is caught and logged, never propagated to the awaiter.
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 pub fn blocking_call<F, R>(f: F) -> BlockingHandle
 where
     F: FnOnce() -> R + Send + 'static,
@@ -447,6 +499,7 @@ where
 ///
 /// Returns `Err` when the closure panics (the panic is caught and its message
 /// returned) or when the task is cancelled before reporting a result.
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 pub async fn spawn_blocking_value<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -457,12 +510,12 @@ where
 
 /// Runs a pooled blocking closure, turning a panic into an `Err(message)`.
 ///
-/// The pooled variants of the `rt-threads` and `smol` facades are built on
+/// The pooled variants of the `rt-async` and `smol` facades are built on
 /// `blocking::unblock`, which re-raises a panic in the awaiting task: catching it
 /// here is what keeps a panicking task from taking its awaiter down with it.
 /// Under the `tokio` feature the pool reports panics through `JoinError`
 /// instead, so none of this is compiled there.
-#[cfg(not(feature = "tokio"))]
+#[cfg(all(not(feature = "tokio"), any(feature = "smol", feature = "rt-async")))]
 fn catch_panic<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce() -> R,
@@ -473,7 +526,7 @@ where
 /// Formats the payload of a caught panic into a human-readable message.
 ///
 /// Only used by the modes whose pool re-raises panics.
-#[cfg(not(feature = "tokio"))]
+#[cfg(all(not(feature = "tokio"), any(feature = "smol", feature = "rt-async")))]
 fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
@@ -485,11 +538,13 @@ fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Sleeps for the given duration.
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 pub fn sleep(dur: Duration) -> impl Future<Output = ()> + Send + 'static {
     imp::sleep(dur)
 }
 
 /// Waits for `fut` to complete, or returns [`Elapsed`] once `dur` elapses.
+#[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
 pub async fn timeout<F>(dur: Duration, fut: F) -> Result<F::Output, Elapsed>
 where
     F: Future,
@@ -579,12 +634,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn spawn_blocking_value_returns_result() {
         let value = test_block_on(spawn_blocking_value(|| 21 * 2));
         assert_eq!(value, Ok(42));
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn spawn_blocking_value_reports_panic_as_error() {
         // The wording depends on the facade: the agnostic pool returns the panic
         // payload, tokio wraps it in a `JoinError`.
@@ -597,6 +654,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn blocking_call_runs_the_closure_on_the_pool() {
         let flag = Arc::new(AtomicBool::new(false));
         let flag_clone = flag.clone();
@@ -618,12 +676,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn timeout_resolves_value_when_future_completes_first() {
         let result = test_block_on(timeout(Duration::from_secs(5), async { 42 }));
         assert_eq!(result, Ok(42));
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn timeout_returns_elapsed_on_deadline() {
         let result = test_block_on(timeout(Duration::from_millis(10), async {
             futures_lite::future::pending::<()>().await;
@@ -632,6 +692,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "tokio", feature = "smol", feature = "rt-async"))]
     fn spawn_runs_detached_future() {
         // `spawn` requires an active runtime under the `tokio` facade.
         let flag = Arc::new(AtomicBool::new(false));

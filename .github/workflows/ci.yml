@@ -41,7 +41,7 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --exclude gateway-nodejs --exclude ice-rpc-nodejs --all-targets --features tokio,http-tokio,json,tracing -- -D warnings
 
-      # The default workspace run exercises the `rt-threads` mode, the fallback
+      # The default workspace run exercises the `rt-async` mode, the fallback
       # facade (an `async-executor` instance on OS threads, `futures-timer` for
       # the timers, `blocking` for the pool).
       - name: Test (workspace, default mode)
@@ -54,13 +54,13 @@ jobs:
       # runs strict: without it the fallback mode is compiled too, and the point
       # of a mode is that a deployment can build one only.
       - name: Test (ice-rpc-rx, tokio mode)
-        run: cargo test -p ice-rpc-rx --no-default-features --features tokio
+        run: cargo test -p ice-rpc-rx --no-default-features --features tokio,operators
 
       - name: Test (ice-rpc, tokio mode)
         run: cargo test -p ice-rpc --lib --no-default-features --features tokio
 
       - name: Test (ice-rpc-rx, smol mode)
-        run: cargo test -p ice-rpc-rx --no-default-features --features smol
+        run: cargo test -p ice-rpc-rx --no-default-features --features smol,operators
 
       - name: Test (ice-rpc, smol mode)
         run: cargo test -p ice-rpc --lib --no-default-features --features smol
@@ -92,14 +92,20 @@ jobs:
           # fallback mode: neither runtime, and no I/O reactor at all — the core
           # performs no async I/O, the transport blocks on its iceoryx2 WaitSet.
           for forbidden in tokio smol async-io; do
-            assert_absent rt-threads "$forbidden"
+            assert_absent rt-async "$forbidden"
+          done
+          # light client: no execution runtime at all — no pool, no timer, no
+          # third-party runtime and no I/O reactor. This is the build a pure
+          # blocking consumer selects, so its purity is the whole point.
+          for forbidden in tokio smol async-executor blocking futures-timer async-io async-process; do
+            assert_absent client "$forbidden"
           done
           # No `futures` facade in any mode: the only primitive the core needed
           # from it (the oneshot channel behind `rt::oneshot`) now comes from the
           # runtime-agnostic, dependency-free `oneshot` crate. Only napi — and
           # therefore the Node.js gateway, which this job excludes — still pulls
           # `futures` in.
-          for mode in tokio smol rt-threads; do
+          for mode in tokio smol rt-async; do
             assert_absent "$mode" futures
           done
           echo "each mode carries exactly one runtime"
@@ -111,6 +117,14 @@ jobs:
       # features on purpose, so it does not cover this either.
       - name: Test (ice-rpc, tracing feature)
         run: cargo test -p ice-rpc --features tracing --lib
+
+      # The light client: `rt-none` mode, no operators, no runtime. It must
+      # build on its own, and the example proves the blocking surface compiles —
+      # and runs — as a plain `fn main` with no executor.
+      - name: Check (ice-rpc, light client)
+        run: |
+          cargo check -p ice-rpc --no-default-features --features client
+          cargo check -p ice-rpc --no-default-features --features client --example blocking-consumer-app
       - name: Check (ice-rpc, optional features, one mode at a time)
         shell: bash
         run: |
@@ -150,7 +164,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # The default build first: `rt-threads` for `ice-rpc`, the plain bus
+      # The default build first: `rt-async` for `ice-rpc`, the plain bus
       # observer for `ice-rpc-monitor`. This is what a user who names no feature
       # at all compiles, so it is the floor that matters most.
       - name: Check (workspace, default features)

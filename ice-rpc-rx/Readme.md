@@ -88,9 +88,9 @@ implementation can recover from a transport, discovery or protocol failure.
 | `stream` | `Observable`, `channel`, `unbounded_channel` |
 | `error` | `RpcError`, the technical error of the whole stack |
 | `creation` | `from`, `of`, `throw_error`, `defer`, `from_future`, `ObservableInput` |
-| `subject` | `Subject`, the multicast source |
-| `subscribe` | `Subscription`, the cancellation handle — awaited to join the subscription (`sub.await`) |
-| `transform` | the operators, carried by `Observable` |
+| `subject` | `Subject`, the multicast source *(gated by `operators`)* |
+| `subscribe` | `Subscription`, the cancellation handle — awaited to join the subscription (`sub.await`) *(gated by `operators`)* |
+| `transform` | the operators, carried by `Observable` *(gated by `operators`)* |
 | `rt` | execution facade (`spawn`, `Spawner`, `sleep`, `block_on`) and `CancellationToken` |
 
 ## Execution modes
@@ -100,15 +100,24 @@ deployment that has none:
 
 | Feature | `spawn` | `sleep` | blocking pool |
 |---|---|---|---|
-| `rt-threads` (default) | an `async-executor` instance this crate owns, on `available_parallelism()` OS threads | `futures-timer` | `blocking` |
+| `rt-async` (default) | an `async-executor` instance this crate owns, on `available_parallelism()` OS threads | `futures-timer` | `blocking` |
 | `tokio` | `tokio::spawn` | `tokio::time::sleep` | tokio's pool |
 | `smol` | `smol::spawn` (the application's global executor) | `smol::Timer` | `smol::unblock` |
+| `rt-none` | *absent* — no executor | *absent* — no timer | dedicated-thread `spawn_blocking` |
 
 `ice-rpc` forwards its own features here, so the choice is made once, at the top
 of the dependency tree. The modes are exclusive (`tokio` + `smol` is a compile
-error) and selected by priority `tokio` > `smol` > `rt-threads`. Cargo features
-being additive, enabling a mode leaves the fallback in the graph; a build that
-carries one runtime only uses `default-features = false`.
+error) and selected by priority `tokio` > `smol` > `rt-async` > `rt-none`.
+Cargo features being additive, enabling a mode leaves the fallback in the graph;
+a build that carries one runtime only uses `default-features = false`.
+
+`rt-none` is the **lightest** mode and the only one that pulls no async
+runtime at all: it keeps `block_on`, the dedicated-thread `spawn_blocking`,
+cancellation and the oneshot channel, and provides no `spawn`/`sleep`. It is the
+mode `ice-rpc`'s `client` feature selects, for a pure blocking consumer. The
+reactive surface (operators, `Subject`, `Subscription`) is a separate
+`operators` feature — on by default, off for the light client — so it never
+becomes a hidden dependency of a build that does not use it.
 
 A full mode, rather than a single runtime-agnostic executor, is what lets the
 process run *one* pool: the fallback adds no reactor (the core does no async

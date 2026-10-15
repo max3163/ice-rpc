@@ -56,6 +56,14 @@ unwrap_used = "deny"
 expect_used = "allow"
 
 [workspace.metadata.release]
+# Every member shares the version of `[workspace.package]`, so a release is a
+# single one. `shared-version` is what tells `cargo release --workspace` that:
+# without it, each crate tries to create the same `v{{version}}` tag and the
+# second one fails with `tag already exists (for <crate>)`.
+# `consolidate-commits` is the same decision for the history: one release commit
+# for the whole workspace instead of one per crate.
+shared-version = true
+consolidate-commits = true
 tag-name = "v{{version}}"
 pre-release-commit-message = "release: ice-rpc v{{version}}"
 push = false

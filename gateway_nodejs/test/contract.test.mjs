@@ -70,14 +70,42 @@ test('registering after init() is refused with the same code', () => {
 
 test('resolving an unknown correlation id is refused with its own code', () => {
   assert.throws(
-    () => gateway.resolveNodejsCall('11111111-2222-3333-4444-555555555555', { type: 'next' }),
+    () => gateway.resolveNodejsCall('11111111-2222-3333-4444-555555555555', {}),
     (error) => error.message.startsWith('E_UNKNOWN_CID'),
   );
 });
 
 test('resolving a malformed correlation id is refused with its own code', () => {
   assert.throws(
-    () => gateway.resolveNodejsCall('not-a-correlation-id', { type: 'next' }),
+    () => gateway.resolveNodejsCall('not-a-correlation-id', {}),
     (error) => error.message.startsWith('E_INVALID_CID'),
+  );
+});
+
+test('the removed { type, data } envelope is refused on both entry points', () => {
+  // The envelope is built from `{ data }` / `{ error }` / `{}` now; a caller
+  // still passing a `type` gets a diagnosable failure instead of a silent
+  // lone `Next` that never terminates the stream.
+  for (const formula of [
+    () => gateway.resolveNodejsCall('11111111-2222-3333-4444-555555555555', { type: 'next', data: 1 }),
+    () => gateway.resolveNodejsCall('11111111-2222-3333-4444-555555555555', { type: 'complete' }),
+    () => gateway.emitNodejsEvent('11111111-2222-3333-4444-555555555555', { type: 'next', data: 1 }),
+  ]) {
+    assert.throws(formula, (error) => error.message.startsWith('E_INVALID_ARGS'));
+  }
+});
+
+test('emit refuses an error: a failure is terminal, so it belongs to resolve', () => {
+  assert.throws(
+    () => gateway.emitNodejsEvent('11111111-2222-3333-4444-555555555555', { error: 'boom' }),
+    (error) => error.message.startsWith('E_INVALID_ARGS'),
+  );
+});
+
+test('an emitted value is accepted without a type field', () => {
+  // Reaches the unknown-id check, which proves the envelope itself was valid.
+  assert.throws(
+    () => gateway.emitNodejsEvent('11111111-2222-3333-4444-555555555555', { data: 1 }),
+    (error) => error.message.startsWith('E_UNKNOWN_CID'),
   );
 });

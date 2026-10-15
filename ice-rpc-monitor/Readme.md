@@ -47,7 +47,10 @@ feature of `ice-rpc` makes `#[service]` also generate, per service:
 
 Each rendered value uses its own `Display` implementation when it has one, and
 falls back to its `Debug` implementation otherwise: `Debug` is the only
-formatting requirement a service type has to meet.
+formatting requirement a service type has to meet — and it is one no service type
+has to ask for, since `#[ice_rpc::payload]` derives it on every payload that does
+not already do so itself (a hand-written `impl Debug` opts out with
+`#[ice_rpc::payload(no_debug)]`).
 
 The observer then lists nothing: it reads the slice back.
 

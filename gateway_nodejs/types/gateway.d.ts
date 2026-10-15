@@ -10,7 +10,7 @@
  * add it to your `tsconfig` (or reference it) — the ambient module below then
  * types the addon's exports.
  *
- * The argument convention (see `docs/nodejs-gateway-api-v2.md`) is:
+ * The argument convention (see `docs/nodejs-gateway-api-v3.md`) is:
  *   0 argument  -> no argument
  *   1 argument  -> the value itself
  *   2+ arguments -> an object `{ name: value, ... }`
@@ -22,12 +22,23 @@ declare module 'gateway-nodejs' {
   /** A correlation id: a UUID-like hexadecimal string. */
   export type CorrelationId = string;
 
-  /** The event envelope a provider sends back: `{ type, data }`. */
-  export interface Event<T = unknown> {
-    /** Defaults to `'next'` when omitted. */
-    type?: 'next' | 'complete' | 'error';
-    data?: T;
+  /** One intermediate value of a stream: `emitNodejsEvent(cid, { data })`. */
+  export interface Emitted<T = unknown> {
+    data: T;
   }
+
+  /**
+   * The terminal answer of a call: `resolveNodejsCall(cid, …)`.
+   *
+   * The closing event is derived from the envelope, never stated:
+   * - `{ data }` — close with one last value (a single `CompleteWith` sample);
+   * - `{ error }` — close with a business error;
+   * - `{}` — close without a value.
+   */
+  export type Terminal<T = unknown, E = unknown> =
+    | { data: T }
+    | { error: E }
+    | { data?: undefined; error?: undefined };
 
   /** One call handed to the provider dispatcher. */
   export interface Call {
@@ -46,8 +57,8 @@ declare module 'gateway-nodejs' {
     method: string,
     args?: unknown,
   ): Promise<unknown[]>;
-  export function emitNodejsEvent(correlationId: CorrelationId, event: Event): void;
-  export function resolveNodejsCall(correlationId: CorrelationId, event: Event): void;
+  export function emitNodejsEvent(correlationId: CorrelationId, event: Emitted): void;
+  export function resolveNodejsCall(correlationId: CorrelationId, event: Terminal): void;
   export function shutdown(): Promise<void>;
   export function version(): string;
 

@@ -19,7 +19,7 @@
 //! ```
 //!
 //! See the crate's `Readme.md` for the `Cargo.toml`, `build.rs` and npm layout,
-//! and `docs/nodejs-gateway-api-v2.md` for the JavaScript contract (argument
+//! and `docs/nodejs-gateway-api-v3.md` for the JavaScript contract (argument
 //! convention, event envelope, error codes, lifecycle).
 //!
 //! # Why the list is not here

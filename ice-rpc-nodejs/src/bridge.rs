@@ -188,16 +188,21 @@ impl NodeJsBridge {
 
     /// Pushes one intermediate event, keeping the call open.
     ///
+    /// Backs the addon's `emitNodejsEvent(correlationId, { data })`: the envelope
+    /// is normalized to the internal `{ "type": "next", "data": … }` form the
+    /// generated converter reads (see [`next_envelope`]).
+    ///
     /// # Errors
-    /// `E_INVALID_CID`, `E_UNKNOWN_CID`, or `E_CALLBACK` when the call was
-    /// already closed.
+    /// `E_INVALID_CID`, `E_INVALID_ARGS` on a malformed envelope,
+    /// `E_UNKNOWN_CID`, or `E_CALLBACK` when the call was already closed.
     pub fn emit_event(&self, correlation_id_hex: &str, event: Value) -> Result<(), GatewayError> {
         let cid = parse_cid(correlation_id_hex)?;
+        let envelope = next_envelope(event)?;
         let sender = self
             .pending()
             .sender(&cid)
             .ok_or_else(|| unknown_cid(correlation_id_hex))?;
-        sender.try_send(event).map_err(|_| {
+        sender.try_send(envelope).map_err(|_| {
             GatewayError::new(
                 GatewayErrorCode::Callback,
                 "the call was closed while pushing an event",
@@ -207,20 +212,94 @@ impl NodeJsBridge {
 
     /// Answers a pending call with its terminal event and closes it.
     ///
+    /// Backs the addon's
+    /// `resolveNodejsCall(correlationId, { data } | { error } | {})`: the terminal
+    /// event is built here, so a caller never states a `type` (see
+    /// [`terminal_envelope`]).
+    ///
     /// # Errors
-    /// `E_INVALID_CID`, `E_UNKNOWN_CID` when no call matches it (already
-    /// answered or expired).
+    /// `E_INVALID_CID`, `E_INVALID_ARGS` on a malformed envelope, `E_UNKNOWN_CID`
+    /// when no call matches it (already answered or expired).
     pub fn resolve(&self, correlation_id_hex: &str, event: Value) -> Result<(), GatewayError> {
         let cid = parse_cid(correlation_id_hex)?;
+        // Normalized before the call is taken: a malformed envelope must leave
+        // the call open, not close it unanswered.
+        let envelope = terminal_envelope(event)?;
         let sender = self
             .pending()
             .take(&cid)
             .ok_or_else(|| unknown_cid(correlation_id_hex))?;
         // Best effort: a closed receiver only means the caller already gave up
         // (deadline), which is not the answering side's problem.
-        let _ = sender.try_send(event);
+        let _ = sender.try_send(envelope);
         Ok(())
     }
+}
+
+/// Builds the `E_INVALID_ARGS` failure of a malformed JavaScript envelope.
+fn invalid_envelope(message: &'static str) -> GatewayError {
+    GatewayError::new(GatewayErrorCode::InvalidArgs, message)
+}
+
+/// The message of an envelope still using the removed `{ type, data }` form.
+const REMOVED_ENVELOPE: &str = "the `{ type, data }` envelope was removed: use `{ data }` or `{ error }` \
+     (resolveNodejsCall), and `emitNodejsEvent(correlationId, { data })`";
+
+/// Normalizes an **intermediate** event envelope for the generated converter.
+///
+/// The JavaScript surface is `{ "data": v }`; what
+/// `serialize_response_from_value` reads is `{ "type": "next", "data": v }`.
+/// The presence of the **key** decides, so a `null` payload — `()`, or an empty
+/// string field — is carried as a value rather than mistaken for "nothing".
+///
+/// An `error` is refused: only [`NodeJsBridge::resolve`] may close a call with a
+/// failure.
+fn next_envelope(event: Value) -> Result<Value, GatewayError> {
+    let Value::Object(object) = event else {
+        return Err(invalid_envelope("emitNodejsEvent expects `{ data }`"));
+    };
+    if object.contains_key("type") {
+        return Err(invalid_envelope(REMOVED_ENVELOPE));
+    }
+    match object.get("data").cloned() {
+        Some(data) => Ok(serde_json::json!({ "type": "next", "data": data })),
+        None => Err(invalid_envelope(
+            "emitNodejsEvent expects `{ data }`: the key is missing",
+        )),
+    }
+}
+
+/// Normalizes the **terminal** event envelope for the generated converter.
+///
+/// | JavaScript | internal envelope | wire event |
+/// |---|---|---|
+/// | `{ "data": v }` | `{ "type": "complete", "data": v }` | `CompleteWith(v)` |
+/// | `{ "error": e }` | `{ "type": "error", "data": e }` | `Error(e)` |
+/// | `{}` / `null` | `{ "type": "complete" }` | `Complete` |
+///
+/// The presence of the **key** decides, not its value: `{ "data": null }` is the
+/// one-value `CompleteWith(())` of a unit service, and `{}` is the only way to
+/// close without a value.
+fn terminal_envelope(event: Value) -> Result<Value, GatewayError> {
+    let Value::Object(object) = event else {
+        return if event.is_null() {
+            Ok(serde_json::json!({ "type": "complete" }))
+        } else {
+            Err(invalid_envelope(
+                "resolveNodejsCall expects `{ data }`, `{ error }` or `{}`",
+            ))
+        };
+    };
+    if object.contains_key("type") {
+        return Err(invalid_envelope(REMOVED_ENVELOPE));
+    }
+    if let Some(data) = object.get("data").cloned() {
+        return Ok(serde_json::json!({ "type": "complete", "data": data }));
+    }
+    if let Some(error) = object.get("error").cloned() {
+        return Ok(serde_json::json!({ "type": "error", "data": error }));
+    }
+    Ok(serde_json::json!({ "type": "complete" }))
 }
 
 /// The bridge, seen by the generated JSON dispatcher.
@@ -325,5 +404,71 @@ mod tests {
     fn a_malformed_correlation_id_is_an_invalid_cid() {
         let error = parse_cid("not-a-correlation-id").expect_err("malformed id");
         assert_eq!(error.code(), GatewayErrorCode::InvalidCid);
+    }
+
+    // ── The JavaScript envelope ──────────────────────────────────────
+
+    #[test]
+    fn an_intermediate_event_is_a_bare_data_envelope() {
+        let envelope = next_envelope(serde_json::json!({ "data": 7 })).expect("a bare value");
+        assert_eq!(envelope, serde_json::json!({ "type": "next", "data": 7 }));
+
+        // A `null` value is legitimate: `()` serializes to `null`.
+        let envelope = next_envelope(serde_json::json!({ "data": null })).expect("a null value");
+        assert_eq!(
+            envelope,
+            serde_json::json!({ "type": "next", "data": null })
+        );
+    }
+
+    #[test]
+    fn an_intermediate_event_refuses_a_missing_or_removed_envelope() {
+        let error = next_envelope(serde_json::json!({ "type": "next", "data": 1 }))
+            .expect_err("the `{ type, data }` form was removed");
+        assert_eq!(error.code(), GatewayErrorCode::InvalidArgs);
+
+        // `emit` never carries an error: a failure is terminal.
+        let error =
+            next_envelope(serde_json::json!({ "error": "boom" })).expect_err("only `{ data }`");
+        assert_eq!(error.code(), GatewayErrorCode::InvalidArgs);
+
+        let error = next_envelope(serde_json::json!(7)).expect_err("not an object");
+        assert_eq!(error.code(), GatewayErrorCode::InvalidArgs);
+    }
+
+    #[test]
+    fn a_terminal_data_envelope_is_a_complete_with() {
+        let envelope = terminal_envelope(serde_json::json!({ "data": 42 })).expect("a value");
+        assert_eq!(
+            envelope,
+            serde_json::json!({ "type": "complete", "data": 42 })
+        );
+    }
+
+    #[test]
+    fn a_terminal_error_envelope_is_an_error() {
+        let envelope =
+            terminal_envelope(serde_json::json!({ "error": "KeyNotFound" })).expect("an error");
+        assert_eq!(
+            envelope,
+            serde_json::json!({ "type": "error", "data": "KeyNotFound" })
+        );
+    }
+
+    #[test]
+    fn an_empty_or_null_terminal_envelope_is_a_plain_complete() {
+        let complete = serde_json::json!({ "type": "complete" });
+        assert_eq!(
+            terminal_envelope(serde_json::json!({})).expect("empty"),
+            complete
+        );
+        assert_eq!(terminal_envelope(Value::Null).expect("null"), complete);
+    }
+
+    #[test]
+    fn a_terminal_envelope_refuses_the_removed_form() {
+        let error = terminal_envelope(serde_json::json!({ "type": "next", "data": 1 }))
+            .expect_err("the `{ type, data }` form was removed");
+        assert_eq!(error.code(), GatewayErrorCode::InvalidArgs);
     }
 }

@@ -31,26 +31,24 @@ function handleContext(method, args, correlationId) {
   switch (method) {
     case 'get': {
       const value = store.get(args);
-      // A terminal event closes the call; `type` may only be `next`, `complete`
-      // or `error`, and the payload must fit the declared error type.
-      return value === undefined
-        ? { type: 'error', data: 'KeyNotFound' }
-        : { type: 'next', data: value };
+      // The terminal answer is an envelope built here: `{ data }` closes with a
+      // value, `{ error }` with a business error, `{}` without one. The payload
+      // must fit the declared error type.
+      return value === undefined ? { error: 'KeyNotFound' } : { data: value };
     }
     case 'set':
       // `set` takes two parameters, so JavaScript receives an object.
       store.set(String(args.key), String(args.value));
-      return { type: 'next', data: true };
+      return { data: true };
     case 'delete':
-      return { type: 'next', data: store.delete(args) };
+      return { data: store.delete(args) };
     case 'list': {
       const entries = [...store].map(([key, value]) => ({ key, value }));
-      return entries.length === 0
-        ? { type: 'complete' }
-        : { type: 'next', data: entries[0] };
+      // `{}` closes the call without a value, which an empty context needs.
+      return entries.length === 0 ? {} : { data: entries[0] };
     }
     default:
-      return { type: 'error', data: `unknown method '${method}'` };
+      return { error: `unknown method '${method}'` };
   }
 }
 
@@ -74,10 +72,11 @@ function dispatch(err, call) {
   const event =
     service === 'ContextService'
       ? handleContext(method, args, correlationId)
-      : { type: 'error', data: `this process does not provide '${service}'` };
+      : { error: `this process does not provide '${service}'` };
 
-  // `resolveNodejsCall` sends the terminal event and closes the call. Use
-  // `emitNodejsEvent` first when a method streams several values.
+  // `resolveNodejsCall` builds the terminal event from the envelope and closes
+  // the call. Use `emitNodejsEvent(cid, { data })` first for the values of a
+  // multi-value method.
   gateway.resolveNodejsCall(correlationId, event);
 }
 

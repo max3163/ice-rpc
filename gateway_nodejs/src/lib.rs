@@ -23,7 +23,7 @@
 //! ```
 //!
 //! The full contract (argument convention, event envelope, error codes,
-//! lifecycle) is in `docs/nodejs-gateway-api-v2.md`, and the engine's `Readme.md`
+//! lifecycle) is in `docs/nodejs-gateway-api-v3.md`, and the engine's `Readme.md`
 //! explains how to build an addon for **your own** services.
 //!
 //! # The service list is the only thing here

@@ -5,8 +5,9 @@
  * On the wire each value is its own sample, so serving it from JavaScript means
  * answering one call with several events:
  *
- *   `emitNodejsEvent(cid, { type: 'next', data })`  — pushes a value, keeps the call open
- *   `resolveNodejsCall(cid, { type: 'complete' })`  — closes the call
+ *   `emitNodejsEvent(cid, { data })`  — pushes a value, keeps the call open
+ *   `resolveNodejsCall(cid, {})`       — closes the call without a value
+ *   `resolveNodejsCall(cid, { data })` — closes the call with one last value
  *
  * A consumer reads them with `callServiceStream` (every value) or
  * `callService` (the first one, without waiting for the end — which is what an
@@ -32,11 +33,11 @@ function handleWatch(correlationId, count) {
   let emitted = 0;
   const tick = () => {
     if (emitted >= count) {
-      gateway.resolveNodejsCall(correlationId, { type: 'complete' });
+      gateway.resolveNodejsCall(correlationId, {});
       return;
     }
     emitted += 1;
-    gateway.emitNodejsEvent(correlationId, { type: 'next', data: emitted });
+    gateway.emitNodejsEvent(correlationId, { data: emitted });
     setTimeout(tick, WATCH_INTERVAL_MS);
   };
   tick();
@@ -53,14 +54,13 @@ function dispatch(err, call) {
     return;
   }
   if (service === 'NotificationService' && method === 'ping') {
-    // A single-value method: one `next` is enough, and `resolveNodejsCall`
-    // closes the call.
-    gateway.resolveNodejsCall(correlationId, { type: 'next', data: 1 });
+    // A single-value method: `{ data }` is the terminal value, carried as one
+    // `CompleteWith` sample.
+    gateway.resolveNodejsCall(correlationId, { data: 1 });
     return;
   }
   gateway.resolveNodejsCall(correlationId, {
-    type: 'error',
-    data: `this process does not provide '${service}::${method}'`,
+    error: `this process does not provide '${service}::${method}'`,
   });
 }
 

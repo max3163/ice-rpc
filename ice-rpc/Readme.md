@@ -55,8 +55,15 @@ That is the whole list. The framework hides its own dependencies behind its
 facade:
 
 - a service payload is declared with `#[ice_rpc::payload]`, which supplies the
-  `rkyv` derives and points their expansion at the re-exported `rkyv` — no `rkyv`
-  dependency of your own;
+  `rkyv` derives — **and `Debug`**, unless the item derives it already or is
+  annotated `no_debug` for a hand-written `impl Debug` — and points their
+  expansion at the re-exported `rkyv`: no `rkyv` dependency of your own. `Debug`
+  is what the `monitoring` feature needs to render a payload, so leaving it to the
+  macro keeps a service observable without asking for the trait. An **error**
+  payload propagated with `?` into a `Box<dyn std::error::Error>` also needs
+  `Display`, which `std::error::Error` requires and no derive can produce:
+  `#[ice_rpc::payload(display)]` generates one, delegating to the `Debug` form,
+  for the payloads whose author does not write a better rendering by hand;
 - a service implementation is annotated with `#[ice_rpc::async_trait]`, the
   re-exported `async-trait` attribute — no `async-trait` dependency of your own;
 - everything `#[service]` generates names `log` (and the rest) through
@@ -100,10 +107,14 @@ ice-rpc = { version = "0.3", default-features = false, features = ["tokio"] }
 
 The two long-lived IPC loops own a `std::thread` and block on an iceoryx2
 `WaitSet`: they never go through a runtime. `#[ice_rpc::main]` drives `main`
-with `ice_rpc::rt::block_on` (no runtime required, any mode),
-`#[ice_rpc::main(tokio)]` builds a multi-thread tokio runtime, and any
-`fn(Future) -> T` can be given instead, e.g.
-`#[ice_rpc::main(pollster::block_on)]`.
+with `ice_rpc::rt::block_on`, which polls the body on the calling thread and
+therefore executes on the mode selected above — `rt-async` (the default), or
+whichever one the features pick. The macro bundles no runtime of its own, so
+this is not a runtime-free mode; `#[ice_rpc::main(tokio)]` builds a multi-thread
+tokio runtime, and any `fn(Future) -> T` can be given instead, e.g.
+`#[ice_rpc::main(pollster::block_on)]`. Only `#[ice_rpc::main(rt-none)]` — the
+`rt-none` mode behind the `client` feature — drops the runtime entirely, which
+is why it is the sole mode that can truthfully be called *runtime-free*.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
   stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
@@ -114,81 +125,129 @@ with `ice_rpc::rt::block_on` (no runtime required, any mode),
 
 ## Quick start
 
-### 1. Define a service
+A complete, runnable example lives in
+[`examples/quickstart.rs`](examples/quickstart.rs): one file holding the service,
+its provider and its consumer — the two roles picked by a command-line argument.
+The steps below are that file, and step 5 runs it.
+
+### 1. Define the service
 
 ```rust,ignore
-use ice_rpc::{service, Observable};
+use ice_rpc::{Observable, service};
 
+/// The business error of the service.
+///
+/// `#[ice_rpc::payload]` supplies the rkyv derives (and `Debug`) — no `rkyv`
+/// dependency of your own.
 #[ice_rpc::payload]
-#[derive(Debug)]
-pub enum MyError {
-    NotFound,
+#[derive(Debug, Clone)]
+pub enum GreeterError {
+    /// The name was empty.
+    EmptyName,
 }
 
-#[service("MyService")]
-pub trait MyService: Send + Sync + 'static {
-    async fn hello(&self, name: String) -> Observable<String, MyError>;
+#[service("GreeterService")]
+pub trait GreeterService {
+    /// Returns a greeting for `name`.
+    async fn hello(&self, name: String) -> Observable<String, GreeterError>;
 }
 ```
 
-The macro generates `MyServiceRequest`, `MyServiceClient`, `MyServiceServer`, `MyServiceProxy` and `MyServiceMode`.
+The macro generates `GreeterServiceRequest`, `GreeterServiceClient`,
+`GreeterServiceServer`, `GreeterServiceProxy` and `GreeterServiceMode`. A service
+method returns `Observable<T, E>` — never a `Result`: the error travels inside the
+flux.
 
-`#[service]` also accepts two optional parameters:
+`#[service]` also accepts optional parameters:
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
-- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.
+- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id;
+- `max_slice_len` and `blocking` — see *Configuration* below.
 
 ```rust,ignore
 #[service("MyService", version = 1, group = "db")]
-pub trait MyService: Send + Sync + 'static {
-    async fn hello(&self, name: String) -> Observable<String, MyError>;
+pub trait MyService {
+    async fn hello(&self, name: String) -> Observable<String, GreeterError>;
 }
 ```
 
-### 2. Start a provider
+### 2. The provider
+
+`#[ice_rpc::main(tokio)]` owns the bootstrap (init + runtime) and the clean
+shutdown; `run_provider!` starts the services and blocks until Ctrl+C.
 
 ```rust,ignore
-struct MyServiceImpl;
+struct Greeter;
 
 #[ice_rpc::async_trait]
-impl MyService for MyServiceImpl {
-    async fn hello(&self, name: String) -> Observable<String, MyError> {
-        // Single response: this is just
-        //     ice_rpc::of(format!("Hello {name} !"))
-        // The raw channel stays available for long-lived push streams:
-        let (tx, rx) = ice_rpc::codegen::channel::<String, MyError>(1);
-        ice_rpc::rt::spawn(async move {
-            let _ = tx.send_complete_with(format!("Hello {} !", name)).await;
-        });
-        rx // no Result: a service returns the observable itself
+impl GreeterService for Greeter {
+    async fn hello(&self, name: String) -> Observable<String, GreeterError> {
+        if name.is_empty() {
+            // A business error is an observable too: it travels inside the flux.
+            return ice_rpc::throw_error(GreeterError::EmptyName);
+        }
+        // One value, then completion — no channel, no task. A long-lived push
+        // stream would use `ice_rpc::codegen::channel`.
+        ice_rpc::of(format!("Hello {name}!"))
     }
 }
 
-#[ice_rpc::main(tokio)]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and shuts it down
-    // on exit; `run_provider!` starts the services and waits for Ctrl+C.
-    ice_rpc::run_provider!(
-        MyServiceProxy::provide(MyServiceImpl),
-    ).await
+/// Hosts the service and blocks until Ctrl+C.
+async fn run_provider() {
+    ice_rpc::run_provider!(GreeterServiceProxy::provide(Greeter)).await
 }
 ```
 
-### 3. Call from a consumer
+### 3. The consumer
+
+The proxy is built lazily from its type — no registry, no explicit connection;
+the IPC link opens on the first call. A call never fails at the call site: a
+transport failure becomes an in-stream error that `first_value()` returns.
+
+```rust,ignore
+async fn run_consumer() {
+    let proxy = ice_rpc::locator()
+        .get::<GreeterServiceProxy>()
+        .await
+        .expect("GreeterService unknown");
+
+    match proxy.hello("Alice".into()).await.first_value().await {
+        Ok(greeting) => println!("{greeting}"),
+        Err(error) => eprintln!("call failed: {error}"),
+    }
+}
+```
+
+### 4. Two roles, one binary
+
+The example dispatches on its first argument, so the provider and the consumer
+are the two runs of the same program:
 
 ```rust,ignore
 #[ice_rpc::main(tokio)]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proxy = ice_rpc::locator()
-        .get::<MyServiceProxy>().await
-        .expect("MyService unknown");
-
-    let response: String = proxy.hello("Alice".into()).await.first_value().await?;
-    println!("Response: {}", response);
-
-    Ok(()) // `#[ice_rpc::main]` shuts ice-rpc down on exit
+async fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("provider") | None => run_provider().await,
+        Some("consumer") => run_consumer().await,
+        Some(other) => eprintln!("usage: quickstart [provider|consumer] (got {other})"),
+    }
 }
 ```
+
+### 5. Run it
+
+Start the provider in one terminal and the consumer in another; both must run
+from the same directory, so they resolve the same iceoryx2 configuration.
+
+```bash
+# terminal 1 — the provider (blocks until Ctrl+C)
+cargo run -p ice-rpc --example quickstart --features tokio -- provider
+
+# terminal 2 — the consumer (prints the greeting and exits)
+cargo run -p ice-rpc --example quickstart --features tokio -- consumer
+```
+
+The consumer prints `Hello Alice!`. Stop the provider with Ctrl+C.
 
 ## Core concepts
 

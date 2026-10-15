@@ -886,7 +886,7 @@ The implementation is split in two crates:
   no logic of its own.
 
 The full contract — signatures, argument convention, event envelope, error codes,
-lifecycle — is in [`docs/nodejs-gateway-api-v2.md`](docs/nodejs-gateway-api-v2.md).
+lifecycle — is in [`docs/nodejs-gateway-api-v3.md`](docs/nodejs-gateway-api-v3.md).
 An addon built around **your** services is described in
 [`ice-rpc-nodejs/Readme.md`](ice-rpc-nodejs/Readme.md); the reference addon's own
 guide is [`gateway_nodejs/Readme.md`](gateway_nodejs/Readme.md).
@@ -906,11 +906,11 @@ sequenceDiagram
     G->>B: start_call cid service method args
     B->>J: ThreadsafeFunction call
     J->>J: business logic, then emits its events
-    J->>B: emitNodejsEvent cid event
-    B-->>G: one event per call
+    J->>B: emitNodejsEvent cid { data }
+    B-->>G: one Next per call
     G->>T: one wire sample per event
-    J->>B: resolveNodejsCall cid terminal event
-    B-->>G: the call is closed
+    J->>B: resolveNodejsCall cid { data | error | {} }
+    B-->>G: one CompleteWith/Error/Complete, then the call is closed
     G->>T: rkyv WireEvent samples
     T->>C: publish on DatabaseService_resp
 ```
@@ -928,7 +928,10 @@ gateway.init((err, call) => {
     if (err) return;
     const { correlationId, service, method, args } = call;
     // args is a native JS value: no JSON.parse anywhere.
-    gateway.resolveNodejsCall(correlationId, { type: 'next', data: store.get(args) });
+    // The terminal envelope carries the outcome: `{ data }` closes with one last
+    // value (a single CompleteWith sample), `{ error }` with a business error,
+    // and `{}` without a value.
+    gateway.resolveNodejsCall(correlationId, { data: store.get(args) });
 });
 
 // 3. Consume: the proxy is created on demand, nothing to declare.
@@ -939,9 +942,10 @@ const values = await gateway.callServiceStream('NotificationService', 'watch', 3
 await gateway.shutdown();
 ```
 
-A method that streams several values answers one call with several events:
-`emitNodejsEvent` for each intermediate one, `resolveNodejsCall` for the terminal
-one, which also closes the call.
+An intermediate value of a multi-value method is pushed with
+`emitNodejsEvent(correlationId, { data })`, and the call is closed by
+`resolveNodejsCall` alone: the closing event is **derived from its envelope**,
+never passed as a `type`, so a call can no longer end on a bare `Next`.
 
 ### 12.3. Key points
 

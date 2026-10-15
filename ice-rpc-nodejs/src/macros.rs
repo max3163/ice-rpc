@@ -105,6 +105,9 @@ macro_rules! gateway {
         }
 
         /// Pushes an intermediate event of a call, keeping it open.
+        ///
+        /// `emitNodejsEvent(correlationId, { data })` — one value, one wire
+        /// sample. The terminal event belongs to `resolveNodejsCall`.
         #[::napi_derive::napi]
         pub fn emit_nodejs_event(
             correlation_id: ::std::string::String,
@@ -114,6 +117,10 @@ macro_rules! gateway {
         }
 
         /// Answers a call with its terminal event and closes it.
+        ///
+        /// `resolveNodejsCall(correlationId, { data } | { error } | {})`: the
+        /// closing event is **built from the envelope**, never stated as a
+        /// `type`.
         #[::napi_derive::napi]
         pub fn resolve_nodejs_call(
             correlation_id: ::std::string::String,

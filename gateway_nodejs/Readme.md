@@ -12,7 +12,7 @@ call any other ice-rpc service of the machine.
 
 The complete contract — signatures, argument convention, event envelope, error
 codes and the lifecycle state machine — is in
-[`docs/nodejs-gateway-api-v2.md`](../docs/nodejs-gateway-api-v2.md).
+[`docs/nodejs-gateway-api-v3.md`](../docs/nodejs-gateway-api-v3.md).
 
 ```mermaid
 flowchart LR
@@ -79,10 +79,26 @@ serves the previous API, which is exactly how `index.d.ts` came to advertise a
 | `init(callback)` | `void` | `callback` is `(err, call)` — not `(call)`. Once per run. |
 | `callService(service, method, args)` | `Promise<any>` | Resolves with the first value, without waiting for the stream to end. |
 | `callServiceStream(service, method, args)` | `Promise<any[]>` | Resolves with every value, once the stream completed. |
-| `emitNodejsEvent(correlationId, event)` | `void` | Pushes an intermediate event, keeps the call open. |
-| `resolveNodejsCall(correlationId, event)` | `void` | Sends the terminal event and closes the call. |
+| `emitNodejsEvent(correlationId, { data })` | `void` | Pushes one intermediate value, keeps the call open. |
+| `resolveNodejsCall(correlationId, { data } \| { error } \| {})` | `void` | Builds the terminal event and closes the call. |
 | `shutdown()` | `Promise<void>` | Releases the IPC resources; `init` may then run again. |
 | `version()` | `string` | Built from the compiled versions, never a literal. |
+
+The envelope is the whole provider contract, and the entry point decides what it
+means:
+
+| JavaScript | Wire | Meaning |
+|---|---|---|
+| `emitNodejsEvent(cid, { data: v })` | `Next(v)` | one intermediate value, call stays open |
+| `resolveNodejsCall(cid, { data: v })` | `CompleteWith(v)` | closes with one last value, as a single sample |
+| `resolveNodejsCall(cid, {})` | `Complete` | closes without a value |
+| `resolveNodejsCall(cid, { error: e })` | `Error(e)` | closes with a business error |
+
+The closing event is **derived from the envelope**: `resolveNodejsCall` is never
+told a `type`, and `emitNodejsEvent` refuses an `error` — a failure is terminal.
+The removed `{ type, data }` form is refused with `E_INVALID_ARGS`, so a caller
+that still uses it learns it at once instead of emitting a lone `Next` that never
+terminates the stream.
 
 `callService` and `callServiceStream` run their IPC call on the **libuv thread
 pool**: the Node.js event loop is never blocked, not even by a call that takes
@@ -100,11 +116,11 @@ gateway.init((err, call) => {                // one dispatcher for all services
     const { correlationId, service, method, args } = call;
     // `args` is a native JS value: no JSON.parse anywhere.
     const value = store.get(args);
+    // The terminal envelope carries the outcome; the payload of `error` must fit
+    // the declared error type.
     gateway.resolveNodejsCall(
         correlationId,
-        value === undefined
-            ? { type: 'error', data: 'KeyNotFound' }   // must fit the declared error type
-            : { type: 'next', data: value },
+        value === undefined ? { error: 'KeyNotFound' } : { data: value },
     );
 });
 ```
@@ -126,9 +142,9 @@ once:
 ```javascript
 function handleWatch(correlationId, count) {
     for (let value = 1; value <= count; value += 1) {
-        gateway.emitNodejsEvent(correlationId, { type: 'next', data: value });
+        gateway.emitNodejsEvent(correlationId, { data: value });
     }
-    gateway.resolveNodejsCall(correlationId, { type: 'complete' });
+    gateway.resolveNodejsCall(correlationId, {});   // closes without a value
 }
 ```
 
@@ -156,7 +172,7 @@ const values = await gateway.callServiceStream('NotificationService', 'watch', 3
 
 Failures reject with a **message whose prefix is a stable code**:
 `E_NO_PROVIDER`, `E_TIMEOUT`, `E_BUSINESS`, `E_INVALID_ARGS`, `E_UNKNOWN_METHOD`,
-… The full table is in the [ADR](../docs/nodejs-gateway-api-v2.md). `napi::Error`
+… The full table is in the [ADR](../docs/nodejs-gateway-api-v3.md). `napi::Error`
 exposes no custom `code` property, so the prefix is the contract.
 
 ## Lifecycle and threading

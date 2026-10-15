@@ -436,14 +436,18 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
 ///
 /// # Runtime
 ///
-/// No runtime is hard-coded:
-/// - `#[ice_rpc::main]` → driven by `ice_rpc::rt::block_on`, which requires no
-///   runtime and suits every execution mode (`rt-async`, `tokio`, `smol`);
+/// The macro bundles no runtime of its own; it only chooses how `main` is
+/// driven:
+/// - `#[ice_rpc::main]` → driven by `ice_rpc::rt::block_on`, which polls the
+///   body on the calling thread. The body still runs on the execution facade
+///   the crate is built with — `rt-async` (the default) provides the executor
+///   and the timers, `smol` its own — so this is *not* a runtime-free mode;
 /// - `#[ice_rpc::main(tokio)]` → a dedicated multi-thread tokio runtime;
 /// - `#[ice_rpc::main(pollster::block_on)]` → any user-provided `fn(Future) -> T`;
 /// - `#[ice_rpc::main(rt-none)]` → **no runtime at all**: the annotated function
 ///   is a plain synchronous `fn main`, the body runs blocking, and ice-rpc is
-///   shut down with `shutdown_blocking` on the way out.
+///   shut down with `shutdown_blocking` on the way out. This is the only mode
+///   that pulls in no async runtime.
 ///
 /// # Example (blocking main)
 /// ```rust,ignore
@@ -472,14 +476,63 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// `#[payload]` attribute macro: derives the rkyv traits an ice-rpc service
-/// payload needs, **without the crate naming `rkyv`**.
+/// `#[payload]` attribute macro: derives the traits an ice-rpc service payload
+/// needs, **without the crate naming `rkyv`** — and without its author having to
+/// ask for `Debug`.
 ///
 /// Expands to the annotated item preceded by
 /// `#[derive(ice_rpc::codegen::rkyv::Archive, ice_rpc::codegen::rkyv::Deserialize, ice_rpc::codegen::rkyv::Serialize)]`
 /// and `#[rkyv(crate = ice_rpc::codegen::rkyv)]`. The second attribute is what makes
 /// the dependency disappear: without it the rkyv derive expands against the
 /// default `::rkyv` path, and the service crate would have to declare it.
+///
+/// # `Debug`
+///
+/// The generated derivation carries `Debug` as well, **unless the item derives
+/// it already or opts out**. A payload type must be `Debug` to be observable: a
+/// service built with the `monitoring` feature derives `Debug` on its generated
+/// `{Trait}Request` enum, so an out-of-band observer can render the arguments.
+/// Supplying the trait here turns a puzzling error on generated code into a
+/// populated payload type.
+///
+/// It is never derived twice — that would be an `E0119`, two `impl Debug for X`.
+/// An item whose own `#[derive(..)]` names `Debug`, whatever the spelling
+/// (`std::fmt::Debug` included), keeps its derivation alone. A **hand-written
+/// `impl Debug`** is invisible to an attribute macro, which only sees the item it
+/// annotates, so such a type says so:
+///
+/// ```rust,ignore
+/// #[ice_rpc::payload(no_debug)] // `impl Debug` is written by hand
+/// pub struct Query {
+///     pub key: String,
+/// }
+/// ```
+///
+/// `Display` is deliberately not part of the set: it is not derivable — there is
+/// no `#[derive(Display)]` — and it has no canonical generated form. The
+/// framework prefers a hand-written `Display` when the type has one, and falls
+/// back to this `Debug` form otherwise.
+///
+/// # `Display`, for an error payload
+///
+/// `std::error::Error` requires `Debug` **and** `Display`, and `?` converts into
+/// a `Box<dyn Error>` only through that trait: a payload used as a service error
+/// therefore needs a `Display` as soon as it is propagated with `?` from a `main`
+/// returning `Result<(), Box<dyn Error>>`. `Debug` comes from the macro; the
+/// `Display` is asked for explicitly, because the *good* rendering — a sentence
+/// rather than a field dump — is the one the author writes by hand and an
+/// attribute macro cannot detect:
+///
+/// ```rust,ignore
+/// #[ice_rpc::payload(display)] // `impl Display` delegating to `Debug`
+/// pub enum MyError {
+///     NotFound,
+/// }
+/// ```
+///
+/// The generated implementation is `Debug::fmt`, so it must not be combined with
+/// a hand-written `impl Display` (an `E0119`), and `no_debug` is refused
+/// alongside it, since the delegation would have nothing to render.
 ///
 /// Any `#[derive(..)]`, doc comment or other attribute already on the item is
 /// preserved — the generated derives are added in a **second** `#[derive(..)]`,
@@ -490,28 +543,75 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// itself.
 ///
 /// ```rust,ignore
-/// #[ice_rpc::payload]
-/// #[derive(Debug, Clone)]
+/// #[ice_rpc::payload] // rkyv derives + `Debug`
 /// pub struct Query {
 ///     pub key: String,
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn payload(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_payload(item.into()).into()
+pub fn payload(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_payload(attr.into(), item.into()).into()
+}
+
+/// Options of [`payload`], read from the attribute's argument list.
+#[derive(Default)]
+struct PayloadOptions {
+    /// `no_debug`: never add the `Debug` derivation. For a type whose `Debug` is
+    /// written by hand — an `impl` an attribute macro cannot see — or one that
+    /// must stay free of the trait.
+    no_debug: bool,
+    /// `display`: additionally generate `impl Display`, delegating to `Debug`.
+    /// For an error payload that is propagated with `?` into a `Box<dyn Error>`,
+    /// which needs the trait.
+    display: bool,
+}
+
+impl syn::parse::Parse for PayloadOptions {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut options = Self::default();
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            if ident == "no_debug" {
+                options.no_debug = true;
+            } else if ident == "display" {
+                options.display = true;
+            } else {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("unknown parameter `{ident}` for #[ice_rpc::payload]"),
+                ));
+            }
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        Ok(options)
+    }
 }
 
 /// Body of [`payload`], kept on `proc_macro2` so a unit test can call it: a
 /// `#[proc_macro_attribute]` function is only invocable from the compiler.
-fn expand_payload(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+fn expand_payload(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let options = match syn::parse2::<PayloadOptions>(attr) {
+        Ok(options) => options,
+        Err(error) => return error.to_compile_error(),
+    };
+
     let parsed = match syn::parse2::<syn::Item>(item.clone()) {
         Ok(parsed) => parsed,
         Err(error) => return error.to_compile_error(),
     };
 
-    let has_rkyv_crate = match &parsed {
-        syn::Item::Struct(item) => item.attrs.iter().any(is_rkyv_crate_attr),
-        syn::Item::Enum(item) => item.attrs.iter().any(is_rkyv_crate_attr),
+    // Whatever the item carries: a `struct` and an `enum` are the two accepted
+    // shapes, and both hold their attributes, name and generics in the same
+    // fields.
+    let (item_attrs, item_ident, item_generics) = match &parsed {
+        syn::Item::Struct(item) => (&item.attrs, &item.ident, &item.generics),
+        syn::Item::Enum(item) => (&item.attrs, &item.ident, &item.generics),
         other => {
             return syn::Error::new_spanned(
                 other,
@@ -521,7 +621,7 @@ fn expand_payload(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
         }
     };
 
-    if has_rkyv_crate {
+    if item_attrs.iter().any(is_rkyv_crate_attr) {
         return syn::Error::new_spanned(
             &parsed,
             "#[ice_rpc::payload] already sets `#[rkyv(crate = ..)]`; remove the one written on the item",
@@ -529,15 +629,90 @@ fn expand_payload(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
         .to_compile_error();
     }
 
+    // The generated `Display` renders through `Debug`, so refusing the pair here
+    // is clearer than letting the delegation fail on a payload that has none.
+    if options.display && options.no_debug {
+        return syn::Error::new_spanned(
+            &parsed,
+            "#[ice_rpc::payload] cannot combine `display` with `no_debug`: the generated `Display` renders through `Debug`",
+        )
+        .to_compile_error();
+    }
+
+    // `Debug` joins the set only when nothing else provides it: a second
+    // derivation of one trait is an `E0119`, and a hand-written `impl` is out of
+    // an attribute macro's sight, hence `no_debug`.
+    let debug = if options.no_debug || derives_debug(item_attrs) {
+        quote! {}
+    } else {
+        quote! { Debug, }
+    };
+
+    // Opt-in, because the rendering worth having is a hand-written one: an
+    // `impl Display` cannot be detected — there is no `#[derive(Display)]` to
+    // inspect — so the macro never guesses. `Debug::fmt` is the fallback shape,
+    // and the bound it needs is stated, since a derived `Debug` on a generic type
+    // carries the `T: Debug` bounds itself.
+    let display = if options.display {
+        let (impl_generics, ty_generics, where_clause) = item_generics.split_for_impl();
+        let mut predicates = where_clause
+            .map(|clause| clause.predicates.clone())
+            .unwrap_or_default();
+        predicates.push(syn::parse_quote!(
+            #item_ident #ty_generics: ::std::fmt::Debug
+        ));
+        quote! {
+            impl #impl_generics ::std::fmt::Display for #item_ident #ty_generics
+            where #predicates
+            {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                    ::std::fmt::Debug::fmt(self, f)
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         #[derive(
             ice_rpc::codegen::rkyv::Archive,
             ice_rpc::codegen::rkyv::Deserialize,
             ice_rpc::codegen::rkyv::Serialize,
+            #debug
         )]
         #[rkyv(crate = ice_rpc::codegen::rkyv)]
         #item
+        #display
     }
+}
+
+/// Whether one of the item's **own** `#[derive(..)]` already asks for `Debug`.
+///
+/// The trait is matched on the last path segment, so `#[derive(std::fmt::Debug)]`
+/// counts as well: what matters is that `Debug` is derived once, whatever path
+/// spelling names it.
+fn derives_debug(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            // A malformed `derive` is left for the compiler to diagnose: only the
+            // presence of the trait matters here.
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "Debug")
+                {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
 }
 
 /// Whether one attribute is an rkyv `crate` attribute — `#[rkyv(crate = ..)]` or
@@ -566,14 +741,37 @@ mod payload_tests {
     use super::expand_payload;
     use quote::quote;
 
+    /// Expands and renders the result. The attribute argument is spelled out at
+    /// every call site, so a test that forgets it is not silently passing `()`.
+    fn expand(
+        attr: proc_macro2::TokenStream,
+        item: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        expand_payload(attr, item)
+    }
+
+    /// The generated derivation alone — everything before the `#[rkyv(..)]` the
+    /// macro also emits. The item, and thus its own `#[derive(..)]`, comes after.
+    fn generated_derivation(out: &proc_macro2::TokenStream) -> String {
+        let rendered = out.to_string();
+        rendered
+            .split("# [rkyv")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     #[test]
     fn payload_adds_the_rkyv_derives_and_redirects_the_crate() {
-        let out = expand_payload(quote! {
-            #[derive(Debug, Clone)]
-            pub struct Query {
-                pub key: String,
-            }
-        })
+        let out = expand(
+            quote! {},
+            quote! {
+                #[derive(Debug, Clone)]
+                pub struct Query {
+                    pub key: String,
+                }
+            },
+        )
         .to_string();
         assert!(
             out.contains("ice_rpc :: codegen :: rkyv :: Archive"),
@@ -597,10 +795,139 @@ mod payload_tests {
     }
 
     #[test]
+    fn payload_adds_debug_when_the_item_does_not_derive_it() {
+        let out = expand(
+            quote! {},
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        );
+        // `monitoring` derives `Debug` on the generated request enum, so a payload
+        // that asks for nothing must still come out observable.
+        let generated = generated_derivation(&out);
+        assert!(generated.contains("Debug"), "{out}");
+    }
+
+    #[test]
+    fn payload_keeps_the_items_own_debug_derivation() {
+        let out = expand(
+            quote! {},
+            quote! {
+                #[derive(Debug, Clone)]
+                pub struct Query { pub key: String }
+            },
+        );
+        // Deriving it twice would be an `E0119`: the item's own derivation is the
+        // only one allowed to name `Debug`.
+        let generated = generated_derivation(&out);
+        assert!(!generated.contains("Debug"), "{out}");
+    }
+
+    #[test]
+    fn payload_detects_a_fully_qualified_debug_derive() {
+        let out = expand(
+            quote! {},
+            quote! {
+                #[derive(std::fmt::Debug)]
+                pub struct Query { pub key: String }
+            },
+        );
+        let generated = generated_derivation(&out);
+        assert!(!generated.contains("Debug"), "{out}");
+    }
+
+    #[test]
+    fn payload_no_debug_leaves_the_derivation_to_a_hand_written_impl() {
+        let out = expand(
+            quote! { no_debug },
+            quote! {
+                pub struct Point { pub x: i32 }
+            },
+        );
+        let generated = generated_derivation(&out);
+        assert!(!generated.contains("Debug"), "{out}");
+        assert!(
+            generated.contains("ice_rpc :: codegen :: rkyv :: Archive"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_display_delegates_to_debug() {
+        let out = expand(
+            quote! { display },
+            quote! {
+                pub enum MyError { NotFound }
+            },
+        );
+        let rendered = out.to_string();
+        // The trait `?` needs to reach a `Box<dyn Error>`, rendered by `Debug`.
+        assert!(
+            rendered.contains(
+                "impl :: std :: fmt :: Display for MyError where MyError : :: std :: fmt :: Debug"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(":: std :: fmt :: Debug :: fmt (self , f)"),
+            "{rendered}"
+        );
+        // `Display` needs something to render, so `Debug` is still derived.
+        assert!(generated_derivation(&out).contains("Debug"), "{rendered}");
+    }
+
+    #[test]
+    fn payload_display_on_a_generic_type_bounds_the_delegation() {
+        let out = expand(
+            quote! { display },
+            quote! {
+                pub struct Wrapper<T> { pub inner: T }
+            },
+        )
+        .to_string();
+        // The derived `Debug` carries the `T: Debug` bounds, so the delegation
+        // states them rather than assuming them.
+        assert!(
+            out.contains("where Wrapper < T > : :: std :: fmt :: Debug"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_refuses_display_combined_with_no_debug() {
+        let out = expand(
+            quote! { display, no_debug },
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        assert!(
+            out.contains("cannot combine `display` with `no_debug`"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_refuses_an_unknown_parameter() {
+        let out = expand(
+            quote! { debug },
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        assert!(out.contains("unknown parameter `debug`"), "{out}");
+    }
+
+    #[test]
     fn payload_works_on_an_enum() {
-        let out = expand_payload(quote! {
-            pub enum Status { Ok, Nok }
-        })
+        let out = expand(
+            quote! {},
+            quote! {
+                pub enum Status { Ok, Nok }
+            },
+        )
         .to_string();
         assert!(
             out.contains("ice_rpc :: codegen :: rkyv :: Archive"),
@@ -611,7 +938,7 @@ mod payload_tests {
 
     #[test]
     fn payload_refuses_a_non_struct_or_enum_item() {
-        let out = expand_payload(quote! { fn free() {} }).to_string();
+        let out = expand(quote! {}, quote! { fn free() {} }).to_string();
         assert!(
             out.contains("may only be applied to a struct or an enum"),
             "{out}"
@@ -620,10 +947,13 @@ mod payload_tests {
 
     #[test]
     fn payload_refuses_an_item_that_already_sets_the_rkyv_crate() {
-        let out = expand_payload(quote! {
-            #[rkyv(crate = other::place)]
-            pub struct Query { pub key: String }
-        })
+        let out = expand(
+            quote! {},
+            quote! {
+                #[rkyv(crate = other::place)]
+                pub struct Query { pub key: String }
+            },
+        )
         .to_string();
         assert!(out.contains("already sets"), "{out}");
     }

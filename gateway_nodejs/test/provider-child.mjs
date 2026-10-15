@@ -35,18 +35,17 @@ gateway.init((err, call) => {
     const count = typeof call.args === 'number' ? call.args : 3;
     // One call, several events: each one becomes its own wire sample.
     for (let value = 1; value <= count; value += 1) {
-      gateway.emitNodejsEvent(call.correlationId, { type: 'next', data: value });
+      gateway.emitNodejsEvent(call.correlationId, { data: value });
     }
-    // `resolveNodejsCall` is the terminal event; it also closes the call.
-    gateway.resolveNodejsCall(call.correlationId, { type: 'complete' });
+    // `resolveNodejsCall` builds the terminal event from the envelope and closes
+    // the call; `{}` closes without a value.
+    gateway.resolveNodejsCall(call.correlationId, {});
     return;
   }
   const value = STORE.get(call.args);
   gateway.resolveNodejsCall(
     call.correlationId,
-    value === undefined
-      ? { type: 'error', data: 'KeyNotFound' }
-      : { type: 'next', data: value },
+    value === undefined ? { error: 'KeyNotFound' } : { data: value },
   );
 });
 

@@ -277,3 +277,9 @@ required-features = ["tokio", "tracing"]
 [[example]]
 name = "blocking-consumer-app"
 required-features = ["rt-async"]
+
+# The Readme's Quick start, kept runnable: one service, its provider and its
+# consumer in a single file, the two roles picked by a command-line argument.
+[[example]]
+name = "quickstart"
+required-features = ["tokio"]

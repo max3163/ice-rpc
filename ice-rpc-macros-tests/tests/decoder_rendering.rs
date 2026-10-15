@@ -10,7 +10,7 @@
 
 use ice_rpc::codegen::WireEvent;
 use ice_rpc::monitor::{Decoders, ServiceDecoder};
-use ice_rpc::{Observable, service};
+use ice_rpc::{Observable, ObservableError, service};
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// No `Display`: only the `Debug` every generated request enum already requires.
@@ -52,12 +52,35 @@ impl std::fmt::Display for Label {
     }
 }
 
+/// Declared with the macro **and no `Debug`**: `#[ice_rpc::payload]` supplies it.
+///
+/// The type is the proof of that: `monitoring` derives `Debug` on the generated
+/// request enum, so a payload author would otherwise have to know the trait is
+/// required and ask for it here.
+#[ice_rpc::payload]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Counter(pub u32);
+
+/// Error payload propagated with `?` into a `Box<dyn std::error::Error>`.
+///
+/// `std::error::Error` requires `Display` as well as `Debug`, and `?` converts
+/// through that trait: `display` is what makes this payload reach a `Box<dyn
+/// Error>` without a hand-written implementation.
+#[ice_rpc::payload(display)]
+pub enum RenderedError {
+    /// Nothing to report.
+    Empty,
+}
+
 /// Service mixing an argument without `Display` and one with a hand-written one.
 #[service("DecoderRendering")]
 #[async_trait::async_trait]
 pub trait DecoderRendering: Send + Sync + 'static {
     /// Would not compile if the generated decoder forced `Display` on `Status`.
     async fn set(&self, status: Status, label: Label) -> Observable<Status, String>;
+
+    /// Would not compile if `#[ice_rpc::payload]` left `Counter` without `Debug`.
+    async fn bump(&self, counter: Counter) -> Observable<Counter, String>;
 }
 
 /// Encodes a value exactly like the transport does.
@@ -107,6 +130,39 @@ fn generated_decoder_renders_requests() {
         Some("set(status=Ok, label=label#1)")
     );
     assert_eq!(decoder().request("unknown", &request), None);
+}
+
+#[test]
+fn a_payload_with_the_display_option_reaches_a_box_dyn_error() {
+    /// The shape the option exists for: `?` has to convert an
+    /// `ObservableError<E>` into a `Box<dyn Error>`, which needs `E: Display`.
+    fn call() -> Result<(), Box<dyn std::error::Error>> {
+        let failed: Result<(), ObservableError<RenderedError>> =
+            Err(ObservableError::Business(RenderedError::Empty));
+        failed?;
+        Ok(())
+    }
+
+    // The generated `Display` renders through `Debug` — a field dump, not a
+    // sentence, which is why the hand-written form stays the better rendering.
+    assert_eq!(call().unwrap_err().to_string(), "Empty");
+}
+
+#[test]
+fn a_payload_the_macro_derived_debug_for_is_renderable() {
+    // `Counter` asks for none of the `rkyv` traits and no `Debug`: the attribute
+    // macro adds both, and the rendering below can only happen with the `Debug` it
+    // contributed.
+    let request = DecoderRenderingRequest::Bump {
+        counter: Counter(3),
+    };
+    assert_eq!(request.to_string(), "bump(counter=Counter(3))");
+
+    let encoded = encode(&request);
+    assert_eq!(
+        decoder().request("bump", &encoded).as_deref(),
+        Some("bump(counter=Counter(3))")
+    );
 }
 
 #[test]

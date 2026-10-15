@@ -220,10 +220,11 @@ pub fn shutdown_impl() -> napi::Result<AsyncTask<ShutdownTask>> {
 
 /// Pushes an intermediate event of a call, keeping it open.
 ///
-/// Backs the addon's `emitNodejsEvent(correlationId, event)`. Every event
+/// Backs the addon's `emitNodejsEvent(correlationId, { data })`. Every event
 /// becomes its own wire sample, so calling this `n` times before
 /// [`resolve_nodejs_call_impl`] turns one JavaScript answer into an `n`-value
-/// stream.
+/// stream. An `error` is refused here: a failure is terminal, and therefore
+/// belongs to [`resolve_nodejs_call_impl`].
 pub fn emit_nodejs_event_impl(correlation_id_hex: String, event: Value) -> napi::Result<()> {
     state::bridge()
         .and_then(|bridge| bridge.emit_event(&correlation_id_hex, event))
@@ -232,7 +233,10 @@ pub fn emit_nodejs_event_impl(correlation_id_hex: String, event: Value) -> napi:
 
 /// Answers a call with its terminal event and closes it.
 ///
-/// Backs the addon's `resolveNodejsCall(correlationId, event)`.
+/// Backs the addon's
+/// `resolveNodejsCall(correlationId, { data } | { error } | {})`: `{ data }`
+/// closes with one last value (a single `CompleteWith` sample), `{ error }` with
+/// a business error, and `{}` without a value.
 pub fn resolve_nodejs_call_impl(correlation_id_hex: String, event: Value) -> napi::Result<()> {
     state::bridge()
         .and_then(|bridge| bridge.resolve(&correlation_id_hex, event))

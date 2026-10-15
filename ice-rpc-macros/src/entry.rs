@@ -1,12 +1,15 @@
 //! Expansion of the `#[ice_rpc::main]` attribute.
 //!
 //! Wraps an `async fn main` so that ice-rpc is bootstrapped before the body and
-//! shut down after it, including on early `return` / `?`. No runtime is
-//! hard-coded; the macro only chooses how `main` is driven:
-//! - `#[ice_rpc::main]` → `ice_rpc::rt::block_on`, which needs no runtime and
-//!   suits every execution mode, `smol` included;
+//! shut down after it, including on early `return` / `?`. The macro does not
+//! bundle a runtime of its own; it only chooses how `main` is driven:
+//! - `#[ice_rpc::main]` → `ice_rpc::rt::block_on`, which polls the body on the
+//!   calling thread. It needs no *external* runtime, but the body still runs on
+//!   the execution facade the crate was built with — `rt-async` (the default)
+//!   supplies the executor and the timers, `smol` its own;
 //! - `#[ice_rpc::main(tokio)]` → a dedicated tokio multi-thread runtime;
-//! - `#[ice_rpc::main(pollster::block_on)]` → any `fn(Future) -> T` driver.
+//! - `#[ice_rpc::main(pollster::block_on)]` → any `fn(Future) -> T` driver;
+//! - `#[ice_rpc::main(rt-none)]` → **no runtime at all**: a synchronous `main`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,7 +17,7 @@ use syn::{ItemFn, Path, ReturnType};
 
 /// How the generated `main` is driven.
 enum Driver {
-    /// `ice_rpc::rt::block_on` (the default: no runtime required).
+    /// `ice_rpc::rt::block_on` (the default: driven on the calling thread).
     Agnostic,
     /// A dedicated tokio multi-thread runtime.
     Tokio,

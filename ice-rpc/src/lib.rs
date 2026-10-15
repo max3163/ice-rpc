@@ -9,55 +9,66 @@
 //!
 //! ## Quick start
 //!
+//! A complete, runnable example lives in `examples/quickstart.rs`: one file
+//! holding the service, its provider and its consumer — the two roles picked by
+//! a command-line argument. The steps below are that file.
+//!
 //! ### 1. Define a service
 //!
 //! ```rust,ignore
-//! use ice_rpc::{service, Observable};
+//! use ice_rpc::{Observable, service};
 //!
+//! /// The business error of the service.
+//! ///
+//! /// `#[ice_rpc::payload]` supplies the rkyv derives (and `Debug`) — no `rkyv`
+//! /// dependency of your own.
 //! #[ice_rpc::payload]
-//! #[derive(Debug)]
-//! pub enum MyError {
-//!     NotFound,
+//! #[derive(Debug, Clone)]
+//! pub enum GreeterError {
+//!     /// The name was empty.
+//!     EmptyName,
 //! }
 //!
-//! #[service("MyService")]
-//! pub trait MyService: Send + Sync + 'static {
-//!     async fn hello(&self, name: String) -> Observable<String, MyError>;
+//! #[service("GreeterService")]
+//! pub trait GreeterService {
+//!     /// Returns a greeting for `name`.
+//!     async fn hello(&self, name: String) -> Observable<String, GreeterError>;
 //! }
 //! ```
 //!
-//! The `#[service("MyService")]` macro automatically generates:
-//! - `MyServiceRequest` — rkyv enum for serialization
-//! - `MyServiceClient` — IPC client (publish/subscribe, one call per request id)
-//! - `MyServiceServer` — IPC server exposing the method dispatcher
-//! - `MyServiceProxy` — unified entry point (3 modes)
+//! The `#[service("GreeterService")]` macro automatically generates:
+//! - `GreeterServiceRequest` — rkyv enum for serialization
+//! - `GreeterServiceClient` — IPC client (publish/subscribe, one call per request id)
+//! - `GreeterServiceServer` — IPC server exposing the method dispatcher
+//! - `GreeterServiceProxy` — unified entry point (3 modes)
 //!
 //! ### 2. Start a Provider
 //!
 //! ```rust,ignore
-//! struct MyServiceImpl;
+//! struct Greeter;
 //!
 //! #[ice_rpc::async_trait]
-//! impl MyService for MyServiceImpl {
-//!     async fn hello(&self, name: String) -> Observable<String, MyError> {
+//! impl GreeterService for Greeter {
+//!     async fn hello(&self, name: String) -> Observable<String, GreeterError> {
+//!         if name.is_empty() {
+//!             // A business error is an observable too: it travels inside the flux.
+//!             return ice_rpc::throw_error(GreeterError::EmptyName);
+//!         }
 //!         // One value, then completion. A handler streaming several values uses
 //!         // the wire-level `ice_rpc::codegen::channel(capacity)`, which returns a
 //!         // `(Sender, Observable)` pair whose `send_complete_with` closes the
 //!         // stream with its last value.
-//!         Observable::from_events([
-//!             ice_rpc::Event::Next(format!("Hello {} !", name)),
-//!             ice_rpc::Event::Complete,
-//!         ]) // no Result: a service returns the observable itself
+//!         ice_rpc::of(format!("Hello {name}!"))
 //!     }
 //! }
 //!
 //! #[ice_rpc::main(tokio)]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() {
 //!     // `#[ice_rpc::main]` owns the bootstrap (init + runtime) and the clean
-//!     // shutdown; `run_provider!` only starts the services and waits for Ctrl+C.
-//!     ice_rpc::run_provider!(
-//!         MyServiceProxy::provide(MyServiceImpl),
-//!     ).await
+//!     // shutdown; `run_provider!` starts the services and waits for Ctrl+C.
+//!     if let Err(error) = ice_rpc::run_provider!(GreeterServiceProxy::provide(Greeter)).await {
+//!         log::error!("provider stopped: {error}");
+//!     }
 //! }
 //! ```
 //!
@@ -86,16 +97,16 @@
 //!
 //! ```rust,ignore
 //! #[ice_rpc::main(tokio)]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn main() {
 //!     // Proxy instantiated lazily, IPC connection on the first RPC call.
 //!     let proxy = ice_rpc::locator()
-//!         .get::<MyServiceProxy>().await
-//!         .expect("MyService unknown");
+//!         .get::<GreeterServiceProxy>().await
+//!         .expect("GreeterService unknown");
 //!
-//!     let response = proxy.hello("Alice".into()).await.first_value().await?;
-//!     log::info!("Response: {}", response);
-//!
-//!     Ok(()) // `#[ice_rpc::main]` shuts ice-rpc down on exit
+//!     match proxy.hello("Alice".into()).await.first_value().await {
+//!         Ok(greeting) => log::info!("{greeting}"),
+//!         Err(error) => log::error!("call failed: {error}"),
+//!     }
 //! }
 //! ```
 //!

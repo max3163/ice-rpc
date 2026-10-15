@@ -138,9 +138,11 @@ use ice_rpc::{Observable, service};
 /// The business error of the service.
 ///
 /// `#[ice_rpc::payload]` supplies the rkyv derives (and `Debug`) — no `rkyv`
-/// dependency of your own.
+/// dependency of your own. The `serde` derives are the ones the optional `json`
+/// and `http` features require on every service type; drop them only in a
+/// deployment that never enables either.
 #[ice_rpc::payload]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum GreeterError {
     /// The name was empty.
     EmptyName,

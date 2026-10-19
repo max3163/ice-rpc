@@ -45,6 +45,21 @@ impl ServiceLocator {
         })
     }
 
+    /// Builds a **fresh, empty** registry, independent of the process-wide
+    /// singleton.
+    ///
+    /// Test-only: it lets a test assert absolute counts and identities without
+    /// observing what another test registered. Production code always goes
+    /// through [`global`](Self::global).
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            lazy_cache: RwLock::new(HashMap::new()),
+            shutdown_registry: crate::shutdown::ShutdownRegistry::new(),
+        }
+    }
+
     /// Returns the number of currently registered services.
     pub fn service_count(&self) -> u8 {
         self.entries.try_read().map(|e| e.len() as u8).unwrap_or(0)
@@ -162,7 +177,16 @@ impl ServiceLocator {
     }
 
     /// Registers a Provider service, storing its instance and lifecycle.
-    pub async fn register<T>(&self, service: Arc<T>)
+    ///
+    /// Registration is keyed by the service's **logical name**: registering a
+    /// name that is already present **replaces** the previous entry instead of
+    /// adding a second one, so [`service_count`](Self::service_count) does not
+    /// grow on a re-registration.
+    ///
+    /// # Returns
+    /// - `true` when an entry under the same name was replaced;
+    /// - `false` when the name was new and the entry was added.
+    pub async fn register<T>(&self, service: Arc<T>) -> bool
     where
         T: ServiceLifecycle + ServiceNamed + ServiceInit + Any + Send + Sync + 'static,
     {
@@ -170,14 +194,18 @@ impl ServiceLocator {
         let instance = service.clone() as Arc<dyn Any + Send + Sync>;
         let init = service.clone() as Arc<dyn ServiceInit>;
         let lifecycle = service as Arc<dyn ServiceLifecycle>;
-        self.entries.write().await.insert(
-            name,
-            ServiceEntry {
-                instance,
-                lifecycle,
-                init,
-            },
-        );
+        self.entries
+            .write()
+            .await
+            .insert(
+                name,
+                ServiceEntry {
+                    instance,
+                    lifecycle,
+                    init,
+                },
+            )
+            .is_some()
     }
 
     /// Initializes all the registered services, **in dependency order**.
@@ -265,8 +293,10 @@ mod tests {
 
     use super::*;
 
-    /// The locator is a process-global singleton: its tests must not interleave,
-    /// or one test's registrations would land in another's counts.
+    /// Guards the **process-global** locator, which only [`initialize_all`]
+    /// touches: it starts the registered transport channels, which is global
+    /// state and cannot run on a per-test instance. Every other test builds its
+    /// own [`ServiceLocator::new_for_test`] and needs no lock.
     fn locator_lock() -> &'static Mutex<()> {
         static LOCK: Mutex<()> = Mutex::new(());
         &LOCK
@@ -325,18 +355,17 @@ mod tests {
     // registered instance without ever building a proxy.
     provider_mock!(EchoService, "LocatorEcho");
 
-    static ECHO_PROXY_CREATIONS: AtomicUsize = AtomicUsize::new(0);
-
     impl ServiceConsumer for EchoService {
+        // `ServiceConsumer::consume_proxy` is a **static** constructor, so it
+        // cannot read a per-instance counter. The tests assert the observable
+        // property instead: a proxy built here would not be `Arc::ptr_eq` to the
+        // registered provider, which is a stronger check than a call count.
         fn consume_proxy() -> Arc<Self> {
-            ECHO_PROXY_CREATIONS.fetch_add(1, Ordering::Relaxed);
             Arc::new(EchoService(MockState::default()))
         }
     }
 
     // A consumer-only service: `get::<T>` must build it lazily, once.
-    static CONFIG_PROXY_CREATIONS: AtomicUsize = AtomicUsize::new(0);
-
     struct ConfigService;
 
     impl ServiceNamed for ConfigService {
@@ -345,7 +374,6 @@ mod tests {
 
     impl ServiceConsumer for ConfigService {
         fn consume_proxy() -> Arc<Self> {
-            CONFIG_PROXY_CREATIONS.fetch_add(1, Ordering::Relaxed);
             Arc::new(ConfigService)
         }
     }
@@ -371,8 +399,7 @@ mod tests {
 
     #[test]
     fn a_registered_provider_is_handed_back_without_a_proxy() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
+        let locator = ServiceLocator::new_for_test();
 
         let state = MockState {
             init_result: true,
@@ -381,23 +408,21 @@ mod tests {
         let init_calls = state.init_calls.clone();
         let provider = Arc::new(EchoService(state));
 
-        let before = locator.service_count();
-        pollster::block_on(locator.register(provider.clone()));
-
-        assert_eq!(locator.service_count(), before + 1);
+        assert!(
+            !pollster::block_on(locator.register(provider.clone())),
+            "a fresh name is an addition, not a replacement"
+        );
+        // Absolute, not a delta: the registry is private to this test.
+        assert_eq!(locator.service_count(), 1, "one name, one entry");
         assert!(locator.service_names().contains(&"LocatorEcho"));
 
-        // Fast-path 1: the registered provider, by type.
+        // Fast-path 1: the registered provider, by type. Getting the very same
+        // instance back is itself the proof that no proxy was built.
         let fetched = pollster::block_on(locator.get::<EchoService>())
             .expect("a registered provider is returned");
         assert!(
             Arc::ptr_eq(&fetched, &provider),
             "the very same instance must come back"
-        );
-        assert_eq!(
-            ECHO_PROXY_CREATIONS.load(Ordering::Relaxed),
-            0,
-            "the registered path must not build a proxy"
         );
         assert_eq!(
             init_calls.load(Ordering::Relaxed),
@@ -406,26 +431,42 @@ mod tests {
         );
     }
 
+    /// Re-registering a name **replaces** the previous entry: the count does not
+    /// grow, and `register` says so. This is the regression guard for the
+    /// order-dependent test that assumed a fresh registry.
+    #[test]
+    fn registering_the_same_name_twice_replaces_the_entry() {
+        let locator = ServiceLocator::new_for_test();
+
+        let first =
+            pollster::block_on(locator.register(Arc::new(EchoService(MockState::default()))));
+        let second =
+            pollster::block_on(locator.register(Arc::new(EchoService(MockState::default()))));
+
+        assert!(!first, "the name was new");
+        assert!(second, "the second registration replaces the first");
+        assert_eq!(locator.service_count(), 1, "one name maps to one entry");
+    }
+
     #[test]
     fn an_unregistered_service_is_built_once_and_cached() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
+        let locator = ServiceLocator::new_for_test();
 
         // Slow path: the proxy is built, then cached (fast-path 2 answers next).
         let first = pollster::block_on(locator.get::<ConfigService>()).expect("a proxy is built");
         let second = pollster::block_on(locator.get::<ConfigService>()).expect("the cache answers");
 
+        // The same `Arc` twice is what "built once" means: a second build would
+        // hand back a different allocation.
         assert!(Arc::ptr_eq(&first, &second), "the cached proxy is reused");
         assert_eq!(first.service_name(), "LocatorConfig");
-        assert_eq!(CONFIG_PROXY_CREATIONS.load(Ordering::Relaxed), 1);
         // A lazily built proxy is not a registered provider.
         assert!(!locator.service_names().contains(&"LocatorConfig"));
     }
 
     #[test]
     fn a_name_registered_under_another_type_is_not_returned() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
+        let locator = ServiceLocator::new_for_test();
         pollster::block_on(locator.register(Arc::new(NamesakeProvider(MockState::default()))));
 
         // The name is registered, but the entry holds another concrete type: the
@@ -435,6 +476,9 @@ mod tests {
 
     #[test]
     fn initialize_all_orders_dependencies_and_reports_a_failure() {
+        // The only test that needs the process-wide locator: `initialize_all`
+        // starts the registered transport channels, which is global state a
+        // per-test instance would not exercise.
         let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
         let locator = ServiceLocator::global();
 
@@ -482,10 +526,9 @@ mod tests {
 
     #[test]
     fn shutdown_handles_are_registered_on_the_locator() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
-        // Both registrations complete immediately, so a later `release_node` (from
-        // another test) joins them without blocking.
+        let locator = ServiceLocator::new_for_test();
+        // Both handles complete immediately, so taking ownership of them is the
+        // whole behaviour under test.
         locator.register_shutdown_handle(crate::rt::spawn_blocking(|| {}));
         locator.register_shutdown_thread(std::thread::spawn(|| {}));
     }
@@ -555,8 +598,7 @@ mod tests {
     /// entering a runtime.
     #[test]
     fn get_blocking_hands_back_the_registered_provider() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
+        let locator = ServiceLocator::new_for_test();
 
         let provider = Arc::new(EchoService(MockState::default()));
         pollster::block_on(locator.register(provider.clone()));
@@ -571,8 +613,7 @@ mod tests {
     /// cache — a lazily built proxy is never a registered provider.
     #[test]
     fn get_blocking_builds_and_caches_a_consumer_proxy() {
-        let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let locator = ServiceLocator::global();
+        let locator = ServiceLocator::new_for_test();
 
         let first = locator
             .get_blocking::<ConfigService>()

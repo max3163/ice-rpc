@@ -38,7 +38,7 @@ pub const DEFAULT_MAX_SLICE_LEN: usize = 256;
 /// produces, so a sample is decodable in place. It is also the alignment every
 /// buffer that holds an encoded request uses, so the payload stays aligned when
 /// it is written.
-pub(super) const PAYLOAD_ALIGNMENT: usize = 16;
+pub const PAYLOAD_ALIGNMENT: usize = 16;
 
 /// Initial capacity of the per-thread request-encoding buffer, in bytes.
 ///

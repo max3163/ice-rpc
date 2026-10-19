@@ -27,6 +27,7 @@ use ice_rpc_macros::service;
 #[async_trait::async_trait]
 pub trait ConverterApi: Send + Sync + 'static {
     async fn echo(&self, text: String, count: i32) -> Observable<String, String>;
+    async fn echo_text(&self, text: String) -> Observable<String, String>;
     async fn upload(&self, blob: Vec<u8>) -> Observable<(), String>;
 }
 
@@ -43,6 +44,20 @@ fn a_request_decodes_to_a_json_object() {
         .expect("the request must convert");
     assert_eq!(value["text"], "hello");
     assert_eq!(value["count"], 3);
+}
+
+/// A single `String` argument is moved into the `Value`, not copied through
+/// `serde_json::to_value`; the JS shape is the string itself, as before.
+#[test]
+fn a_single_string_argument_is_moved_into_the_value() {
+    let request = ConverterApiRequest::EchoText {
+        text: "hello".to_owned(),
+    };
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&request).unwrap();
+
+    let value = ConverterApiProxy::deserialize_request_to_value("echo_text", &bytes)
+        .expect("the request must convert");
+    assert_eq!(value, "hello");
 }
 
 /// A `Vec<u8>` argument is transported as base64, not as a JSON array of
@@ -148,6 +163,8 @@ fn an_unusable_response_does_not_convert() {
         r#"{"type":"error"}"#,
         // No `type` and no `data`: nothing to read.
         r#"{}"#,
+        // A bare value is not an envelope at all.
+        r#""bare""#,
     ] {
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
         assert!(

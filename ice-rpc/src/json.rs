@@ -168,14 +168,18 @@ impl JsonCallStream {
 ///
 /// Implemented by whatever hosts a JavaScript-like implementation of the
 /// service; registered once, at startup, with [`set_json_dispatcher`].
-#[async_trait::async_trait]
 pub trait JsonDispatcher: Send + Sync + 'static {
     /// Hands one call to the host and returns the stream of its events.
+    ///
+    /// Synchronous on purpose: [`JsonCallStream`] carries the asynchronous
+    /// events, so a host that answers later returns the stream immediately and
+    /// pushes into it. This keeps the provider handler free of a boxed future
+    /// per call, which is what `async_trait` used to add.
     ///
     /// # Errors
     /// `Err` when the call could not even be started (no callback, host gone):
     /// the generated dispatcher reports it as an internal error.
-    async fn dispatch_json(
+    fn dispatch_json(
         &self,
         cid: [u8; 16],
         service: &str,
@@ -204,14 +208,14 @@ pub fn json_dispatcher() -> Option<&'static Arc<dyn JsonDispatcher>> {
 /// # Errors
 /// Returns `Err` when no host was registered; the generated dispatcher logs and
 /// reports it rather than dropping the call.
-pub async fn dispatch_json(
+pub fn dispatch_json(
     cid: [u8; 16],
     service: &str,
     method: &str,
     args: Value,
 ) -> Result<JsonCallStream, String> {
     match DISPATCHER.get() {
-        Some(dispatcher) => dispatcher.dispatch_json(cid, service, method, args).await,
+        Some(dispatcher) => dispatcher.dispatch_json(cid, service, method, args),
         None => Err("no JSON dispatcher registered — call \
                      ice_rpc::json::set_json_dispatcher() first"
             .to_string()),
@@ -279,9 +283,8 @@ mod tests {
     /// A minimal host: echoes the arguments as one event.
     struct EchoHost;
 
-    #[async_trait::async_trait]
     impl JsonDispatcher for EchoHost {
-        async fn dispatch_json(
+        fn dispatch_json(
             &self,
             _cid: [u8; 16],
             service: &str,
@@ -316,7 +319,6 @@ mod tests {
                 "get_user_age",
                 serde_json::json!({ "name": "Alice" }),
             )
-            .await
             .expect("a registered host accepts the call");
 
             let mut collected = Vec::new();

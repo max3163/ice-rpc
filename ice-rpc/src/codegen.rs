@@ -57,6 +57,7 @@ pub use crate::start_http_server;
 
 // ── Publish/subscribe transport ─────────────────────────────────────
 // Entry points used by the generated client/server.
+pub use crate::transport::PAYLOAD_ALIGNMENT;
 pub use crate::transport::{
     BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, OwnedEmitter, ResponseEmitter,
     ServiceDispatcher, declare_channel_max_slice_len, decode_aligned, emit_rpc_error, native_call,

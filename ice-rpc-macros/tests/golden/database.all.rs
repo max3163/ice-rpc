@@ -506,13 +506,11 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                                             return;
                                         };
                                         let mut events = match ice_rpc::codegen::dispatch_json(
-                                                header.correlation_id,
-                                                <DatabaseApiProxy>::SERVICE_NAME,
-                                                "add",
-                                                args,
-                                            )
-                                            .await
-                                        {
+                                            header.correlation_id,
+                                            <DatabaseApiProxy>::SERVICE_NAME,
+                                            "add",
+                                            args,
+                                        ) {
                                             Ok(events) => events,
                                             Err(e) => {
                                                 ice_rpc::codegen::log::error!(
@@ -600,13 +598,11 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                                             return;
                                         };
                                         let mut events = match ice_rpc::codegen::dispatch_json(
-                                                header.correlation_id,
-                                                <DatabaseApiProxy>::SERVICE_NAME,
-                                                "get",
-                                                args,
-                                            )
-                                            .await
-                                        {
+                                            header.correlation_id,
+                                            <DatabaseApiProxy>::SERVICE_NAME,
+                                            "get",
+                                            args,
+                                        ) {
                                             Ok(events) => events,
                                             Err(e) => {
                                                 ice_rpc::codegen::log::error!(
@@ -694,13 +690,11 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                                             return;
                                         };
                                         let mut events = match ice_rpc::codegen::dispatch_json(
-                                                header.correlation_id,
-                                                <DatabaseApiProxy>::SERVICE_NAME,
-                                                "put",
-                                                args,
-                                            )
-                                            .await
-                                        {
+                                            header.correlation_id,
+                                            <DatabaseApiProxy>::SERVICE_NAME,
+                                            "put",
+                                            args,
+                                        ) {
                                             Ok(events) => events,
                                             Err(e) => {
                                                 ice_rpc::codegen::log::error!(
@@ -850,7 +844,7 @@ impl DatabaseApiProxy {
                     .ok()?;
                 match req {
                     DatabaseApiRequest::Get { key } => {
-                        Some(ice_rpc::codegen::serde_json::to_value(key).ok()?)
+                        Some(ice_rpc::codegen::serde_json::Value::String(key))
                     }
                     _ => None,
                 }
@@ -864,8 +858,8 @@ impl DatabaseApiProxy {
                     DatabaseApiRequest::Put { key, value } => {
                         Some(
                             ice_rpc::codegen::serde_json::json!(
-                                { "key" : ice_rpc::codegen::serde_json::to_value(key).ok()
-                                ?, "value" : { use ice_rpc::codegen::base64::Engine; let
+                                { "key" : ice_rpc::codegen::serde_json::Value::String(key),
+                                "value" : { use ice_rpc::codegen::base64::Engine; let
                                 encoded =
                                 ice_rpc::codegen::base64::engine::general_purpose::STANDARD
                                 .encode(& value);
@@ -886,18 +880,31 @@ impl DatabaseApiProxy {
     pub fn serialize_response_from_value(
         method: &str,
         value: ice_rpc::codegen::serde_json::Value,
-    ) -> Option<(ice_rpc::codegen::EventKind, Vec<u8>)> {
+    ) -> Option<
+        (
+            ice_rpc::codegen::EventKind,
+            ice_rpc::codegen::rkyv::util::AlignedVec<
+                { ice_rpc::codegen::PAYLOAD_ALIGNMENT },
+            >,
+        ),
+    > {
+        let ice_rpc::codegen::serde_json::Value::Object(mut object) = value else {
+            return None;
+        };
+        let event_type: &'static str = match object.get("type").and_then(|v| v.as_str())
+        {
+            Some("complete") => "complete",
+            Some("error") => "error",
+            Some("next") | None => "next",
+            Some(_) => return None,
+        };
         match method {
             "add" => {
-                let event_type = value
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("next");
                 let event = match event_type {
                     "next" => {
-                        let data: i32 = match value.get("data") {
+                        let data: i32 = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -907,10 +914,10 @@ impl DatabaseApiProxy {
                         ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
-                        match value.get("data") {
+                        match object.remove("data") {
                             Some(d) => {
                                 let data: i32 = match ice_rpc::codegen::serde_json::from_value(
-                                    d.clone(),
+                                    d,
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
@@ -921,9 +928,9 @@ impl DatabaseApiProxy {
                         }
                     }
                     "error" => {
-                        let err: String = match value.get("data") {
+                        let err: String = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -939,18 +946,14 @@ impl DatabaseApiProxy {
                     ice_rpc::codegen::rkyv::rancor::Error,
                 >(&event)
                     .ok()
-                    .map(|aligned| (kind, aligned.to_vec()))
+                    .map(|aligned| (kind, aligned))
             }
             "get" => {
-                let event_type = value
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("next");
                 let event = match event_type {
                     "next" => {
-                        let data: String = match value.get("data") {
+                        let data: String = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -960,10 +963,10 @@ impl DatabaseApiProxy {
                         ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
-                        match value.get("data") {
+                        match object.remove("data") {
                             Some(d) => {
                                 let data: String = match ice_rpc::codegen::serde_json::from_value(
-                                    d.clone(),
+                                    d,
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
@@ -974,9 +977,9 @@ impl DatabaseApiProxy {
                         }
                     }
                     "error" => {
-                        let err: String = match value.get("data") {
+                        let err: String = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -992,18 +995,14 @@ impl DatabaseApiProxy {
                     ice_rpc::codegen::rkyv::rancor::Error,
                 >(&event)
                     .ok()
-                    .map(|aligned| (kind, aligned.to_vec()))
+                    .map(|aligned| (kind, aligned))
             }
             "put" => {
-                let event_type = value
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("next");
                 let event = match event_type {
                     "next" => {
-                        let data: () = match value.get("data") {
+                        let data: () = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -1013,10 +1012,10 @@ impl DatabaseApiProxy {
                         ice_rpc::codegen::WireEvent::Next(data)
                     }
                     "complete" => {
-                        match value.get("data") {
+                        match object.remove("data") {
                             Some(d) => {
                                 let data: () = match ice_rpc::codegen::serde_json::from_value(
-                                    d.clone(),
+                                    d,
                                 ) {
                                     Ok(v) => v,
                                     Err(_) => return None,
@@ -1027,9 +1026,9 @@ impl DatabaseApiProxy {
                         }
                     }
                     "error" => {
-                        let err: String = match value.get("data") {
+                        let err: String = match object.remove("data") {
                             Some(d) => {
-                                match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 }
@@ -1045,7 +1044,7 @@ impl DatabaseApiProxy {
                     ice_rpc::codegen::rkyv::rancor::Error,
                 >(&event)
                     .ok()
-                    .map(|aligned| (kind, aligned.to_vec()))
+                    .map(|aligned| (kind, aligned))
             }
             _ => None,
         }
@@ -1059,10 +1058,11 @@ impl DatabaseApiProxy {
         args: ice_rpc::codegen::serde_json::Value,
         read: ice_rpc::codegen::ReadMode,
     ) -> ice_rpc::codegen::JsonResult {
+        let mut args = args;
         let a: i32 = {
             let __value = args
-                .get("a")
-                .cloned()
+                .get_mut("a")
+                .map(std::mem::take)
                 .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
             ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {
@@ -1073,8 +1073,8 @@ impl DatabaseApiProxy {
         };
         let b: i32 = {
             let __value = args
-                .get("b")
-                .cloned()
+                .get_mut("b")
+                .map(std::mem::take)
                 .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
             ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {
@@ -1103,10 +1103,11 @@ impl DatabaseApiProxy {
         args: ice_rpc::codegen::serde_json::Value,
         read: ice_rpc::codegen::ReadMode,
     ) -> ice_rpc::codegen::JsonResult {
+        let mut args = args;
         let key: String = {
             let __value = args
-                .get("key")
-                .cloned()
+                .get_mut("key")
+                .map(std::mem::take)
                 .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
             ice_rpc::codegen::serde_json::from_value(__value)
                 .map_err(|e| {

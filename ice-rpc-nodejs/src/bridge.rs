@@ -25,6 +25,7 @@ use napi::bindgen_prelude::{Function, Unknown};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::sync::{Mutex, MutexGuard};
 
 /// A correlation id: 16 bytes, rendered as a UUID-like hex string in JS.
@@ -46,6 +47,14 @@ pub type NodeJsCallback = ThreadsafeFunction<Value>;
 
 type PendingSender = ice_rpc::codegen::async_channel::Sender<Value>;
 
+/// The pending-call table's map.
+///
+/// Correlation ids are minted by this process (never chosen by a peer), which
+/// is exactly the contract of [`ice_rpc::codegen::FxHasher`]: a deterministic
+/// 16-byte-key hasher, cheaper than the default SipHash on the per-event lookup.
+type PendingMap =
+    HashMap<CorrelationId, PendingSender, BuildHasherDefault<ice_rpc::codegen::FxHasher>>;
+
 /// Bookkeeping of the calls JavaScript has not closed yet.
 ///
 /// Kept separate from the ThreadsafeFunction so the admission rules (bounded
@@ -53,7 +62,7 @@ type PendingSender = ice_rpc::codegen::async_channel::Sender<Value>;
 /// engine.
 #[derive(Default)]
 pub(crate) struct PendingCalls {
-    entries: HashMap<CorrelationId, PendingSender>,
+    entries: PendingMap,
 }
 
 impl PendingCalls {
@@ -255,13 +264,15 @@ const REMOVED_ENVELOPE: &str = "the `{ type, data }` envelope was removed: use `
 /// An `error` is refused: only [`NodeJsBridge::resolve`] may close a call with a
 /// failure.
 fn next_envelope(event: Value) -> Result<Value, GatewayError> {
-    let Value::Object(object) = event else {
+    let Value::Object(mut object) = event else {
         return Err(invalid_envelope("emitNodejsEvent expects `{ data }`"));
     };
-    if object.contains_key("type") {
+    // The event is owned here: `remove` moves the data into the envelope instead
+    // of cloning the whole subtree, which is the dominant cost on a large value.
+    if object.remove("type").is_some() {
         return Err(invalid_envelope(REMOVED_ENVELOPE));
     }
-    match object.get("data").cloned() {
+    match object.remove("data") {
         Some(data) => Ok(serde_json::json!({ "type": "next", "data": data })),
         None => Err(invalid_envelope(
             "emitNodejsEvent expects `{ data }`: the key is missing",
@@ -281,7 +292,7 @@ fn next_envelope(event: Value) -> Result<Value, GatewayError> {
 /// one-value `CompleteWith(())` of a unit service, and `{}` is the only way to
 /// close without a value.
 fn terminal_envelope(event: Value) -> Result<Value, GatewayError> {
-    let Value::Object(object) = event else {
+    let Value::Object(mut object) = event else {
         return if event.is_null() {
             Ok(serde_json::json!({ "type": "complete" }))
         } else {
@@ -290,13 +301,15 @@ fn terminal_envelope(event: Value) -> Result<Value, GatewayError> {
             ))
         };
     };
-    if object.contains_key("type") {
+    // Same as `next_envelope`: the envelope owns the value, so the payload is
+    // moved into the internal `{ type, data }` form, never cloned.
+    if object.remove("type").is_some() {
         return Err(invalid_envelope(REMOVED_ENVELOPE));
     }
-    if let Some(data) = object.get("data").cloned() {
+    if let Some(data) = object.remove("data") {
         return Ok(serde_json::json!({ "type": "complete", "data": data }));
     }
-    if let Some(error) = object.get("error").cloned() {
+    if let Some(error) = object.remove("error") {
         return Ok(serde_json::json!({ "type": "error", "data": error }));
     }
     Ok(serde_json::json!({ "type": "complete" }))
@@ -311,9 +324,8 @@ fn terminal_envelope(event: Value) -> Result<Value, GatewayError> {
 /// error instead of touching a bridge that is gone.
 pub(crate) struct GatewayJsonDispatcher;
 
-#[async_trait::async_trait]
 impl JsonDispatcher for GatewayJsonDispatcher {
-    async fn dispatch_json(
+    fn dispatch_json(
         &self,
         cid: CorrelationId,
         service: &str,

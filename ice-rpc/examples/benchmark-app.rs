@@ -32,8 +32,9 @@
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use common::{
-    ConfigServiceProxy, DatabaseService, DatabaseServiceProxy, PersonneQuery, WorkloadFilter,
-    WorkloadProfile, WorkloadQuery, WorkloadScalars, WorkloadService, WorkloadServiceProxy,
+    ConfigServiceProxy, ContextService, ContextServiceProxy, DatabaseService, DatabaseServiceProxy,
+    PersonneQuery, WorkloadFilter, WorkloadProfile, WorkloadQuery, WorkloadScalars,
+    WorkloadService, WorkloadServiceProxy,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -339,6 +340,26 @@ impl WorkloadKind {
     }
 }
 
+/// The `ContextService` methods a Node.js provider serves in the e2e benchmark.
+#[derive(Clone, Copy)]
+enum NodeContextKind {
+    Get,
+    Set,
+    List,
+}
+
+impl NodeContextKind {
+    /// `None` when `service` is not a Rust → Node.js case.
+    fn from_service(service: &str) -> Option<Self> {
+        match service {
+            "node-get" => Some(Self::Get),
+            "node-set" => Some(Self::Set),
+            "node-list" => Some(Self::List),
+            _ => None,
+        }
+    }
+}
+
 /// One text field of `size` bytes. The suffix keeps each payload distinct, so
 /// string sharing/dedup cannot hide the per-request work.
 fn make_text(size: usize, seq: usize) -> String {
@@ -476,8 +497,8 @@ async fn send_one_workload(
 ///
 /// Extracted from the request match so that the **response-side** case, whose
 /// success type is a struct, is measured by the very same rules as the others.
-async fn first_outcome<T>(
-    next: impl std::future::Future<Output = Option<Result<T, ice_rpc::ObservableError<String>>>>,
+async fn first_outcome<T, E>(
+    next: impl std::future::Future<Output = Option<Result<T, ice_rpc::ObservableError<E>>>>,
     t0: Instant,
 ) -> ReqOutcome {
     match tokio::time::timeout(REQ_TIMEOUT, next).await {
@@ -517,6 +538,88 @@ async fn worker_workload(
         let permit = sem2.acquire_owned().await.unwrap();
         join_set.spawn(async move {
             let outcome = send_one_workload(proxy2, kind, &cfg2, seq).await;
+            drop(permit);
+            outcome
+        });
+
+        while let Some(Ok(outcome)) = join_set.try_join_next() {
+            results.push(outcome);
+        }
+    }
+
+    while let Some(Ok(outcome)) = join_set.join_next().await {
+        results.push(outcome);
+    }
+    results
+}
+
+/// One call to a Node.js provider through `ContextService`.
+///
+/// - `get` measures a large **response** (one value, the shape that pays the
+///   envelope and converter copies);
+/// - `set` measures two `String` arguments (the provider-side multi-argument
+///   conversion);
+/// - `list` drains a **multi-value stream**, so the per-event path is included.
+async fn send_one_context(
+    proxy: Arc<ContextServiceProxy>,
+    kind: NodeContextKind,
+    cfg: &BenchConfig,
+    seq: usize,
+) -> ReqOutcome {
+    let t0 = Instant::now();
+    match kind {
+        NodeContextKind::Get => {
+            let mut rx = proxy.get("bench.key".to_string()).await;
+            first_outcome(rx.next(), t0).await
+        }
+        NodeContextKind::Set => {
+            let mut rx = proxy
+                .set("bench.key".to_string(), make_text(cfg.payload_size, seq))
+                .await;
+            first_outcome(rx.next(), t0).await
+        }
+        NodeContextKind::List => {
+            let stream = proxy.list().await;
+            match tokio::time::timeout(REQ_TIMEOUT, stream.collect()).await {
+                Err(_) => ReqOutcome::ErrEmpty(t0.elapsed()),
+                Ok(Ok(values)) if !values.is_empty() => ReqOutcome::Ok(t0.elapsed()),
+                Ok(Ok(_)) => ReqOutcome::ErrEmpty(t0.elapsed()),
+                Ok(Err(ice_rpc::ObservableError::Business(_))) => {
+                    ReqOutcome::ErrService(t0.elapsed())
+                }
+                Ok(Err(ice_rpc::ObservableError::Technical(_))) => ReqOutcome::ErrIpc(t0.elapsed()),
+                Ok(Err(ice_rpc::ObservableError::Empty)) => ReqOutcome::ErrEmpty(t0.elapsed()),
+            }
+        }
+    }
+}
+
+async fn worker_context(
+    proxy: Arc<ContextServiceProxy>,
+    kind: NodeContextKind,
+    worker_id: usize,
+    cfg: Arc<BenchConfig>,
+) -> Vec<ReqOutcome> {
+    let total = cfg.warmup_per_worker + cfg.requests_per_worker;
+
+    for i in 0..cfg.warmup_per_worker {
+        send_one_context(proxy.clone(), kind, &cfg, worker_id * 7 + i * 3).await;
+    }
+
+    let mut results = Vec::with_capacity(cfg.requests_per_worker);
+    let depth = cfg.pipeline_depth.min(cfg.requests_per_worker);
+    let sem = Arc::new(Semaphore::new(depth));
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for i in cfg.warmup_per_worker..total {
+        let seq = worker_id * 7 + i * 3;
+        let proxy2 = proxy.clone();
+        let cfg2 = cfg.clone();
+        let sem2 = sem.clone();
+
+        let permit = sem2.acquire_owned().await.unwrap();
+        join_set.spawn(async move {
+            let outcome = send_one_context(proxy2, kind, &cfg2, seq).await;
             drop(permit);
             outcome
         });
@@ -730,6 +833,7 @@ fn print_json(cfg: &BenchConfig, stats: &Stats, wall: Duration) {
 enum BenchmarkProxy {
     Database(Arc<DatabaseServiceProxy>),
     Workload(Arc<WorkloadServiceProxy>),
+    Context(Arc<ContextServiceProxy>),
 }
 
 async fn run_phase(proxy: BenchmarkProxy, cfg: Arc<BenchConfig>) -> (Stats, Duration) {
@@ -737,6 +841,17 @@ async fn run_phase(proxy: BenchmarkProxy, cfg: Arc<BenchConfig>) -> (Stats, Dura
     let mut handles = Vec::with_capacity(cfg.workers);
 
     match proxy {
+        BenchmarkProxy::Context(proxy) => {
+            let kind =
+                NodeContextKind::from_service(&cfg.service).expect("a node context service name");
+            for worker_id in 0..cfg.workers {
+                let proxy = proxy.clone();
+                let cfg_c = cfg.clone();
+                handles.push(tokio::spawn(async move {
+                    worker_context(proxy, kind, worker_id, cfg_c).await
+                }));
+            }
+        }
         BenchmarkProxy::Workload(proxy) => {
             let kind = WorkloadKind::from_service(&cfg.service).expect("a workload service name");
             for worker_id in 0..cfg.workers {
@@ -810,6 +925,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let context_proxy = if NodeContextKind::from_service(&cfg.service).is_some() {
+        ice_rpc::locator().get::<ContextServiceProxy>().await
+    } else {
+        None
+    };
+
     let _cfg_proxy = if cfg.service == "config" || cfg.service == "all" {
         ice_rpc::locator().get::<ConfigServiceProxy>().await
     } else {
@@ -824,9 +945,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Warmup: {} req/worker (not counted)", cfg.warmup_per_worker);
     log::info!("");
 
-    let proxy = match workload_proxy {
-        Some(workload) => BenchmarkProxy::Workload(workload),
-        None => BenchmarkProxy::Database(
+    let proxy = match (context_proxy, workload_proxy) {
+        (Some(context), _) => BenchmarkProxy::Context(context),
+        (None, Some(workload)) => BenchmarkProxy::Workload(workload),
+        (None, None) => BenchmarkProxy::Database(
             db_proxy
                 .clone()
                 .expect("DatabaseServiceProxy not initialized"),

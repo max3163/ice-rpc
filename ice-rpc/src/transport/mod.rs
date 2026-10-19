@@ -37,7 +37,7 @@ pub use server::{register_native_service, spawn_native_service, start_registered
 // The transport reads its tunables through these names, so `tuning.rs` stays the
 // only place where a value is defined and documented.
 use tuning::{
-    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT,
+    CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP,
     PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX,
     REQUEST_SCRATCH_CAPACITY, REQUEST_SUFFIX, RESPONSE_NOTIFY_SUFFIX, RESPONSE_SUFFIX,
     SIGNAL_CHECK_SAMPLES, WAITSET_DEADLINE,
@@ -47,6 +47,8 @@ use tuning::{
 // and the direct entry points (`native_call`, `spawn_native_service`) fall back to
 // it. Re-exported so the value is defined in `tuning.rs` alone.
 pub use tuning::DEFAULT_MAX_SLICE_LEN;
+
+pub use tuning::PAYLOAD_ALIGNMENT;
 
 /// Declared initial slice length of the channels this process opens, by channel.
 fn max_slice_len_registry() -> &'static Locked<HashMap<String, usize>> {

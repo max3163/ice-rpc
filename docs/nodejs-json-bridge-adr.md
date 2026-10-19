@@ -45,30 +45,31 @@ The bench prices five operations on the same payload shapes:
 - `from_value`: response-side tree read (`serde_json::from_value::<T>(value)`),
   with the input clone excluded from the timed section through
   `iter_with_setup`;
-- `value_clone`: the envelope's `data` clone
-  ([`next_envelope`](../ice-rpc-nodejs/src/bridge.rs:257),
-  [`terminal_envelope`](../ice-rpc-nodejs/src/bridge.rs:283));
+- `value_clone`: the clone of `data` the bridge used to perform in
+  [`next_envelope`](../ice-rpc-nodejs/src/bridge.rs:266) and
+  [`terminal_envelope`](../ice-rpc-nodejs/src/bridge.rs:294); the implementation
+  now moves the value instead;
 - `rkyv_encode` / `rkyv_decode`: the baseline the tree is added to.
 
 Medians, on the machine used for this decision, with Criterion (1 s warm-up,
 2 s measurement; the exact values move with the host, the orders of magnitude do
 not):
 
-| Shape | `to_value` | `from_value` | `Value::clone` | rkyv encode | rkyv decode |
-|---|---:|---:|---:|---:|---:|
-| `u32` | 4.34 ns | 23.45 ns | 9.59 ns | 26.04 ns | 1.05 ns |
-| `WorkloadScalars` | 228.7 ns | 136.5 ns | 160.4 ns | 30.4 ns | 2.30 ns |
-| `String` 64 B | 11.14 ns | 23.10 ns | 23.65 ns | 109.6 ns | 21.14 ns |
-| `String` 1 KiB | 17.91 ns | 22.99 ns | 29.52 ns | 114.0 ns | 37.83 ns |
-| `String` 1 MiB | 22.29 µs | 23.0 ns | 21.55 µs | 21.96 µs | 35.39 µs |
-| `PersonneInfo` | 204.4 ns | 94.6 ns | 133.9 ns | 96.8 ns | 64.5 ns |
-| `Vec<ContextEntry>` × 4 | 417.6 ns | 221.5 ns | 281.4 ns | 196.5 ns | 105.3 ns |
-| `Vec<ContextEntry>` × 64 | 11.47 µs | 4.233 µs | 10.17 µs | 940.9 ns | 4.250 µs |
-| `Vec<ContextEntry>` × 1024 | 204.8 µs | 73.28 µs | 171.7 µs | 10.61 µs | 65.19 µs |
-| `WorkloadQuery` 8 tags + 8 filters | 1.540 µs | 662.1 ns | 1.373 µs | 405.8 ns | 543.3 ns |
-| `WorkloadQuery` 64 tags + 64 filters | 14.43 µs | 5.789 µs | 12.98 µs | 1.541 µs | 6.389 µs |
-| `HttpResponseParams`, 1 KiB body | 9.630 µs | 6.817 µs | 3.881 µs | 214.3 ns | 124.2 ns |
-| `HttpResponseParams`, 1 MiB body | 25.99 ms | 9.846 ms | 20.78 ms | 22.76 µs | 23.12 µs |
+| Shape                                | `to_value` | `from_value` | `Value::clone` | rkyv encode | rkyv decode |
+| ------------------------------------ | ---------: | -----------: | -------------: | ----------: | ----------: |
+| `u32`                                |    4.34 ns |     23.45 ns |        9.59 ns |    26.04 ns |     1.05 ns |
+| `WorkloadScalars`                    |   228.7 ns |     136.5 ns |       160.4 ns |     30.4 ns |     2.30 ns |
+| `String` 64 B                        |   11.14 ns |     23.10 ns |       23.65 ns |    109.6 ns |    21.14 ns |
+| `String` 1 KiB                       |   17.91 ns |     22.99 ns |       29.52 ns |    114.0 ns |    37.83 ns |
+| `String` 1 MiB                       |   22.29 µs |      23.0 ns |       21.55 µs |    21.96 µs |    35.39 µs |
+| `PersonneInfo`                       |   204.4 ns |      94.6 ns |       133.9 ns |     96.8 ns |     64.5 ns |
+| `Vec<ContextEntry>` × 4              |   417.6 ns |     221.5 ns |       281.4 ns |    196.5 ns |    105.3 ns |
+| `Vec<ContextEntry>` × 64             |   11.47 µs |     4.233 µs |       10.17 µs |    940.9 ns |    4.250 µs |
+| `Vec<ContextEntry>` × 1024           |   204.8 µs |     73.28 µs |       171.7 µs |    10.61 µs |    65.19 µs |
+| `WorkloadQuery` 8 tags + 8 filters   |   1.540 µs |     662.1 ns |       1.373 µs |    405.8 ns |    543.3 ns |
+| `WorkloadQuery` 64 tags + 64 filters |   14.43 µs |     5.789 µs |       12.98 µs |    1.541 µs |    6.389 µs |
+| `HttpResponseParams`, 1 KiB body     |   9.630 µs |     6.817 µs |       3.881 µs |    214.3 ns |    124.2 ns |
+| `HttpResponseParams`, 1 MiB body     |   25.99 ms |     9.846 ms |       20.78 ms |    22.76 µs |    23.12 µs |
 
 Two readings matter:
 
@@ -80,14 +81,15 @@ Two readings matter:
    `Vec<ContextEntry>` of 1024 entries, `to_value` is ~19× the rkyv encode and
    ~3× the rkyv decode. For `HttpResponseParams` with a 1 MiB `Vec<u8>`, the
    tree is three orders of magnitude larger than rkyv: `serde_json` represents
-   the bytes as an array of numbers. The envelope clone adds another 20.78 ms
-   on the response path, before the 9.85 ms parse.
+   the bytes as an array of numbers. Before the follow-up optimization, the
+   envelope cloned `data`, adding another 20.78 ms on the response path before
+   the 9.85 ms parse; the bridge now moves it.
 
 The `from_value` line for a top-level `String` is intentionally surprising:
 `serde_json::from_value::<String>` **moves** the string out of
 `Value::String`, so it is a 23 ns operation even for 1 MiB. The tree build
-(`to_value`) and the envelope clone are the real copies; this is why the bench
-prices them separately.
+(`to_value`) was the real copy in that path; the envelope clone priced by the
+bench is now avoided by moving `data`.
 
 The measurement is an **upper bound of the conversion saving**, not an
 end-to-end speedup: a napi-object path still creates the V8 objects, and the
@@ -116,7 +118,7 @@ service payload types.
    **Rust** `#[napi(object)]` struct, whose conversion runs on the JS thread,
    but the bridge is generic over one payload type. Serving every method would
    require an erased converter, a generated enum, or one bridge type per addon —
-   a redesign of [`NodeJsBridge`](../ice-rpc-nodejs/src/bridge.rs:110), not a
+   a redesign of [`NodeJsBridge`](../ice-rpc-nodejs/src/bridge.rs:119), not a
    simplification.
 3. **The response direction needs the method at the JS boundary.** Today
    `emitNodejsEvent` / `resolveNodejsCall` receive a `Value` and the generated
@@ -154,8 +156,11 @@ service payload types.
 
 ## Consequences
 
-- No bridge or code-generation change: the current behavior is kept.
-- The JSON surface is still described as *no JSON text*, not *zero-copy*. The
+- The JS contract is unchanged; the bridge behavior is preserved.
+- The `Value::clone` column above now prices the clone the bridge avoids, not
+  the clone it performs. It remains the upper bound of what the move-based
+  implementation saves.
+- The JSON surface is still described as _no JSON text_, not _zero-copy_. The
   intermediate `Value` tree is part of the documented cost model.
 - [`json_value_cost.rs`](../ice-rpc/benches/json_value_cost.rs:1) stays in the
   tree as the regression guard and as the evidence for this decision.

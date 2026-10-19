@@ -75,6 +75,10 @@ pub fn gen_json_provider_from_request_fn(input: &JsonGenInput<'_>) -> TokenStrea
                             let encoded = ice_rpc::codegen::base64::engine::general_purpose::STANDARD.encode(&#arg_name);
                             ice_rpc::codegen::serde_json::Value::String(encoded)
                         } }
+                    } else if is_type_string(arg_type) {
+                        // A top-level `String` is moved into the `Value`; going
+                        // through `to_value` would copy the whole buffer.
+                        quote! { ice_rpc::codegen::serde_json::Value::String(#arg_name) }
                     } else {
                         quote! { ice_rpc::codegen::serde_json::to_value(#arg_name).ok()? }
                     }
@@ -92,6 +96,9 @@ pub fn gen_json_provider_from_request_fn(input: &JsonGenInput<'_>) -> TokenStrea
                                     let encoded = ice_rpc::codegen::base64::engine::general_purpose::STANDARD.encode(&#name);
                                     ice_rpc::codegen::serde_json::Value::String(encoded)
                                 } }
+                            } else if is_type_string(arg_type) {
+                                // Same move as the single-argument path.
+                                quote! { #field_str: ice_rpc::codegen::serde_json::Value::String(#name) }
                             } else {
                                 quote! { #field_str: ice_rpc::codegen::serde_json::to_value(#name).ok()? }
                             }
@@ -129,6 +136,20 @@ pub fn gen_json_provider_from_request_fn(input: &JsonGenInput<'_>) -> TokenStrea
     }
 }
 
+/// Detects whether a syn type is `String`.
+///
+/// The last segment is checked, so `String` and `std::string::String` are both
+/// recognized. A type alias is not: its expansion falls back to `to_value`,
+/// which is correct, only less efficient.
+fn is_type_string(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "String";
+    }
+    false
+}
+
 /// Detects whether a syn type is `Vec<u8>`.
 fn is_type_vec_u8(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
@@ -147,7 +168,7 @@ fn is_type_vec_u8(ty: &Type) -> bool {
 }
 
 /// Generates the provider-side
-/// `serialize_response_from_value(method, value) -> Option<(EventKind, Vec<u8>)>`.
+/// `serialize_response_from_value(method, value) -> Option<(EventKind, AlignedVec)>`.
 ///
 /// The host returns an object `{ "type": "next"|"complete"|"error", "data": … }`;
 /// this builds the matching `WireEvent`, derives its `EventKind` (stamped in the
@@ -169,11 +190,13 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
 
             quote! {
                 #fn_name_str => {
-                    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("next");
+                    // `object` is owned: the payload is moved into `from_value`,
+                    // never cloned. That is the whole point of destructuring the
+                    // envelope before the method dispatch.
                     let event = match event_type {
                         "next" => {
-                            let data: #ok_type = match value.get("data") {
-                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                            let data: #ok_type = match object.remove("data") {
+                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 },
@@ -181,9 +204,9 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
                             };
                             ice_rpc::codegen::WireEvent::Next(data)
                         }
-                        "complete" => match value.get("data") {
+                        "complete" => match object.remove("data") {
                             Some(d) => {
-                                let data: #ok_type = match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                                let data: #ok_type = match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 };
@@ -192,8 +215,8 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
                             None => ice_rpc::codegen::WireEvent::Complete,
                         },
                         "error" => {
-                            let err: #err_type = match value.get("data") {
-                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d.clone()) {
+                            let err: #err_type = match object.remove("data") {
+                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d) {
                                     Ok(v) => v,
                                     Err(_) => return None,
                                 },
@@ -204,9 +227,12 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
                         _ => return None,
                     };
                     let kind = event.kind();
+                    // Return the rkyv buffer itself, not a `Vec`: `to_vec()` would
+                    // allocate and copy the whole sample once more. The emitter
+                    // accepts the `AlignedVec` through its `&[u8]` deref.
                     ice_rpc::codegen::rkyv::to_bytes::<ice_rpc::codegen::rkyv::rancor::Error>(&event)
                         .ok()
-                        .map(|aligned| (kind, aligned.to_vec()))
+                        .map(|aligned| (kind, aligned))
                 }
             }
         })
@@ -216,7 +242,24 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
         // Same rationale as `deserialize_request_to_value` above.
         #[allow(dead_code)]
         impl #proxy_name {
-            #visibility fn serialize_response_from_value(method: &str, value: ice_rpc::codegen::serde_json::Value) -> Option<(ice_rpc::codegen::EventKind, Vec<u8>)> {
+            #visibility fn serialize_response_from_value(
+                method: &str,
+                value: ice_rpc::codegen::serde_json::Value,
+            ) -> Option<(
+                ice_rpc::codegen::EventKind,
+                ice_rpc::codegen::rkyv::util::AlignedVec<{ ice_rpc::codegen::PAYLOAD_ALIGNMENT }>,
+            )> {
+                let ice_rpc::codegen::serde_json::Value::Object(mut object) = value else {
+                    return None;
+                };
+                // A `&'static str` keeps the borrow of `object` from crossing the
+                // `remove` calls below, while preserving the default-`next` rule.
+                let event_type: &'static str = match object.get("type").and_then(|v| v.as_str()) {
+                    Some("complete") => "complete",
+                    Some("error") => "error",
+                    Some("next") | None => "next",
+                    Some(_) => return None,
+                };
                 match method {
                     #(#match_arms)*
                     _ => None,
@@ -422,9 +465,13 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
                         ));
                         quote! {
                             let #name: #ty = {
+                                // `args` is owned by the helper: move the field out
+                                // instead of cloning its whole subtree. A missing
+                                // field still becomes `Null`, which `from_value`
+                                // reports as an invalid parameter.
                                 let __value = args
-                                    .get(#field_str)
-                                    .cloned()
+                                    .get_mut(#field_str)
+                                    .map(std::mem::take)
                                     .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
                                 ice_rpc::codegen::serde_json::from_value(__value).map_err(|e| {
                                     ice_rpc::codegen::JsonCallError::InvalidArgs(format!(#invalid))
@@ -434,7 +481,10 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
                     }
                 })
                 .collect();
-            quote! { #(#fields)* }
+            quote! {
+                let mut args = args;
+                #(#fields)*
+            }
         }
     }
 }
@@ -511,9 +561,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStr
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str,
                                 args,
-                            )
-                            .await
-                            {
+                            ) {
                                 Ok(events) => events,
                                 Err(e) => {
                                     ice_rpc::codegen::log::error!(

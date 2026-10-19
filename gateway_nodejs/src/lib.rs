@@ -40,11 +40,12 @@ ice_rpc_nodejs::gateway! {
     common::DatabaseServiceProxy,
     common::HttpServiceProxy,
     common::NotificationServiceProxy,
+    common::WorkloadServiceProxy,
 }
 
 #[cfg(test)]
 mod tests {
-    /// The advertised surface is exactly the five services of `common`.
+    /// The advertised surface is exactly the six services of `common`.
     ///
     /// The table is read from the macro-generated static, so this is what the
     /// provider registration and the consumer dispatch both see.
@@ -58,6 +59,7 @@ mod tests {
                 "DatabaseService",
                 "HttpService",
                 "NotificationService",
+                "WorkloadService",
             ],
         );
     }

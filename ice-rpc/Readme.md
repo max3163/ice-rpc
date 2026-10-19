@@ -25,7 +25,10 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
   rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode a JSON host
   dispatches to — the `ice-rpc-nodejs` bridge today. Off by default: a Rust-only
   deployment does not carry them, and they are about half of the generated code
-  of a service.
+  of a service. The `Value` is an in-memory, transport-neutral representation:
+  the Node.js bridge converts it to V8 objects without JSON text. Its measured
+  cost is documented in
+  [`docs/nodejs-json-bridge-adr.md`](../docs/nodejs-json-bridge-adr.md).
 - **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also
   generates a `{Service}Decoder` (and `Display` on the request enum) so an
   external observer renders the observed payloads in clear text — with each

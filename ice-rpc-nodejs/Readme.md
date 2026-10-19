@@ -181,7 +181,8 @@ gateway.registerService('ContextService');   // only what THIS process provides
 gateway.init((err, call) => {
   if (err) return;
   const { correlationId, method, args } = call;
-  // `args` is a native JS value: no JSON.parse anywhere.
+  // `args` is a native JS value: N-API converted the intermediate Value tree,
+  // and no JSON.parse is involved.
   gateway.resolveNodejsCall(
     correlationId,
     args === undefined ? { error: 'KeyNotFound' } : { data: args },
@@ -228,12 +229,45 @@ it puts **two** samples on the bus instead of one.
 
 The presence of the **key** decides, not its value: `{ data: null }` closes with a
 `null` value — the `CompleteWith(())` of a unit method — while `{}` closes without
-one. `data` must fit the declared success type, and for a `Vec<u8>` it is a base64
-string, like every argument.
+one. `data` must fit the declared success type. A **top-level** `Vec<u8>` is a
+base64 string, like every argument; a `Vec<u8>` **field** inside a struct follows
+`serde` and is an array of numbers.
 
 The `{ type, data }` envelope of the earlier contract is **removed**: passing it
 to either entry point fails with `E_INVALID_ARGS`, which turns a silent "lone
 `Next` that never terminates the stream" into a diagnosable error.
+
+### Cost of the JSON bridge
+
+The bridge does **no JSON text**: N-API converts a `serde_json::Value` tree to
+native JS objects, so there is no `JSON.stringify` / `JSON.parse`. The tree is
+still an allocation, and it is the intermediate cost of both directions:
+
+```text
+provider: IPC (rkyv) → decode → serde_json::Value → N-API → JS
+consumer: JS → N-API → serde_json::Value → rkyv → IPC
+```
+
+The envelope normalization also clones `data` once per event. The
+[`json_value_cost`](../ice-rpc/benches/json_value_cost.rs:1) bench prices the
+tree against the rkyv decode/encode on the shapes the services carry. On the
+machine used for the decision:
+
+| Shape | `to_value` | `from_value` | `Value::clone` | rkyv encode/decode |
+|---|---:|---:|---:|---:|
+| `u32` | 4.34 ns | 23.45 ns | 9.59 ns | 26.04 / 1.05 ns |
+| `PersonneInfo` | 204.4 ns | 94.6 ns | 133.9 ns | 96.8 / 64.5 ns |
+| `Vec<ContextEntry>` × 1024 | 204.8 µs | 73.28 µs | 171.7 µs | 10.61 / 65.19 µs |
+| `HttpResponseParams`, 1 MiB body | 25.99 ms | 9.846 ms | 20.78 ms | 22.76 / 23.12 µs |
+
+The tree is in the noise for scalar and short-text payloads, and dominates for
+long lists and for a `Vec<u8>` **field** (which `serde_json` represents as an
+array of numbers; only a top-level `Vec<u8>` argument is base64-encoded). A
+`#[napi(object)]` fast path was considered and rejected: it cannot cover enums
+with data or custom `serde` attributes, it would make the shared service crates
+depend on napi, and it would not remove the V8 object creation. The full
+reasoning, the measurement protocol and the conditions to revisit the decision
+are in [`nodejs-json-bridge-adr.md`](../docs/nodejs-json-bridge-adr.md).
 
 ### Running it
 

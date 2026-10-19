@@ -104,6 +104,11 @@ terminates the stream.
 pool**: the Node.js event loop is never blocked, not even by a call that takes
 30 s to fail.
 
+The bridge has no JSON text: N-API converts a `serde_json::Value` tree to JS
+objects in both directions. The tree is the intermediate cost; its measured cost
+and the decision not to move payloads to napi objects are in
+[`docs/nodejs-json-bridge-adr.md`](../docs/nodejs-json-bridge-adr.md).
+
 ## Writing a provider
 
 ```javascript
@@ -114,7 +119,7 @@ gateway.registerService('ContextService');   // only what THIS process provides
 gateway.init((err, call) => {                // one dispatcher for all services
     if (err) return;
     const { correlationId, service, method, args } = call;
-    // `args` is a native JS value: no JSON.parse anywhere.
+    // `args` is a native JS value: N-API converted the Value tree, no JSON.parse.
     const value = store.get(args);
     // The terminal envelope carries the outcome; the payload of `error` must fit
     // the declared error type.

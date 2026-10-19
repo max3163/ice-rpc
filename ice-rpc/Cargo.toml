@@ -235,6 +235,15 @@ harness = false
 name = "payload_shapes"
 harness = false
 
+# Prices the `serde_json::Value` tree the Node.js bridge builds and reads, on
+# the payload shapes the services actually carry, against the rkyv decode and
+# encode it accompanies. The bridge has no JSON text; this bench measures the
+# intermediate tree, which is the most a napi-object fast path could remove.
+# See `benches/json_value_cost.rs`.
+[[bench]]
+name = "json_value_cost"
+harness = false
+
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here so a single crate ships the library, its examples and its benches.
 # They all need the Tokio runtime facade,

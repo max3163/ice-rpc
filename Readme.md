@@ -630,11 +630,11 @@ addressing is entirely static. What remains is **liveness**:
 │  │                                                              │    │
 │  │  No local state — delegates to the NodeJsBridge (singleton)  │    │
 │  │                                                              │    │
-│  │  IPC (rkyv) → deserialize → Value → NodeJsBridge → JS        │    │
-│  │  JS → NodeJsBridge → serialize → rkyv → IPC                  │    │
+│  │  IPC (rkyv) → deserialize → Value tree → Bridge → JS         │    │
+│  │  JS → Bridge → Value tree → rkyv → IPC                       │    │
 │  │                                                              │    │
 │  │  The JS callback is UNIQUE for all services.                 │    │
-│  │  Not zero-copy: rkyv → serde_json::Value → JS                │    │
+│  │  No JSON text: N-API converts the Value tree to JS objects   │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                      │
 │  Constructors :                                                      │
@@ -683,6 +683,12 @@ dispatcher bridges each RPC method to the JS host:
    own wire sample, so a method may answer several values;
 3. `serialize_response_from_value(method, value)` encodes each event back into a
    rkyv `WireEvent` sample.
+
+The `Value` is an **in-memory tree**, not JSON text: N-API converts it to V8
+objects directly, so there is no `JSON.stringify` / `JSON.parse`. The tree is
+the intermediate cost of the bridge; its measured cost and the decision not to
+move it into napi objects are documented in
+[`nodejs-json-bridge-adr.md`](docs/nodejs-json-bridge-adr.md).
 
 `ice_rpc::json` holds an `Arc<dyn JsonDispatcher>` registered at startup
 by the JSON host (`ice-rpc-nodejs` calls `set_json_dispatcher`), which avoids a
@@ -927,7 +933,8 @@ gateway.registerService('ContextService');
 gateway.init((err, call) => {
     if (err) return;
     const { correlationId, service, method, args } = call;
-    // args is a native JS value: no JSON.parse anywhere.
+    // args is a native JS value: N-API converted the intermediate Value tree,
+    // and no JSON.parse is involved.
     // The terminal envelope carries the outcome: `{ data }` closes with one last
     // value (a single CompleteWith sample), `{ error }` with a business error,
     // and `{}` without a value.
@@ -952,7 +959,7 @@ never passed as a `type`, so a call can no longer end on a bare `Next`.
 | Characteristic | Description |
 |---|---|
 | **Single bridge** | One `NodeJsBridge` per gateway, owning the calls JavaScript has not closed yet |
-| **Zero-copy JS** | No `JSON.parse`/`JSON.stringify`: NAPI serde-json converts `Value` and native JS objects |
+| **No JSON text** | No `JSON.parse`/`JSON.stringify`: N-API converts the intermediate `serde_json::Value` tree to native JS objects; see [the ADR](docs/nodejs-json-bridge-adr.md) for its measured cost |
 | **Single callback** | One JS dispatcher `(err, call)` for every service and method |
 | **Generated surface** | `#[service]` emits the provider converters and the `JsonInvoker` the consumer side dispatches to; `gateway!` emits the eight N-API functions, so neither can drift from the declaration |
 | **No direct iceoryx2** | Neither `ice-rpc-nodejs` nor an addon depends on `iceoryx2`: everything goes through `ice-rpc` |

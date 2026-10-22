@@ -7,7 +7,7 @@ use ice_rpc::{Observable, service};
 
 /// Error returned by the [`DatabaseService`] operations.
 #[ice_rpc::payload]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub enum DatabaseError {
     /// No record found for the query.
     NotFound,
@@ -26,7 +26,7 @@ impl std::fmt::Display for DatabaseError {
 
 /// Search criteria for a person by their identity.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PersonneQuery {
     /// Last name of the searched person.
     pub nom: String,
@@ -42,7 +42,7 @@ impl std::fmt::Display for PersonneQuery {
 
 /// Full information about a person.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PersonneInfo {
     /// Last name.
     pub nom: String,

@@ -25,7 +25,7 @@ use ice_rpc::{Observable, service};
 
 /// One filter of a workload query.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct WorkloadFilter {
     /// Field name the filter applies to.
     pub field: String,
@@ -39,7 +39,7 @@ pub struct WorkloadFilter {
 /// request declared **flat** (`&str` plus three `&[&str]`), so nothing new has to
 /// be declared, documented or maintained on this side.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct WorkloadQuery {
     /// Primary key of the query.
     pub key: String,
@@ -54,7 +54,7 @@ pub struct WorkloadQuery {
 /// Named `WorkloadProfile` (not `WorkloadKind`) so the benchmark's own
 /// case-selection enum keeps its name.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum WorkloadProfile {
     /// No preference.
     Fast,
@@ -66,7 +66,7 @@ pub enum WorkloadProfile {
 
 /// Every scalar family, plus `Option` and an enum, in one struct.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct WorkloadScalars {
     /// A boolean flag.
     pub flag: bool,

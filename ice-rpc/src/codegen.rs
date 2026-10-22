@@ -102,6 +102,11 @@ pub use async_trait;
 #[cfg(feature = "json")]
 pub use base64;
 pub use futures_lite;
+// Named by the `Serialize` / `Deserialize` derives `#[payload]` adds when the
+// `json` block is on (`#[serde(crate = "ice_rpc::codegen::serde")]`), so a
+// service crate needs no `serde` dependency of its own.
+#[cfg(feature = "json")]
+pub use serde;
 // The link-time registration surface the generated decoders use. The whole crate
 // is re-exported, not just its attribute: the expansion names `linkme` itself
 // (`#[linkme(crate = …)]`, the private type-check module), so the generated code

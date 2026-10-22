@@ -613,6 +613,20 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// preserved — the generated derives are added in a **second** `#[derive(..)]`,
 /// which the compiler merges with the item's own.
 ///
+/// # serde
+///
+/// When the `json` block is compiled in (the `json` feature of `ice-rpc`, which
+/// forwards to this crate), the macro also derives `Serialize` and `Deserialize`,
+/// through `ice_rpc::codegen::serde`: the JSON converters read every argument and
+/// response through them. Writing them by hand — and keeping them on the same
+/// feature as the codegen — used to be the caller's job; it is now the macro's, so
+/// the two cannot drift apart, and the service crate needs no `serde` dependency.
+///
+/// A `#[derive(serde::Serialize, serde::Deserialize)]` already on the item is left
+/// alone (a second derivation of one trait is an `E0119`), as is an item that
+/// carries its own `#[serde(crate = ..)]`. `no_serde` opts out for a type whose
+/// implementations are hand-written, which an attribute macro cannot see.
+///
 /// Applies to a `struct` or an `enum` only, and refuses an item that already
 /// carries an rkyv `crate` attribute, since this macro sets that attribute
 /// itself.
@@ -625,7 +639,7 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn payload(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_payload(attr.into(), item.into()).into()
+    expand_payload(attr.into(), item.into(), Features::from_cfg()).into()
 }
 
 /// Options of [`payload`], read from the attribute's argument list.
@@ -639,6 +653,10 @@ struct PayloadOptions {
     /// For an error payload that is propagated with `?` into a `Box<dyn Error>`,
     /// which needs the trait.
     display: bool,
+    /// `no_serde`: never add the `Serialize` / `Deserialize` derivations. Same
+    /// reason as `no_debug`: a hand-written impl is invisible to an attribute
+    /// macro, and a second one is an `E0119`.
+    no_serde: bool,
 }
 
 impl syn::parse::Parse for PayloadOptions {
@@ -650,6 +668,8 @@ impl syn::parse::Parse for PayloadOptions {
                 options.no_debug = true;
             } else if ident == "display" {
                 options.display = true;
+            } else if ident == "no_serde" {
+                options.no_serde = true;
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -670,6 +690,7 @@ impl syn::parse::Parse for PayloadOptions {
 fn expand_payload(
     attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
+    features: Features,
 ) -> proc_macro2::TokenStream {
     let options = match syn::parse2::<PayloadOptions>(attr) {
         Ok(options) => options,
@@ -717,10 +738,41 @@ fn expand_payload(
     // `Debug` joins the set only when nothing else provides it: a second
     // derivation of one trait is an `E0119`, and a hand-written `impl` is out of
     // an attribute macro's sight, hence `no_debug`.
-    let debug = if options.no_debug || derives_debug(item_attrs) {
+    let debug = if options.no_debug || derives_trait(item_attrs, "Debug") {
         quote! {}
     } else {
         quote! { Debug, }
+    };
+
+    // The JSON converters read every argument and response through `serde`, so
+    // the two derivations follow the same switch as the codegen — emitted here,
+    // once, instead of being repeated as a `#[cfg_attr(..)]` on every payload.
+    // They name `ice_rpc::codegen::serde`, so the crate declaring the service
+    // needs no `serde` dependency of its own.
+    //
+    // A type that already derives either trait is left untouched: a second
+    // derivation is an `E0119`, and its author also owns the `#[serde(..)]`
+    // container attributes.
+    let add_serde = features.json
+        && !options.no_serde
+        && !derives_trait(item_attrs, "Serialize")
+        && !derives_trait(item_attrs, "Deserialize");
+
+    let serde_derives = if add_serde {
+        quote! {
+            ice_rpc::codegen::serde::Serialize,
+            ice_rpc::codegen::serde::Deserialize,
+        }
+    } else {
+        quote! {}
+    };
+
+    // Only meaningful next to the derivations above: without them the item either
+    // brings its own `#[serde(..)]` or does not use serde at all.
+    let serde_crate_attr = if add_serde {
+        quote! { #[serde(crate = "ice_rpc::codegen::serde")] }
+    } else {
+        quote! {}
     };
 
     // Opt-in, because the rendering worth having is a hand-written one: an
@@ -754,20 +806,22 @@ fn expand_payload(
             ice_rpc::codegen::rkyv::Archive,
             ice_rpc::codegen::rkyv::Deserialize,
             ice_rpc::codegen::rkyv::Serialize,
+            #serde_derives
             #debug
         )]
         #[rkyv(crate = ice_rpc::codegen::rkyv)]
+        #serde_crate_attr
         #item
         #display
     }
 }
 
-/// Whether one of the item's **own** `#[derive(..)]` already asks for `Debug`.
+/// Whether one of the item's **own** `#[derive(..)]` already asks for `trait_name`.
 ///
 /// The trait is matched on the last path segment, so `#[derive(std::fmt::Debug)]`
-/// counts as well: what matters is that `Debug` is derived once, whatever path
-/// spelling names it.
-fn derives_debug(attrs: &[syn::Attribute]) -> bool {
+/// and `#[derive(serde::Serialize)]` count as well: what matters is that the trait
+/// is derived once, whatever path spelling names it.
+fn derives_trait(attrs: &[syn::Attribute], trait_name: &str) -> bool {
     attrs
         .iter()
         .filter(|attr| attr.path().is_ident("derive"))
@@ -780,7 +834,7 @@ fn derives_debug(attrs: &[syn::Attribute]) -> bool {
                     .path
                     .segments
                     .last()
-                    .is_some_and(|segment| segment.ident == "Debug")
+                    .is_some_and(|segment| segment.ident == trait_name)
                 {
                     found = true;
                 }
@@ -813,16 +867,41 @@ fn is_rkyv_crate_attr(attr: &syn::Attribute) -> bool {
 
 #[cfg(test)]
 mod payload_tests {
-    use super::expand_payload;
+    use super::{Features, expand_payload};
     use quote::quote;
 
-    /// Expands and renders the result. The attribute argument is spelled out at
-    /// every call site, so a test that forgets it is not silently passing `()`.
+    /// Expands without any optional block, which is the state most assertions
+    /// below are written against.
+    ///
+    /// The set is explicit, never `Features::from_cfg()`: a test must not depend
+    /// on the features of the build that runs it.
     fn expand(
         attr: proc_macro2::TokenStream,
         item: proc_macro2::TokenStream,
     ) -> proc_macro2::TokenStream {
-        expand_payload(attr, item)
+        expand_payload(
+            attr,
+            item,
+            Features {
+                monitoring: false,
+                json: false,
+            },
+        )
+    }
+
+    /// Same, with the `json` block compiled in: the serde derivations belong to it.
+    fn expand_json(
+        attr: proc_macro2::TokenStream,
+        item: proc_macro2::TokenStream,
+    ) -> proc_macro2::TokenStream {
+        expand_payload(
+            attr,
+            item,
+            Features {
+                monitoring: false,
+                json: true,
+            },
+        )
     }
 
     /// The generated derivation alone — everything before the `#[rkyv(..)]` the
@@ -1009,6 +1088,76 @@ mod payload_tests {
             "{out}"
         );
         assert!(out.contains("pub enum Status"), "{out}");
+    }
+
+    #[test]
+    fn payload_adds_serde_derives_when_the_json_block_is_on() {
+        let out = expand_json(
+            quote! {},
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        assert!(
+            out.contains("ice_rpc :: codegen :: serde :: Serialize"),
+            "{out}"
+        );
+        assert!(
+            out.contains("ice_rpc :: codegen :: serde :: Deserialize"),
+            "{out}"
+        );
+        // The derive macro must resolve `serde` through the re-export, since the
+        // service crate has no `serde` dependency of its own.
+        assert!(
+            out.contains(r#"serde (crate = "ice_rpc::codegen::serde")"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_without_the_json_block_adds_no_serde() {
+        let out = expand(
+            quote! {},
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        assert!(!out.contains("serde"), "{out}");
+    }
+
+    /// A type that already derives the pair keeps its own — a second derivation
+    /// would be an `E0119` — and its author keeps ownership of the container
+    /// attributes.
+    #[test]
+    fn payload_keeps_a_serde_derivation_already_written() {
+        let out = expand_json(
+            quote! {},
+            quote! {
+                #[derive(serde::Serialize, serde::Deserialize)]
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        // The item's own derive stays, and nothing of ours is added: a second
+        // derivation would be an `E0119`.
+        assert_eq!(out.matches("serde :: Serialize").count(), 1, "{out}");
+        assert!(!out.contains("codegen :: serde :: Serialize"), "{out}");
+        assert!(!out.contains("codegen :: serde :: Deserialize"), "{out}");
+        assert!(!out.contains("serde (crate = "), "{out}");
+    }
+
+    #[test]
+    fn payload_no_serde_opts_out() {
+        let out = expand_json(
+            quote! { no_serde },
+            quote! {
+                pub struct Query { pub key: String }
+            },
+        )
+        .to_string();
+        assert!(!out.contains("serde"), "{out}");
     }
 
     #[test]

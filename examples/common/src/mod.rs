@@ -182,11 +182,12 @@ mod usage_without_direct_dependencies {
 
     /// A payload used both as a request argument and as a response value.
     ///
-    /// The `serde` derives are the ones the `json` / `http` features require on
-    /// a service type — see the rest of this crate. They are unrelated to the
-    /// masking: `#[ice_rpc::payload]` only supplies the rkyv derives.
+    /// Nothing here names `rkyv`, `serde` or the masking crate:
+    /// `#[ice_rpc::payload]` supplies the rkyv derives, and the `serde` ones
+    /// whenever the `json` block is on — the feature that also generates the
+    /// converters that read them.
     #[ice_rpc::payload]
-    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct MaskedPayload {
         /// A text field.
         pub name: String,

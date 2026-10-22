@@ -7,7 +7,7 @@ use ice_rpc::{Observable, service};
 
 /// Error returned when a key is not found in the configuration.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub enum ConfigError {
     /// The requested key does not exist in the configuration.
     KeyNotFound,

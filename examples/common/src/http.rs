@@ -7,7 +7,7 @@ use ice_rpc::{Observable, service};
 
 /// Parameters of an HTTP request to transmit.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct HttpRequestParams {
     /// HTTP method (`GET`, `POST`, `PUT`, etc.).
     pub method: String,
@@ -34,7 +34,7 @@ impl std::fmt::Display for HttpRequestParams {
 
 /// HTTP response received after processing.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct HttpResponseParams {
     /// HTTP status code (`200`, `404`, `500`, etc.).
     pub status_code: u16,
@@ -61,7 +61,7 @@ impl std::fmt::Display for HttpResponseParams {
 
 /// Error returned by the [`HttpService`] operations.
 #[ice_rpc::payload]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub enum HttpError {
     /// Internal error while processing the request.
     InternalError(String),

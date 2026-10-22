@@ -7,7 +7,7 @@ use ice_rpc::{Observable, service};
 
 /// Context entry associating a key with its value.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ContextEntry {
     /// Key of the entry.
     pub key: String,
@@ -23,7 +23,7 @@ impl std::fmt::Display for ContextEntry {
 
 /// Error returned by the [`ContextService`] operations.
 #[ice_rpc::payload]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub enum ContextError {
     /// The requested key does not exist in the context.
     KeyNotFound,

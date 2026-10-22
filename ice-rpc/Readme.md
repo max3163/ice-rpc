@@ -80,11 +80,17 @@ facade:
   annotated `no_debug` for a hand-written `impl Debug` — and points their
   expansion at the re-exported `rkyv`: no `rkyv` dependency of your own. `Debug`
   is what the `monitoring` feature needs to render a payload, so leaving it to the
-  macro keeps a service observable without asking for the trait. An **error**
-  payload propagated with `?` into a `Box<dyn std::error::Error>` also needs
-  `Display`, which `std::error::Error` requires and no derive can produce:
-  `#[ice_rpc::payload(display)]` generates one, delegating to the `Debug` form,
-  for the payloads whose author does not write a better rendering by hand;
+  macro keeps a service observable without asking for the trait. When the `json`
+  block is compiled in, the macro also derives `Serialize` and `Deserialize`,
+  through `ice_rpc::codegen::serde`: the converters read every argument and
+  response through them, so the two cannot drift apart — and the crate declaring
+  the service needs no `serde` dependency (`no_serde` opts out for a
+  hand-written implementation, and a `#[derive(serde::…)]` already present is left
+  alone). An **error** payload propagated with `?` into a
+  `Box<dyn std::error::Error>` also needs `Display`, which `std::error::Error`
+  requires and no derive can produce: `#[ice_rpc::payload(display)]` generates
+  one, delegating to the `Debug` form, for the payloads whose author does not
+  write a better rendering by hand;
 - a service implementation is annotated with `#[ice_rpc::async_trait]`, the
   re-exported `async-trait` attribute — no `async-trait` dependency of your own;
 - everything `#[service]` generates names `log` (and the rest) through
@@ -93,9 +99,10 @@ facade:
 **Backward compatible.** A crate that already depends on `rkyv` may keep
 `#[derive(rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]`, and one that
 already depends on `async-trait` may keep `#[async_trait::async_trait]`: both
-spellings are recognized and produce the same code. The `json` feature (and the
-`http-*` ones, which imply it) additionally requires `serde` (`Serialize` +
-`Deserialize`) on the service types, exactly as before.
+spellings are recognized and produce the same code. A service type is
+`Serialize` + `Deserialize` whenever the `json` feature (or one of the `http-*`
+ones, which imply it) is on, because `#[ice_rpc::payload]` derives both — no
+`serde` dependency, no attribute to keep in sync with the feature.
 
 ## Execution modes
 
@@ -159,11 +166,10 @@ use ice_rpc::{Observable, service};
 /// The business error of the service.
 ///
 /// `#[ice_rpc::payload]` supplies the rkyv derives (and `Debug`) — no `rkyv`
-/// dependency of your own. The `serde` derives are the ones the optional `json`
-/// and `http` features require on every service type; drop them only in a
-/// deployment that never enables either.
+/// dependency of your own — and, when the `json` block is compiled in, the
+/// `serde` ones the generated converters read. Nothing to keep in sync here.
 #[ice_rpc::payload]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub enum GreeterError {
     /// The name was empty.
     EmptyName,

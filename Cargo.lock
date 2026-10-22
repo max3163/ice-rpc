@@ -475,8 +475,6 @@ name = "common"
 version = "0.3.6"
 dependencies = [
  "ice-rpc",
- "serde",
- "serde_json",
 ]
 
 [[package]]

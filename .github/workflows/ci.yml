@@ -137,9 +137,10 @@ jobs:
         run: cargo check -p ice-rpc-monitor --all-targets --features process-metrics
 
       - name: Check (common, optional features)
-        run: cargo check -p common --all-targets --features napi,monitoring,http --features ice-rpc/http-threads
+        run: cargo check -p common --all-targets --features json,monitoring --features ice-rpc/http-threads
+
       - name: Check (common, http without json)
-        run: cargo check -p common --all-targets --no-default-features --features monitoring,http --features ice-rpc/http-threads
+        run: cargo check -p common --all-targets --no-default-features --features monitoring --features ice-rpc/http-threads
   msrv:
     name: MSRV (declared rust-version)
     runs-on: ubuntu-latest
@@ -184,7 +185,7 @@ jobs:
         run: cargo check -p ice-rpc-monitor --all-targets --features process-metrics
 
       - name: Check (common, optional features)
-        run: cargo check -p common --all-targets --features napi,monitoring,http --features ice-rpc/http-threads
+        run: cargo check -p common --all-targets --features json,monitoring --features ice-rpc/http-threads
 
   coverage:
     name: Coverage (Ubuntu)
@@ -248,7 +249,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24.22'
+          node-version: "24.22"
           cache: npm
           cache-dependency-path: gateway_nodejs/package-lock.json
 

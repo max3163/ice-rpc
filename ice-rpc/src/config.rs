@@ -39,9 +39,7 @@ mod tests {
     #[test]
     fn build_config_inherits_the_global_root_path() {
         let config = build_iceoryx2_config();
-        // The root-path is the shared-memory domain. Rewriting it here would let
-        // two processes pick different domains and silently stop seeing each
-        // other, which is exactly what `ice-rpc` must not do.
+        // The root-path is the shared-memory domain: two processes must not diverge.
         assert_eq!(
             config.global.root_path().as_bytes(),
             Config::global_config().global.root_path().as_bytes()

@@ -43,12 +43,9 @@ pub fn json_host_handler(
     request_to_value: RequestToValue,
     value_to_response: ValueToResponse,
 ) -> BoxResponseFuture {
-    // Built before the coroutine: it is copied into the task, and the header
-    // itself is not needed past this point.
+    // Built before the coroutine: copied into the task, unused afterwards.
     let ctx = CallContext::new(&header, service, method);
-    // Decoded **synchronously**, straight from the received sample: the borrow
-    // ends here, and only the JSON value enters the task, which outlives the
-    // sample.
+    // Decoded synchronously from the sample: only the JSON value enters the task.
     let args = request_to_value(method, payload);
     let correlation_id = header.correlation_id;
 
@@ -58,8 +55,7 @@ pub fn json_host_handler(
             reject_json_request(service, method, &mut *emitter);
             return;
         };
-        // The correlation id is the real one now that the handler receives
-        // the header: the host can correlate its logs.
+        // The real correlation id, so the host can correlate its logs.
         let mut events = match dispatch_json(correlation_id, service, method, args) {
             Ok(events) => events,
             Err(e) => {
@@ -80,9 +76,7 @@ pub fn json_host_handler(
                 Some((kind, sample)) => {
                     emitter.emit(kind, &sample);
                 }
-                // An event that cannot be encoded would leave the call
-                // unanswered: it is reported instead of dropped, and the
-                // stream stops here.
+                // An event that cannot be encoded is reported, and the stream stops.
                 None => {
                     reject_json_response(service, method, &mut *emitter);
                     return;
@@ -115,8 +109,7 @@ pub fn json_host_oneway_handler(
             return;
         };
         match dispatch_json(correlation_id, service, method, args) {
-            // Nothing is emitted, by contract: dropping the stream is how the
-            // host learns the call is over.
+            // Nothing emitted: dropping the stream tells the host the call is over.
             Ok(events) => drop(events),
             Err(e) => log::error!("[{service}::{method}] one-way JSON dispatch failed: {e}"),
         }

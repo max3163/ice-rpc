@@ -14,10 +14,8 @@ mod model;
 #[cfg(test)]
 mod golden_tests;
 
-// Private: the public version lives in `ice-rpc` (`types/consts.rs`). The value
-// MUST stay identical. It caps the service or channel name, which becomes the
-// iceoryx2 service name (`{channel}{suffix}`, capped at 255 bytes by iceoryx2).
-// Method names have no limit: the wire carries the method id, not the name.
+// Private: the public value lives in `ice-rpc` (`types/consts.rs`) and must stay
+// identical. It caps the service/channel name; method names have no limit.
 pub(crate) const SERVICE_NAME_LEN: usize = 64;
 
 use proc_macro::TokenStream;
@@ -148,16 +146,14 @@ fn expand_service_with(
 
     inject_trait_requirements(&mut input_trait);
 
-    // Names, versions, generated type names and the per-method data are read and
-    // validated once, by the model. Every generator below works from it, so none
-    // of them can accept a signature another one refused.
+    // Read and validated once by the model; every generator works from it, so none
+    // can accept a signature another one refused.
     let model = match ServiceModel::read(&service_attr, &input_trait) {
         Ok(model) => model,
         Err(e) => return e.to_compile_error(),
     };
 
-    // Whether the `blocking` parameter asked for a synchronous twin of every
-    // method, on both the client and the proxy.
+    // Whether every method gets a synchronous twin, on client and proxy.
     let blocking = service_attr.blocking;
 
     let trait_name = &model.trait_name;
@@ -166,9 +162,8 @@ fn expand_service_with(
     let group_lit = model.group.clone();
     let service_version = model.service_version;
 
-    // The slice length of the channel's publishers. The default lives in
-    // `ice-rpc` (`DEFAULT_MAX_SLICE_LEN`), so the value is declared once and the
-    // two crates cannot drift apart.
+    // The default lives in `ice-rpc` (`DEFAULT_MAX_SLICE_LEN`), so the two crates
+    // cannot drift apart.
     let max_slice_len = match model.max_slice_len {
         Some(value) => quote! { #value },
         None => quote! { ice_rpc::codegen::DEFAULT_MAX_SLICE_LEN },
@@ -181,12 +176,10 @@ fn expand_service_with(
     let mode_name = &model.mode_name;
     let init_default_name = &model.init_default_name;
 
-    // Identity of the contract declared once: the client call and the provider
-    // registration both read this same constant, so the interface version can
-    // neither be dropped nor drift between them.
+    // Declared once and read by both the client call and the provider registration,
+    // so the interface version can neither be dropped nor drift.
     let service_ref = quote! { <#proxy_name>::SERVICE };
-    // The logical name travels next to the identity: a span shows it, because the
-    // header only carries the 4-byte hash of the name.
+    // Next to the identity: a span shows the name, the header only carries its hash.
     let service_name = quote! { <#proxy_name>::SERVICE_NAME };
 
     let mut req_variants = Vec::new();
@@ -198,17 +191,14 @@ fn expand_service_with(
     let mut node_methods = Vec::new();
     let mut decoder_methods: Vec<DecoderMethod> = Vec::new();
 
-    // One pass over the model. The discriminant is the position in the trait, so
-    // the request enum, the header and the router agree by construction.
+    // One pass over the model; the discriminant is the position in the trait.
     for (discriminant, method) in model.numbered_methods() {
         let fn_name = &method.fn_name;
         let var_name = &method.var_name;
         let arg_names: Vec<&Ident> = method.arg_names.iter().collect();
         let arg_types: Vec<&Type> = method.arg_types.iter().collect();
 
-        // The request enum carries the arguments of *every* method: a one-way
-        // call travels as a `Request` sample like any other, only its handler
-        // never answers.
+        // Carries the arguments of every method, one-way ones included.
         req_variants.push(quote! {
             #var_name { #(#arg_names: #arg_types),* } = #discriminant
         });
@@ -243,8 +233,7 @@ fn expand_service_with(
             };
             node_methods.push(gen_proxy_oneway_method(&proxy_oneway_input));
             proxy_oneway_calls.push(gen_proxy_oneway_call(&proxy_oneway_input));
-            // A one-way method is already synchronous: the `blocking` parameter
-            // adds no `{method}_blocking` twin for it.
+            // Already synchronous: no `{method}_blocking` twin.
         } else {
             client_methods.push(gen_client_method(&ClientMethodGenInput {
                 visibility,
@@ -285,9 +274,7 @@ fn expand_service_with(
             }
         }
 
-        // The JSON *host* side only: these handlers serve a service whose
-        // implementation lives in a JSON host, so a build that only consumes JSON
-        // (the HTTP gateway) must not carry them.
+        // JSON host side only: a build that merely consumes JSON must not carry them.
         if features.json {
             json_provider_methods.push(gen_json_provider_method(
                 proxy_name,
@@ -357,9 +344,8 @@ fn expand_service_with(
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
-    // The three optional blocks. Their inputs are built in every configuration —
-    // that is what consumes the vectors filled above — and only the generator
-    // call is skipped, so nothing here can drift into "declared but unused".
+    // The three optional blocks: inputs always built, only the generator call is
+    // skipped, so nothing can drift into "declared but unused".
     let json_methods: Vec<JsonMethod> = json_methods(&model);
     let json_input = JsonGenInput {
         visibility,
@@ -367,9 +353,7 @@ fn expand_service_with(
         req_enum_name,
         methods: json_methods,
     };
-    // The provider-side converters: they turn an rkyv request into a JSON value and
-    // a host answer back into a wire sample. Only `provide_json()` reaches them, so
-    // they follow the same flag as the rest of the block and the linker decides.
+    // Provider-side converters, reached only by `provide_json()`.
     let (json_provider_from_request, json_provider_from_response) = if features.json {
         (
             gen_json_provider_from_request_fn(&json_input),
@@ -379,19 +363,15 @@ fn expand_service_with(
         (quote! {}, quote! {})
     };
 
-    // **One** JSON view per service, whatever the JSON transport: the Node.js
-    // gateway and the HTTP gateway both consume it, so neither carries generated
-    // code of its own and the two cannot drift apart. The reading policy travels
-    // as an argument, which is what keeps a single match table.
+    // One JSON view per service, whatever the transport: neither gateway carries
+    // generated code of its own. The reading policy travels as an argument.
     let json_invoker = if features.json {
         gen_json_invoker_impl(&json_input)
     } else {
         quote! {}
     };
 
-    // Human-readable decoding of the service payloads, opt-in via the
-    // `monitoring` feature: it is the only part that forces `Display` on every
-    // argument and return type, so a plain provider/consumer must not carry it.
+    // Opt-in `monitoring` decoding: the only part forcing `Display` on every type.
     let decoder_output = if features.monitoring {
         let decoder_name = Ident::new(&format!("{trait_name}Decoder"), trait_name.span());
         let decoder_input = DecoderGenInput {
@@ -407,8 +387,7 @@ fn expand_service_with(
         quote! {}
     };
 
-    // Unique symbol to detect name collisions: two services with the same
-    // logical name make the linker fail with "duplicate symbol".
+    // Unique symbol: a name collision fails at link time.
     let collision_symbol = syn::Ident::new(
         &format!("__ICE_RPC_SVC_{}", logical_name_lit.replace('-', "_")),
         proc_macro2::Span::call_site(),
@@ -416,10 +395,7 @@ fn expand_service_with(
 
     let generated = quote! {
         #[repr(u8)]
-        // The derives are named through the re-export, and `#[rkyv(crate = …)]`
-        // redirects their expansion to it as well: without that attribute the
-        // derive defaults to `::rkyv`, which would force every service crate to
-        // declare the dependency just to compile its own `{Trait}Request`.
+        // Named through the re-export, so no service crate needs `rkyv`.
         #[derive(ice_rpc::codegen::rkyv::Archive, ice_rpc::codegen::rkyv::Deserialize, ice_rpc::codegen::rkyv::Serialize, Debug)]
         #[rkyv(crate = ice_rpc::codegen::rkyv)]
         #visibility enum #req_enum_name { #(#req_variants),* }
@@ -455,8 +431,7 @@ fn expand_service_with(
         static #collision_symbol: u8 = 0;
     };
 
-    // The generated wrappers cannot be documented by the consumer, so they must
-    // not trip its `missing_docs` lint; the annotated trait is not exempted.
+    // Generated wrappers must not trip the consumer's `missing_docs` lint.
     let generated = codegen::helpers::allow_missing_docs(generated);
 
     let expanded = quote! {
@@ -487,9 +462,7 @@ fn inject_trait_requirements(input_trait: &mut ItemTrait) {
             .push(syn::parse_quote! { #[ice_rpc::codegen::async_trait::async_trait] });
     }
 
-    // Compared as rendered tokens: the bound must be recognized whatever the
-    // user's spacing, and a path-qualified `std::marker::Send` simply counts as
-    // missing, which costs one redundant bound and nothing else.
+    // Compared as rendered tokens: a path-qualified `Send` counts as missing.
     let present: Vec<String> = input_trait
         .supertraits
         .iter()
@@ -702,9 +675,7 @@ fn expand_payload(
         Err(error) => return error.to_compile_error(),
     };
 
-    // Whatever the item carries: a `struct` and an `enum` are the two accepted
-    // shapes, and both hold their attributes, name and generics in the same
-    // fields.
+    // Whatever the item carries: `struct` and `enum` hold the same fields.
     let (item_attrs, item_ident, item_generics) = match &parsed {
         syn::Item::Struct(item) => (&item.attrs, &item.ident, &item.generics),
         syn::Item::Enum(item) => (&item.attrs, &item.ident, &item.generics),
@@ -725,8 +696,7 @@ fn expand_payload(
         .to_compile_error();
     }
 
-    // The generated `Display` renders through `Debug`, so refusing the pair here
-    // is clearer than letting the delegation fail on a payload that has none.
+    // `Display` renders through `Debug`: refusing the pair here is clearer.
     if options.display && options.no_debug {
         return syn::Error::new_spanned(
             &parsed,
@@ -735,24 +705,17 @@ fn expand_payload(
         .to_compile_error();
     }
 
-    // `Debug` joins the set only when nothing else provides it: a second
-    // derivation of one trait is an `E0119`, and a hand-written `impl` is out of
-    // an attribute macro's sight, hence `no_debug`.
+    // `Debug` joins only when nothing else provides it (`E0119` otherwise), and a
+    // hand-written `impl` is out of sight, hence `no_debug`.
     let debug = if options.no_debug || derives_trait(item_attrs, "Debug") {
         quote! {}
     } else {
         quote! { Debug, }
     };
 
-    // The JSON converters read every argument and response through `serde`, so
-    // the two derivations follow the same switch as the codegen — emitted here,
-    // once, instead of being repeated as a `#[cfg_attr(..)]` on every payload.
-    // They name `ice_rpc::codegen::serde`, so the crate declaring the service
-    // needs no `serde` dependency of its own.
-    //
-    // A type that already derives either trait is left untouched: a second
-    // derivation is an `E0119`, and its author also owns the `#[serde(..)]`
-    // container attributes.
+    // The JSON converters read everything through `serde`: both derivations follow
+    // the codegen switch and name `ice_rpc::codegen::serde`. A type that already
+    // derives either trait is left untouched (`E0119`, and it owns its `#[serde]`).
     let add_serde = features.json
         && !options.no_serde
         && !derives_trait(item_attrs, "Serialize")
@@ -767,19 +730,15 @@ fn expand_payload(
         quote! {}
     };
 
-    // Only meaningful next to the derivations above: without them the item either
-    // brings its own `#[serde(..)]` or does not use serde at all.
+    // Only meaningful next to the derivations above.
     let serde_crate_attr = if add_serde {
         quote! { #[serde(crate = "ice_rpc::codegen::serde")] }
     } else {
         quote! {}
     };
 
-    // Opt-in, because the rendering worth having is a hand-written one: an
-    // `impl Display` cannot be detected — there is no `#[derive(Display)]` to
-    // inspect — so the macro never guesses. `Debug::fmt` is the fallback shape,
-    // and the bound it needs is stated, since a derived `Debug` on a generic type
-    // carries the `T: Debug` bounds itself.
+    // Opt-in: a hand-written `impl Display` cannot be detected, so the macro never
+    // guesses. `Debug::fmt` is the fallback shape, with the bounds it needs.
     let display = if options.display {
         let (impl_generics, ty_generics, where_clause) = item_generics.split_for_impl();
         let mut predicates = where_clause
@@ -827,8 +786,7 @@ fn derives_trait(attrs: &[syn::Attribute], trait_name: &str) -> bool {
         .filter(|attr| attr.path().is_ident("derive"))
         .any(|attr| {
             let mut found = false;
-            // A malformed `derive` is left for the compiler to diagnose: only the
-            // presence of the trait matters here.
+            // A malformed `derive` is left to the compiler; only the trait matters.
             let _ = attr.parse_nested_meta(|meta| {
                 if meta
                     .path
@@ -851,13 +809,11 @@ fn is_rkyv_crate_attr(attr: &syn::Attribute) -> bool {
         return false;
     }
     let mut found = false;
-    // A malformed attribute is left to the `rkyv` derive to diagnose; here only
-    // the presence of the `crate` key matters.
+    // A malformed attribute is left to the `rkyv` derive: only the key matters.
     let _ = attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("crate") {
             found = true;
-            // Consume `= <path>` when present, so parsing does not stop early on
-            // the bare `#[rkyv(crate)]` form either.
+            // Consume `= <path>`, so `#[rkyv(crate)]` also parses cleanly.
             let _ = meta.value().and_then(|value| value.parse::<syn::Path>());
         }
         Ok(())
@@ -956,8 +912,7 @@ mod payload_tests {
                 pub struct Query { pub key: String }
             },
         );
-        // `monitoring` derives `Debug` on the generated request enum, so a payload
-        // that asks for nothing must still come out observable.
+        // `monitoring` derives `Debug`, so an empty payload is still observable.
         let generated = generated_derivation(&out);
         assert!(generated.contains("Debug"), "{out}");
     }
@@ -971,8 +926,7 @@ mod payload_tests {
                 pub struct Query { pub key: String }
             },
         );
-        // Deriving it twice would be an `E0119`: the item's own derivation is the
-        // only one allowed to name `Debug`.
+        // Deriving it twice would be an `E0119`.
         let generated = generated_derivation(&out);
         assert!(!generated.contains("Debug"), "{out}");
     }
@@ -1039,8 +993,7 @@ mod payload_tests {
             },
         )
         .to_string();
-        // The derived `Debug` carries the `T: Debug` bounds, so the delegation
-        // states them rather than assuming them.
+        // The derived `Debug` carries the `T: Debug` bounds: state them.
         assert!(
             out.contains("where Wrapper < T > : :: std :: fmt :: Debug"),
             "{out}"
@@ -1107,8 +1060,7 @@ mod payload_tests {
             out.contains("ice_rpc :: codegen :: serde :: Deserialize"),
             "{out}"
         );
-        // The derive macro must resolve `serde` through the re-export, since the
-        // service crate has no `serde` dependency of its own.
+        // Resolved through the re-export: no `serde` dependency in the service crate.
         assert!(
             out.contains(r#"serde (crate = "ice_rpc::codegen::serde")"#),
             "{out}"
@@ -1140,8 +1092,7 @@ mod payload_tests {
             },
         )
         .to_string();
-        // The item's own derive stays, and nothing of ours is added: a second
-        // derivation would be an `E0119`.
+        // Nothing added: a second derivation would be an `E0119`.
         assert_eq!(out.matches("serde :: Serialize").count(), 1, "{out}");
         assert!(!out.contains("codegen :: serde :: Serialize"), "{out}");
         assert!(!out.contains("codegen :: serde :: Deserialize"), "{out}");
@@ -1227,8 +1178,7 @@ mod entry_tests {
     #[test]
     fn main_wraps_body_in_an_inner_async_block() {
         let out = expand(quote! {}, quote! { async fn main() {} });
-        // The shutdown must come after the awaited body, so an early `return`
-        // cannot skip it.
+        // After the awaited body, so an early `return` cannot skip it.
         let shutdown = out.find("shutdown").expect("shutdown() missing");
         let body_await = out.find(". await").expect("body await missing");
         assert!(body_await < shutdown, "{out}");
@@ -1278,8 +1228,7 @@ mod trait_requirements_tests {
             trait Declared: Send + Sync + 'static {}
         };
         inject_trait_requirements(&mut item);
-        // `syn` nodes have no `Debug` without the `extra-traits` feature, so the
-        // message shows the rendered tokens.
+        // `syn` nodes have no `Debug` without `extra-traits`: show the tokens.
         let rendered = quote::quote!(#item).to_string();
         assert_eq!(
             item.attrs.len(),

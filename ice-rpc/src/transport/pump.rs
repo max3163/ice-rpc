@@ -27,9 +27,7 @@ pub(super) fn run_receive_loop(
     stop: impl Fn() -> bool,
     mut handle: impl FnMut(&RpcHeader, &[u8]),
 ) {
-    // Setup is an I/O step: neither of the two `return`s below is provokable in a
-    // unit test (see the module documentation), so they are exercised by the
-    // integration suite rather than by `#[cfg(test)]`.
+    // Setup is an I/O step: the integration suite exercises these returns.
     let Ok(waitset) = WaitSetBuilder::new()
         .signal_handling_mode(crate::waitset_signal_handling_mode())
         .create::<Iox>()
@@ -38,9 +36,8 @@ pub(super) fn run_receive_loop(
         return;
     };
 
-    // A plain notification attachment: the wake-up deadline is passed to
-    // `wait_and_process_once_with_timeout`, so attaching it as a deadline would
-    // make the guard fire on every expiry and defeat the idle path.
+    // Attached plainly: as a deadline it would fire on every expiry and defeat
+    // the idle path.
     let Ok(guard) = waitset.attach_notification(listener) else {
         log::error!("[transport] '{channel}': waitset attach failed");
         return;
@@ -53,8 +50,8 @@ pub(super) fn run_receive_loop(
         match subscriber.receive() {
             Ok(Some(sample)) => {
                 idle_spins = 0;
-                // A saturated channel never reaches the blocking path below,
-                // where iceoryx2 reports the termination request.
+                // A saturated channel never reaches the blocking path that reports
+                // termination.
                 signal_ticks = signal_ticks.wrapping_add(1);
                 if signal_ticks & (SIGNAL_CHECK_SAMPLES - 1) == 0
                     && SignalHandler::termination_requested()
@@ -70,14 +67,12 @@ pub(super) fn run_receive_loop(
                     std::thread::yield_now();
                 } else {
                     let notified = wait_for_wakeup(&waitset, &guard, listener);
-                    // Only a notification means there is something to poll for;
-                    // a bare deadline expiry keeps the thread blocked.
+                    // Only a notification means something to poll.
                     idle_spins = if notified { 0 } else { IDLE_SPINS };
                 }
             }
-            // A transport-level receive failure, not provokable in a unit test
-            // (see the module documentation): report it, then yield so a
-            // persistent error cannot turn the loop into a busy spin.
+            // Receive failure: report it, then yield so a persistent error cannot
+            // turn the loop into a busy spin.
             Err(e) => {
                 log::warn!(
                     "[transport] '{channel}': {} receive error: {e:?}",

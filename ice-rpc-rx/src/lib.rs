@@ -99,8 +99,7 @@ mod subscribe;
 #[cfg(feature = "operators")]
 mod transform;
 
-// The reactive surface (operators, `Subject`, `Subscription`) is gated behind
-// `operators`; its tests are too, so a build without it compiles none of them.
+// The reactive surface is gated behind `operators`, and so are its tests.
 #[cfg(all(test, feature = "operators"))]
 mod tests;
 

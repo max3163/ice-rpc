@@ -67,10 +67,8 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         methods,
     } = input;
 
-    // One static per service. Its name follows the **trait**, not the logical
-    // name: two declarations of the same logical name must keep reporting that
-    // collision through the one symbol meant for it, instead of adding a second
-    // confusing "defined multiple times" on an internal registration.
+    // One static per service, named after the trait: a duplicate logical name keeps
+    // reporting the collision through the one symbol meant for it.
     let registration_name = Ident::new(
         &format!(
             "__ICE_RPC_DECODER_{}",
@@ -89,17 +87,14 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         let method_lit = LitStr::new(&method.method_name, var_name.span());
         let arg_names = &method.arg_names;
 
-        // The wire carries only the method id: the observer resolves it back to
-        // the name through this generated table, the same way it resolves a
-        // service id through the decoder registry.
+        // The wire carries only the method id: this table resolves it back to a name.
         method_name_arms.push(quote! {
             if method_id == ice_rpc::codegen::method_id_of(#method_lit) {
                 return ::std::option::Option::Some(#method_lit);
             }
         });
 
-        // `Display`: `method(arg1=…, arg2=…)`, each argument rendered by
-        // `render_value!` — its `Display` form when it has one, else its `Debug`.
+        // `method(arg=…)`, each argument rendered by `render_value!`.
         let mut format = String::from(method.method_name.as_str());
         format.push('(');
         for (index, arg) in arg_names.iter().enumerate() {
@@ -124,15 +119,12 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
             #method_lit => ice_rpc::monitor::decode_request::<#req_enum_name>(payload)
         });
 
-        // Response: the value and the error are rendered by renderers expanded
-        // *here*, where their types are concrete — the decoder itself imposes no
-        // formatting bound on them. `()` carries nothing worth rendering, so the
-        // unit case only passes the error renderer.
+        // Renderers are expanded here, where the types are concrete; the decoder
+        // imposes no formatting bound. `()` only passes the error renderer.
         let ok_type = &method.ok_type;
         let err_type = &method.err_type;
         if method.oneway {
-            // A one-way method publishes nothing on the response channel: an
-            // observer can render its **request** (above) and never a response.
+            // A one-way method publishes nothing: only its request is renderable.
             response_arms.push(quote! {
                 #method_lit => ::std::option::Option::None
             });
@@ -183,10 +175,8 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
             }
         }
 
-        // Nothing refers to this static by name: the linker collects every entry
-        // of `DECODERS` into one slice, which is the whole point. `linkme` builds
-        // its symbols from its own crate path, so the generated code hands it the
-        // facade's re-export — the service crate does not depend on `linkme`.
+        // Nothing refers to this static: the linker collects every entry into one
+        // slice. `linkme` symbols come from the facade's re-export.
         #[allow(dead_code)]
         #[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
         #[linkme(crate = ice_rpc::codegen::linkme)]

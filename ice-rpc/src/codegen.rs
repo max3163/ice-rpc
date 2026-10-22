@@ -16,8 +16,7 @@ pub use crate::types::{
     raw_pid_to_u32, service_id_of, unbounded_channel,
 };
 
-// The hashers the transport's own maps use, re-exported so `benches/hash_map.rs`
-// can price the **shipped** implementation instead of a copy of it.
+// The hashers the transport uses, so benchmarks price the shipped implementation.
 pub use crate::hash::{FxHasher, IdentityHasher};
 
 // Canonical terminals behind the inherent `Observable` methods.
@@ -29,19 +28,17 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 
 // ── The JSON contract, both sides ────────────────────────────────────
 // One view per service: the macro implements the caller side and calls the host
-// side, which registers itself once with `set_json_dispatcher`. Gated alongside
-// the module itself, by the `json` feature.
+// side, registered once with `set_json_dispatcher`. Gated by `json`.
 #[cfg(feature = "json")]
 pub use crate::json::{
     JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonInvoker,
     JsonOutcome, JsonResult, ReadMode, dispatch_json, json_dispatcher, read_json,
     set_json_dispatcher,
 };
-// The host-side conversion of one host answer into a wire sample: the whole
-// envelope dispatch, so `serialize_response_from_value` stays one line per method.
+// Host answer to wire sample: the whole envelope dispatch, one line per method.
 #[cfg(feature = "json")]
 pub use crate::json::event_from_json;
-// The caller-side argument decoding, likewise: one line per parameter.
+// Caller-side argument decoding: one line per parameter.
 #[cfg(feature = "json")]
 pub use crate::json::{arg_from_base64, arg_from_json, take_field};
 
@@ -87,31 +84,21 @@ pub use crate::transport::{
 pub use crate::transport::{reject_json_dispatch, reject_json_request, reject_json_response};
 
 // ── Dependency re-exports used by the generated code ────────────────
-// No `futures` here: the codegen never named it, and the oneshot channel it
-// used to provide now lives in `ice-rpc-rx::rt::oneshot`.
+// No `futures`: the oneshot channel lives in `ice-rpc-rx::rt::oneshot`.
 pub use async_channel;
 pub use async_lock;
-// Re-exported so the generated `impl` blocks (and the injection on the annotated
-// trait) can name `ice_rpc::codegen::async_trait::async_trait`: the attribute macro
-// expands to `::core::…` only, so reaching it through this path needs no
-// `async-trait` dependency in the service crate.
+// Lets generated `impl` blocks name `ice_rpc::codegen::async_trait::async_trait`
+// without an `async-trait` dependency in the service crate.
 pub use async_trait;
-// The JSON converters are the only generated code that names `base64`. The host
-// converters and the invoker both decode a `Vec<u8>` argument through it, so the
-// re-export follows the union of the two JSON directions.
+// Only the JSON converters name `base64`, in both directions.
 #[cfg(feature = "json")]
 pub use base64;
 pub use futures_lite;
-// Named by the `Serialize` / `Deserialize` derives `#[payload]` adds when the
-// `json` block is on (`#[serde(crate = "ice_rpc::codegen::serde")]`), so a
-// service crate needs no `serde` dependency of its own.
+// Named by the `Serialize` / `Deserialize` derives `#[payload]` adds under `json`.
 #[cfg(feature = "json")]
 pub use serde;
-// The link-time registration surface the generated decoders use. The whole crate
-// is re-exported, not just its attribute: the expansion names `linkme` itself
-// (`#[linkme(crate = …)]`, the private type-check module), so the generated code
-// must be able to reach it without the service crate depending on it. Gated by
-// the same feature that emits the decoders.
+// The link-time registration surface: the expansion names `linkme` itself, so the
+// whole crate is re-exported.
 pub use iceoryx2;
 #[cfg(feature = "monitoring")]
 pub use linkme;

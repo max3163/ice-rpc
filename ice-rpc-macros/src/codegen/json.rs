@@ -81,8 +81,7 @@ pub fn gen_json_provider_from_request_fn(input: &JsonGenInput<'_>) -> TokenStrea
                             ice_rpc::codegen::serde_json::Value::String(encoded)
                         } }
                     } else if is_type_string(arg_type) {
-                        // A top-level `String` is moved into the `Value`; going
-                        // through `to_value` would copy the whole buffer.
+                        // A top-level `String` is moved into the `Value`, not copied.
                         quote! { ice_rpc::codegen::serde_json::Value::String(#arg_name) }
                     } else {
                         quote! { ice_rpc::codegen::serde_json::to_value(#arg_name).ok()? }
@@ -190,8 +189,7 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
 
     let match_arms: Vec<TokenStream> = methods
         .iter()
-        // A one-way method never emits a response: there is no `WireEvent` to
-        // build for it, and no arm to emit.
+        // One-way methods emit no response: no `WireEvent`, no arm.
         .filter(|m| !m.oneway)
         .map(|m| {
             let fn_name_str = m.fn_name.to_string();
@@ -253,9 +251,8 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
     let match_arms: Vec<TokenStream> = methods.iter().map(gen_invoker_arm).collect();
 
     quote! {
-        // One inherent helper per method, emitted next to the table that calls
-        // it. The decoding and the call live there, which is what keeps the
-        // table down to one line per method.
+        // One inherent helper per method, next to the table that calls it, so the
+        // table stays one line per method.
         impl #proxy_name {
             #(#helpers)*
         }
@@ -296,9 +293,8 @@ fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
     let extraction = gen_arg_extraction(&fn_name_str, arg_names, &method.arg_types);
 
     if method.oneway {
-        // A one-way method has no stream to read: `read_json` would wait
-        // `JSON_CALL_TIMEOUT` for an event that never exists. The inherent caller
-        // is synchronous, and its `bool` maps straight onto `JsonOutcome::Accepted`.
+        // No stream to read: the inherent caller is synchronous and its `bool` maps
+        // onto `JsonOutcome::Accepted`.
         let call = if arg_names.is_empty() {
             quote! { self.#fn_name() }
         } else {
@@ -330,8 +326,7 @@ fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
         quote! { self.#fn_name(#(#arg_names),*).await }
     };
 
-    // The leading space is what rustfmt turns into `/// The …` instead of
-    // `///The …`, so the generated item reads like a hand-written one.
+    // The leading space makes rustfmt render `/// The …` as written.
     let doc = format!(
         " The JSON view of `{fn_name_str}`: decodes the arguments, calls the method and reads \
          its result. Generated so the dispatch table stays one line per method."
@@ -451,10 +446,8 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
     let method_name_str = fn_name.to_string();
 
     if oneway {
-        // A one-way method served by a JSON host publishes nothing: the host is
-        // handed the call, and its answer stream — if it opens one — is dropped,
-        // because there is no caller waiting for it. The dispatcher is told the
-        // method is one-way, so it registers no in-flight entry either.
+        // One-way: the host is handed the call and its answer stream, if any, is
+        // dropped; the dispatcher registers no in-flight entry.
         return quote! {
             {
                 dispatcher.oneway_method(
@@ -484,8 +477,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
                       payload: &[u8],
                       emitter: ice_rpc::codegen::OwnedEmitter|
                       -> ice_rpc::codegen::BoxResponseFuture {
-                    // The service name is the constant the proxy declares, so the
-                    // span shows it instead of the 4-byte hash the header carries.
+                    // The service name shows in the span instead of the header hash.
                     ice_rpc::codegen::json_host_handler(
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,

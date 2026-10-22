@@ -146,8 +146,8 @@ mod tests {
         assert_eq!(phase(), Phase::Configured);
         mark_configured().expect("configured still accepts a registration");
 
-        // Reserving the start moves to `Running`; a second reservation fails,
-        // which is what makes a double `init` reportable.
+        // Reserving moves to `Running`; a second reservation fails, so a double
+        // `init` is reportable.
         begin_start().expect("configured can start");
         assert_eq!(phase(), Phase::Running);
         let error = begin_start().expect_err("a second init is refused");

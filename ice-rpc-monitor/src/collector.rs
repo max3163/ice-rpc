@@ -125,9 +125,8 @@ impl Monitor {
     /// # Errors
     /// Returns a message when the trace file cannot be created.
     pub fn new(config: Config, metrics: Arc<Metrics>) -> Result<Self, String> {
-        // The live view cannot let the messages scroll, so it keeps them in a
-        // bounded in-memory buffer instead of streaming them to stdout. An
-        // explicit `--trace-file` still wins (the messages go to the file).
+        // The live view cannot scroll: messages go to a bounded in-memory buffer.
+        // An explicit `--trace-file` still wins.
         let (trace, recent) = if config.trace_sample_rate == 0 {
             (None, None)
         } else if config.console_live && config.trace_file.is_none() {
@@ -203,14 +202,14 @@ impl Monitor {
         self.attach_known_channels();
 
         while !cancel.load(Ordering::Relaxed) {
-            // The channel *list* is re-scanned on the discovery interval only: it
-            // costs a walk of the service registry.
+            // The channel list is re-scanned on the discovery interval only: it costs
+            // a registry walk.
             if self.last_discover.elapsed() >= self.config.discover_interval {
                 self.last_discover = Instant::now();
                 self.refresh_channel_list();
             }
-            // Attachment is retried far more often: a channel that appears late
-            // must be observed from its first call, see [`ATTACH_RETRY`].
+            // Attachment is retried far more often: a late channel must be observed
+            // from its first call (see [`ATTACH_RETRY`]).
             if self.last_attach.elapsed() >= ATTACH_RETRY {
                 self.last_attach = Instant::now();
                 self.attach_known_channels();
@@ -273,8 +272,7 @@ impl Monitor {
     /// Every call published before the attachment is out of the observer's reach:
     /// iceoryx2 subscribers never receive past samples.
     fn attach_known_channels(&mut self) {
-        // Indexed rather than iterated: `open_if_missing` borrows the whole
-        // observer, the list of known channels included.
+        // Indexed rather than iterated: `open_if_missing` borrows the whole observer.
         for index in 0..self.known_channels.len() {
             let channel = self.known_channels[index].clone();
             self.open_if_missing(&channel, Direction::Request);
@@ -293,13 +291,11 @@ impl Monitor {
         if due && let Some(snapshot) = self.health.as_ref().map(Scanner::snapshot) {
             self.metrics.set_health(snapshot);
         }
-        // The per-channel block is built from the observer's own views, so it is
-        // published on every pass: the inventory scan is throttled, the truth
-        // about what is attached must not be.
+        // Built from the observer's own views and published every pass: the inventory
+        // scan is throttled, the attachment truth is not.
         self.metrics.set_channels(&self.channel_health());
-        // One ice-rpc service per channel, as the bus shows it. Counting the
-        // linked contract instead would include services that are not hosted
-        // here (e.g. a `#[service]` this provider never started).
+        // One ice-rpc service per channel as the bus shows it, not the linked
+        // contract.
         self.metrics.set_services(self.known_channels.len() as i64);
         // The observer's own counters are published on every pass.
         self.metrics
@@ -431,10 +427,8 @@ impl Monitor {
             sample.payload_len(),
             emitter.pid
         );
-        // Loss detection must see every sample, whatever its kind: the `seq` is
-        // monotonic per publisher port, which the native `publisher_id` scopes.
-        // What is counted is the observer's **own** loss: a lagging observer is
-        // skipped by the publisher instead of slowing the application down.
+        // Loss detection sees every sample: `seq` is monotonic per publisher port,
+        // and what is counted is the observer's own lag.
         let missed = self.loss.observe(emitter.publisher_id, header.seq);
         self.metrics.on_sample_gap(missed);
         self.metrics
@@ -457,9 +451,7 @@ impl Monitor {
             return;
         }
 
-        // The wire carries only the method id: resolve it to the name the
-        // observer was told about, or fall back to the hexadecimal id — the
-        // same discipline as an unlinked service.
+        // The wire carries only the method id: resolve it, or fall back to hexadecimal.
         let method = match self
             .config
             .decoders
@@ -514,8 +506,7 @@ impl Monitor {
             Resolution::Matched(call) => {
                 self.complete_response(channel, header, emitter, sample, call, kind)
             }
-            // A passive observer drains the two directions independently: the
-            // request may not have been observed yet. Hold the response briefly.
+            // A passive observer drains both directions independently: hold the response.
             Resolution::Unknown => self.defer_response(channel, header, emitter, sample),
         }
     }
@@ -530,8 +521,7 @@ impl Monitor {
         call: PendingCall,
         kind: EventKind,
     ) {
-        // Derived rather than passed: one less argument to thread through the
-        // deferred-replay path, and a single source of truth.
+        // Derived rather than passed: one source of truth, one argument less.
         let terminal = kind.is_terminal();
         if !call.first_response_seen {
             if header.timestamp_ns >= call.request_ts_ns {
@@ -571,8 +561,7 @@ impl Monitor {
         }
 
         let cid = header.correlation_id;
-        // A pathological stream must not grow the entry without bound: give the
-        // call up as orphan, the TTL sweep will then correct the in-flight gauge.
+        // Bound the stream: give the call up as orphan; the TTL sweep fixes the gauge.
         let overflowing = self
             .deferred
             .get(&cid)
@@ -616,8 +605,7 @@ impl Monitor {
             let Some(entry) = self.deferred.remove(&cid) else {
                 continue;
             };
-            // Replay the whole stream in observation order: the first sample
-            // carries the latency, the terminal one closes the call.
+            // Replay in observation order: the first sample carries the latency.
             for (header, emitter, sample) in &entry.samples {
                 let kind = header.event_kind();
                 let terminal = kind.is_terminal();
@@ -665,16 +653,13 @@ impl Monitor {
 
         let latency_us = header.timestamp_ns.saturating_sub(call.request_ts_ns) / 1_000;
         let call_id = fmt_correlation_id(&header.correlation_id);
-        // The distributed trace, when the caller propagated one. Read from the
-        // header alone: the observer never decodes the payload, which is what
-        // keeps the stats mode free of any decode cost.
+        // The distributed trace, read from the header alone: no payload decode.
         let trace = header.trace();
         let trace_id = trace.is_present().then(|| trace.trace_id_hex());
         // Decode the response with the registry this observer was built with.
         let response_text = match sample {
             Sample::Full { payload } => Some(if header.event_kind() == EventKind::RpcError {
-                // A transport-level rejection carries a bare `RpcError`, not the
-                // service's `WireEvent<T, E>`: it is rendered without the registry.
+                // A bare `RpcError`, rendered without the registry.
                 ice_rpc::transport::decode_aligned::<ice_rpc::RpcError>(payload)
                     .map(|err| format!("rpc error: {err}"))
                     .unwrap_or_else(|_| undecoded(payload.len()))
@@ -738,15 +723,12 @@ impl Monitor {
     /// Blocks briefly on one listener (round-robin) when nothing was drained.
     fn wait_idle(&mut self) {
         if self.views.is_empty() {
-            // Nothing to block on: wait only until the next attachment retry, so
-            // a channel whose provider starts late is picked up within
-            // [`ATTACH_RETRY`] of its appearance.
+            // Wait only until the next attachment retry, for a provider starting late.
             std::thread::sleep(ATTACH_RETRY);
             return;
         }
         self.wait_cursor = (self.wait_cursor + 1) % self.views.len();
-        // A wake-up on any channel is followed by a drain of *every* view, so
-        // blocking on a single listener is enough and avoids a WaitSet.
+        // One wake-up drains every view, so a single listener suffices.
         let _ = self.views[self.wait_cursor].view.wait(IDLE_WAIT);
     }
 }
@@ -798,8 +780,7 @@ mod tests {
 
     #[test]
     fn every_event_kind_has_a_label() {
-        // The labels live on `EventKind` itself now, so this only checks that
-        // the observer's view of a sample stays the wire vocabulary.
+        // The labels live on `EventKind`: this only checks the wire vocabulary.
         assert_eq!(EventKind::Request.label(), "request");
         assert_eq!(EventKind::Next.label(), "next");
         assert_eq!(EventKind::Complete.label(), "complete");
@@ -828,8 +809,7 @@ mod tests {
             publisher_id: 9,
         };
 
-        // The three response samples are drained first: the request is not yet
-        // tracked, so every one of them is deferred.
+        // Responses are drained first: the request is not tracked yet, so all defer.
         let mut response = RpcHeader {
             correlation_id: cid,
             service_id: 7,
@@ -863,8 +843,7 @@ mod tests {
             text.contains("ice_rpc_inflight{channel=\"TestChannel\",service=\"7\"} 0"),
             "the terminal sample must close the call:\n{text}"
         );
-        // The wire carries only the method id and this observer was given no
-        // decoder to name it, so the label falls back to the hexadecimal id.
+        // No decoder to name the method: fall back to the hexadecimal id.
         assert!(
             text.contains(
                 "ice_rpc_latency_seconds_count{channel=\"TestChannel\",service=\"7\",method=\"0x00000000\"} 1"
@@ -1002,8 +981,7 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let mut monitor = Monitor::new(config, metrics.clone()).expect("built");
 
-        // The wire carries only the method id, so the header must carry the id
-        // the registry was told about.
+        // The header must carry the id the registry was told about.
         let mut request = header(0x66, EventKind::Request, 1_000);
         request.method_id = ice_rpc::codegen::method_id_of("echo");
         monitor.on_request(
@@ -1118,8 +1096,7 @@ mod tests {
         monitor.on_request("C", &bogus, &Sample::Meta { payload_len: 1 });
 
         assert_eq!(monitor.correlate.len(), 0, "no call is tracked");
-        // The `# HELP` line always names the metric: only a series proves a
-        // request was actually counted.
+        // Only a series proves a request was actually counted.
         let text = metrics.render_prometheus();
         assert!(!text.contains("ice_rpc_requests_total{"), "{text}");
     }

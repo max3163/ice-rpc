@@ -308,8 +308,8 @@ mod tests {
         let stream: crate::Observable<i32, String> = crate::of(1);
         let sub = stream.subscribe(|_v| {});
 
-        // The push task cancels its token when it returns, so awaiting the handle
-        // resolves on a terminal event as well.
+        // The push task cancels its token on return, so the handle also resolves on
+        // a terminal event.
         pollster::block_on(sub);
     }
 

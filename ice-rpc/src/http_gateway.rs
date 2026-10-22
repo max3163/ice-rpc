@@ -73,9 +73,8 @@
 //! Only the reading of **one** value is exposed: a browser cannot consume an
 //! endless stream, and waiting for every value would buffer it in memory.
 
-// trillium is built on one runtime adapter at a time. There is no "gateway
-// without an adapter" feature to diagnose: each `http-*` name brings its own
-// adapter, and the module is compiled only when one of them is on.
+// Each `http-*` feature brings its own trillium runtime adapter; the module is
+// compiled only when one of them is on.
 use crate::json::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
 use async_lock::RwLock;
 use serde_json::Value;
@@ -120,7 +119,7 @@ impl HttpGatewayState {
             }
         }
 
-        // Slow-path: creates the proxy through the service factory.
+        // Slow-path: build the proxy through the service factory.
         let factory = self.factories.get(service_name)?;
         let proxy = factory();
 
@@ -373,8 +372,7 @@ async fn invoke_service(
         );
     };
 
-    // `None` is "this service has no such method", answered without touching the
-    // bus: the route is wrong, not the call.
+    // No such method: the route is wrong, answered without touching the bus.
     let Some(result) = invoker.invoke_json(method, params, ReadMode::First).await else {
         return json_response(
             conn,
@@ -392,21 +390,16 @@ async fn invoke_service(
             200,
             serde_json::json!({ "status": "ok", "data": data }),
         ),
-        // A service may complete without emitting anything: a legitimate answer,
-        // reported without `data` rather than as a failure.
+        // A completion without a value is legitimate: no `data`, not a failure.
         Ok(JsonOutcome::Nothing) => json_response(conn, 200, serde_json::json!({ "status": "ok" })),
-        // A one-way method never answers, so `202 Accepted` is the honest
-        // status: the request was published, and nothing was processed *for this
-        // request*. `delivered: false` (nobody was subscribed) is still an
-        // accepted outcome, not an error.
+        // One-way methods never answer: `202 Accepted`, `delivered: false` included.
         Ok(JsonOutcome::Accepted { delivered }) => json_response(
             conn,
             202,
             serde_json::json!({ "status": "accepted", "delivered": delivered }),
         ),
         Err(error) => {
-            // A transport failure is not the caller's mistake, so it is the only
-            // one that is not reported as a bad request.
+            // A transport failure is not the caller's mistake: not a bad request.
             let (status, message) = match error {
                 JsonCallError::InvalidArgs(message) | JsonCallError::Business(message) => {
                     (400, message)
@@ -442,7 +435,7 @@ fn allowed_origin_domain() -> String {
 fn is_origin_allowed(origin: &str) -> bool {
     let allowed = allowed_origin_domain();
 
-    // Extracts the host from the origin URL (e.g. "https://sub.my-domain.com:8080" → "sub.my-domain.com")
+    // Host of the origin URL ("https://sub.my-domain.com:8080" → "sub.my-domain.com").
     let host = origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"))
@@ -494,8 +487,7 @@ pub async fn start_http_server(
         port
     );
 
-    // Graceful shutdown driven by the global cancellation token; Trillium's own
-    // signal handling is disabled so ice-rpc keeps a single shutdown path.
+    // Shutdown driven by the global token; Trillium's own signal handling is off.
     let swansong = trillium::Swansong::new();
     let signal_swansong = swansong.clone();
     let cancel = crate::global_cancel_token().clone();
@@ -504,10 +496,8 @@ pub async fn start_http_server(
         signal_swansong.shut_down().await;
     });
 
-    // Runtime adapter, one per mode: `http-tokio` on tokio, `http-smol` and
-    // `http-threads` on `trillium-smol` (whose server runs on
-    // `async-global-executor` threads, so no tokio runtime is required). The
-    // `http` feature alone cannot reach either block — the manifest refuses it.
+    // One runtime adapter per mode: `http-tokio`, or `http-smol` / `http-threads`
+    // on `trillium-smol`.
     #[cfg(feature = "http-tokio")]
     {
         trillium_tokio::config()

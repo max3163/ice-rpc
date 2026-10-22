@@ -32,8 +32,7 @@ fn parse_driver(attr: TokenStream) -> syn::Result<Driver> {
     if attr.is_empty() {
         return Ok(Driver::Agnostic);
     }
-    // `rt-none` carries a hyphen, so it is not a Rust identifier and cannot be
-    // parsed as a path: match it on the raw tokens, with the spacing trimmed.
+    // `rt-none` has a hyphen, so it is matched on the raw tokens.
     let compact: String = attr
         .to_string()
         .chars()
@@ -79,9 +78,8 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
     };
     let body = &func.block;
 
-    // `rt-none`: a fully synchronous main. The body runs blocking and is
-    // isolated in an immediately-invoked closure, so a `return` or a `?` inside
-    // it leaves *the closure* — the `shutdown_blocking` below always runs.
+    // `rt-none`: a synchronous main, body isolated in an immediately-invoked
+    // closure so the `shutdown_blocking` below always runs.
     if matches!(driver, Driver::NoRuntime) {
         if func.sig.asyncness.is_some() {
             return Err(syn::Error::new_spanned(
@@ -109,8 +107,7 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
         ));
     }
 
-    // The body is isolated in its own `async` block: a `return` or a `?` inside
-    // it returns from *that* block, so the shutdown below always runs.
+    // Body in its own `async` block, so the shutdown below always runs.
     let wrapped = quote! {
         async {
             let __ice_rpc_guard = ice_rpc::codegen::init();
@@ -130,8 +127,8 @@ pub fn expand_main(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
                     .build()
                     .expect("failed to build the tokio runtime for #[ice_rpc::main]");
                 let __ice_rpc_output = __ice_rpc_runtime.block_on(#wrapped);
-                // Blocking tasks cannot be cancelled, and dropping the runtime
-                // waits for them: a bounded grace period lets the process exit.
+                // Blocking tasks cannot be cancelled: a bounded grace period lets the
+                // process exit.
                 __ice_rpc_runtime.shutdown_timeout(std::time::Duration::from_millis(500));
                 __ice_rpc_output
             }

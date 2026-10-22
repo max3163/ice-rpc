@@ -44,8 +44,7 @@ fn main() {
     let live_requested = config.console_live;
     let channels = config.channels.len();
 
-    // Opt-in: heal a bus polluted by killed runs before observing it. Without
-    // the flag the observer stays strictly read-only.
+    // Opt-in: heal a bus polluted by killed runs; otherwise strictly read-only.
     if config.cleanup {
         let (dead_nodes, orphan_markers) = cleanup::reap_dead_state();
         log::info!(
@@ -63,9 +62,8 @@ fn main() {
         eprintln!("failed to start the Prometheus endpoint: {e}");
     }
 
-    // A persistent signal callback sets the shutdown flag once, so the loops no
-    // longer depend on a bridge competing for the (consumed) pending signal. Keep
-    // the guard alive for the whole process; it falls back to polling internally.
+    // A persistent callback sets the flag once; the guard lives for the whole
+    // process.
     let _termination = Termination::install();
     let cancel: &'static AtomicBool = shutdown::flag();
 
@@ -77,8 +75,7 @@ fn main() {
         }
     };
 
-    // `top`-like view: only when explicitly requested *and* a terminal is
-    // attached; otherwise the observer stays quiet (metrics + traces only).
+    // Only when requested and a terminal is attached; otherwise quiet.
     let mut console = LiveConsole::new(live_requested);
     if !console.is_active() {
         if let Err(e) = monitor.run(cancel) {

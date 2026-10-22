@@ -50,8 +50,7 @@ pub async fn call_ipc_method(
     match call_outcome(table, service, method, args, ReadMode::First).await? {
         JsonOutcome::Value(value) => Ok(value),
         JsonOutcome::Nothing => Err(no_value(service, method)),
-        // A value was asked for and none can ever exist: naming the contract
-        // beats returning a `null` that looks like a real payload.
+        // No value can ever exist: naming the contract beats a `null` payload.
         JsonOutcome::Accepted { .. } => Err(one_way(service, method)),
     }
 }
@@ -69,14 +68,11 @@ pub async fn call_ipc_method_stream(
     args: Value,
 ) -> Result<Vec<Value>, GatewayError> {
     match call_outcome(table, service, method, args, ReadMode::All).await? {
-        // `ReadMode::All` answers with the array of every value. A lone value is
-        // wrapped rather than dropped, so a deviation shows up in the result
-        // instead of being silently swallowed.
+        // `All` answers with an array; a lone value is wrapped, not dropped.
         JsonOutcome::Value(Value::Array(values)) => Ok(values),
         JsonOutcome::Value(other) => Ok(vec![other]),
         JsonOutcome::Nothing => Ok(Vec::new()),
-        // Zero values will ever arrive, and the caller asked for a stream: saying
-        // so is more useful than an empty array that looks like a silent service.
+        // Nothing will ever arrive: saying so beats an empty array.
         JsonOutcome::Accepted { .. } => Err(one_way(service, method)),
     }
 }
@@ -96,9 +92,7 @@ async fn call_outcome(
     let invoker: Arc<dyn JsonInvoker> = (entry.invoker)()
         .await
         .ok_or_else(|| no_provider(service))?;
-    // `None` means "this service has no such method": the JSON view answers
-    // `Some` even when the call itself fails, so the two cases stay
-    // distinguishable.
+    // `None` means "no such method"; `Some` is returned even when the call fails.
     match invoker.invoke_json(method, args, read).await {
         Some(result) => result.map_err(call_error),
         None => Err(unknown_method(service, method)),

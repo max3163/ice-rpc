@@ -53,8 +53,7 @@ impl FxHasher {
 impl Hasher for FxHasher {
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        // 8 bytes at a time; the tail is zero-padded, so the word count depends
-        // on the length alone.
+        // 8 bytes at a time; the tail is zero-padded, so the count follows the length.
         let (chunks, tail) = bytes.as_chunks::<8>();
         for chunk in chunks {
             self.add(u64::from_le_bytes(*chunk));
@@ -88,13 +87,9 @@ impl Hasher for FxHasher {
 
     #[inline]
     fn finish(&self) -> u64 {
-        // A final avalanche is **required**, not a nicety: a correlation id is
-        // `pid ++ counter`, so consecutive keys differ only in their low bytes
-        // and, without this step, the high bits — the ones `hashbrown` uses as
-        // its 7-bit control byte — stay nearly constant and collapse the table
-        // (`map_build_realistic` measured 285 ms against 1.4 ms for SipHash, and
-        // a lookup at 65 536 entries 2.3 µs against 19 ns). Measured after the
-        // fix: the same steps are within a few percent of SipHash's cost.
+        // A final avalanche is required: keys are `pid ++ counter`, so consecutive
+        // ids differ in their low bytes and would leave the high bits hashbrown
+        // uses as control bytes nearly constant (285 ms against 1.4 ms for SipHash).
         let mut hash = self.hash;
         hash ^= hash >> 32;
         hash = hash.wrapping_mul(0xd6e8_feb8_6659_fd93);
@@ -193,15 +188,13 @@ mod tests {
     fn the_fx_finish_avalanches_the_state() {
         let mut hasher = FxHasher::default();
         hasher.write_u64(1);
-        // Without the final mix, consecutive keys keep nearly constant high bits
-        // and collapse the table (see the doc comment on `finish`).
+        // Without the final mix, consecutive keys collapse the table (see `finish`).
         assert_ne!(hasher.finish(), hasher.hash);
     }
 
     #[test]
     fn consecutive_correlation_ids_do_not_collide() {
-        // A correlation id is `pid ++ counter`: keys differing only in their low
-        // bytes, which is exactly the shape that used to collapse the table.
+        // `pid ++ counter`: keys differing only in their low bytes.
         let fx = BuildHasherDefault::<FxHasher>::default();
         let mut hashes = std::collections::HashSet::new();
         for counter in 0..1024u64 {
@@ -220,8 +213,7 @@ mod tests {
     #[test]
     fn the_identity_hasher_ignores_byte_writes() {
         let mut hasher = IdentityHasher::default();
-        // `write` is unreachable for the `u32` keys `IdMap` stores, and must not
-        // corrupt the state if it is ever reached.
+        // Unreachable for `IdMap`'s `u32` keys, and must not corrupt the state.
         hasher.write(b"ignored");
         assert_eq!(hasher.finish(), 0);
 

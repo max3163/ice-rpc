@@ -274,13 +274,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))] // test code may panic
 pub use ice_rpc_macros::{main, payload, service};
 
-// The *macro* is re-exported, not the crate, so a service implementation can
-// annotate its `impl` block with the short `#[ice_rpc::async_trait]` — without
-// declaring the `async-trait` crate. The attribute expands to `::core::…` paths
-// only; the explicit `#[async_trait::async_trait]` keeps working for a crate
-// that already has the dependency.
-// (`ice_rpc::codegen` re-exports the *crate* instead, because the generated `impl`
-// blocks name it as a path segment: `ice_rpc::codegen::async_trait::async_trait`.)
+// The macro is re-exported so an implementation can write
+// `#[ice_rpc::async_trait]` without declaring the crate; `ice_rpc::codegen`
+// re-exports the crate instead, since generated code names it as a path segment.
 pub use async_trait::async_trait;
 
 // Dependency re-exports (`rkyv`, `serde_json`, `base64`, …) live in `ice_rpc::codegen`.
@@ -338,8 +334,7 @@ mod http_gateway;
 pub use service_traits::ServiceInit;
 
 // ── Public API: the reactive vocabulary ─────────────────────────────
-// Defined by `ice-rpc-rx` and re-exported unchanged: the crate keeps one single
-// stream type, and a consumer never has to name the stream crate.
+// Defined by `ice-rpc-rx` and re-exported unchanged: one single stream type.
 pub use ice_rpc_rx::{
     CancellationToken, Event, Observable, ObservableError, RpcError, defer, from, from_future, of,
     throw_error,
@@ -372,9 +367,8 @@ pub mod rt {
 pub use locator::ServiceLocator;
 
 // ── Public API: provider liveness ───────────────────────────────────
-// The probe behind the `{Proxy}::is_provider_connected()` the macro generates.
-// Exported too, for a host that only knows the channel name (a gateway, a
-// readiness endpoint, a test).
+// The probe behind `{Proxy}::is_provider_connected()`, exported for hosts that
+// only know the channel name (gateway, readiness endpoint, test).
 pub use transport::is_provider_connected;
 
 // ── Public API: out-of-band monitoring ──────────────────────────────
@@ -425,19 +419,15 @@ pub async fn shutdown_and_release() {
     registry_cancel_token().cancel();
     ServiceLocator::global().release_node().await;
 
-    // `release_node` joins the dispatch threads, and a thread owns its ports:
-    // joining it is what makes iceoryx2 unlink the services it created. What
-    // survives is the cache of consumed channels, which lives in a `static` —
-    // Rust never drops a `static`, so it is released here explicitly.
+    // `release_node` joins the threads that own the ports, which is what lets
+    // iceoryx2 unlink its services; the `static` port cache is released after.
     let released = crate::transport::release_process_ports();
     if released > 0 {
         log::info!("[ice-rpc] released {released} cached channel port(s)");
     }
 
-    // Last, and only now: the node itself. iceoryx2 removes the node's own state
-    // — `nodes/<id>/` and its `node_monitor*` files — when the node is dropped,
-    // so releasing it is what a clean exit needs to leave nothing behind. It has
-    // to come after the ports, which is why it is not part of their release.
+    // Then the node: dropping it removes `nodes/<id>/` and its monitors, so it
+    // must come after the ports.
     if crate::transport::release_shared_node() {
         log::info!("[ice-rpc] released the iceoryx2 node");
     }
@@ -715,15 +705,12 @@ where
 pub async fn run_provider_inner(
     services: Vec<Box<dyn _ProviderService>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Defensive and idempotent: enabling signal handling here guarantees the
-    // `WaitSet`s created below report SIGINT/SIGTERM even if the macro was
+    // Idempotent: the `WaitSet`s below report signals even if the macro was
     // bypassed (e.g. after `init_without_ctrl_c()`).
     SIGNAL_HANDLING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // Reap what previous runs left behind, before creating any service: a provider
-    // that was killed is still on the bus, and nothing else removes it — see
-    // `transport::cleanup_dead_nodes`. This is what makes a machine self-healing
-    // in production, where nobody runs a purge script.
+    // Reap what killed providers left on the bus, before creating any service
+    // (see `transport::cleanup_dead_nodes`).
     let reaped = crate::transport::cleanup_dead_nodes();
     if reaped > 0 {
         log::info!("[ice-rpc] reaped {reaped} dead node(s) left by previous runs");
@@ -857,7 +844,7 @@ mod tests {
         let t2 = registry_cancel_token().clone();
         {
             let _guard = ShutdownGuard::new();
-            // The guard has not called shutdown() yet → Drop cancels the tokens.
+            // `shutdown()` was not called: `Drop` cancels the tokens.
         }
         assert!(t1.is_cancelled());
         assert!(t2.is_cancelled());
@@ -895,8 +882,7 @@ mod tests {
 
     #[test]
     fn shutdown_and_release_does_not_panic_when_no_node() {
-        // Without a created iceoryx2 Node, shutdown_and_release must terminate
-        // cleanly.
+        // No node created: shutdown must still terminate cleanly.
         crate::rt::test_block_on(shutdown_and_release());
     }
 
@@ -905,10 +891,9 @@ mod tests {
     #[test]
     fn the_guard_shuts_down_once() {
         let guard = ShutdownGuard::new();
-        // The first call performs the shutdown...
+        // First call shuts down...
         crate::rt::test_block_on(guard.shutdown());
-        // ...the second is a no-op, and `Drop` then does nothing either (the flag
-        // is already set), so the node is never released twice.
+        // ...the second is a no-op, as is `Drop`: the node is released once.
         crate::rt::test_block_on(guard.shutdown());
         drop(guard);
     }
@@ -952,8 +937,7 @@ mod tests {
         use iceoryx2::prelude::SignalHandlingMode;
 
         let _guard = signal_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // The flag is enabled unless `init_without_ctrl_c` was called: a plain
-        // `init` must let iceoryx2 report SIGINT/SIGTERM to the WaitSet loops.
+        // Enabled unless `init_without_ctrl_c` was called.
         assert_eq!(
             waitset_signal_handling_mode(),
             SignalHandlingMode::HandleTerminationRequests
@@ -967,8 +951,7 @@ mod tests {
 
         let _guard = signal_lock().lock().unwrap_or_else(|e| e.into_inner());
 
-        // `init` gives the signals back to iceoryx2, even after a host had taken
-        // them — which is what makes running it twice harmless.
+        // `init` gives the signals back to iceoryx2, so running it twice is safe.
         SIGNAL_HANDLING_ENABLED.store(false, Ordering::Relaxed);
         let guard = init();
         assert_eq!(
@@ -977,8 +960,7 @@ mod tests {
         );
         drop(guard);
 
-        // `init_without_ctrl_c` leaves the disposition to the host (the Node.js
-        // gateway installs its own handler).
+        // `init_without_ctrl_c` leaves the disposition to the host.
         let guard = init_without_ctrl_c();
         assert_eq!(waitset_signal_handling_mode(), SignalHandlingMode::Disabled);
         drop(guard);

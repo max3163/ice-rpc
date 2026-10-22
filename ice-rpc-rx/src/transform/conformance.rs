@@ -276,8 +276,7 @@ fn start_with_conformance() {
         "start_with",
         |stream| stream.start_with(99),
         &[
-            // Le préfixe est émis avant tout poll de la source : sur un flux
-            // vide, il est tout ce qu'on voit.
+            // Le préfixe est émis avant tout poll : sur un flux vide, on ne voit que lui.
             (no_event(), vec![next(99)]),
             (one_value(), vec![next(99), next(1), complete()]),
             (completion_only(), vec![next(99), complete()]),
@@ -324,8 +323,7 @@ fn take_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            // La troisième valeur déclenche le `Complete` synthétisé : elle
-            // n'est **pas** émise.
+            // La troisième valeur déclenche le `Complete` synthétisé, sans être émise.
             (three_values(), vec![next(1), next(2), complete()]),
         ],
     );
@@ -356,8 +354,7 @@ fn first_conformance() {
         "first",
         |stream| stream.first(),
         &[
-            // Un flux vide ne synthétise **pas** de `Complete` : il n'y a rien
-            // à compléter.
+            // Un flux vide ne synthétise pas de `Complete`.
             (no_event(), vec![]),
             (one_value(), vec![next(1), complete()]),
             (completion_only(), vec![complete()]),
@@ -433,9 +430,8 @@ fn take_until_conformance() {
 
 #[test]
 fn merge_conformance() {
-    // Le second flux est inline, donc toujours prêt : l'entrelacement du
-    // round-robin est déterministe et la matrice peut le figer. C'est aussi ce
-    // qui montre qu'un `Complete` de la source gauche ne termine pas le flux.
+    // Le second flux est inline, donc l'entrelacement est déterministe ; un
+    // `Complete` de la source gauche ne termine pas le flux.
     assert_matrix(
         "merge",
         |stream| stream.merge(crate::from::<i32, String, _>([9])),
@@ -443,13 +439,11 @@ fn merge_conformance() {
             (no_event(), vec![next(9), complete()]),
             (one_value(), vec![next(1), next(9), complete()]),
             (completion_only(), vec![next(9), complete()]),
-            // Une erreur, d'où qu'elle vienne, termine le merge : la seconde
-            // source n'est jamais lue.
+            // Une erreur termine le merge : la seconde source n'est jamais lue.
             (business_failure(), vec![business("boom")]),
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
-            // Une fermeture sans terminal est lue comme une fin propre, et le
-            // merge n'émet qu'un seul `Complete`.
+            // Une fermeture sans terminal est une fin propre : un seul `Complete`.
             (abrupt_close(), vec![next(1), next(9), complete()]),
             (
                 three_values(),
@@ -473,9 +467,8 @@ fn distinct_until_changed_conformance() {
             (technical_failure(), vec![technical()]),
             (empty_failure(), vec![empty()]),
             (abrupt_close(), vec![next(1)]),
-            // Les cas canoniques ne portent que des valeurs distinctes, donc
-            // l'opérateur n'y fait rien : celui-ci exerce le dédoublonnage, y
-            // compris un retour à une valeur déjà vue plus tôt.
+            // Les cas canoniques n'ont que des valeurs distinctes : celui-ci
+            // exerce le dédoublonnage, retour à une valeur déjà vue compris.
             (
                 vec![next(1), next(1), next(2), next(2), next(1), complete()],
                 vec![next(1), next(2), next(1), complete()],

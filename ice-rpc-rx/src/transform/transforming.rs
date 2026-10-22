@@ -172,8 +172,7 @@ pin_project_lite::pin_project! {
         // The **projected** stream, replaced on every new source value.
         #[pin]
         projected: Option<crate::Observable<U, E>>,
-        // Set once the source ended: the projected stream in flight is then
-        // drained before the pipeline terminates (RxJS semantics).
+        // Set once the source ended: the projected stream is drained before ending.
         source_end: Option<SourceEnd>,
         // Set once our own terminal has been emitted.
         finished: bool,
@@ -208,8 +207,7 @@ where
                 return Poll::Ready(None);
             }
 
-            // The active projected stream is always polled first: it may still
-            // carry values, even after the source has ended.
+            // The active projected stream is polled first: it may still carry values.
             if this.projected.is_some() {
                 let polled = {
                     let projected = this
@@ -228,8 +226,7 @@ where
                         *this.finished = true;
                         return Poll::Ready(Some(Event::Error(e)));
                     }
-                    // RxJS: a projected completion is *not* a downstream
-                    // completion — the source may still project another value.
+                    // A projected completion is not a downstream completion.
                     Poll::Ready(Some(Event::Complete)) | Poll::Ready(None) => {
                         this.projected.set(None);
                     }
@@ -237,23 +234,18 @@ where
                 }
             }
 
-            // The source ended and the last projected stream has been drained: the
-            // pipeline now ends the way the source did. This is the RxJS rule — the
-            // source's completion waits for the projected stream in flight instead
-            // of dropping it.
+            // The source ended and the projected stream is drained: end the way it
+            // did, per RxJS.
             if let Some(end) = *this.source_end {
                 if this.projected.is_none() {
                     *this.finished = true;
                     return match end {
                         SourceEnd::Completed => Poll::Ready(Some(Event::Complete)),
-                        // A source that closed without a terminal is passed
-                        // through as such, the convention every other operator
-                        // follows.
+                        // A source closed without a terminal passes through as such.
                         SourceEnd::Closed => Poll::Ready(None),
                     };
                 }
-                // The projected stream is still pending: the poll above registered
-                // its waker, and the source must not be read again.
+                // The projected stream is pending: the source must not be read again.
                 return Poll::Pending;
             }
 
@@ -268,8 +260,7 @@ where
                     *this.finished = true;
                     return Poll::Ready(Some(Event::Error(e)));
                 }
-                // RxJS has no "closed without a terminal": the crate maps it to
-                // the same wait, then forwards the end as `None`.
+                // No "closed without a terminal" in RxJS: wait, then forward `None`.
                 Poll::Ready(None) => {
                     *this.source_end = Some(SourceEnd::Closed);
                 }
@@ -443,8 +434,7 @@ impl<T, E> Observable<T, E> {
         U: Send + 'static,
         E: Send + 'static,
     {
-        // The projected stream is always an `Observable`: the projection's output
-        // is normalized here, so `SwitchMap` itself never sees a future.
+        // The projection's output is normalized here: `SwitchMap` never sees a future.
         Observable::from_stream(SwitchMap::new(self, move |v| f(v).into_observable()))
     }
 }

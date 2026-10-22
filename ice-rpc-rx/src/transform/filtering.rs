@@ -93,8 +93,7 @@ where
         if *this.done {
             return Poll::Ready(None);
         }
-        // Answered here, without consulting the source: the poll that follows
-        // the n-th value must not wait for another event to ever arrive.
+        // Answered here: the poll after the n-th value must not wait for an event.
         if *this.remaining == 0 {
             *this.done = true;
             return Poll::Ready(Some(Event::Complete));
@@ -104,8 +103,7 @@ where
                 *this.remaining -= 1;
                 Poll::Ready(Some(Event::Next(v)))
             }
-            // A terminal from the source ends the stream for good: mark it done
-            // so a later poll does not touch the source again.
+            // A terminal ends the stream: mark it done so no later poll touches it.
             Poll::Ready(Some(other)) => {
                 *this.done = true;
                 Poll::Ready(Some(other))
@@ -151,9 +149,8 @@ where
         loop {
             match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => {
-                    // Compared against the last *emitted* value, not the whole
-                    // history. An equal value falls through to the next poll of
-                    // the loop — it is dropped, not a reason to end the stream.
+                    // Compared against the last emitted value only; an equal value
+                    // is dropped, not a reason to end the stream.
                     if this.last.as_ref() != Some(&v) {
                         *this.last = Some(v.clone());
                         return Poll::Ready(Some(Event::Next(v)));

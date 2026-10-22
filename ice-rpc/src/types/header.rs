@@ -112,8 +112,7 @@ impl EventKind {
     }
 }
 
-// The labels an observer reads back from a sample (`kind="complete"`), declared
-// next to the kind they describe.
+// Observer labels (`kind="complete"`), next to the kind they describe.
 impl_labels!(EventKind {
     EventKind::Request => "request",
     EventKind::Next => "next",
@@ -278,8 +277,7 @@ impl RpcHeader {
             // A response echoes the trace of the request it answers.
             trace_id: request.trace_id,
             parent_span_id: request.parent_span_id,
-            // The emitter's own span is not known here; an observer joins the
-            // response to its request through the correlation id.
+            // The emitter's span is unknown here; the correlation id joins both.
             span_id: 0,
             flags: request.flags,
             // Stamped by the caller with the per-channel sequence.
@@ -311,8 +309,7 @@ impl RpcHeader {
             parent_span_id: request.parent_span_id,
             span_id: 0,
             flags: request.flags,
-            // Stamped by the emitter with the per-channel sequence, like every
-            // other sample: a gap in `seq` is how the observer detects a loss.
+            // Stamped like every sample: a gap in `seq` signals a loss.
             seq: 0,
             timestamp_ns: now_ns(),
         }
@@ -559,10 +556,8 @@ mod tests {
 
     #[test]
     fn the_header_layout_stays_bounded_and_aligned() {
-        // Part of the wire contract: the header is copied per sample and its size
-        // is validated by iceoryx2 when a service is opened, so every process on
-        // the machine must agree on it. Pinning the exact size makes any layout
-        // drift a deliberate, reviewed change.
+        // Part of the wire contract: iceoryx2 validates the size on open, so every
+        // process must agree on the layout.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
         assert_eq!(std::mem::size_of::<RpcHeader>(), 80);
 

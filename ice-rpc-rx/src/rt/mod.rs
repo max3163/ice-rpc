@@ -32,10 +32,8 @@
 //! consumer needs nothing more; a detached task, when one is asked for, runs on
 //! its own OS thread through [`Spawner`].
 
-// Cargo features are additive and cannot express "if tokio then not smol", so
-// the exclusivity the modes require is enforced here rather than in the
-// manifest. Two full runtimes in one process is precisely what these modes exist
-// to avoid: the first one to start would silently own the tasks of both.
+// Cargo features cannot express "if tokio then not smol": the exclusivity of the
+// modes is enforced here, since two runtimes would silently share the tasks.
 #[cfg(all(feature = "tokio", feature = "smol"))]
 compile_error!(
     "features `tokio` and `smol` are mutually exclusive: pick one execution facade. \
@@ -153,8 +151,7 @@ mod imp {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // `detach` is mandatory: dropping an `async_executor::Task` cancels its
-        // future, and the core spawns tasks it never joins.
+        // `detach` is mandatory: dropping an `async_executor::Task` cancels it.
         smol::spawn(future).detach();
     }
 
@@ -230,8 +227,8 @@ mod imp {
                 std::thread::Builder::new()
                     .name(format!("ice-rpc-rt-{index}"))
                     .spawn(move || {
-                        // `pending()` never completes, so the thread polls the
-                        // executor for the whole process lifetime.
+                        // `pending()` never completes: the thread polls for the
+                        // whole process lifetime.
                         futures_lite::future::block_on(
                             worker.run(futures_lite::future::pending::<()>()),
                         )
@@ -247,8 +244,7 @@ mod imp {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // `detach` is mandatory: dropping an `async_executor::Task` cancels its
-        // future, and the core spawns tasks it never joins.
+        // `detach` is mandatory: dropping the task would cancel it.
         executor().spawn(future).detach();
     }
 
@@ -335,14 +331,12 @@ impl Spawner {
             Some(handle) => {
                 handle.spawn(future);
             }
-            // A provider booted outside any runtime (a bare `fn main`, an N-API
-            // callback) still needs somewhere to run its calls.
+            // Booted outside any runtime, it still needs an executor for its calls.
             None => {
                 fallback_runtime().spawn(future);
             }
         }
-        // A full non-tokio facade owns an executor that accepts a spawn from any
-        // thread.
+        // A non-tokio facade accepts a spawn from any thread.
         #[cfg(all(not(feature = "tokio"), any(feature = "smol", feature = "rt-async")))]
         spawn(future);
         // The light client owns no executor: a detached task runs on its own OS

@@ -459,8 +459,7 @@ mod tests {
     #[test]
     fn rendering_falls_back_to_debug_without_display() {
         assert_eq!(render_value!(&DebugOnly::Nok), "Nok");
-        // `Display` still wins whenever the type provides it, so a `String`
-        // payload is not rendered with the `Debug` quoting.
+        // `Display` wins when available, so no `Debug` quoting.
         assert_eq!(render_value!(&Reply { value: 7 }), "value=7");
         assert_eq!(render_value!(&String::from("hi")), "hi");
 
@@ -584,8 +583,7 @@ mod tests {
         let mut decoders = Decoders::new();
         assert!(decoders.is_empty());
         assert_eq!(decoders.len(), 0);
-        // An unknown service has no decoder: neither direction decodes, and no
-        // method name can be resolved.
+        // Unknown service: no decoder, and no method name to resolve.
         assert_eq!(decoders.request(1, "m", b""), None);
         assert_eq!(decoders.response(1, "m", b""), None);
         assert_eq!(decoders.method_name(1, 0), None);

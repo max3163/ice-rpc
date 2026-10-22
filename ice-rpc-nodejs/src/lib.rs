@@ -59,9 +59,8 @@ pub use services::{
 };
 
 // ── Re-exports the generated addon code names ────────────────────────────────
-// The `gateway!` macro expands in the addon crate and refers to everything
-// through `$crate`, so an addon only needs `napi`/`napi-derive` of its own for
-// the `#[napi]` attribute and the absolute paths the derive emits.
+// The `gateway!` macro refers to everything through `$crate`, so an addon only
+// needs its own `napi`/`napi-derive`.
 pub use ice_rpc;
 pub use napi;
 pub use napi_derive;

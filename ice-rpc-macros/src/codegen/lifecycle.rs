@@ -41,15 +41,11 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         json_provider,
     } = input;
 
-    // Without the feature the enum has no `ProviderJson` variant, so the branch
-    // cannot exist — a `match` arm on a variant that is not declared does not
-    // compile.
+    // Without the feature the variant does not exist: the arm cannot compile.
     let json_provider_arm = if *json_provider {
         quote! {
             #mode_name::ProviderJson { dispatcher } => {
-                // The dispatcher was built by `provide_json()`: this arm only
-                // hands it over, so it names no JSON symbol and a binary that
-                // never hosts JSON links none of them.
+                // Hands the built dispatcher over; names no JSON symbol.
                 let Some(dispatcher) = dispatcher.take()
                 else {
                     ice_rpc::codegen::log::error!(
@@ -58,10 +54,8 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                     );
                     return false;
                 };
-                // Registered on the channel: the channel thread starts
-                // once every provider of the process is registered.
-                // The channel's publishers are sized from this declaration; being
-                // a property of the channel, it is recorded once here.
+                // Registered on the channel, whose publishers are sized from this
+                // declaration; the thread starts once every provider registered.
                 ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 if let Err(e) = ice_rpc::codegen::register_native_service(
                     #group_lit,
@@ -101,8 +95,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                                 return false;
                             }
 
-                            // Registered on the channel; the channel thread starts
-                            // in `initialize_all`, once every provider registered.
+                            // Registered: the thread starts in `initialize_all`.
                             let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
                             ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                             if let Err(e) = ice_rpc::codegen::register_native_service(

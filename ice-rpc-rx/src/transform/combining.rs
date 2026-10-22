@@ -90,8 +90,7 @@ where
         let mut this = self.project();
 
         loop {
-            // One `Complete` is synthesized when the **last** source ends, and
-            // the merge is over for good afterwards.
+            // One `Complete` when the last source ends; the merge is over after it.
             if *this.completed {
                 return Poll::Ready(None);
             }
@@ -100,8 +99,7 @@ where
                 return Poll::Ready(Some(Event::Complete));
             }
 
-            // Alternate the poll order: without it, a source that is always
-            // ready would starve the other one for as long as it produces.
+            // Alternate the poll order, or a ready source starves the other one.
             let left_first = *this.left_first;
             *this.left_first = !left_first;
 
@@ -122,14 +120,12 @@ where
                     Poll::Ready(Some(Event::Next(value))) => {
                         return Poll::Ready(Some(Event::Next(value)));
                     }
-                    // A terminal error is fatal for the whole merge: the other
-                    // source is dropped with the pipeline, as in RxJS.
+                    // A terminal error is fatal for the whole merge.
                     Poll::Ready(Some(Event::Error(error))) => {
                         *this.completed = true;
                         return Poll::Ready(Some(Event::Error(error)));
                     }
-                    // One source is over; the other may still produce, so the
-                    // merged stream does not end here.
+                    // One source is over; the other may still produce.
                     Poll::Ready(Some(Event::Complete)) | Poll::Ready(None) => {
                         if left {
                             *this.left_done = true;
@@ -141,8 +137,7 @@ where
                 }
             }
 
-            // Both sources ended during this pass: go back and emit the single
-            // `Complete` rather than report an end of stream.
+            // Both ended during this pass: go back and emit the single `Complete`.
             if *this.left_done && *this.right_done {
                 continue;
             }
@@ -238,8 +233,7 @@ impl<T, E> Observable<T, E> {
         T: Send + 'static,
         E: Send + 'static,
     {
-        // The right operand is normalized here: `Merge` only ever sees
-        // `Observable`s, whatever the caller handed in.
+        // The right operand is normalized: `Merge` only sees `Observable`s.
         Observable::from_stream(Merge::new(self, other.into_observable()))
     }
 }

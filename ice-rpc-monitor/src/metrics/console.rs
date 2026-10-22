@@ -85,8 +85,7 @@ pub(super) fn render(inner: &Inner) -> String {
                 Some(histogram) => describe_latency(histogram, LATENCY_BOUNDS),
                 None => "no response yet".to_owned(),
             };
-            // The numeric service id is dropped: the channel name just before it
-            // already identifies the service, and the id means nothing to a human.
+            // The numeric id is dropped: the channel name already identifies it.
             let _ = writeln!(out, " {channel} {method}: requests={count} {latency_text}");
         }
     }
@@ -97,9 +96,7 @@ pub(super) fn render(inner: &Inner) -> String {
         let alive = inner.node_states.get("alive").copied().unwrap_or(0);
         let dead = inner.node_states.get("dead").copied().unwrap_or(0);
         let total: i64 = inner.node_states.values().copied().sum();
-        // "services" counts the ice-rpc services present on the bus, one per
-        // observed channel — not the raw iceoryx2 entities, which are four per
-        // channel and carry no macro meaning.
+        // One per observed channel, not the four raw iceoryx2 entities per channel.
         let _ = writeln!(
             out,
             " network : nodes={total} (alive {alive}, dead {dead})  services={}",
@@ -107,8 +104,7 @@ pub(super) fn render(inner: &Inner) -> String {
         );
         if inner.shm_enabled {
             if inner.shm_segments == 0 {
-                // Metadata files exist, but no `.data` segment: the segments
-                // are not file-backed on this platform (e.g. Windows).
+                // No `.data` segment: not file-backed on this platform.
                 let _ = writeln!(out, " shm     : n/a (segments are not file-backed here)");
             } else {
                 let _ = writeln!(
@@ -119,8 +115,7 @@ pub(super) fn render(inner: &Inner) -> String {
                 );
             }
         }
-        // One line per emitting process (iceoryx2 node), bounded so a busy
-        // machine cannot push the frame past the terminal height.
+        // One line per node, bounded so a busy machine cannot overflow the frame.
         const MAX_NODES: usize = 5;
         for (index, (pid, sample)) in inner.processes.iter().enumerate() {
             if index >= MAX_NODES {

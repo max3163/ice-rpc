@@ -231,15 +231,13 @@ impl NodeJsBridge {
     /// when no call matches it (already answered or expired).
     pub fn resolve(&self, correlation_id_hex: &str, event: Value) -> Result<(), GatewayError> {
         let cid = parse_cid(correlation_id_hex)?;
-        // Normalized before the call is taken: a malformed envelope must leave
-        // the call open, not close it unanswered.
+        // Normalized before the call is taken: a malformed envelope leaves it open.
         let envelope = terminal_envelope(event)?;
         let sender = self
             .pending()
             .take(&cid)
             .ok_or_else(|| unknown_cid(correlation_id_hex))?;
-        // Best effort: a closed receiver only means the caller already gave up
-        // (deadline), which is not the answering side's problem.
+        // Best effort: a closed receiver only means the caller already gave up.
         let _ = sender.try_send(envelope);
         Ok(())
     }
@@ -267,8 +265,7 @@ fn next_envelope(event: Value) -> Result<Value, GatewayError> {
     let Value::Object(mut object) = event else {
         return Err(invalid_envelope("emitNodejsEvent expects `{ data }`"));
     };
-    // The event is owned here: `remove` moves the data into the envelope instead
-    // of cloning the whole subtree, which is the dominant cost on a large value.
+    // Owned here: `remove` moves the data instead of cloning the whole subtree.
     if object.remove("type").is_some() {
         return Err(invalid_envelope(REMOVED_ENVELOPE));
     }
@@ -301,8 +298,7 @@ fn terminal_envelope(event: Value) -> Result<Value, GatewayError> {
             ))
         };
     };
-    // Same as `next_envelope`: the envelope owns the value, so the payload is
-    // moved into the internal `{ type, data }` form, never cloned.
+    // Same: the payload is moved into `{ type, data }`, never cloned.
     if object.remove("type").is_some() {
         return Err(invalid_envelope(REMOVED_ENVELOPE));
     }
@@ -363,8 +359,7 @@ mod tests {
 
     fn sender() -> PendingSender {
         let (tx, rx) = ice_rpc::codegen::async_channel::unbounded::<Value>();
-        // The receiver is kept alive by leaking it: `insert` only needs a live
-        // sender, and a dropped receiver would turn every send into a no-op.
+        // Leaked on purpose: `insert` needs a live sender.
         Box::leak(Box::new(rx));
         tx
     }

@@ -351,15 +351,12 @@ mod tests {
         };
     }
 
-    // A provider that is also its own consumer: `get::<T>` must hand back the
-    // registered instance without ever building a proxy.
+    // A provider that is its own consumer: `get::<T>` returns the instance, no proxy.
     provider_mock!(EchoService, "LocatorEcho");
 
     impl ServiceConsumer for EchoService {
-        // `ServiceConsumer::consume_proxy` is a **static** constructor, so it
-        // cannot read a per-instance counter. The tests assert the observable
-        // property instead: a proxy built here would not be `Arc::ptr_eq` to the
-        // registered provider, which is a stronger check than a call count.
+        // A static constructor cannot read a per-instance counter: the tests check
+        // `Arc::ptr_eq` with the registered provider instead.
         fn consume_proxy() -> Arc<Self> {
             Arc::new(EchoService(MockState::default()))
         }
@@ -416,8 +413,7 @@ mod tests {
         assert_eq!(locator.service_count(), 1, "one name, one entry");
         assert!(locator.service_names().contains(&"LocatorEcho"));
 
-        // Fast-path 1: the registered provider, by type. Getting the very same
-        // instance back is itself the proof that no proxy was built.
+        // Fast-path 1: the same instance back proves no proxy was built.
         let fetched = pollster::block_on(locator.get::<EchoService>())
             .expect("a registered provider is returned");
         assert!(
@@ -469,16 +465,13 @@ mod tests {
         let locator = ServiceLocator::new_for_test();
         pollster::block_on(locator.register(Arc::new(NamesakeProvider(MockState::default()))));
 
-        // The name is registered, but the entry holds another concrete type: the
-        // lookup reports nothing rather than handing back a foreign instance.
+        // Registered under another type: `None` rather than a foreign instance.
         assert!(pollster::block_on(locator.get::<NamesakeConsumer>()).is_none());
     }
 
     #[test]
     fn initialize_all_orders_dependencies_and_reports_a_failure() {
-        // The only test that needs the process-wide locator: `initialize_all`
-        // starts the registered transport channels, which is global state a
-        // per-test instance would not exercise.
+        // `initialize_all` starts global transport channels: process-wide locator.
         let _guard = locator_lock().lock().unwrap_or_else(|e| e.into_inner());
         let locator = ServiceLocator::global();
 
@@ -574,8 +567,7 @@ mod tests {
 
     #[test]
     fn a_dependency_registered_by_another_process_is_external() {
-        // Only `First` is local; its dependency belongs to another process and
-        // must never hold the pass up.
+        // The dependency belongs to another process and must not hold the pass up.
         let names = ["LocatorFirst"];
         let deps = [vec!["LocatorSecond"]];
         assert_eq!(topological_order(&names, &deps), vec![0]);

@@ -78,8 +78,7 @@ impl CancellationToken {
     /// cancellation that lands after this point is either seen by the second read
     /// or wakes the registered waker.
     pub fn poll_cancelled(&self, cx: &mut Context<'_>) -> Poll<()> {
-        // The already-cancelled case needs no registration, and the token is
-        // polled on every poll of the future that waits on it.
+        // Already cancelled: no registration needed, the token is polled every time.
         if self.is_cancelled() {
             return Poll::Ready(());
         }
@@ -144,8 +143,7 @@ impl CancellationToken {
         if self.is_cancelled() {
             return Poll::Ready(());
         }
-        // The fast path: the waker is the one this task already registered, so
-        // the list cannot tell us anything the flag above did not.
+        // Fast path: the waker is the one this task already registered.
         if let Some(cached) = registered.as_ref()
             && cached.will_wake(cx.waker())
         {

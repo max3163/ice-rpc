@@ -142,8 +142,7 @@ where
     E: Send + 'static,
 {
     fn into_observable(self) -> Observable<T, E> {
-        // The future is created by the caller and polled once, on the first poll
-        // of the returned observable: the same laziness as `defer`.
+        // Created on the first poll of the observable: the same laziness as `defer`.
         let mut future = Some(self);
         defer(move || future.take().expect("the future is polled once"))
     }

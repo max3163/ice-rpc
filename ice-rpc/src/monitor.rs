@@ -37,10 +37,8 @@ pub use decode::{
     ClosureDecoder, Decoders, ServiceDecoder, decode_request, decode_response, decode_response_unit,
 };
 
-// The link-time registration surface: `#[service]` submits one entry per service
-// into `DECODERS` when the `monitoring` feature is on, and `Decoders::linked()`
-// reads the slice back. Both names are that feature's, so they are re-exported
-// under the same condition.
+// The link-time registration surface of `monitoring`: `DECODERS` and
+// `Decoders::linked()`.
 #[cfg(feature = "monitoring")]
 pub use decode::{DECODERS, DecoderRegistration};
 pub use inventory::{
@@ -48,8 +46,7 @@ pub use inventory::{
     list_services,
 };
 
-// Plumbing of the code generated with the `monitoring` feature: `render_value!`
-// resolves these names through `ice_rpc::monitor`, so they stay reachable here.
+// Plumbing of the generated `monitoring` code: `render_value!` resolves these names.
 #[doc(hidden)]
 pub use decode::{RenderValue, RenderViaDebug, RenderViaDisplay};
 

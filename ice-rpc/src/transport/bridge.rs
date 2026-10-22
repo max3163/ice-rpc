@@ -72,8 +72,7 @@ pin_project_lite::pin_project! {
     struct WireFolding<T, E> {
         #[pin]
         source: Observable<T, E>,
-        // Event read one step ahead while looking for the `Complete` that closes
-        // a single-sample response.
+        // Look-ahead: the event read while seeking the `Complete` of a sample.
         pending: Option<Event<T, E>>,
     }
 }
@@ -100,10 +99,8 @@ impl<T, E> futures_lite::Stream for WireFolding<T, E> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // The event to emit: the one read one step ahead by the previous call, or
-        // the next event of the source. Both go through the fold below, so a value
-        // is never emitted without its look-ahead — otherwise the last `Next` of a
-        // stream would never meet its `Complete`.
+        // The look-ahead event or the next one; both go through the fold, so a
+        // value never separates from its `Complete`.
         let event = match this.pending.take() {
             Some(event) => event,
             None => match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
@@ -115,8 +112,7 @@ impl<T, E> futures_lite::Stream for WireFolding<T, E> {
 
         match event {
             Event::Next(value) => {
-                // Best-effort peek with the same context: when the `Complete` is
-                // already available, the pair is one sample.
+                // The `Complete` may already be available: the pair is one sample.
                 match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                     Poll::Ready(Some(Event::Complete)) => {
                         Poll::Ready(Some(WireEvent::CompleteWith(value)))
@@ -171,26 +167,21 @@ where
         >,
 {
     let mut scratch = AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY);
-    // Pinned on the stack: `Observable` is not `Unpin`, and this costs no
-    // allocation on the response path.
+    // Pinned on the stack: `Observable` is not `Unpin`, and nothing is allocated.
     let mut stream = std::pin::pin!(WireFolding::new(observable));
 
     loop {
-        // Yields here when the source is silent: the executor runs the other
-        // in-flight calls of the same channel meanwhile.
+        // Yields while the source is silent so other calls of the channel can run.
         let wire = match stream.as_mut().next_wire().await {
             Some(wire) => wire,
             // The source is exhausted, or closed abruptly.
             None => return,
         };
-        // The writer appends: the buffer must be emptied before each sample, and
-        // it comes back from the call, so its allocation is reused. `AlignedVec`
-        // is a pointer, a length and a capacity: passing it by value costs
-        // nothing, and the encoded bytes reach the emitter without a copy.
+        // The buffer is emptied and reused across samples; `AlignedVec` moves
+        // without copying the encoded bytes.
         scratch.clear();
 
-        // Two framings: a bare `RpcError` for a technical error, the service's
-        // `WireEvent<T, E>` for everything else.
+        // Bare `RpcError` for a technical error, `WireEvent<T, E>` otherwise.
         let framed: (
             EventKind,
             Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error>,
@@ -208,8 +199,7 @@ where
                 scratch = bytes;
             }
             Err(e) => {
-                // The stream must end here: a response that cannot be encoded
-                // would otherwise leave the call unanswered.
+                // A response that cannot be encoded must end the stream.
                 log::error!("[bridge] response serialization failed: {e:?}");
                 return;
             }
@@ -466,8 +456,7 @@ pub fn reject_json_dispatch(
     emitter: &mut dyn ResponseEmitter,
 ) {
     log::error!("[{service}::{method}] JSON dispatch failed: {message}");
-    // The failure is the provider's, not the framing: reported as an internal
-    // error rather than dropped.
+    // The provider's failure, not the framing: an internal error, not dropped.
     let _ = emit_rpc_error(RpcError::Internal(message), emitter);
 }
 
@@ -562,8 +551,7 @@ mod tests {
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].0, EventKind::RpcError);
 
-        // Reading it as the service's `WireEvent` must fail: that is exactly
-        // what lets a provider answer a call for a method it does not have.
+        // That failure is what lets a provider answer an unknown method.
         assert!(
             rkyv::from_bytes::<WireEvent<i32, String>, rkyv::rancor::Error>(&samples[0].1).is_err()
         );

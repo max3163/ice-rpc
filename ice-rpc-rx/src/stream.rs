@@ -66,20 +66,17 @@ pin_project_lite::pin_project! {
     pub struct Observable<T, E> {
         #[pin]
         inner: StreamInner<T, E>,
-        // Set as soon as a terminal event (`Complete` / `Error`) has been
-        // delivered, so that a later channel close is reported as a normal end
-        // (`None` from `next`) instead of an abrupt one.
+        // Set once a terminal was delivered, so a later channel close reads as a
+        // normal end (`None`) instead of an abrupt one.
         terminated: bool,
     }
 
-    // Explicit rather than left to the drop of the field: the cleanup is the
-    // release point of a call, so it must not depend on how the projection
-    // macro destroys the pinned enum.
+    // Explicit rather than left to `Drop`: the cleanup is the release point of a
+    // call and must not depend on how the projection macro destroys the enum.
     impl<T, E> PinnedDrop for Observable<T, E> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            // Read before the cleanup is taken: an answered call and an abandoned
-            // one are not the same drop.
+            // Read before the cleanup is taken: answered and abandoned differ.
             let terminated = *this.terminated;
             if let StreamInnerProj::Channel { _cleanup, .. } = this.inner.project()
                 && let Some(action) = _cleanup.take() {
@@ -446,13 +443,10 @@ where
         .await
         {
             Some(Event::Next(v)) => last = Some(v),
-            // A terminal error wins even when a value was already read: the
-            // stream failed. `collect` behaves the same way — it discards what
-            // it gathered — and returning the last value here would report a
-            // failure as a success.
+            // A terminal error wins even after a value was read: `collect` also
+            // discards what it gathered.
             Some(Event::Error(e)) => return Err(e),
-            // `Empty` is the artefact for "ended carrying nothing", the same
-            // answer `first_event` gives, so the two terminals stay symmetric.
+            // `Empty` means "ended carrying nothing", symmetric with `first_event`.
             Some(Event::Complete) | None => return last.ok_or(ObservableError::Empty),
         }
     }
@@ -503,9 +497,8 @@ impl<T, E> futures_lite::Stream for Observable<T, E> {
             }
         };
 
-        // Keep `terminated` in sync for the callers that poll the stream
-        // directly — an operator pipeline and the `Subject` relay both wrap it
-        // as a `futures_lite::Stream` — before they fall back to `recv`/`next`.
+        // Keep `terminated` in sync for callers that poll the stream directly
+        // (operators and the `Subject` relay) before they fall back to `recv`.
         if let Poll::Ready(Some(event)) = &polled
             && event.is_terminal()
         {

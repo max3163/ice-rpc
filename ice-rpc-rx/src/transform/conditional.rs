@@ -20,8 +20,8 @@ pin_project_lite::pin_project! {
     pub struct TakeUntil<S, U, T, E> {
         #[pin]
         source: S,
-        // The notifier, polled first and dropped as soon as it is over: one that
-        // completes without a value never stops the source (RxJS).
+        // Polled first, dropped once over: a notifier completing without a value
+        // stops nothing.
         #[pin]
         notifier: Option<Observable<U, E>>,
         // The notifier fired: the source is over.
@@ -56,8 +56,7 @@ where
             return Poll::Ready(None);
         }
 
-        // The notifier is polled first, so a notifier ready at the same instant
-        // as a source value wins — the rule RxJS applies since v7.
+        // Polled first: a notifier ready at the same instant as a value wins.
         if this.notifier.is_some() {
             let polled = {
                 let notifier = this.notifier.as_mut().as_pin_mut().expect("notifier");
@@ -190,8 +189,7 @@ impl<T, E> Observable<T, E> {
         T: Send + 'static,
         E: Send + 'static,
     {
-        // The notifier is normalized here: `TakeUntil` only ever sees an
-        // `Observable`, whatever the caller handed in.
+        // The notifier is normalized: `TakeUntil` only sees an `Observable`.
         Observable::from_stream(TakeUntil::new(self, notifier.into_observable()))
     }
 

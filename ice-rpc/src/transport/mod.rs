@@ -42,8 +42,7 @@ pub use json_host::{RequestToValue, ValueToResponse, json_host_handler, json_hos
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
-// The transport reads its tunables through these names, so `tuning.rs` stays the
-// only place where a value is defined and documented.
+// Tunables are read through these names so `tuning.rs` stays the single source.
 use tuning::{
     CONSUMER_WAIT_TIMEOUT, IDLE_SPINS, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP,
     PROVIDER_WAIT_DEFAULT, PUBLISH_RETRY_SLEEP, PUBLISH_SPIN_ATTEMPTS, REQUEST_NOTIFY_SUFFIX,
@@ -51,9 +50,7 @@ use tuning::{
     SIGNAL_CHECK_SAMPLES, WAITSET_DEADLINE,
 };
 
-// The generated code names this default when `#[service]` omits `max_slice_len`,
-// and the direct entry points (`native_call`, `spawn_native_service`) fall back to
-// it. Re-exported so the value is defined in `tuning.rs` alone.
+// Re-exported so the default is defined in `tuning.rs` alone.
 pub use tuning::DEFAULT_MAX_SLICE_LEN;
 
 pub use tuning::PAYLOAD_ALIGNMENT;
@@ -260,8 +257,7 @@ pub fn sweep_orphan_shm_markers() -> usize {
     let before = names.len();
 
     for name in &names {
-        // The answer is deliberately ignored: the observable effect wanted here
-        // is the unlink of an orphan, which `does_exist` performs itself.
+        // Ignored on purpose: the wanted effect is the unlink done by `does_exist`.
         let _ = SharedMemory::does_exist(name);
     }
 
@@ -360,8 +356,7 @@ mod tests {
         declare_channel_max_slice_len("UnitTestSliceDeclared", 4096);
         assert_eq!(channel_max_slice_len("UnitTestSliceDeclared"), 4096);
 
-        // The first declaration wins: a later, different value is ignored rather
-        // than silently changing the slice length under the running publishers.
+        // The first declaration wins: a different later value is ignored.
         declare_channel_max_slice_len("UnitTestSliceDeclared", 8192);
         assert_eq!(channel_max_slice_len("UnitTestSliceDeclared"), 4096);
 
@@ -401,8 +396,7 @@ mod tests {
 
     #[test]
     fn releasing_the_process_ports_is_safe_when_none_was_opened() {
-        // Best-effort by contract: it reports what it dropped, and nothing here
-        // depends on the number.
+        // Best-effort: nothing here depends on the reported count.
         let _ = release_process_ports();
     }
 }

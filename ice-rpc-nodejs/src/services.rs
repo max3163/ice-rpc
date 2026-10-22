@@ -70,8 +70,7 @@ pub fn register_service(
     table: &'static [GatewayService],
     service_name: &str,
 ) -> Result<(), GatewayError> {
-    // The name is validated first: "unknown service" is more informative than
-    // "wrong phase", and it keeps the answer independent of the current phase.
+    // Name first: "unknown service" is more informative than "wrong phase".
     if !is_known_service(table, service_name) {
         return Err(unknown_service_error(table, service_name));
     }

@@ -64,21 +64,17 @@ pub fn register_service_impl(
 pub fn init_impl(callback: Function<'_, Value, Unknown<'static>>) -> napi::Result<()> {
     log::info!("Initializing the NodeJS gateway...");
 
-    // Built (and possibly rejected) before any state change, so a failed
-    // `init` leaves the previous run untouched.
+    // Built before any state change, so a failed `init` leaves the previous run intact.
     let bridge = std::sync::Arc::new(bridge::NodeJsBridge::new(callback)?);
 
-    // Reserve the transition BEFORE creating the guard: dropping a
-    // `ShutdownGuard` cancels the ice-rpc tokens, which must not happen to a
-    // gateway that is already running.
+    // Reserve the transition before the guard: dropping a `ShutdownGuard` cancels
+    // the tokens of a gateway that is already running.
     state::begin_start().map_err(napi::Error::from)?;
     let guard = ice_rpc::codegen::init_without_ctrl_c();
     state::complete_start(bridge, guard);
 
-    // Registered once: the host reads the *running* bridge from the state on
-    // every call, so a restart swaps it without re-registering. The generated
-    // dispatcher runs on the transport dispatch thread, which then reads the
-    // call's events until JavaScript closes it.
+    // Registered once: the host reads the running bridge from the state on every
+    // call, so a restart swaps it without re-registering.
     ice_rpc::json::set_json_dispatcher(std::sync::Arc::new(bridge::GatewayJsonDispatcher));
 
     log::info!(
@@ -163,8 +159,7 @@ impl napi::Task for CallServiceStreamTask {
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        // The array is handed over as a JSON array: `JsonValue` already knows how
-        // to convert it, so the values are not re-encoded one by one.
+        // Handed over as a JSON array, without re-encoding each value.
         output
             .map(|values| JsonValue(Value::Array(values)))
             .map_err(napi::Error::from)
@@ -197,8 +192,7 @@ impl napi::Task for ShutdownTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // Take the guard out first: the gateway is no longer running, and
-        // releasing the resources must not race a new `init`.
+        // Taken first: releasing the resources must not race a new `init`.
         let guard = state::stop();
         ice_rpc::rt::block_on(ice_rpc::codegen::shutdown_and_release());
         drop(guard);

@@ -144,8 +144,7 @@ fn assert_golden(
         )
     });
 
-    // A checkout with `core.autocrlf=true` rewrites the file's line endings;
-    // normalizing them keeps the comparison about the generated code alone.
+    // Normalize line endings: the comparison is about the generated code alone.
     let expected = expected.replace("\r\n", "\n");
 
     if expected == rendered {
@@ -205,18 +204,14 @@ fn the_pinned_service_carries_every_shape_in_every_feature_set() {
 fn the_default_naming_of_a_bare_trait_is_pinned() {
     let rendered = render(NONE, quote! {}, CALCULATOR());
 
-    // The logical name falls back to the trait name lowercased. A trait named
-    // `Calculator` only ever produces this literal if the fallback ran — the same
-    // string names the service on the bus (`SERVICE_NAME`) and its channel (the
-    // group).
+    // The logical name falls back to the trait name lowercased; only then does this
+    // literal appear, and it names both the service and its channel.
     assert!(
         rendered.contains("\"calculator\""),
         "the logical name must fall back to the lowercased trait name: {rendered}"
     );
-    // The version falls back to 1, in the identity the client and the provider
-    // share. Compared whitespace-free and without the call's closing tokens:
-    // `prettyplease` decides where to break the call and whether it needs a
-    // trailing comma, but it cannot invent the `u16` suffix nor the version.
+    // The version falls back to 1, in the identity client and provider share;
+    // compared whitespace-free, since `prettyplease` chooses the wrapping.
     assert!(
         compact(&rendered).contains("ice_rpc::codegen::service_id_of(\"calculator\"),1u16"),
         "the identity must be built from the fallback name and version: {rendered}"
@@ -259,8 +254,7 @@ fn every_optional_block_follows_its_own_flag() {
                 json,
                 "the host converters must follow `json`, in {features}"
             );
-            // The host mode is a whole variant and constructor, not only a
-            // pair of converters: they cannot be split from each other.
+            // The host mode is a whole variant: it cannot be split from the converters.
             assert_eq!(
                 rendered.contains("fn provide_json"),
                 json,
@@ -297,8 +291,7 @@ fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
         2,
         "the twin is generated on both the client and the proxy: {with}"
     );
-    // The proxy twin reads the mode lock blocking instead of awaiting it, and
-    // the client twin publishes through the already-synchronous call path.
+    // The twin reads the mode lock blocking; the client twin calls synchronously.
     assert!(
         with.contains("read_blocking"),
         "the proxy twin must read the mode without an await: {with}"

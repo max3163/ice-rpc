@@ -160,9 +160,8 @@ impl<T, E> Subject<T, E> {
         T: Clone,
         E: Clone,
     {
-        // Held for the whole call: no broadcast can slip between the snapshot
-        // below and the registration at the end, so a late subscriber never
-        // misses the value the replay promised it.
+        // Locked for the whole call: no broadcast can slip in before the
+        // registration, so a late subscriber never misses a replayed value.
         let _emit = self.emit.lock().await;
 
         // Snapshot under a short lock — no `await` while `state` is held.
@@ -171,10 +170,8 @@ impl<T, E> Subject<T, E> {
             (state.replay.clone(), state.terminal_event())
         };
 
-        // An unbounded queue: the replay is pushed before the consumer starts
-        // polling, and a live emission must never wait for a subscriber — a
-        // bounded channel used to deadlock here on `replay(n)` for `n` above its
-        // capacity, and used to stall the whole subject on a slow subscriber.
+        // Unbounded: a bounded channel used to deadlock `replay(n)` and stall the
+        // subject on a slow subscriber.
         let (tx, rx) = crate::unbounded_channel::<T, E>();
         for value in replayed {
             let _ = tx.send_next(value).await;
@@ -185,8 +182,7 @@ impl<T, E> Subject<T, E> {
 
         {
             let mut state = self.state.lock().await;
-            // A terminated subject never emits again: registering would only
-            // leave a sender that is never used.
+            // Terminated: registering would leave a sender that is never used.
             if !state.is_terminated() {
                 state.subscribers.push(tx);
             }
@@ -221,8 +217,7 @@ impl<T, E> Subject<T, E> {
             state.retain_live();
             state.subscribers.clone()
         };
-        // The sends happen outside `state`: a slow subscriber no longer blocks
-        // `subscribe`, `complete` or any other state access.
+        // Sends happen outside `state`, so a slow subscriber blocks nothing else.
         for tx in &subscribers {
             let _ = tx.send_next(value.clone()).await;
         }
@@ -339,8 +334,7 @@ mod tests {
             let _rx = pollster::block_on(subject.subscribe());
         }
 
-        // Broadcasting to a dead subscriber prunes it without panicking, and
-        // later subscribers still receive events.
+        // A dead subscriber is pruned without panicking; later ones still receive.
         pollster::block_on(subject.next(1));
 
         let mut rx = pollster::block_on(subject.subscribe());
@@ -366,9 +360,8 @@ mod tests {
             pollster::block_on(rx.recv()).unwrap(),
             Event::Complete
         ));
-        // Dropping the subject closes the channel: the stream is really over
-        // (a `recv` would otherwise park on the sender still held by the
-        // subscribers list).
+        // Closing the channel really ends the stream (a `recv` would otherwise
+        // park on a sender still held by the subscribers list).
         drop(subject);
         assert!(pollster::block_on(rx.recv()).is_err());
     }
@@ -383,8 +376,7 @@ mod tests {
             pollster::block_on(late.recv()).unwrap(),
             Event::Complete
         ));
-        // A terminated subject does not register subscribers, so the channel is
-        // already closed behind the replayed terminal event.
+        // Terminated: nothing registered, the channel is closed after the replay.
         assert!(pollster::block_on(late.recv()).is_err());
     }
 
@@ -452,10 +444,8 @@ mod tests {
             pollster::block_on(subject.next(value));
         }
 
-        // The whole replay must fit in the channel: subscribing cannot suspend
-        // waiting for room nobody drains yet. `poll_once` yields `None` when the
-        // future is not ready on its first poll — the old deadlock, asserted
-        // without any timer, so it holds under the `tokio` facade too.
+        // The replay must fit without suspending: `poll_once` yields `None` if the
+        // future is not ready at first poll — the old deadlock, timer-free.
         let mut rx = pollster::block_on(futures_lite::future::poll_once(subject.subscribe()))
             .expect("subscribe must complete on its first poll");
 

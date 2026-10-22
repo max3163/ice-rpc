@@ -123,8 +123,7 @@ impl TraceRecord<'_> {
     fn to_json(&self) -> String {
         let mut map = Map::new();
         map.insert("call_id".to_owned(), json!(self.call_id));
-        // `null` rather than absent: a consumer can then tell "no trace" from
-        // "field the writer does not know about".
+        // `null` rather than absent, so "no trace" differs from an unknown field.
         map.insert("trace_id".to_owned(), json!(self.trace_id));
         map.insert("parent_span_id".to_owned(), json!(self.parent_span_id));
         map.insert("channel".to_owned(), json!(self.channel));
@@ -189,8 +188,7 @@ impl TraceSink {
     }
 
     fn new(writer: Box<dyn Write + Send>, capacity: usize, format: TraceFormat) -> Self {
-        // Line-buffered: every record becomes visible as soon as it is written,
-        // which is what makes the stream tail-able.
+        // Line-buffered: every record is visible as soon as written, hence tail-able.
         let mut writer = LineWriter::new(writer);
         Self::spawn(capacity, format, move |line| {
             // A sink failure must not stall the producer: keep draining.
@@ -244,9 +242,8 @@ impl TraceSink {
 
 impl Drop for TraceSink {
     fn drop(&mut self) {
-        // Closing the channel *before* joining terminates the writer loop, which
-        // then flushes. Joining while the sender is still alive would deadlock:
-        // struct fields are only dropped after this body runs.
+        // Closing the channel before joining terminates the writer, which flushes;
+        // joining with the sender alive would deadlock.
         drop(self.sender.take());
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -373,8 +370,7 @@ mod tests {
         record.trace_id = None;
 
         let json = record.to_json();
-        // A `null` rather than an absent key: the consumer can tell "no trace"
-        // from "a field the writer does not know about".
+        // `null` rather than an absent key, so "no trace" is distinguishable.
         assert!(json.contains("\"trace_id\":null"), "{json}");
 
         let human = record.to_human();
@@ -421,8 +417,7 @@ mod tests {
     fn a_saturated_sink_drops_records_instead_of_blocking() {
         let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        // Capacity one, and a writer that blocks on its first record: the queue
-        // is then full, and the next record must be dropped, never block.
+        // Capacity one with a blocked writer: the next record must be dropped.
         let sink = TraceSink::spawn(1, TraceFormat::Human, move |_line| {
             let _ = started_tx.send(());
             let _ = release_rx.recv();

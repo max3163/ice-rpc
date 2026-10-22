@@ -260,9 +260,8 @@ impl CallContext {
             method,
             received_at_ns: header.timestamp_ns,
             trace: header.trace(),
-            // The receiver mints its **own** span: deriving it from the caller's
-            // correlation id would make it identical to the caller's span, which
-            // W3C forbids.
+            // The receiver mints its own span: reusing the caller's would repeat
+            // it, which W3C forbids.
             span_id: next_span_id(),
         }
     }
@@ -403,9 +402,8 @@ impl CallContext {
     #[inline]
     pub fn cancellation() -> Option<CancellationToken> {
         CURRENT_CANCEL.with(|slot| {
-            // `Cell` exposes no shared borrow: take the value out, clone it, put
-            // it back. No other code runs in between, so the slot is never
-            // observed empty — and there is no borrow to violate, hence no panic.
+            // `Cell` has no shared borrow: take, clone, put back. Nothing runs in
+            // between, so the slot is never seen empty.
             let current = slot.take();
             let cloned = current.clone();
             slot.set(current);
@@ -581,8 +579,7 @@ impl Future for CallScope {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
-        // Installed for this poll only: the next task polled on this thread must
-        // not inherit it.
+        // Installed for this poll only: the next task must not inherit it.
         let _ambient = this.ctx.enter_ambient();
         #[cfg(feature = "tracing")]
         let _span = this.span.enter();
@@ -776,8 +773,7 @@ mod tests {
         assert_ne!(a.span_id(), 0);
         assert_ne!(b.span_id(), 0);
 
-        // The caller's span travels as the W3C `parent-id` (the trace context),
-        // while `span_id` on the header is the emitter's own span.
+        // The caller's span is the W3C `parent-id`; `span_id` is the emitter's own.
         let caller_span = a.span_id();
         let header = RpcHeader::request("c", 1, 1)
             .with_trace(TraceContext {
@@ -832,8 +828,7 @@ mod tests {
         {
             let inner = CancellationToken::new();
             let _inner_scope = install_call_cancellation(inner.clone());
-            // Cancelling the inner token is what proves the slot holds it, and
-            // `CancellationToken` needs no `PartialEq` for that.
+            // Cancelling the inner token proves the slot holds it.
             inner.cancel();
             assert!(
                 CallContext::cancellation().unwrap().is_cancelled(),
@@ -999,8 +994,7 @@ mod tests {
         let recorder = Arc::new(SpanRecorder::default());
         let dispatch = tracing::Dispatch::new(Arc::clone(&recorder));
 
-        // Built inside the dispatcher: the span of a call is created when the task
-        // is built, not when it is polled.
+        // Built inside the dispatcher: the span exists when the task is built.
         tracing::dispatcher::with_default(&dispatch, || {
             let header = RpcHeader::request("ping", 7, 1);
             let mut task = call_scoped(CallContext::new(&header, "Ping", "ping"), yields_once());

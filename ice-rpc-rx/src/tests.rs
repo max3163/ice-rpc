@@ -366,8 +366,7 @@ fn of_returns_a_channel_free_observable() {
 
 #[test]
 fn a_pipeline_stays_one_observable_type() {
-    // An operator returns the same `Observable` type as its source, so a
-    // pipeline can be returned by a service method as-is: no conversion step.
+    // Same `Observable` type as the source: a pipeline needs no conversion step.
     let stream: crate::Observable<i32, Infallible> = from([1, 2, 3]).map(|v| v * 2);
 
     let events = pollster::block_on(drain(stream));

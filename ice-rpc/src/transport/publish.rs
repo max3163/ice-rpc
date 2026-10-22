@@ -53,8 +53,7 @@ pub(super) fn publish_until_delivered(
             return Ok(());
         }
 
-        // A subscriber is connected but did not take the sample: its buffer is
-        // full, which is backpressure rather than a missing peer.
+        // Subscriber connected but buffer full: backpressure, not a missing peer.
         if Instant::now() >= deadline {
             return Err(RpcError::TransportError(
                 "delivery refused: the subscriber buffer stayed full".to_string(),
@@ -158,8 +157,7 @@ mod tests {
         let channel = format!("UnitPublish{}", std::process::id());
         let service = open_service(&node, &channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)
             .expect("the channel is created");
-        // The builder default is one byte, so the declared slice length has to be
-        // requested explicitly — exactly what the consumer port does.
+        // The builder default is one byte: the slice length must be requested.
         let publisher = service
             .publisher_builder()
             .initial_max_slice_len(DEFAULT_MAX_SLICE_LEN)
@@ -170,8 +168,7 @@ mod tests {
         // Nobody is attached: the sample is not delivered, which is not an error.
         assert!(!try_publish(&publisher, header, b"data").expect("publish a sample"));
 
-        // A zero-length payload still travels as a sample: it is the placeholder
-        // byte that makes this branch different from the one above.
+        // A zero-length payload still travels as a placeholder byte.
         assert!(!try_publish(&publisher, header, b"").expect("publish an empty sample"));
 
         // A subscriber takes it, so the same call now reports a delivery.

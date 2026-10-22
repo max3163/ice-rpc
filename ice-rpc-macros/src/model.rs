@@ -78,8 +78,7 @@ impl syn::parse::Parse for ServiceAttr {
             } else {
                 let ident: Ident = input.parse()?;
                 if ident == "blocking" {
-                    // A bare flag: no `= value`. The loop below still consumes the
-                    // separating comma, so `#[service("S", blocking)]` is accepted.
+                    // A bare flag: no `= value`, but the separating comma is consumed.
                     blocking = true;
                 } else if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
@@ -93,8 +92,7 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     let value = lit.base10_parse::<usize>()?;
-                    // A slice of 0 elements cannot carry an RPC payload, and
-                    // iceoryx2 refuses it: reject it here rather than at runtime.
+                    // A slice of 0 cannot carry a payload and iceoryx2 refuses it.
                     if value == 0 {
                         return Err(syn::Error::new(
                             lit.span(),
@@ -153,8 +151,7 @@ impl NameKind {
 
     /// Length limit, shared with the wire framing.
     const fn max_len(self) -> usize {
-        // A group becomes part of the iceoryx2 service names, so it obeys the
-        // same limit as a service name.
+        // Part of the iceoryx2 service name: same limit as a service name.
         SERVICE_NAME_LEN
     }
 }
@@ -334,17 +331,12 @@ impl ServiceModel {
             }
         }
 
-        // The signature *is* the marker: `async fn f(..);` is a one-way
-        // notification (`()` returned, no response ever published), and any
-        // declared return type must be an `Observable<T, E>`. A method meant to
-        // answer has a body that produces a value, so it cannot silently compile
-        // without its return type — the two cases cannot be confused by mistake.
+        // The signature is the marker: no return type means one-way; anything else
+        // must be an `Observable<T, E>`, so the two cases cannot be confused.
         let (oneway, output_type, ok_type, err_type) = match &method.sig.output {
             syn::ReturnType::Type(_, ty) => {
                 let output_type = (**ty).clone();
-                // `-> ()` is the one shape a developer writes *thinking* it means
-                // "nothing comes back". It is rejected with the alternative that
-                // does: drop the return type, or answer `Observable<(), E>`.
+                // `-> ()` is rejected with the alternative that works.
                 if is_unit_type(&output_type) {
                     return Err(syn::Error::new_spanned(
                         &method.sig.output,
@@ -356,8 +348,7 @@ impl ServiceModel {
                 let (ok_type, err_type) = extract_rpc_result_types(&output_type)?;
                 (false, output_type, (*ok_type).clone(), (*err_type).clone())
             }
-            // No return type: nothing is answered. The three types are unit so
-            // the generators that only describe the *request* can stay generic.
+            // No return type: nothing is answered; unit types keep generators generic.
             syn::ReturnType::Default => (
                 true,
                 syn::parse_quote! { () },
@@ -504,8 +495,7 @@ mod tests {
         );
 
         assert!(model.methods[0].oneway, "no return type: one-way");
-        // The untyped fields are unit so the generators that only describe the
-        // request can stay generic; nothing renders them for a one-way method.
+        // Unit types keep request-only generators generic; nothing renders them.
         assert_eq!(model.methods[0].ok_type.to_token_stream_string(), "()");
         assert_eq!(model.methods[0].err_type.to_token_stream_string(), "()");
         assert!(!model.methods[1].oneway, "an Observable answers");

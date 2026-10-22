@@ -46,8 +46,8 @@ impl LiveConsole {
             columns: terminal_columns(),
         };
         if console.active {
-            // Alternate screen + hidden cursor: the caller's scrollback is left
-            // untouched and restored by `leave`.
+            // Alternate screen + hidden cursor: the scrollback is untouched and
+            // restored by `leave`.
             console.write_raw("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
         }
         console
@@ -270,9 +270,8 @@ fn fit_frame(frame: &str, max_lines: usize, max_width: usize) -> String {
         return clamp_frame(metrics, max_lines);
     }
 
-    // The metrics are the primary view: keep them whole and give the messages the
-    // leftover lines. Only when the metrics themselves overflow the screen are
-    // they trimmed — head and tail kept — to leave a share for the messages.
+    // The metrics are the primary view: they keep their lines, the messages get the
+    // rest; an overflowing block is trimmed head and tail.
     let metrics_lines = metrics.lines().count();
     let reserved = if metrics_lines + 2 <= max_lines {
         0
@@ -385,8 +384,7 @@ mod tests {
     #[test]
     fn a_disabled_console_never_switches_screen() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // Disabled is disabled whatever stdout is (TTY or pipe): the live mode
-        // must stay off.
+        // Disabled is disabled whatever stdout is: the live mode must stay off.
         let console = LiveConsole::new(false);
         assert!(!console.is_active());
     }
@@ -394,12 +392,8 @@ mod tests {
     #[test]
     fn the_live_mode_needs_a_terminal_even_when_requested() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // The live mode is opt-in *and* requires a terminal. Whether stdout is a
-        // TTY depends on how the tests are launched: `cargo test` in a terminal
-        // leaves fd 1 attached to it (libtest only captures the output at the
-        // application level, it does not detach the descriptor), whereas a piped
-        // or CI run has none. The two must agree — requested but no terminal
-        // means the frames are appended instead of redrawn in place.
+        // Opt-in and a terminal are both required; requested without one, frames are
+        // appended instead of redrawn in place.
         let mut console = LiveConsole::new(true);
         assert_eq!(console.is_active(), std::io::stdout().is_terminal());
         // Restore the terminal so an active console leaves no escape codes behind.
@@ -425,8 +419,7 @@ mod tests {
 
         set_env("LINES", "42");
         assert_eq!(terminal_lines(), 42);
-        // A frame taller than the screen is worse than no frame at all, so an
-        // unusable value falls back to the conservative default.
+        // A frame taller than the screen falls back to the conservative default.
         set_env("LINES", "4");
         assert_eq!(terminal_lines(), 24);
         set_env("LINES", "not-a-number");
@@ -473,10 +466,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("COLUMNS").ok();
 
-        // `COLUMNS` is only a fallback: when stdout is a terminal the console is
-        // asked directly and the environment value is deliberately ignored.
-        // Whether stdout is a TTY depends on how the tests are launched, so the
-        // expectation follows rather than assuming a piped harness.
+        // `COLUMNS` is only a fallback: with a terminal the console is asked directly.
         let tty = std::io::stdout().is_terminal();
 
         set_env("COLUMNS", "100");
@@ -487,9 +477,7 @@ mod tests {
             assert_eq!(terminal_columns(), 100);
         }
 
-        // Too narrow to be trusted: with a console to ask, its real width wins;
-        // with none (a piped or CI run) the width is treated as unbounded, so
-        // nothing is truncated on a guess.
+        // Too narrow to trust: the console width wins, else treat it as unbounded.
         set_env("COLUMNS", "5");
         if tty {
             let console = console_columns().expect("a terminal answers TIOCGWINSZ");
@@ -506,8 +494,8 @@ mod tests {
 
     #[test]
     fn the_metrics_tail_is_kept_when_messages_are_shown() {
-        // A tall metrics block whose distinctive line (the node inventory) is at
-        // the very end, then one message.
+        // A tall metrics block whose distinctive line sits at the very end, then one
+        // message.
         let mut metrics: String = (0..40).map(|index| format!("metric {index}\n")).collect();
         metrics.push_str("network : nodes=3 (alive 3, dead 0)  services=5\n");
         let mut frame = metrics;

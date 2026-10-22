@@ -73,10 +73,8 @@
 //! their treatment of the terminals can be compared, and `tests.rs`, which keeps
 //! the pipelines that cross several categories.
 
-// One module per ReactiveX category. Each holds both the poll-based combinator
-// and the inherent method that exposes it on `Observable`, so adding an
-// operator touches one file and never this one. The operator *types* stay
-// private: they never appear in a public signature.
+// One module per ReactiveX category, each holding the combinator and its inherent
+// method, so adding an operator touches one file. The operator types stay private.
 mod combining;
 mod conditional;
 mod error_handling;
@@ -85,9 +83,8 @@ mod terminals;
 mod transforming;
 mod utility;
 
-// A factory-based retry cannot be an inherent method: it re-runs the *source*
-// instead of wrapping the stream it was called on, and an `Observable` is
-// single-subscription. It is therefore a free function of the crate.
+// `retry_with` is a free function: it re-runs the source, which an inherent method
+// on a single-subscription `Observable` cannot do.
 pub use error_handling::{RetryPolicy, retry_with};
 
 #[cfg(test)]

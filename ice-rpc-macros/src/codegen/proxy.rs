@@ -63,12 +63,9 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         json_provider_methods,
     } = input;
 
-    // The Node.js mode is a whole variant and constructor, not a flag: without
-    // the feature the proxy must not advertise a mode it cannot serve.
-    //
-    // The variant carries the **already built** dispatcher, opaque here: `init()`
-    // only hands it to the transport, so no JSON symbol is reachable from the
-    // lifecycle code and a binary that never hosts JSON links none of it.
+    // A whole variant, not a flag: without the feature the proxy must not advertise
+    // a mode it cannot serve. It carries the built dispatcher, opaque here, so no
+    // JSON symbol is reachable from the lifecycle code.
     let json_variant = if *json_provider {
         quote! {
             ProviderJson {
@@ -79,8 +76,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         quote! {}
     };
 
-    // The variant and the constructor are unused in a crate that does not link
-    // the bridge, and the proxy is `pub`: nothing else silences them.
+    // Unused when the bridge is not linked, and the proxy is `pub`.
     let json_allow = if *json_provider {
         quote! { #[allow(dead_code)] }
     } else {
@@ -171,9 +167,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             }
 
             #visibility fn consume() -> std::sync::Arc<Self> {
-                // The channel's publishers are sized from this declaration; being
-                // a property of the channel, it is recorded once here rather than
-                // carried by every call.
+                // The channel's publishers are sized from this one declaration.
                 ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 std::sync::Arc::new(Self {
                     deps: vec![],
@@ -302,8 +296,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
             let mode = self.mode.read().await;
             match &*mode {
                 #mode_name::Provider { local_impl, .. } => {
-                    // A direct call carries no wire, so its context is built here
-                    // from the callee's own identity
+                    // A direct call carries no wire: its context comes from the callee.
                     ice_rpc::codegen::local_call_scoped(
                         #service_ref,
                         #service_name,
@@ -419,9 +412,7 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
     let json_arm = if *json_provider {
         quote! {
             #mode_name::ProviderJson { .. } => {
-                // A notification cannot be routed through the JSON bridge: the
-                // bridge answers on behalf of a host, and a one-way call has no
-                // answer to fetch.
+                // A notification cannot go through the bridge: there is no answer.
                 ice_rpc::codegen::log::warn!(
                     "[{}] a one-way method cannot be served in ProviderJson mode",
                     <Self as ice_rpc::codegen::ServiceNamed>::SERVICE_NAME
@@ -440,9 +431,7 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
                     local_impl.#fn_name(#(#arg_names),*).await;
                 }
                 #mode_name::Consumer { ipc_client } => {
-                    // The outcome is the emitter's local observation, and this
-                    // signature has no way to report it: the inherent caller is
-                    // where a consumer reads it.
+                    // The emitter's local outcome cannot be reported by this signature.
                     let _ = ipc_client.#fn_name(#(#arg_names),*);
                 }
                 #json_arm

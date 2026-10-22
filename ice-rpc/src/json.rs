@@ -272,8 +272,7 @@ where
             Err(crate::ObservableError::Technical(e)) => {
                 Err(JsonCallError::Transport(e.to_string()))
             }
-            // A service may legitimately complete without emitting anything:
-            // reported as such rather than as a failure.
+            // A completion without any value is legitimate, not a failure.
             Err(crate::ObservableError::Empty) => Ok(JsonOutcome::Nothing),
         },
         ReadMode::All => match stream.collect().await {
@@ -287,8 +286,7 @@ where
             Err(crate::ObservableError::Technical(e)) => {
                 Err(JsonCallError::Transport(e.to_string()))
             }
-            // An empty stream is an empty array here; only `First` has to
-            // distinguish "no value at all".
+            // An empty array; only `First` distinguishes "no value at all".
             Err(crate::ObservableError::Empty) => {
                 Ok(JsonOutcome::Value(serde_json::Value::Array(Vec::new())))
             }
@@ -371,8 +369,7 @@ pub fn event_from_json<T, E>(value: Value) -> Option<(EventKind, AlignedVec<PAYL
 where
     T: serde::de::DeserializeOwned,
     E: serde::de::DeserializeOwned,
-    // The exact strategy `rkyv::to_bytes` uses, spelled out: it is the same
-    // bound `observable_to_responses` carries for the native path.
+    // The exact strategy `rkyv::to_bytes` uses, as in `observable_to_responses`.
     for<'a> WireEvent<T, E>: rkyv::Serialize<
             rkyv::rancor::Strategy<
                 rkyv::ser::Serializer<
@@ -388,8 +385,7 @@ where
     let Value::Object(mut object) = value else {
         return None;
     };
-    // A `&'static str` keeps the borrow of `object` from crossing the `remove`
-    // calls below, while preserving the default-`next` rule.
+    // A `&'static str` keeps the borrow from crossing the `remove` calls below.
     let event_type: &'static str = match object.get("type").and_then(|v| v.as_str()) {
         Some("complete") => "complete",
         Some("error") => "error",
@@ -406,8 +402,7 @@ where
         _ => return None,
     };
     let kind = event.kind();
-    // Return the rkyv buffer itself, not a `Vec`: the emitter accepts the
-    // `AlignedVec` through its `&[u8]` deref, so no sample is copied.
+    // Return the `AlignedVec` itself: the emitter accepts it via `&[u8]`, no copy.
     rkyv::to_bytes::<rkyv::rancor::Error>(&event)
         .ok()
         .map(|aligned| (kind, aligned))
@@ -428,9 +423,8 @@ mod tests {
             method: &str,
             args: Value,
         ) -> Result<JsonCallStream, String> {
-            // Answered before returning: a host that spawned its answer would
-            // need its executor to outlive the call, which is a property of that
-            // host, not of the contract under test.
+            // Answered before returning: a spawned answer would need an executor
+            // outliving the call, which is not what this test covers.
             let (stream, sender) = JsonCallStream::channel();
             let _ = sender.try_send(serde_json::json!({
                 "service": service,
@@ -447,8 +441,7 @@ mod tests {
     fn a_registered_host_receives_the_call_and_its_events_are_read() {
         set_json_dispatcher(Arc::new(EchoHost));
 
-        // `test_block_on`, not `block_on`: under the `tokio` facade the deadline
-        // this stream arms needs an active runtime for the whole poll.
+        // `test_block_on`: the armed deadline needs a runtime for the whole poll.
         let events = crate::rt::test_block_on(async {
             let mut stream = dispatch_json(
                 [7u8; 16],
@@ -477,9 +470,7 @@ mod tests {
             })]
         );
 
-        // The registry is a process-wide singleton, so every assertion about
-        // *which* host it holds belongs to this test: a second `#[test]` reading
-        // it would depend on when it happens to run.
+        // The registry is process-wide: only this test asserts which host it holds.
         let registered = json_dispatcher().expect("a registered host stays reachable");
         assert_eq!(
             Arc::strong_count(registered),
@@ -487,8 +478,7 @@ mod tests {
             "the framework holds the single reference to the host"
         );
 
-        // A second registration is ignored, so replaying `init` cannot swap the
-        // host under the calls that are already running.
+        // A second registration is ignored, so `init` cannot swap the host.
         set_json_dispatcher(Arc::new(EchoHost));
         assert_eq!(
             Arc::strong_count(json_dispatcher().expect("the first host is still there")),
@@ -539,8 +529,7 @@ mod tests {
 
     #[test]
     fn a_completion_without_any_value_is_not_a_failure() {
-        // `First` has to tell "the service emitted nothing" from a `null` payload;
-        // `All` simply produces the empty array.
+        // `First` tells "nothing" from a `null` payload; `All` yields an empty array.
         let nothing =
             crate::rt::test_block_on(read_json(values([crate::Event::Complete]), ReadMode::First))
                 .expect("an empty completion is legitimate");
@@ -554,8 +543,7 @@ mod tests {
 
     #[test]
     fn a_business_error_maps_to_a_business_failure_in_both_modes() {
-        // No `Next` before the error: in `First` mode a leading value would be
-        // read and returned before the failure is ever seen.
+        // No `Next` before the error, or `First` would return the value first.
         let error = |mode| {
             let stream = values([crate::Event::Error(crate::ObservableError::Business(
                 String::from("denied"),
@@ -596,9 +584,7 @@ mod tests {
     fn a_value_json_cannot_represent_is_a_transport_failure() {
         use std::collections::HashMap;
 
-        // JSON object keys are strings: a byte-string key cannot be represented,
-        // so this value fails to serialize. The failure must surface as a call
-        // error, not a panic.
+        // A byte-string key cannot be represented in JSON: a call error, not a panic.
         let failing = || {
             crate::Observable::<HashMap<Vec<u8>, i32>, String>::from_events([
                 crate::Event::Next(HashMap::from([(vec![1, 2, 3], 2)])),

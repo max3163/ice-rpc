@@ -38,6 +38,5 @@ mod liveness;
 mod loss;
 
 pub use collector::Monitor;
-// Decoding lives in `ice-rpc` so the macro-generated `{Service}Decoder`s can
-// implement it; re-exported here for the observer's convenience.
+// Decoding lives in `ice-rpc` so the generated decoders can implement it.
 pub use ice_rpc::monitor::{ClosureDecoder, Decoders, ServiceDecoder};

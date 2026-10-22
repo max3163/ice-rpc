@@ -120,14 +120,12 @@ pin_project_lite::pin_project! {
         #[pin]
         source: S,
         duration: Duration,
-        // Events read ahead, each with the instant it must be released. An
-        // event's deadline is *its own* arrival time plus the delay, so the
-        // source's spacing survives (RxJS `delay`).
+        // Events read ahead with their release instant: arrival time plus the delay,
+        // so the source's spacing survives (RxJS `delay`).
         queue: VecDeque<(Instant, Event<T, E>)>,
         // Timer armed for the head of `queue`, when one is waiting.
         sleep: Option<futures_lite::future::Boxed<()>>,
-        // Set once the source has no more events: the end is forwarded after the
-        // queue drains.
+        // Set once the source ended: the end is forwarded after the queue drains.
         source_finished: bool,
     }
 }
@@ -173,10 +171,8 @@ where
                 }
             }
 
-            // Drain a bounded batch from the source: a burst stays a burst, it is
-            // merely shifted, so the source is never throttled. The queue is
-            // ordered, so a newly pushed event never precedes the head and the
-            // armed timer stays valid.
+            // Drain a bounded batch: a burst stays a burst, merely shifted. The queue
+            // is ordered, so the armed timer stays valid.
             if !*this.source_finished && read < DELAY_READ_AHEAD {
                 match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                     Poll::Ready(Some(event)) => {
@@ -193,8 +189,7 @@ where
                 }
             }
 
-            // Nothing is due: wait for the head's deadline. A pending source has
-            // already registered its waker.
+            // Nothing due: wait for the head's deadline; a pending source has a waker.
             if let Some(sleep) = this.sleep.as_mut() {
                 match sleep.as_mut().poll(cx) {
                     Poll::Ready(()) => {

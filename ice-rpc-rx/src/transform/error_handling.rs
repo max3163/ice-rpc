@@ -21,8 +21,7 @@ pin_project_lite::pin_project! {
         source: S,
         // The selector, consumed by the first business error (`FnOnce`).
         f: Option<F>,
-        // The recovery stream: it replaces the failed source entirely, values
-        // and terminal included.
+        // The recovery stream replaces the failed source entirely.
         #[pin]
         recovery: Option<Observable<T, E>>,
         // Set once our own terminal has been emitted.
@@ -55,8 +54,7 @@ where
                 return Poll::Ready(None);
             }
 
-            // Recovering: the recovery stream is the only source left, and its
-            // terminal is ours.
+            // Recovering: the recovery stream is the only source left.
             if this.recovery.is_some() {
                 let polled = {
                     let recovery = this
@@ -83,11 +81,10 @@ where
 
             match futures_lite::Stream::poll_next(this.source.as_mut(), cx) {
                 Poll::Ready(Some(Event::Next(v))) => return Poll::Ready(Some(Event::Next(v))),
-                // Only a business error is recoverable; a technical error and
-                // `Empty` are fatal, so they travel untouched.
+                // Only a business error is recoverable; technical errors and `Empty`
+                // travel untouched.
                 Poll::Ready(Some(Event::Error(crate::ObservableError::Business(e)))) => {
-                    // The selector runs exactly once: an error raised by the
-                    // recovery is not caught again, as in RxJS.
+                    // The selector runs once: a recovery error is not caught again.
                     let f = this
                         .f
                         .take()
@@ -102,8 +99,7 @@ where
                     *this.finished = true;
                     return Poll::Ready(Some(Event::Complete));
                 }
-                // An abrupt close ends the stream for good: `finished` is set, so
-                // a later poll never touches the dead source again.
+                // An abrupt close ends the stream for good: `finished` is set.
                 Poll::Ready(None) => {
                     *this.finished = true;
                     return Poll::Ready(None);
@@ -274,8 +270,7 @@ pin_project_lite::pin_project! {
         // The stream of the current attempt.
         #[pin]
         stream: Option<Observable<T, E>>,
-        // Pause before the next attempt. Not `#[pin]`: a `Boxed` future is
-        // `Unpin`, and polling it only needs `&mut` (see `Delay`).
+        // Pause before the next attempt. Not `#[pin]`: a `Boxed` future is `Unpin`.
         sleep: Option<futures_lite::future::Boxed<()>>,
         // Our terminal has been emitted: no further attempt.
         finished: bool,
@@ -341,8 +336,7 @@ where
                     Poll::Ready(Some(Event::Next(value))) => {
                         return Poll::Ready(Some(Event::Next(value)));
                     }
-                    // Only an error earns another attempt; the values the failed
-                    // attempt emitted stay emitted, as in RxJS.
+                    // Only an error earns another attempt; emitted values stay emitted.
                     Poll::Ready(Some(Event::Error(error))) => {
                         this.stream.set(None);
                         if should_retry(*this.attempts, this.policy, &error) {

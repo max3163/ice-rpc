@@ -80,8 +80,7 @@ fn publish_cancel(ports: &ConsumerPorts, request: &RpcHeader) {
 
     publish_best_effort(ports, header);
 
-    // Coalesced like a request's wake-up: at worst the provider polls the Cancel
-    // on its next waitset expiry, one deadline (1 ms) later.
+    // Coalesced: the provider may see the Cancel one deadline (1 ms) later.
     if ports.last_request_notify.should_notify() {
         let _ = ports
             .request_notifier
@@ -97,8 +96,7 @@ fn publish_cancel(ports: &ConsumerPorts, request: &RpcHeader) {
 /// for saying so. A failed attempt is logged and dropped.
 fn publish_best_effort(ports: &ConsumerPorts, header: RpcHeader) {
     match try_publish(&ports.publisher, header, &[]) {
-        // `Ok(false)` is the ordinary "nobody was there to take it" case: no
-        // subscriber yet, or a subscriber buffer that stayed full.
+        // `Ok(false)`: no subscriber yet, or a full buffer.
         Ok(_) => {}
         Err(e) => log::debug!("[transport] best-effort sample not published: {e}"),
     }
@@ -199,15 +197,12 @@ fn provider_wait_timeout() -> Duration {
 /// on the same request channel, routed by correlation id. The cache lock is held
 /// across the creation so a single set of ports is created under a race.
 fn consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
-    // The lock is held across the creation on purpose: a race between two
-    // threads must not open the same channel twice.
+    // Held across creation so two threads never open the same channel twice.
     consumer_cache().with(|cache| {
         if let Some(ports) = cache.get(channel) {
             return Ok(ports.clone());
         }
-        // The first call opens — and possibly creates — the services, like the
-        // provider on its own thread: a transient open failure is retried, not
-        // surfaced; a non-retryable one still returns at once, remedy included.
+        // Transient open failures are retried; others return at once.
         let ports = retry_open(
             channel,
             OPEN_RETRY_ATTEMPTS,
@@ -240,9 +235,8 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         OpenMode::CreateOrOpen,
     )?;
 
-    // The slice length was declared by the service for this channel, before its
-    // ports were opened (see `declare_channel_max_slice_len`); every other
-    // publisher setting, the loaned-sample count included, comes from the
+    // Declared by the service before its ports were opened (see
+    // `declare_channel_max_slice_len`); other publisher settings come from the
     // iceoryx2 configuration.
     let max_slice_len = super::channel_max_slice_len(channel);
     let publisher = request_service
@@ -277,8 +271,7 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
         seq: AtomicU64::new(0),
     });
 
-    // The dispatch thread owns a clone of the ports: its subscriber and listener
-    // must outlive the loop that blocks on them.
+    // The thread owns a clone: its ports must outlive the receive loop.
     spawn_response_dispatcher(channel.to_owned(), Arc::clone(&ports));
 
     Ok(ports)
@@ -295,8 +288,7 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
             &ports.listener,
             || cancel.is_cancelled(),
             |header, payload| {
-                // The handler is cloned out of the table so the lock is released
-                // before the handler runs.
+                // Cloned out so the lock is released before the handler runs.
                 let handler = lock(&ports.handlers).get(&header.correlation_id).cloned();
                 if let Some(handler) = handler {
                     handler(header.event_kind(), payload);
@@ -339,14 +331,11 @@ where
 {
     let ports = consumer_ports(channel)?;
 
-    // A call emitted from inside a provider handler continues that handler's
-    // trace; a call emitted anywhere else starts a new one. The ambient read is
-    // synchronous and the value is copied into the header right away — it is
-    // never held across an await, which is what makes it safe here.
+    // A call from a provider handler continues its trace, elsewhere it starts
+    // one; the value is copied immediately and never held across an await.
     let trace = match CallContext::current() {
         Some(ctx) => ctx.child_trace(),
-        // A call emitted outside any trace is a **root**: it still names its own
-        // span as the W3C `parent-id`, never zero.
+        // Outside any trace: a root that still names its own span as `parent-id`.
         None => TraceContext::new_root().continued_or_root(next_span_id()),
     };
     let header = RpcHeader::request(method_id, service.id, service.version)
@@ -358,9 +347,7 @@ where
 
     let handler_ports = Arc::clone(&ports);
     let handler: ResponseHandler = Arc::new(move |kind: EventKind, bytes: &[u8]| {
-        // A transport-level rejection is a bare `RpcError`, framed without the
-        // service types: it can be answered for any method, known or not, so it
-        // must be decoded without naming `(T, E)`.
+        // A bare `RpcError`, decodable without naming `(T, E)`.
         if kind == EventKind::RpcError {
             let error = match super::decode_aligned::<RpcError>(bytes) {
                 Ok(err) => err,
@@ -373,12 +360,8 @@ where
 
         match super::decode_aligned::<WireEvent<T, E>>(bytes) {
             Ok(wire) => {
-                // Terminality is read on the **wire** event, not on the normalized
-                // one: a `CompleteWith` — the single-response case, by far the
-                // most common — expands into `Next` followed by `Complete`, and
-                // the call is over at the wire event. Reading the normalized
-                // `Next` would leave the entry registered until the consumer
-                // happens to drop the stream.
+                // Read on the wire event: a `CompleteWith` expands into `Next` +
+                // `Complete` and the call is over there.
                 let terminal = wire.is_terminal();
                 let (event, follow_up) = normalize_wire_event(wire);
                 if tx.try_send_event(event).is_err() {
@@ -418,19 +401,11 @@ where
             .notify_with_custom_event_id(EventId::new(0));
     }
 
-    // The call owns its handler: dropping the response stream releases it, so an
-    // abandoned call (`timeout`, `take_until_token`, a dropped stream) cannot leave an
-    // entry behind for the rest of the process lifetime.
-    //
-    // The same drop is the cancellation point. Two conditions must hold, and both
-    // are needed: the stream must not have delivered a terminal event
-    // (`terminated`), and the transport must not have answered the call yet
-    // (`release_handler`). Together they mean "the caller stopped listening while
-    // the provider was still working" — the only case where there is work to
-    // abandon.
+    // Dropping the stream releases the handler and is the cancellation point:
+    // only a call with no terminal event that is still in flight is abandoned.
     let cleanup_ports = Arc::clone(&ports);
     Ok(rx.with_cleanup(move |terminated| {
-        // Released whatever the outcome: this drop is the last owner of the call.
+        // This drop is the last owner of the call.
         let in_flight = release_handler(&cleanup_ports, &cid);
         if !terminated && in_flight {
             publish_cancel(&cleanup_ports, &header);
@@ -474,9 +449,7 @@ pub fn send_one_way(
 
     let delivered = publish_one_way(&ports.publisher, &ports.request_service, header, payload)?;
 
-    // Only a delivered sample has somebody to wake: a provider is the subscriber
-    // of the request direction, so `false` means there is no dispatch thread to
-    // notify.
+    // Only a delivered sample has a provider to wake.
     if delivered && ports.last_request_notify.should_notify() {
         let _ = ports
             .request_notifier
@@ -547,8 +520,7 @@ where
         >,
 {
     REQUEST_SCRATCH.with(|cell| {
-        // The buffer is taken for the whole call: a re-entrant serialization
-        // finds the slot empty and gets its own allocation rather than a panic.
+        // Taken for the whole call: a re-entrant serialization allocates its own.
         let mut buffer = cell.take().unwrap_or_else(|| {
             AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY)
         });
@@ -566,7 +538,7 @@ where
 
         let call = native_call::<T, E>(channel, service, method_id, &bytes);
 
-        // The allocation goes back to the thread whether the call started or not.
+        // The buffer goes back whether the call started or not.
         cell.set(Some(bytes));
         call
     })
@@ -613,7 +585,7 @@ where
 
         let sent = send_one_way(channel, service, method_id, &bytes);
 
-        // The allocation goes back to the thread whether the sample went out or not.
+        // The buffer goes back whether the sample went out or not.
         cell.set(Some(bytes));
         sent
     })

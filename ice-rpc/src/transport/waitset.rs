@@ -32,8 +32,7 @@ pub(super) fn wait_for_wakeup(
         WAITSET_DEADLINE,
     );
 
-    // Clear the readiness edge, whether or not this wait reported it: a stale
-    // notification from an earlier iteration would keep the port ready forever.
+    // Clear the readiness edge, or a stale notification keeps the port ready forever.
     let _ = listener.try_wait(|_activation| {});
 
     // iceoryx2 reports SIGINT/SIGTERM here instead of killing the process.

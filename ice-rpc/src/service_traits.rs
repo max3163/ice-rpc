@@ -18,8 +18,7 @@ pub trait ServiceConsumer: ServiceNamed + Send + Sync + 'static {
     fn consume_proxy() -> Arc<Self>;
 }
 
-// The JSON view of a service lives in [`crate::json`], in both directions: a
-// JSON contract does not belong to the lifecycle traits below.
+// The JSON view of a service lives in [`crate::json`], in both directions.
 
 /// Trait defining the lifecycle of a service.
 ///
@@ -193,8 +192,7 @@ mod tests {
 
     #[test]
     fn service_init_default_on_init_returns_true() {
-        // MyService implements ServiceInit via the default trait (not explicitly)
-        // We create a wrapper to test the default behavior.
+        // `MyService` relies on the default `ServiceInit`, wrapped here to test it.
         struct DefaultInit;
         impl ServiceNamed for DefaultInit {
             const SERVICE_NAME: &'static str = "DefaultInit";

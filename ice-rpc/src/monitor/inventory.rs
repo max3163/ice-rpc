@@ -278,8 +278,7 @@ mod tests {
     #[test]
     fn the_node_inventory_scans_without_failing() {
         lay_out_the_bus();
-        // A quiet machine legitimately lists no node: what matters is that the
-        // scan reports a result instead of degrading to "no node at all".
+        // A quiet machine lists no node: the scan must still report a result.
         assert!(
             list_nodes().is_some(),
             "the native node scan must not fail once the bus is laid out"

@@ -273,8 +273,7 @@ mod tests {
         let mut scanner = Scanner::new(Duration::from_millis(1), false);
         scanner.refresh();
         let snapshot = scanner.snapshot();
-        // The scan may legitimately find nothing on a quiet machine, but it must
-        // not have failed.
+        // A quiet machine may find nothing, but the scan must not have failed.
         assert_eq!(snapshot.errors, 0);
         assert_eq!(snapshot.scans, 1);
         assert!(snapshot.layout.is_some());

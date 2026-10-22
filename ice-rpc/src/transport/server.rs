@@ -77,9 +77,8 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
         .listener_builder()
         .create()
         .map_err(|e| transport_error("request listener", e))?;
-    // The slice length was declared by the service for this channel, before its
-    // ports were opened (see `declare_channel_max_slice_len`); every other
-    // publisher setting, the loaned-sample count included, comes from the
+    // Declared by the service before its ports were opened (see
+    // `declare_channel_max_slice_len`); other publisher settings come from the
     // iceoryx2 configuration.
     let publisher = response_service
         .publisher_builder()
@@ -123,29 +122,23 @@ pub fn spawn_native_service(
     services: Vec<ServiceDispatcher>,
     stop: CancellationToken,
 ) -> JoinHandle<()> {
-    // The table key is read from the dispatcher: it is the same value the client
-    // stamps in the frame, so it can never disagree with the version answered for.
-    // An `IdMap`: consulted on every request, so the identity hasher replaces the
-    // default SipHash (see `src/hash.rs`).
+    // Keyed like the client frames it; `IdMap` because this table is consulted on
+    // every request (see `src/hash.rs`).
     let table: IdMap<u32, ServiceDispatcher> = services
         .into_iter()
         .map(|dispatcher| (dispatcher.service().id, dispatcher))
         .collect();
     let channel = channel.to_owned();
-    // Captured on the caller's thread — the one inside the runtime under the
-    // `tokio` facade — because the channel thread has no runtime context, and the
-    // handler tasks are spawned from it.
+    // Captured on the caller's thread: the channel thread has no runtime context.
     let spawner = crate::rt::Spawner::capture();
 
     std::thread::spawn(move || {
-        // Any port that cannot be opened makes the whole channel useless: log it
-        // and stop the thread. A transient failure is retried first — a channel
-        // must not be lost to a race, see `open_with_retries`.
+        // A port that cannot be opened makes the whole channel useless.
         let ports = match open_with_retries(&channel, &stop) {
             Ok(ports) => ports,
             Err(e) => {
                 if stop.is_cancelled() {
-                    // Shutdown asked for while opening: not a failure to report.
+                    // Shutdown during open: not a failure.
                     log::debug!("[transport] '{channel}': open abandoned on shutdown: {e}");
                 } else {
                     log::error!("[transport] '{channel}': {e}");
@@ -159,8 +152,7 @@ pub fn spawn_native_service(
             table.len()
         );
 
-        // What every call publishes through, shared with the tasks as an `Arc`:
-        // the publisher, the response service and the consumers' notifier.
+        // Shared with every call task, which publishes through it.
         let hub = Arc::new(ResponseHub::new(
             channel.clone(),
             ports.publisher,
@@ -471,23 +463,16 @@ impl Future for CancellableCall {
             return Poll::Ready(());
         }
 
-        // Ambient for this poll only, for the same reason the call context is:
-        // several calls are polled interleaved on the same thread, and a token
-        // held across an await would leak into whichever task is polled next.
+        // Ambient for this poll only: an await must not leak the token into the
+        // next task polled on this thread.
         let _ambient = install_call_cancellation(this.token.clone());
 
         if this.task.as_mut().poll(cx).is_ready() {
             return Poll::Ready(());
         }
 
-        // The registration is what makes the cancellation immediate. It is polled
-        // *after* the task, so a Cancel that fired during that poll is seen here
-        // rather than on the next wake-up — the task is dropped at once.
-        //
-        // `poll_cancelled_cached` rather than `poll_cancelled`: this wrapper polls
-        // the token on every poll, so the lock and the waker-list scan would be
-        // paid once per poll instead of once per *waker* — and once for the
-        // no-op waker of the inline poll, then once for the executor's.
+        // Polled after the task so a Cancel fired during that poll is seen at
+        // once; the cached variant avoids a lock per poll (see `registered_waker`).
         if this
             .token
             .poll_cancelled_cached(cx, &mut this.registered_waker)
@@ -595,39 +580,22 @@ fn handle_request(
         return;
     };
 
-    // An incompatible protocol or interface version is rejected **before** the
-    // payload is decoded, on the stable header alone: the payload layout is
-    // exactly what changes when either version moves, so a guard that had to
-    // decode first would be doing the very operation it protects against.
+    // Rejected on the stable header alone: the payload layout is what changes
+    // with either version.
     if let Some(rejection) = RequestRejection::classify(dispatcher, header) {
         reject(channel, header, hub, rejection.rpc_error());
         return;
     }
 
-    // No copy is made: the handler decodes **synchronously** from the received
-    // sample's slice — aligned by construction — and only the owned request
-    // enters the task. The borrow therefore never crosses an await, which is
-    // what used to force the `to_vec()` here.
+    // No copy: the handler decodes synchronously, so the borrow never crosses an
+    // await.
     let cid = header.correlation_id;
     let emitter: OwnedEmitter = Box::new(hub.emitter(header));
-    // One lookup answers both questions: which handler serves this `method_id`,
-    // and whether a call to it expects a response. The method table holds an
-    // entry for a one-way method too — it is the implementation to run — while
-    // the in-flight table below holds **calls**, which is what a one-way call
-    // must not create.
+    // One lookup answers which handler serves `method_id` and whether it answers.
     match dispatcher.dispatch(header.method_id(), *header, payload, emitter) {
-        // Polled once here before being detached: a handler that answers without
-        // yielding completes on this thread and costs no hop at all — measured at
-        // 240 k req/s with the hop and 313 k without it. One that awaits is
-        // spawned at its first `Pending` and keeps the whole benefit of running as
-        // a task.
-        //
-        // The token is created after the handler is **built** and before the task
-        // **runs**: building a future runs nothing, and this thread is inside
-        // `handle_request`, so a `Cancel` — drained by this same loop — cannot slip
-        // in between. The task is wrapped before it runs, so a handler that
-        // completes inline releases its registry entry through the guard, exactly
-        // like one that was detached and cancelled.
+        // Polled once here: a handler that answers without yielding completes on
+        // this thread with no hop (313 k req/s against 240 k with it). The token
+        // exists before the task runs, so a Cancel cannot slip in between.
         Some(DispatchedRequest {
             task,
             expects_response,
@@ -636,18 +604,12 @@ fn handle_request(
                 let token = hub.register(cid);
                 spawner.run_or_spawn(hub.cancellable(cid, token, task));
             } else {
-                // One-way: the caller registered no handler and reads nothing, so
-                // there is no call to register and none to cancel. The task runs
-                // as-is, and `CallContext::cancellation()` answers `None` inside
-                // it — the honest answer to "can this call be cancelled?".
+                // One-way: nothing to register or cancel; the task runs as-is.
                 spawner.run_or_spawn(task);
             }
         }
-        // An unknown method is answered too: silence would leave the caller
-        // waiting for the transport timeout instead of naming the mistake. The
-        // call is answered at once and was never registered. The id is named in
-        // hexadecimal, exactly like the `UnknownService` rejection: the provider
-        // cannot invert a hash it does not know.
+        // Answered at once rather than left to time out; the id is hexadecimal
+        // since the provider cannot invert a hash.
         None => reject(
             channel,
             header,
@@ -727,8 +689,7 @@ pub fn register_native_service(
     let service_id = dispatcher.service().id;
 
     if CHANNELS_SEALED.load(Ordering::Acquire) {
-        // A provider created after the seal (a lazily initialized service)
-        // cannot join its channel: it starts its own thread.
+        // Created after the seal: it starts its own thread.
         let handle = spawn_native_service(
             channel,
             vec![dispatcher],
@@ -738,8 +699,7 @@ pub fn register_native_service(
         return Ok(());
     }
 
-    // The registration is atomic: two services of one channel must never race
-    // into a duplicate `service_id`.
+    // Atomic: two services must never race into a duplicate `service_id`.
     let registered = channel_registry().with(|registry| {
         let pending = registry
             .entry(channel.to_owned())
@@ -784,9 +744,8 @@ pub fn start_registered_channels() {
             .into_iter()
             .map(|svc| svc.dispatcher)
             .collect();
-        // The handle is registered, never discarded: the thread owns the channel's
-        // ports, so the clean shutdown must wait for it to return — otherwise
-        // nothing unlinks the services it created.
+        // Registered so the clean shutdown waits for the thread that owns the
+        // ports.
         let handle = spawn_native_service(&channel, services, pending.stop);
         crate::locator::ServiceLocator::global().register_shutdown_thread(handle);
     }
@@ -842,9 +801,8 @@ mod tests {
     fn a_channel_table_routes_by_service_id() {
         let mut first = ServiceDispatcher::new(ServiceRef::new(7, 1));
         first.method(method_id_of("echo"), |_header, payload, mut emitter| {
-            // Emitted synchronously: the payload is borrowed from the sample and
-            // the returned future is 'static, so the borrow must not enter it —
-            // exactly the rule the generated handler follows by decoding first.
+            // Emitted synchronously: the borrowed payload must not enter the
+            // 'static future.
             emitter.emit(EventKind::Next, payload);
             Box::pin(async {})
         });
@@ -870,7 +828,7 @@ mod tests {
         crate::rt::block_on(dispatched.task);
         assert_eq!(sink.take().len(), 1);
 
-        // The second dispatcher has no `echo` method: no task, nothing emitted.
+        // No `echo` on the second dispatcher.
         assert!(
             table
                 .get(&9)
@@ -902,8 +860,7 @@ mod tests {
         assert_eq!(samples[0].0, EventKind::RpcError);
         assert!(samples[0].0.is_terminal());
 
-        // No `WireEvent<T, E>`: the payload is the `RpcError` alone, decodable
-        // without knowing the service types.
+        // The payload is the `RpcError` alone, decodable without the service types.
         let decoded: RpcError =
             crate::transport::decode_aligned(&samples[0].1).expect("decode the error sample");
         assert_eq!(decoded, RpcError::UnknownMethod("nope".to_owned()));
@@ -1100,8 +1057,7 @@ mod tests {
         assert!(registry.cancel(&cid));
         assert!(poll_once(&mut wrapped).is_ready(), "the call is ended");
 
-        // The executor drops the completed task, which drops the wrapper: the
-        // handler's future and the registry entry go with it.
+        // Dropping the wrapper drops the handler and its registry entry.
         drop(wrapped);
         assert!(dropped.load(Ordering::SeqCst), "the handler was dropped");
         assert_eq!(registry.len(), 0, "the entry was released");
@@ -1142,8 +1098,7 @@ mod tests {
             let ambient =
                 crate::CallContext::cancellation().expect("the wrapper installs the call's token");
             assert!(!ambient.is_cancelled(), "a fresh call is not cancelled");
-            // Cancelling through the ambient handle proves it is the very token
-            // the registry holds, and not a look-alike.
+            // The ambient handle must be the registry's token.
             ambient.cancel();
         });
         let mut wrapped = CancellableCall::wrap(Arc::clone(&registry), cid, token.clone(), task);
@@ -1174,8 +1129,7 @@ mod tests {
         assert!(!token.is_cancelled(), "an unknown id fires no token");
         assert_eq!(registry.len(), 1, "the in-flight call is untouched");
 
-        // Idempotent on a known id: the entry belongs to the task, so a second
-        // Cancel still finds the call and cancelling again changes nothing.
+        // Idempotent on a known id: the entry belongs to the task.
         assert!(registry.cancel(&cid));
         assert!(registry.cancel(&cid), "cancelling twice is fine");
         registry.unregister(&cid);

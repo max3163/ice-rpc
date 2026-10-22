@@ -72,8 +72,7 @@ mod tests {
         let mut tracker = LossTracker::default();
         tracker.observe(1, 0);
         tracker.observe(2, 5);
-        // A second publisher of the same channel (another consumer) must never be
-        // compared with the first one.
+        // A second publisher must never be compared with the first one.
         assert_eq!(tracker.observe(1, 1), 0);
         assert_eq!(tracker.observe(2, 6), 0);
         assert_eq!(tracker.tracked(), 2);

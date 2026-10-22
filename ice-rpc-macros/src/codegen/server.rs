@@ -106,29 +106,21 @@ pub fn gen_native_method(
                       payload: &[u8],
                       emitter: ice_rpc::codegen::OwnedEmitter|
                       -> ice_rpc::codegen::BoxResponseFuture {
-                    // Built before the coroutine: it is copied into the task, and
-                    // the header itself is not needed past this point. The service
-                    // name is the constant the proxy declares, so the span shows it
-                    // instead of the 4-byte hash the header carries.
+                    // Built before the coroutine: copied into the task, and the
+                    // service name shows in the span instead of the 4-byte hash.
                     let ctx = ice_rpc::codegen::CallContext::new(
                         &header,
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
                     );
-                    // Clone per invocation: the closure is `Fn`, so it must not
-                    // move the captured `Arc` into the coroutine.
+                    // Cloned per invocation: the closure is `Fn`.
                     let impl_ref = service_impl.clone();
-                    // Decoded **here**, while the sample is borrowed: the future is
-                    // `'static` and may not hold the slice. The sample is aligned by
-                    // construction, so this reads it where it lies.
+                    // Decoded here, while the sample is borrowed: the future is
+                    // `'static` and may not hold the slice.
                     let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
                         Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
-                        // Fail-fast: a payload that does not decode is answered at
-                        // once with a technical error, never dropped — silence
-                        // would leave the caller waiting for a transport timeout
-                        // that names nothing. The two causes keep their own log
-                        // line, but both live in one `#[cold]` helper rather than
-                        // in every handler.
+                        // Fail-fast: an undecodable payload is answered at once,
+                        // never dropped, from one `#[cold]` helper.
                         Err(e) => {
                             return ice_rpc::codegen::reject_undecodable(
                                 <#proxy_name>::SERVICE_NAME,
@@ -137,9 +129,8 @@ pub fn gen_native_method(
                                 emitter,
                             );
                         }
-                        // The payload decoded, but as the request variant of
-                        // another method: a caller contract violation, answered
-                        // like a decoding failure rather than silently.
+                        // Another method's variant: a contract violation, answered
+                        // like a decoding failure.
                         Ok(_) => {
                             return ice_rpc::codegen::reject_undecodable(
                                 <#proxy_name>::SERVICE_NAME,
@@ -149,17 +140,15 @@ pub fn gen_native_method(
                             );
                         }
                     };
-                    // Installed around each poll rather than around the whole
-                    // call: the tasks of one channel are polled interleaved, so a
-                    // context held across an await would label the wrong call.
+                    // Installed around each poll: a context held across an await
+                    // would label the wrong call.
                     ice_rpc::codegen::call_scoped(
                         ctx,
                         async move {
                             let mut emitter = emitter;
                             let (#(#arg_names),*) = request;
                             let stream = impl_ref.#fn_name(#(#arg_names),*).await;
-                            // Awaited, never blocked on: the other calls of the
-                            // channel run meanwhile.
+                            // Awaited, never blocked on.
                             ice_rpc::codegen::observable_to_responses(stream, &mut *emitter).await;
                         },
                     )
@@ -209,10 +198,7 @@ pub fn gen_native_oneway_method(
                     let impl_ref = service_impl.clone();
                     let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
                         Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
-                        // Nothing waits for an answer, so a decoding failure cannot
-                        // be reported to anyone: it is logged, and the notification
-                        // is dropped — in the shared `#[cold]` helper, not in a copy
-                        // of this code per method.
+                        // Nothing waits for an answer: log it and drop the notification.
                         Err(e) => {
                             return ice_rpc::codegen::reject_undecodable_oneway(
                                 <#proxy_name>::SERVICE_NAME,

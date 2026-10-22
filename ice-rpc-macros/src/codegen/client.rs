@@ -94,8 +94,7 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         {
             let req_val = #req_enum_name::#var_name { #(#arg_names),* };
 
-            // Encoding and publishing are one call: the request buffer is the
-            // thread's, so a call no longer allocates one.
+            // Encoding and publishing are one call, using the thread's buffer.
             ice_rpc::codegen::serialize_and_call::<#ok_type, #err_type, _>(
                 #group,
                 #service_ref,
@@ -106,10 +105,8 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         }
     };
 
-    // The blocking twin: the same body without `async`, because the call path is
-    // already synchronous (`serialize_and_call` is a `pub fn`). This is what lets
-    // a `fn main` issue the call without an executor — and without even
-    // `block_on`, since no future is created here.
+    // The blocking twin: the call path is already synchronous, so no future is
+    // created and a `fn main` needs no executor.
     let blocking_method = if input.blocking {
         let blocking_name = format_ident!("{}_blocking", fn_name);
         let blocking_doc = format!(

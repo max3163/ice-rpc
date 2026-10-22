@@ -11,6 +11,10 @@
 //! subscribers per pub/sub service, and — because the transport disables safe
 //! overflow — a slow observer is simply skipped by the publisher instead of
 //! blocking it.
+//!
+//! The same surface answers whether a channel is **served right now**:
+//! [`is_provider_connected`] reads the publisher count of the response
+//! direction, which is exactly the provider's presence on the bus.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -20,7 +24,7 @@ use iceoryx2::service::header::publish_subscribe::Header as SampleHeader;
 use iceoryx2::service::static_config::messaging_pattern::MessagingPattern;
 use iceoryx2::service::{Service, ServiceDetails};
 
-use super::open::{OpenMode, open_event_service, open_service};
+use super::open::{OpenMode, open_event_service, open_existing_service, open_service};
 use super::{
     Direction, Iox, IoxEvent, IoxListener, IoxPubSub, IoxSubscriber, REQUEST_SUFFIX,
     RESPONSE_SUFFIX, shared_node, transport_error,
@@ -255,6 +259,58 @@ pub fn discover_channels() -> Result<Vec<String>, RpcError> {
     Ok(channels.into_iter().collect())
 }
 
+/// Whether a provider is currently serving `channel`.
+///
+/// A provider owns the **publisher** of the response direction
+/// (`{channel}_resp`): its channel thread creates that publisher when it opens
+/// its ports and drops it when it stops, so the publisher count of the service
+/// *is* the answer. A consumer only subscribes to that direction, which is why
+/// the caller's own process can never make this return `true`.
+///
+/// The probe is **read-only**: it opens the response service without creating
+/// it, so asking the question never makes a channel appear on the bus. A channel
+/// no provider ever created answers `Ok(false)`, exactly like a channel whose
+/// provider has stopped.
+///
+/// It is synchronous and bounded — no port, no wait, no retry — which makes it
+/// usable as a readiness check or as a guard before an optional call. Its cost
+/// has two very different regimes:
+///
+/// - a channel this process already **consumed** answers from the ports the
+///   consumer keeps: 40 ns measured in release (the publisher count alone is a
+///   7 ns atomic load, the rest is the port lookup);
+/// - a channel never consumed here has to be opened first (name lookup, static
+///   config open, deserialization): 131 µs measured in release, 1.06 ms in a
+///   debug build. That is cheap for a readiness poll, not for a per-call guard —
+///   make one call first, and the cheap path takes over.
+///
+/// It is **not** meant for the hot path, and it does not retry: a transient bus
+/// state is reported, not waited out.
+///
+/// The answer is per **channel**: every service sharing a `group` shares it, so
+/// the probe says whether *some* provider serves the group, not which service of
+/// it is answering.
+///
+/// # Errors
+/// Returns a [`RpcError`] when the channel exists but cannot be opened — a
+/// configuration mismatch with its creator, or state left behind by a process
+/// killed while it held it. Those are reported rather than folded into `false`,
+/// because a "not connected" answer would hide a deployment problem that no
+/// amount of retrying resolves.
+pub fn is_provider_connected(channel: &str) -> Result<bool, RpcError> {
+    // Fast path: the channel is already consumed by this process, so its
+    // response service is open and the answer is an atomic read of its publisher
+    // count — the same signal, without opening anything.
+    if let Some(connected) = super::client::cached_provider_connected(channel) {
+        return Ok(connected);
+    }
+
+    let node = shared_node()?;
+    Ok(open_existing_service(&node, channel, RESPONSE_SUFFIX)?
+        .map(|service| service.dynamic_config().number_of_publishers() > 0)
+        .unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +329,54 @@ mod tests {
         assert_eq!(strip_direction_suffix("DatabaseService_req_notify"), None);
         assert_eq!(strip_direction_suffix("DatabaseService_resp_notify"), None);
         assert_eq!(strip_direction_suffix("DatabaseService"), None);
+    }
+
+    /// A channel nobody created is not an error: it is simply not connected. This
+    /// is what lets a readiness check run before the provider is started.
+    #[test]
+    fn a_channel_that_does_not_exist_is_not_connected() {
+        let channel = format!("UnitLivenessMissing{}", std::process::id());
+        assert!(
+            !is_provider_connected(&channel).expect("the probe must answer"),
+            "an unknown channel owns no provider"
+        );
+    }
+
+    /// The probe reads the provider's *publisher*, not the consumer's
+    /// subscriber: attaching a subscriber must leave the answer at `false`, and
+    /// the publisher appearing is what flips it — then its drop flips it back,
+    /// which is how a stopped provider is observed.
+    #[test]
+    fn the_response_publisher_is_what_makes_a_channel_connected() {
+        let node = shared_node().expect("the process node");
+        // Unique to this test process, so the service it creates cannot be another
+        // test's channel.
+        let channel = format!("UnitLiveness{}", std::process::id());
+        let service = open_service(&node, &channel, RESPONSE_SUFFIX, OpenMode::CreateOrOpen)
+            .expect("the channel is created");
+
+        let _subscriber = service
+            .subscriber_builder()
+            .create()
+            .expect("a consumer subscriber");
+        assert!(
+            !is_provider_connected(&channel).expect("the probe must answer"),
+            "a consumer subscriber is not a provider"
+        );
+
+        let publisher = service
+            .publisher_builder()
+            .create()
+            .expect("a provider publisher");
+        assert!(
+            is_provider_connected(&channel).expect("the probe must answer"),
+            "the response publisher is the provider"
+        );
+
+        drop(publisher);
+        assert!(
+            !is_provider_connected(&channel).expect("the probe must answer"),
+            "a provider that stopped is no longer connected"
+        );
     }
 }

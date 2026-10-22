@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
-use ice_rpc::transport::{native_call, spawn_native_service};
+use ice_rpc::transport::{is_provider_connected, native_call, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
 /// Encodes a wire event together with the [`EventKind`] the transport stamps in
@@ -190,6 +190,65 @@ fn an_unknown_method_is_reported_to_the_caller() {
 
     stop.cancel();
     let _ = server.join();
+}
+
+/// The liveness probe follows the provider: `false` before it starts, `true`
+/// once its channel thread has published, `false` again once it stopped — and
+/// asking never creates the channel.
+#[test]
+fn a_channel_is_connected_only_while_its_provider_serves_it() {
+    let channel = format!("IceRpcIntegration/Liveness{}", std::process::id());
+    let service_id = service_id_of(&channel);
+    let stop = CancellationToken::new();
+
+    assert!(
+        !is_provider_connected(&channel).expect("the probe must answer"),
+        "the channel exists only because the probe has to answer about it"
+    );
+
+    let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
+    dispatcher.method("echo", |_header, _payload, mut emitter| {
+        Box::pin(async move {
+            let _ = emitter.emit(EventKind::Complete, &[]);
+        })
+    });
+    let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
+
+    // The channel thread opens its ports asynchronously: poll for the publisher
+    // it creates on the response direction, with a bounded wait. No port is
+    // cached yet, so every one of these probes opens the service (the expensive
+    // path).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !is_provider_connected(&channel).expect("the probe must answer") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the provider never became visible on the channel"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    // One call makes this process a consumer of the channel, which caches the
+    // response service: from here the probe reads that open port — the cheap
+    // path — and must still see the provider.
+    let stream =
+        native_call::<i32, String>(&channel, ServiceRef::new(service_id, 1), "echo", b"go")
+            .expect("the call opens the channel");
+    let _ = pollster::block_on(stream.collect());
+    assert!(
+        is_provider_connected(&channel).expect("the probe must answer"),
+        "the cached ports must see the provider too"
+    );
+
+    // Joining is what drops the ports, hence the publisher: the probe must see
+    // the provider leave, not only its arrival — including through the cached
+    // ports, which keep the service open.
+    stop.cancel();
+    let _ = server.join();
+
+    assert!(
+        !is_provider_connected(&channel).expect("the probe must answer"),
+        "a stopped provider is no longer connected"
+    );
 }
 
 /// A call whose `service_id` nobody registered is answered immediately too.

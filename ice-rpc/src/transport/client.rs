@@ -113,7 +113,12 @@ fn publish_best_effort(ports: &ConsumerPorts, header: RpcHeader) {
 struct ConsumerPorts {
     /// Request service, read for its subscriber count before every publication.
     request_service: IoxPubSub,
-    _response_service: IoxPubSub,
+    /// Response service, read for its **publisher** count by the liveness probe.
+    ///
+    /// The provider owns that publisher, so the count answers whether a provider
+    /// is connected — and reading it costs one atomic load, where opening the
+    /// service costs a file open plus a deserialization.
+    response_service: IoxPubSub,
     _request_notify: IoxEvent,
     _response_notify: IoxEvent,
     /// Receives the responses of every call of the channel.
@@ -139,6 +144,29 @@ struct ConsumerPorts {
 fn consumer_cache() -> &'static Locked<HashMap<String, Arc<ConsumerPorts>>> {
     static CACHE: Locked<HashMap<String, Arc<ConsumerPorts>>> = Locked::new();
     &CACHE
+}
+
+/// Answers the provider liveness of `channel` from ports already opened here.
+///
+/// `None` when this process never consumed the channel: the caller then has to
+/// open the service, which is the expensive half of the probe (a name lookup, a
+/// static-config open and a deserialization, measured at 131 µs in release on
+/// the development machine, against a few nanoseconds for the count).
+///
+/// The signal is deliberately the **publisher** count of the response service,
+/// not the subscriber count of the request one: an out-of-band observer
+/// subscribes to either direction, so a subscriber count would report a peer
+/// that can never answer.
+pub(super) fn cached_provider_connected(channel: &str) -> Option<bool> {
+    consumer_cache().with(|cache| {
+        cache.get(channel).map(|ports| {
+            ports
+                .response_service
+                .dynamic_config()
+                .number_of_publishers()
+                > 0
+        })
+    })
 }
 
 /// Drops the cached ports of every consumed channel, returning how many.
@@ -237,7 +265,7 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
 
     let ports = Arc::new(ConsumerPorts {
         request_service,
-        _response_service: response_service,
+        response_service,
         _request_notify: request_notify,
         _response_notify: response_notify,
         subscriber,

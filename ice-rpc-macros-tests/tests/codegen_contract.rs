@@ -50,6 +50,7 @@ fn gen_facade_symbols_resolve() {
         global_cancel_token,
         init,
         init_without_ctrl_c,
+        is_provider_connected,
         local_call_scoped,
         native_call,
         next_correlation_id,

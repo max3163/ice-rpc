@@ -148,6 +148,40 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 })
             }
 
+            /// Whether a provider is currently connected to this service's
+            /// channel.
+            ///
+            /// Synchronous and **read-only**: it opens the response direction of
+            /// the channel without creating it and reports whether a
+            /// provider-side publisher is attached. `false` therefore means no
+            /// provider is serving the channel right now — the process is not
+            /// started, has stopped, or failed to open its channel — which is
+            /// what a readiness check, or a guard before an optional call, wants
+            /// to know.
+            ///
+            /// The answer is per **channel** (the `group` of `#[service]`):
+            /// every service sharing it shares the answer, so it says whether
+            /// *some* provider serves the channel, not which service of it is
+            /// answering.
+            ///
+            /// # Cost
+            /// ~40 ns once this process has consumed the channel (the ports it
+            /// keeps are read, not opened). The first probe on a channel it
+            /// never consumed opens the service first (~0.13 ms in release,
+            /// ~1 ms in a debug build): poll it, as a readiness endpoint does,
+            /// rather than calling it before every RPC.
+            ///
+            /// # Errors
+            /// Returns an [`ice_rpc::RpcError`] when the channel exists but
+            /// cannot be opened — a configuration mismatch with its creator, or
+            /// state left behind by a process killed while it held it. Those are
+            /// reported rather than folded into `false`, because a "not
+            /// connected" answer would hide a deployment problem no amount of
+            /// retrying resolves.
+            #visibility fn is_provider_connected() -> Result<bool, ice_rpc::RpcError> {
+                ice_rpc::codegen::is_provider_connected(#group_lit)
+            }
+
             #provide_json
 
             #(#blocking_methods)*

@@ -170,6 +170,31 @@
 //!
 //! A complete program lives in `examples/blocking-consumer-app.rs`.
 //!
+//! ### 6. Knowing whether a provider is connected
+//!
+//! `{Proxy}::is_provider_connected()` answers, **synchronously**, whether a
+//! provider is serving the service's channel right now. The probe is read-only —
+//! it opens the response direction of the channel without ever creating it — so
+//! asking the question cannot make a service appear on the bus, and an unknown
+//! channel answers `Ok(false)` instead of failing.
+//!
+//! ```rust,ignore
+//! // A readiness check, or the decision to take a degraded path, without
+//! // sending a request and waiting for the bounded provider wait.
+//! if GreeterServiceProxy::is_provider_connected()? {
+//!     // A provider is on the channel: this call will not wait for one.
+//!     let greeting = proxy.hello("Alice".into()).await.first_value().await?;
+//! } else {
+//!     log::warn!("GreeterService is not running");
+//! }
+//! ```
+//!
+//! The answer is per **channel** (the `group` of `#[service]`): every service
+//! that shares a group shares it, so it says whether *some* provider serves the
+//! channel, not which service of it is answering. A `true` is therefore a
+//! lower bound on availability, not a guarantee that this exact service is the
+//! one running.
+//!
 //! # Architecture
 //!
 //! ## Workspace crates
@@ -298,6 +323,12 @@ pub mod rt {
 
 // ── Public API: locator ─────────────────────────────────────────────
 pub use locator::ServiceLocator;
+
+// ── Public API: provider liveness ───────────────────────────────────
+// The probe behind the `{Proxy}::is_provider_connected()` the macro generates.
+// Exported too, for a host that only knows the channel name (a gateway, a
+// readiness endpoint, a test).
+pub use transport::is_provider_connected;
 
 // ── Public API: out-of-band monitoring ──────────────────────────────
 pub mod monitor;

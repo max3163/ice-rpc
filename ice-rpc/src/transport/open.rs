@@ -17,10 +17,13 @@
 use iceoryx2::prelude::*;
 use iceoryx2::service::builder::event::{EventCreateError, EventOpenError, EventOpenOrCreateError};
 use iceoryx2::service::builder::publish_subscribe::{
-    PublishSubscribeCreateError, PublishSubscribeOpenError, PublishSubscribeOpenOrCreateError,
+    Builder as PubSubBuilder, PublishSubscribeCreateError, PublishSubscribeOpenError,
+    PublishSubscribeOpenOrCreateError,
 };
 
-use super::{IoxEvent, IoxNode, IoxPubSub, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT, transport_error};
+use super::{
+    Iox, IoxEvent, IoxNode, IoxPubSub, OPEN_RETRY_SLEEP, PAYLOAD_ALIGNMENT, transport_error,
+};
 use crate::CancellationToken;
 use crate::types::{RpcError, RpcHeader};
 
@@ -57,6 +60,30 @@ const REMEDY_STALE: &str = "the iceoryx2 state on this machine was left behind b
                             `iceoryx2.toml`, or iceoryx2's default: C:\\Temp\\iceoryx2 on Windows, \
                             /tmp/iceoryx2 elsewhere)";
 
+/// Builds the pub/sub definition of one direction of `channel`.
+///
+/// The definition is shared by the transport, the observers and the liveness
+/// probe, so all of them open the very service the provider created: the wire
+/// types, the user header, the alignment and the overflow behaviour stay
+/// single-sourced here.
+fn pub_sub_builder(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+) -> Result<PubSubBuilder<[u8], RpcHeader, Iox>, RpcError> {
+    let topic = format!("{channel}{suffix}");
+    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
+    let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
+        .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
+    Ok(node
+        .service_builder(&name)
+        .publish_subscribe::<[u8]>()
+        .user_header::<RpcHeader>()
+        .payload_alignment(alignment)
+        // Must stay false: enabled, the receiver overwrites its oldest sample.
+        .enable_safe_overflow(false))
+}
+
 /// Opens the pub/sub service of one direction of `channel`.
 ///
 /// The definition is shared by the transport and the observer, so an
@@ -68,17 +95,7 @@ pub(super) fn open_service(
     suffix: &str,
     mode: OpenMode,
 ) -> Result<IoxPubSub, RpcError> {
-    let topic = format!("{channel}{suffix}");
-    let name = ServiceName::new(&topic).map_err(|e| transport_error("service name", e))?;
-    let alignment = Alignment::new(PAYLOAD_ALIGNMENT)
-        .ok_or_else(|| RpcError::Internal("invalid payload alignment".to_string()))?;
-    let builder = node
-        .service_builder(&name)
-        .publish_subscribe::<[u8]>()
-        .user_header::<RpcHeader>()
-        .payload_alignment(alignment)
-        // Must stay false: enabled, the receiver overwrites its oldest sample.
-        .enable_safe_overflow(false);
+    let builder = pub_sub_builder(node, channel, suffix)?;
 
     match mode {
         OpenMode::CreateOrOpen => builder.open_or_create().map_err(|e| match e {
@@ -93,6 +110,23 @@ pub(super) fn open_service(
         OpenMode::ReadOnly => builder
             .open()
             .map_err(|e| pub_sub_open_error("open service (read-only)", e)),
+    }
+}
+
+/// Opens the pub/sub service of one direction of `channel`, **if it exists**.
+///
+/// Never creates it: `Ok(None)` is the ordinary "no process owns this service"
+/// answer, not a failure. This is what a liveness probe uses, so asking whether
+/// a provider is connected cannot itself make a channel appear on the bus.
+pub(super) fn open_existing_service(
+    node: &IoxNode,
+    channel: &str,
+    suffix: &str,
+) -> Result<Option<IoxPubSub>, RpcError> {
+    match pub_sub_builder(node, channel, suffix)?.open() {
+        Ok(service) => Ok(Some(service)),
+        Err(PublishSubscribeOpenError::DoesNotExist) => Ok(None),
+        Err(e) => Err(pub_sub_open_error("open service (read-only)", e)),
     }
 }
 

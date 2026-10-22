@@ -82,7 +82,7 @@ service types, exactly as before.
 ## Execution modes
 
 The core names **no runtime** outside one façade (`ice_rpc::rt`). A façade
-cannot be runtime-*neutral*: a detached task has to be polled by someone, and
+cannot be runtime-_neutral_: a detached task has to be polled by someone, and
 "who polls" is the only thing a runtime is asked for here. So instead of one
 lowest-common-denominator executor, there is one **full mode per host runtime**,
 plus a fallback for a deployment that has none. "Full" means the process then
@@ -94,14 +94,14 @@ ice-rpc = { version = "0.3", features = ["tokio"] }        # tokio only
 ice-rpc = { version = "0.3", features = ["smol"] }         # smol only
 ```
 
-| Mode | Task spawning, timers, blocking pool |
-|---|---|
+| Mode                 | Task spawning, timers, blocking pool                                                                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rt-async` (default) | an `async-executor` instance owned by the crate, run by `available_parallelism()` OS threads (`ICE_RPC_THREADS` overrides the count), `futures-timer` for `sleep`, `blocking` for the pool. No third-party runtime, and **no I/O reactor**: the core performs no async I/O. |
-| `tokio` | `tokio::spawn`, `tokio::time::sleep`, tokio's blocking pool |
-| `smol` | `smol::spawn` on smol's global executor — so the tasks share the pool of an application that already runs smol — `smol::Timer`, `smol::unblock`. Set `SMOL_THREADS`: that executor runs **one** thread by default. |
+| `tokio`              | `tokio::spawn`, `tokio::time::sleep`, tokio's blocking pool                                                                                                                                                                                                                 |
+| `smol`               | `smol::spawn` on smol's global executor — so the tasks share the pool of an application that already runs smol — `smol::Timer`, `smol::unblock`. Set `SMOL_THREADS`: that executor runs **one** thread by default.                                                          |
 
 The modes are exclusive: `tokio` + `smol` is a compile error. Enabling a mode
-does *not* remove the fallback from the dependency graph, because Cargo features
+does _not_ remove the fallback from the dependency graph, because Cargo features
 are additive; a build that carries one runtime and nothing else says so:
 
 ```toml
@@ -117,7 +117,7 @@ this is not a runtime-free mode; `#[ice_rpc::main(tokio)]` builds a multi-thread
 tokio runtime, and any `fn(Future) -> T` can be given instead, e.g.
 `#[ice_rpc::main(pollster::block_on)]`. Only `#[ice_rpc::main(rt-none)]` — the
 `rt-none` mode behind the `client` feature — drops the runtime entirely, which
-is why it is the sole mode that can truthfully be called *runtime-free*.
+is why it is the sole mode that can truthfully be called _runtime-free_.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
   stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
@@ -167,7 +167,7 @@ flux.
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
 - `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id;
-- `max_slice_len` and `blocking` — see *Configuration* below.
+- `max_slice_len` and `blocking` — see _Configuration_ below.
 
 ```rust,ignore
 #[service("MyService", version = 1, group = "db")]
@@ -256,14 +256,14 @@ The consumer prints `Hello Alice!`. Stop the provider with Ctrl+C.
 
 ## Core concepts
 
-| Concept | Description |
-|---|---|
-| `Observable<T, E>` | The composable stream, and the return type of service methods (no `Result`). |
-| `Event<T, E>` | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
-| `ObservableError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`. |
-| `ServiceLocator` | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`. |
-| `ServiceInit` | The only trait a developer implements: `dependencies()` + the `on_init` hook. |
-| `Proxy` | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderJson`). |
+| Concept              | Description                                                                                                                              |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `Observable<T, E>`   | The composable stream, and the return type of service methods (no `Result`).                                                             |
+| `Event<T, E>`        | Consumer-facing: `Next(T)` / `Complete` / `Error(ObservableError<E>)` where `ObservableError` is `Business(E)` or `Technical(RpcError)`. |
+| `ObservableError<E>` | Terminal error of `first_value()`: `Business(E)` / `Technical(RpcError)` / `Empty`.                                                      |
+| `ServiceLocator`     | Global registry, reached through `locator()`: `locator().get::<MyProxy>()`.                                                              |
+| `ServiceInit`        | The only trait a developer implements: `dependencies()` + the `on_init` hook.                                                            |
+| `Proxy`              | Single entry point with 3 modes (`Provider` / `Consumer` / `ProviderJson`).                                                              |
 
 Internal concepts (`NodeId`, `WireEvent`, the transport entry points, …) are
 exposed through the doc-hidden `ice_rpc::codegen` module and used by
@@ -354,17 +354,17 @@ refines with the two variants.
 
 Every variant the enum declares, in declaration order:
 
-| Variant | Meaning | Retryable |
-|---|---|---|
-| `SerializationError` | rkyv serialization/deserialization failure | no |
-| `TransportError` | iceoryx2 I/O failure (loan, send, receive, port creation) | yes |
-| `Timeout` | deadline exceeded | yes |
-| `Cancelled` | cancelled by a global shutdown (SIGINT/SIGTERM or programmatic), a `take_until` token or a `timeout`; a remote Cancel published by a consumer that abandoned the call is handled by the provider and stays silent | no |
-| `Internal` | unexpected internal error / invariant violation | no |
-| `ProtocolMismatch` | the service on the bus was recorded with a different configuration — a peer resolving another `iceoryx2.toml`, or another build — or its state was left behind by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no |
-| `UnknownMethod` | the provider has no method of that name on the requested service; answered at once, so a typo or a stale client is diagnosable instead of ending in a transport timeout | no |
-| `UnknownService` | no service is registered under the requested id on that channel; answered at once too, and it names the id in hexadecimal because a hash cannot be inverted | no |
-| `IncompatibleVersion` | the provider was built with another `#[service(version = N)]`; emitted before the payload is decoded, and no amount of retrying resolves it — both peers must be rebuilt with the same declared version | no |
+| Variant               | Meaning                                                                                                                                                                                                                                                                                      | Retryable |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `SerializationError`  | rkyv serialization/deserialization failure                                                                                                                                                                                                                                                   | no        |
+| `TransportError`      | iceoryx2 I/O failure (loan, send, receive, port creation)                                                                                                                                                                                                                                    | yes       |
+| `Timeout`             | deadline exceeded                                                                                                                                                                                                                                                                            | yes       |
+| `Cancelled`           | cancelled by a global shutdown (SIGINT/SIGTERM or programmatic), a `take_until` token or a `timeout`; a remote Cancel published by a consumer that abandoned the call is handled by the provider and stays silent                                                                            | no        |
+| `Internal`            | unexpected internal error / invariant violation                                                                                                                                                                                                                                              | no        |
+| `ProtocolMismatch`    | the service on the bus was recorded with a different configuration — a peer resolving another `iceoryx2.toml`, or another build — or its state was left behind by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no        |
+| `UnknownMethod`       | the provider has no method of that name on the requested service; answered at once, so a typo or a stale client is diagnosable instead of ending in a transport timeout                                                                                                                      | no        |
+| `UnknownService`      | no service is registered under the requested id on that channel; answered at once too, and it names the id in hexadecimal because a hash cannot be inverted                                                                                                                                  | no        |
+| `IncompatibleVersion` | the provider was built with another `#[service(version = N)]`; emitted before the payload is decoded, and no amount of retrying resolves it — both peers must be rebuilt with the same declared version                                                                                      | no        |
 
 Four names that appeared in an earlier version of this table — `DiscoveryError`,
 `ProviderUnavailable`, `ServiceNotFound`, `PayloadTooLarge` — have **no** variant.
@@ -373,8 +373,10 @@ id with no dispatcher on the channel, not a service the locator failed to find.
 Addressing is static: a provider that is not running is not a distinct error, it
 surfaces as a `TransportError` reading `no subscriber connected` once the provider
 wait (`ICE_RPC_PROVIDER_WAIT_MS`, 30 s) elapses, and an oversized payload as an
-iceoryx2 failure. A `match` on `RpcError` is exhaustive, so the compiler settles the
-question rather than this table.
+iceoryx2 failure. To know _before_ a call, without waiting, use
+`{Service}Proxy::is_provider_connected()` — see
+[Provider liveness](#provider-liveness). A `match` on `RpcError` is exhaustive, so
+the compiler settles the question rather than this table.
 
 ## Service initialization
 
@@ -398,7 +400,7 @@ impl ice_rpc::ServiceInit for MyServiceImpl {
 
 `dependencies()` feeds **only** the topological sort of the services registered
 in the **same** process: a service is initialized after the local services it
-lists. A dependency provided by **another process** is *external* and never
+lists. A dependency provided by **another process** is _external_ and never
 blocks the startup — it is ignored by the sort, with no discovery, no connection
 and no wait. There is **no iceoryx2 discovery check** at initialization, so a
 provider reports itself ready even when a declared external dependency is not
@@ -407,8 +409,8 @@ the channel (creating it if no provider exists yet) and waits a **bounded**
 provider wait (30 s by default, `ICE_RPC_PROVIDER_WAIT_MS` overrides it) for a
 subscriber, then fails with a `TransportError` reading `no subscriber connected`.
 To require an external dependency at startup, run the check yourself in
-`on_init()` (a typed `ping` with a bounded retry) and return `false` when it is
-unreachable.
+`on_init()` and return `false` when it is unreachable: either a typed `ping` with
+a bounded retry, or the [provider liveness](#provider-liveness) probe.
 
 For services that consume other services, register with `provide_with_init`.
 `#[ice_rpc::main]` bootstraps ice-rpc (init + runtime) and owns the clean
@@ -450,6 +452,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 A `rt::block_on(run_provider!(..))` does **not** start the provider in the
 background: `block_on` runs a future to completion on the calling thread, and
 this future completes only on shutdown — such a call blocks until Ctrl+C.
+
+## Provider liveness
+
+Every generated proxy exposes `{Service}Proxy::is_provider_connected()`, and the
+same probe is reachable as `ice_rpc::is_provider_connected(channel)` for a host
+that only knows the channel name:
+
+```rust,ignore
+#[ice_rpc::async_trait]
+impl ice_rpc::ServiceInit for MyServiceImpl {
+    async fn on_init(&self) -> bool {
+        // No request, no wait: `false` when no provider serves the channel.
+        ConfigServiceProxy::is_provider_connected().unwrap_or(false)
+    }
+}
+```
+
+It is **synchronous** and **read-only**: it opens the response direction of the
+channel _without_ creating it, and reports whether a provider-side publisher is
+attached — the publisher its channel thread creates when it opens its ports and
+drops when it stops. So:
+
+- an unknown channel answers `Ok(false)`, exactly like a channel whose provider
+  has stopped, which is what a readiness check wants _before_ the provider runs;
+- a consumer cannot make it `true`: a consumer only subscribes to the response
+  direction;
+- a channel that exists but cannot be opened (configuration mismatch with its
+  creator, leftover state from a killed process) is reported as an error rather
+  than folded into `false`, because "not connected" would hide a deployment
+  problem no retry resolves.
+
+The answer is per **channel** (the `group` of `#[service]`): every service that
+shares a group shares it, so `true` is a lower bound — _some_ provider serves the
+channel, not necessarily the exact service asked about. It is meant for a
+readiness probe or a guard before an optional call; it is not a hot-path check
+and it does not retry.
+
+Its cost has two regimes. Once the process has consumed the channel, the probe
+reads the response port it already keeps: **40 ns** measured in release (the
+publisher count alone is a 7 ns atomic load; the rest is the cached-port lookup).
+The first probe on a channel it never consumed has to open the service — name
+lookup, static-config open, deserialization — which measured **131 µs** in
+release and **1.06 ms** in a debug build on the development machine. That is
+cheap for a readiness endpoint polled every second, and too much for a guard
+before every RPC: make one call first (or poll once), and the cheap path takes
+over.
 
 ## Clean shutdown
 
@@ -562,15 +610,15 @@ for the list a caller builds before the call. On a request with ~130 variable
 fields that is 130 `malloc`/`free` pairs per call, and the process allocator
 becomes the dominant cost:
 
-| one process, one line changed | system allocator | `mimalloc` |
-|---|---|---|
-| provider serving a struct of ~130 variable fields | 62 481 req/s | **138 032 req/s** |
-| caller building 256 string fields | 83 717 req/s | **141 618 req/s** |
+| one process, one line changed                     | system allocator | `mimalloc`        |
+| ------------------------------------------------- | ---------------- | ----------------- |
+| provider serving a struct of ~130 variable fields | 62 481 req/s     | **138 032 req/s** |
+| caller building 256 string fields                 | 83 717 req/s     | **141 618 req/s** |
 
 A **response** pays it twice — once by the provider that builds the value, once by
 the caller that decodes it — and no signature can avoid that, since a stream hands
-out owned values. The same 64-field structure runs at 19 434 req/s as a *return*
-value, against 139 854 as a *request* and 283 668 for a scalar call (40 733 /
+out owned values. The same 64-field structure runs at 19 434 req/s as a _return_
+value, against 139 854 as a _request_ and 283 668 for a scalar call (40 733 /
 211 429 / 341 074 with `mimalloc`). A large structured response is therefore a
 **design choice**: splitting it into several small ones costs a fraction of that.
 
@@ -587,7 +635,7 @@ allocator is a property each side decides for itself.
 
 The allocations themselves cannot be avoided from the outside: an archive holds the
 **archived** form of a value, so the provider rebuilds every owned field, and a
-stream hands the caller owned values. What the numbers above price *is* that, and the
+stream hands the caller owned values. What the numbers above price _is_ that, and the
 levers left are the allocator (above) and the **shape** of the exchange — a response
 split into several small ones, or a request that carries fewer variable fields.
 

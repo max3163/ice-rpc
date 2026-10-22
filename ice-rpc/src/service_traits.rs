@@ -114,7 +114,11 @@ pub trait ServiceInit: Send + Sync + 'static {
     ///
     /// To require an external dependency at startup, implement the check inside
     /// [`on_init`](ServiceInit::on_init) yourself (a typed `ping` with a bounded
-    /// retry) and return `false` when it is not reachable.
+    /// retry), or ask the generated
+    /// `{Service}Proxy::is_provider_connected()` — a synchronous, read-only
+    /// probe that reports whether a provider currently serves the dependency's
+    /// channel, without sending any request. Return `false` when it is not
+    /// reachable.
     fn dependencies(&self) -> Vec<&'static str> {
         vec![]
     }

@@ -160,3 +160,19 @@ fn test_all_service_parameters_compile() {
     let client = AllParamsServiceClient::new();
     let _ = &client;
 }
+
+// Test 10: the liveness probe generated on every proxy
+
+/// `{Proxy}::is_provider_connected()` needs no proxy instance and, above all,
+/// answers instead of failing when the channel was never created: that is what
+/// makes it usable as a readiness check *before* a provider is started.
+#[test]
+fn test_proxy_reports_whether_a_provider_is_connected() {
+    // The `group` of `AllParamsService`: no test process serves it.
+    let connected = AllParamsServiceProxy::is_provider_connected()
+        .expect("an unknown channel must answer, not fail");
+    assert!(
+        !connected,
+        "no provider serves this channel in the test process"
+    );
+}

@@ -29,7 +29,9 @@
 mod decode;
 mod inventory;
 
-pub use crate::transport::{Direction, DirectionView, Emitter, decode_aligned, discover_channels};
+pub use crate::transport::{
+    Direction, DirectionView, Emitter, decode_aligned, discover_channels, is_provider_connected,
+};
 
 pub use decode::{
     ClosureDecoder, Decoders, ServiceDecoder, decode_request, decode_response, decode_response_unit,

@@ -4,6 +4,7 @@ pub trait DatabaseApi: Send + Sync + 'static {
     async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
     async fn get(&self, key: String) -> Observable<String, String>;
     async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
+    async fn notify(&self, message: String);
 }
 #[allow(missing_docs)]
 #[repr(u8)]
@@ -18,6 +19,7 @@ pub enum DatabaseApiRequest {
     Add { a: i32, b: i32 } = 0u8,
     Get { key: String } = 1u8,
     Put { key: String, value: Vec<u8> } = 2u8,
+    Notify { message: String } = 3u8,
 }
 #[allow(missing_docs)]
 impl DatabaseApiProxy {
@@ -84,6 +86,18 @@ impl DatabaseApiClient {
                 &req_val,
             )
             .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+    }
+    ///One-way call of [`notify`]: publishes the request and returns, without waiting for anything. `Ok(true)` means at least one subscriber took the sample, `Ok(false)` that nobody did (no provider, or a full buffer) — an expected outcome of a fire-and-forget call, not an error.
+    pub fn notify(&self, message: String) -> Result<bool, ice_rpc::RpcError> {
+        let req_val = DatabaseApiRequest::Notify {
+            message,
+        };
+        ice_rpc::codegen::serialize_and_send_one_way(
+            "db",
+            <DatabaseApiProxy>::SERVICE,
+            ice_rpc::codegen::method_id_of("notify"),
+            &req_val,
+        )
     }
 }
 #[allow(missing_docs)]
@@ -303,6 +317,51 @@ impl DatabaseApiServer {
                     },
                 );
         }
+        {
+            let service_impl = self.service_impl.clone();
+            dispatcher
+                .oneway_method(
+                    ice_rpc::codegen::method_id_of("notify"),
+                    move |
+                        header: ice_rpc::codegen::RpcHeader,
+                        payload: &[u8],
+                        _emitter: ice_rpc::codegen::OwnedEmitter,
+                    | -> ice_rpc::codegen::BoxResponseFuture {
+                        let ctx = ice_rpc::codegen::CallContext::new(
+                            &header,
+                            <DatabaseApiProxy>::SERVICE_NAME,
+                            "notify",
+                        );
+                        let impl_ref = service_impl.clone();
+                        let request = match ice_rpc::codegen::decode_aligned::<
+                            DatabaseApiRequest,
+                        >(payload) {
+                            Ok(DatabaseApiRequest::Notify { message }) => (message),
+                            Err(e) => {
+                                ice_rpc::codegen::log::error!(
+                                    "[{}::{}] one-way payload decoding failed: {:?}", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "notify", e
+                                );
+                                return Box::pin(async {});
+                            }
+                            Ok(_) => {
+                                ice_rpc::codegen::log::error!(
+                                    "[{}::{}] one-way payload is another method's variant", <
+                                    DatabaseApiProxy > ::SERVICE_NAME, "notify"
+                                );
+                                return Box::pin(async {});
+                            }
+                        };
+                        ice_rpc::codegen::call_scoped(
+                            ctx,
+                            async move {
+                                let (message) = request;
+                                impl_ref.notify(message).await;
+                            },
+                        )
+                    },
+                );
+        }
         dispatcher
     }
 }
@@ -405,6 +464,17 @@ impl DatabaseApiProxy {
     pub fn is_provider_connected() -> Result<bool, ice_rpc::RpcError> {
         ice_rpc::codegen::is_provider_connected("db")
     }
+    ///One-way call of [`notify`]: publishes the notification and returns. `Ok(true)` means at least one subscriber took the sample, `Ok(false)` that nobody did — an expected outcome, not an error. In Provider mode the local implementation is called and the answer is always `Ok(true)`.
+    pub fn notify(&self, message: String) -> Result<bool, ice_rpc::RpcError> {
+        let mode = self.mode.read_blocking();
+        match &*mode {
+            DatabaseApiMode::Provider { local_impl, .. } => {
+                ice_rpc::rt::block_on(local_impl.notify(message));
+                Ok(true)
+            }
+            DatabaseApiMode::Consumer { ipc_client } => ipc_client.notify(message),
+        }
+    }
 }
 #[allow(missing_docs)]
 #[ice_rpc::codegen::async_trait::async_trait]
@@ -452,6 +522,17 @@ impl DatabaseApi for DatabaseApiProxy {
                     .await
             }
             DatabaseApiMode::Consumer { ipc_client } => ipc_client.put(key, value).await,
+        }
+    }
+    async fn notify(&self, message: String) {
+        let mode = self.mode.read().await;
+        match &*mode {
+            DatabaseApiMode::Provider { local_impl, .. } => {
+                local_impl.notify(message).await;
+            }
+            DatabaseApiMode::Consumer { ipc_client } => {
+                let _ = ipc_client.notify(message);
+            }
         }
     }
 }
@@ -534,6 +615,11 @@ impl ::std::fmt::Display for DatabaseApiRequest {
                     ice_rpc::monitor::render_value!(value)
                 )
             }
+            DatabaseApiRequest::Notify { message } => {
+                ::std::write!(
+                    f, "notify(message={})", ice_rpc::monitor::render_value!(message)
+                )
+            }
         }
     }
 }
@@ -578,6 +664,7 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
             "add" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             "get" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             "put" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
+            "notify" => ice_rpc::monitor::decode_request::<DatabaseApiRequest>(payload),
             _ => ::std::option::Option::None,
         }
     }
@@ -612,6 +699,7 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
                     String,
                 >(payload, |error| ice_rpc::monitor::render_value!(error))
             }
+            "notify" => ::std::option::Option::None,
             _ => ::std::option::Option::None,
         }
     }
@@ -624,6 +712,9 @@ impl ice_rpc::monitor::ServiceDecoder for DatabaseApiDecoder {
         }
         if method_id == ice_rpc::codegen::method_id_of("put") {
             return ::std::option::Option::Some("put");
+        }
+        if method_id == ice_rpc::codegen::method_id_of("notify") {
+            return ::std::option::Option::Some("notify");
         }
         ::std::option::Option::None
     }

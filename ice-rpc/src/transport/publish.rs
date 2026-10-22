@@ -88,6 +88,30 @@ fn backoff(attempts: &mut u32) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// Publishes one sample **once**, and never waits for anything.
+///
+/// The one-way counterpart of [`publish_until_delivered`]: no retry, no spin, no
+/// deadline, and no [`RpcError::Cancelled`]. It answers the only question a
+/// fire-and-forget call can answer — *did any subscriber take it?* — and treats
+/// a "no" as an ordinary outcome, not a failure: the caller's contract is best
+/// effort.
+///
+/// The subscriber count is read first, for the same reason the retrying path
+/// reads it before every attempt: a sample nobody can receive is not worth
+/// copying. That read is one relaxed atomic load on shared memory (a few
+/// nanoseconds), so the short-circuit costs nothing.
+pub(super) fn publish_one_way(
+    publisher: &IoxPublisher,
+    service: &IoxPubSub,
+    header: RpcHeader,
+    payload: &[u8],
+) -> Result<bool, RpcError> {
+    if service.dynamic_config().number_of_subscribers() == 0 {
+        return Ok(false);
+    }
+    try_publish(publisher, header, payload)
+}
+
 /// Loans one sample, writes `header ++ payload` into it and sends it.
 ///
 /// Returns `true` when at least one subscriber received the sample. Also used by

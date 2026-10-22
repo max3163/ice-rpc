@@ -195,6 +195,40 @@
 //! lower bound on availability, not a guarantee that this exact service is the
 //! one running.
 //!
+//! ### 7. Fire-and-forget methods
+//!
+//! A method declared **without a return type** is a notification: one sample
+//! published, no answer, no terminal event. The generated caller is synchronous
+//! and reports only what the emitter can know — whether a subscriber took the
+//! sample:
+//!
+//! ```rust,ignore
+//! #[service("LogSink", group = "logs")]
+//! pub trait LogSink: Send + Sync + 'static {
+//!     /// One-way: no return type, so nothing is answered.
+//!     async fn push(&self, batch: Vec<LogRecord>);
+//!     /// Request/response: a stream of values comes back.
+//!     async fn tail(&self, count: u32) -> Observable<Vec<LogRecord>, LogError>;
+//! }
+//!
+//! let sink = ice_rpc::locator().get_blocking::<LogSinkProxy>()?;
+//! match sink.push(batch) {      // no `.await`: there is nothing to wait for
+//!     Ok(true) => {}            // a subscriber took the sample
+//!     Ok(false) => drops += 1,  // nobody was there, or the buffer was full
+//!     Err(e) => errors += 1,    // the emission itself failed
+//! }
+//! ```
+//!
+//! The two vocabularies cannot be confused: a method meant to answer produces a
+//! value, so it cannot compile without its return type, and an explicit `-> ()`
+//! is refused with both alternatives named. `Ok(false)` is an ordinary outcome
+//! (best effort), `Err` is a real failure of the emission. On the provider side
+//! the handler still reads its [`CallContext`] — so it inherits the caller's
+//! trace — but it cannot be cancelled: there is no call left to cancel.
+//!
+//! Over the JSON transports a one-way method answers **`202 Accepted`**, with
+//! `delivered` reporting the same flag; no reply body is ever expected.
+//!
 //! # Architecture
 //!
 //! ## Workspace crates

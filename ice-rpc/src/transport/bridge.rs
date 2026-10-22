@@ -238,6 +238,37 @@ pub type MethodHandler =
 /// A handler's boxed future, re-exported where the codegen names it.
 pub type BoxResponseFuture = crate::types::BoxResponseFuture;
 
+/// One registered **method**: its implementation, and whether a call expects an
+/// answer.
+///
+/// This is the service's method table, not a table of calls: the entry is how the
+/// provider knows what to execute when a sample carrying that `method_id` arrives,
+/// so a one-way method needs one as much as any other — without it the sample
+/// would be rejected as `UnknownMethod`. What a one-way method does not get is a
+/// **call** entry in the in-flight table, which is created per request.
+///
+/// The flag is a property of the contract, decided once when the provider
+/// registers its methods: it tells the transport that a call to this method has
+/// no answer to await, hence no token to register and no cancellation wrapper.
+struct MethodEntry {
+    handler: MethodHandler,
+    oneway: bool,
+}
+
+/// One dispatched request: the task that serves it, and what to do around it.
+///
+/// Returned by [`ServiceDispatcher::dispatch`] so the transport learns the
+/// classification from the **same** table lookup that finds the handler — one
+/// lookup per request, not two.
+pub struct DispatchedRequest {
+    /// The handler's boxed future, built but **not polled**.
+    pub task: BoxResponseFuture,
+    /// `false` for a one-way method: the caller registered no handler and reads
+    /// nothing, so this call must not be registered as in flight and cannot be
+    /// cancelled.
+    pub expects_response: bool,
+}
+
 /// Per-service table of method handlers, built by a generated provider.
 #[derive(Default)]
 pub struct ServiceDispatcher {
@@ -247,7 +278,7 @@ pub struct ServiceDispatcher {
     ///
     /// An [`IdMap`]: looked up on **every** request, so it uses the identity
     /// hasher rather than the default SipHash (see `src/hash.rs`).
-    handlers: IdMap<u32, MethodHandler>,
+    handlers: IdMap<u32, MethodEntry>,
 }
 
 impl ServiceDispatcher {
@@ -272,8 +303,36 @@ impl ServiceDispatcher {
             + Sync
             + 'static,
     {
-        self.handlers
-            .insert(method_id.method_id(), Box::new(handler));
+        self.handlers.insert(
+            method_id.method_id(),
+            MethodEntry {
+                handler: Box::new(handler),
+                oneway: false,
+            },
+        );
+        self
+    }
+
+    /// Registers the handler of one **one-way** method, keyed by its id.
+    ///
+    /// Same handler shape as [`method`](Self::method) — the generated body simply
+    /// never touches its emitter — but the transport treats a call to it
+    /// differently: no in-flight entry, no cancellation wrapper, and no response
+    /// is ever expected from it.
+    pub fn oneway_method<F>(&mut self, method_id: impl MethodId, handler: F) -> &mut Self
+    where
+        F: for<'a> Fn(RpcHeader, &'a [u8], OwnedEmitter) -> BoxResponseFuture
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.handlers.insert(
+            method_id.method_id(),
+            MethodEntry {
+                handler: Box::new(handler),
+                oneway: true,
+            },
+        );
         self
     }
 
@@ -282,7 +341,8 @@ impl ServiceDispatcher {
     /// Returns `None` when no handler is registered for `method`, which the
     /// transport turns into an immediate [`crate::types::RpcError::UnknownMethod`]
     /// — a silent drop would only reach the caller as a timeout. One lookup: the
-    /// transport needs no separate `has_method` probe.
+    /// transport needs no separate `has_method` probe, and the same lookup answers
+    /// whether the call expects a response.
     ///
     /// The future is handed back rather than awaited: the transport decides when
     /// it runs. It polls it once on the channel's thread — a handler that answers
@@ -294,10 +354,13 @@ impl ServiceDispatcher {
         header: RpcHeader,
         payload: &[u8],
         emitter: OwnedEmitter,
-    ) -> Option<BoxResponseFuture> {
+    ) -> Option<DispatchedRequest> {
         self.handlers
             .get(&method_id)
-            .map(|handler| handler(header, payload, emitter))
+            .map(|entry| DispatchedRequest {
+                task: (entry.handler)(header, payload, emitter),
+                expects_response: !entry.oneway,
+            })
     }
 }
 

@@ -171,10 +171,11 @@ fn assert_golden(
 /// The pinned declaration: every parameter of the attribute, every argument shape
 /// the generators special-case, and every response shape.
 ///
-/// Three methods, so the numbering, the routing and the two request-enum variants
-/// are all visible in one file — and `put` returns `()`, which expands differently
+/// Four methods, so the numbering, the routing and the two request-enum variants
+/// are all visible in one file — `put` returns `()`, which expands differently
 /// from a value return, while `get` can fail, which fixes the `Ok`/`Err` extraction
-/// on both sides.
+/// on both sides. `notify` has **no return type**: it is the one-way shape, whose
+/// client caller is synchronous and whose server handler never emits.
 #[test]
 fn the_pinned_service_carries_every_shape_in_every_feature_set() {
     let item = quote! {
@@ -183,6 +184,7 @@ fn the_pinned_service_carries_every_shape_in_every_feature_set() {
             async fn add(&self, a: i32, b: i32) -> Observable<i32, String>;
             async fn get(&self, key: String) -> Observable<String, String>;
             async fn put(&self, key: String, value: Vec<u8>) -> Observable<(), String>;
+            async fn notify(&self, message: String);
         }
     };
     for (features, label) in PINNED {

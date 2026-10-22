@@ -141,3 +141,62 @@ pub fn gen_client_method(input: &ClientMethodGenInput) -> TokenStream {
         #blocking_method
     }
 }
+
+/// Parameters of a **one-way** client method.
+///
+/// No `ok_type`/`err_type`: a one-way call has no result type, which is exactly
+/// what the declared signature (no return type) says.
+pub struct ClientOnewayGenInput<'a> {
+    pub visibility: &'a Visibility,
+    pub fn_name: &'a Ident,
+    pub var_name: &'a Ident,
+    pub arg_names: &'a [&'a Ident],
+    pub arg_types: &'a [&'a Type],
+    pub req_enum_name: &'a Ident,
+    /// Channel the request is published on (the `group` of `#[service]`).
+    pub group: &'a str,
+    /// Expression of the shared [`ServiceRef`] of the service (id + version).
+    pub service_ref: &'a TokenStream,
+}
+
+/// Generates the client method of a **one-way** RPC method.
+///
+/// The server never answers, so the caller is **synchronous**: encoding and
+/// publishing are a single call that returns before anything could come back.
+/// The returned `bool` is the emitter's own observation — was the sample taken
+/// by at least one subscriber — and never an acknowledgement from the service.
+pub fn gen_client_oneway_method(input: &ClientOnewayGenInput) -> TokenStream {
+    let ClientOnewayGenInput {
+        visibility,
+        fn_name,
+        var_name,
+        arg_names,
+        arg_types,
+        req_enum_name,
+        group,
+        service_ref,
+    } = input;
+
+    let method_name_str = fn_name.to_string();
+    let doc = format!(
+        "One-way call of [`{fn_name}`]: publishes the request and returns, without \
+         waiting for anything. `Ok(true)` means at least one subscriber took the sample, \
+         `Ok(false)` that nobody did (no provider, or a full buffer) — an expected \
+         outcome of a fire-and-forget call, not an error."
+    );
+
+    quote! {
+        #[doc = #doc]
+        #visibility fn #fn_name(&self, #(#arg_names: #arg_types),*)
+            -> Result<bool, ice_rpc::RpcError>
+        {
+            let req_val = #req_enum_name::#var_name { #(#arg_names),* };
+            ice_rpc::codegen::serialize_and_send_one_way(
+                #group,
+                #service_ref,
+                ice_rpc::codegen::method_id_of(#method_name_str),
+                &req_val,
+            )
+        }
+    }
+}

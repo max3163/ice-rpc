@@ -31,10 +31,13 @@ pub struct DecoderMethod {
     pub var_name: Ident,
     /// Argument names, bound by the request-enum variant.
     pub arg_names: Vec<Ident>,
-    /// Success type `T` of `Observable<T, E>`.
+    /// Success type `T` of `Observable<T, E>` (`()` for a one-way method).
     pub ok_type: Type,
-    /// Error type `E` of `Observable<T, E>`.
+    /// Error type `E` of `Observable<T, E>` (`()` for a one-way method).
     pub err_type: Type,
+    /// Whether the method is a notification: it never emits a response, so it has
+    /// no payload to render on the response channel.
+    pub oneway: bool,
 }
 
 /// Parameters of the decoder generation.
@@ -127,7 +130,13 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         // unit case only passes the error renderer.
         let ok_type = &method.ok_type;
         let err_type = &method.err_type;
-        if is_unit_type(ok_type) {
+        if method.oneway {
+            // A one-way method publishes nothing on the response channel: an
+            // observer can render its **request** (above) and never a response.
+            response_arms.push(quote! {
+                #method_lit => ::std::option::Option::None
+            });
+        } else if is_unit_type(ok_type) {
             response_arms.push(quote! {
                 #method_lit => ice_rpc::monitor::decode_response_unit::<#err_type>(
                     payload,

@@ -22,6 +22,12 @@ pub struct ProxyGenInput<'a> {
     /// Blocking twins (`{method}_blocking`) emitted on the **inherent** impl, one
     /// per method when the `blocking` parameter of `#[service]` is set.
     pub blocking_methods: &'a [TokenStream],
+    /// Callers of the **one-way** methods, emitted on the inherent impl.
+    ///
+    /// They carry the plain method name: the inherent method wins over the trait
+    /// one for a `proxy.method(..)`, so a consumer gets the useful
+    /// `Result<bool, RpcError>` while `dyn Trait` keeps the notification shape.
+    pub oneway_calls: &'a [TokenStream],
     /// Whether the `ProviderJson` mode and its constructor belong to the
     /// expansion (the `json` feature).
     pub json_provider: bool,
@@ -42,6 +48,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         max_slice_len,
         node_methods,
         blocking_methods,
+        oneway_calls,
         json_provider,
     } = input;
 
@@ -183,6 +190,8 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             }
 
             #provide_json
+
+            #(#oneway_calls)*
 
             #(#blocking_methods)*
         }
@@ -339,6 +348,127 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
                 },
                 #mode_name::Consumer { ipc_client } => {
                     ipc_client.#blocking_name(#(#arg_names),*)
+                }
+                #json_arm
+            }
+        }
+    }
+}
+
+/// Parameters of one **one-way** proxy method.
+pub struct ProxyOnewayGenInput<'a> {
+    /// The RPC method delegated to.
+    pub fn_name: &'a Ident,
+    /// Parameter names, in declaration order.
+    pub arg_names: &'a [&'a Ident],
+    /// Parameter types, in declaration order.
+    pub arg_types: &'a [&'a syn::Type],
+    /// The generated mode enum (`{Trait}Mode`).
+    pub mode_name: &'a Ident,
+    /// Visibility of the proxy type.
+    pub visibility: &'a Visibility,
+    /// Whether the `ProviderJson` arm belongs to the expansion.
+    pub json_provider: bool,
+}
+
+/// Generates the **trait implementation** body of a one-way method.
+///
+/// The proxy implements the service trait so it can stand in for the
+/// implementation (`dyn Trait`, the gateway), and the shape is exactly the
+/// declared one: an `async fn` returning nothing. The emitter's `delivered`
+/// answer has nowhere to go here, which is why the inherent caller below exists —
+/// `proxy.method(..)` resolves to *it*, not to this.
+pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
+    let ProxyOnewayGenInput {
+        fn_name,
+        arg_names,
+        arg_types,
+        mode_name,
+        visibility: _,
+        json_provider,
+    } = input;
+
+    let json_arm = if *json_provider {
+        quote! {
+            #mode_name::ProviderJson => {
+                // A notification cannot be routed through the JSON bridge: the
+                // bridge answers on behalf of a host, and a one-way call has no
+                // answer to fetch.
+                ice_rpc::codegen::log::warn!(
+                    "[{}] a one-way method cannot be served in ProviderJson mode",
+                    <Self as ice_rpc::codegen::ServiceNamed>::SERVICE_NAME
+                );
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        async fn #fn_name(&self, #(#arg_names: #arg_types),*) {
+            let mode = self.mode.read().await;
+            match &*mode {
+                #mode_name::Provider { local_impl, .. } => {
+                    local_impl.#fn_name(#(#arg_names),*).await;
+                }
+                #mode_name::Consumer { ipc_client } => {
+                    // The outcome is the emitter's local observation, and this
+                    // signature has no way to report it: the inherent caller is
+                    // where a consumer reads it.
+                    let _ = ipc_client.#fn_name(#(#arg_names),*);
+                }
+                #json_arm
+            }
+        }
+    }
+}
+
+/// Generates the **inherent** caller of a one-way method.
+///
+/// Synchronous on purpose: a notification has nothing to wait for, so it needs
+/// neither an executor nor a future. In Provider mode the local implementation is
+/// driven with `rt::block_on` — the primitive the `{method}_blocking` twins use —
+/// and the sample counts as delivered, since the sink is right there.
+pub fn gen_proxy_oneway_call(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
+    let ProxyOnewayGenInput {
+        fn_name,
+        arg_names,
+        arg_types,
+        mode_name,
+        visibility,
+        json_provider,
+    } = input;
+
+    let doc = format!(
+        "One-way call of [`{fn_name}`]: publishes the notification and returns. \
+         `Ok(true)` means at least one subscriber took the sample, `Ok(false)` that \
+         nobody did — an expected outcome, not an error. In Provider mode the local \
+         implementation is called and the answer is always `Ok(true)`."
+    );
+
+    let json_arm = if *json_provider {
+        quote! {
+            #mode_name::ProviderJson => Err(ice_rpc::RpcError::Internal(
+                "ProviderJson: direct calls are not supported — use IPC".into()
+            )),
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        #[doc = #doc]
+        #visibility fn #fn_name(&self, #(#arg_names: #arg_types),*)
+            -> Result<bool, ice_rpc::RpcError>
+        {
+            let mode = self.mode.read_blocking();
+            match &*mode {
+                #mode_name::Provider { local_impl, .. } => {
+                    ice_rpc::rt::block_on(local_impl.#fn_name(#(#arg_names),*));
+                    Ok(true)
+                }
+                #mode_name::Consumer { ipc_client } => {
+                    ipc_client.#fn_name(#(#arg_names),*)
                 }
                 #json_arm
             }

@@ -62,7 +62,8 @@ pub use crate::transport::{
     BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, OwnedEmitter, ResponseEmitter,
     ServiceDispatcher, declare_channel_max_slice_len, decode_aligned, emit_rpc_error,
     is_provider_connected, native_call, observable_to_responses, register_native_service,
-    serialize_and_call, spawn_native_service, start_registered_channels, sweep_orphan_shm_markers,
+    serialize_and_call, serialize_and_send_one_way, spawn_native_service,
+    start_registered_channels, sweep_orphan_shm_markers,
 };
 
 // ── Dependency re-exports used by the generated code ────────────────

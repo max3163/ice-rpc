@@ -11,7 +11,9 @@ use std::thread::JoinHandle;
 
 use iceoryx2::prelude::*;
 
-use super::bridge::{OwnedEmitter, ResponseEmitter, ServiceDispatcher, emit_rpc_error};
+use super::bridge::{
+    DispatchedRequest, OwnedEmitter, ResponseEmitter, ServiceDispatcher, emit_rpc_error,
+};
 use super::notify::Coalescer;
 use super::open::{OpenMode, open_event_service, open_service, retry_open};
 use super::publish::publish_until_delivered;
@@ -323,11 +325,6 @@ impl ResponseHub {
         self.in_flight.cancel(cid)
     }
 
-    /// Forgets a call answered in place, which never became a task.
-    fn unregister(&self, cid: &[u8; CORRELATION_ID_LEN]) {
-        self.in_flight.unregister(cid);
-    }
-
     /// Wraps the task of one call so a Cancel can drop it.
     ///
     /// Returns the boxed task the executor runs: the wrapper is the whole
@@ -611,12 +608,13 @@ fn handle_request(
     // sample's slice — aligned by construction — and only the owned request
     // enters the task. The borrow therefore never crosses an await, which is
     // what used to force the `to_vec()` here.
-    //
-    // The token is created here, before the dispatch, so that the Cancel of this
-    // request — published on the very channel this loop drains — finds it.
     let cid = header.correlation_id;
-    let token = hub.register(cid);
     let emitter: OwnedEmitter = Box::new(hub.emitter(header));
+    // One lookup answers both questions: which handler serves this `method_id`,
+    // and whether a call to it expects a response. The method table holds an
+    // entry for a one-way method too — it is the implementation to run — while
+    // the in-flight table below holds **calls**, which is what a one-way call
+    // must not create.
     match dispatcher.dispatch(header.method_id(), *header, payload, emitter) {
         // Polled once here before being detached: a handler that answers without
         // yielding completes on this thread and costs no hop at all — measured at
@@ -624,25 +622,38 @@ fn handle_request(
         // spawned at its first `Pending` and keeps the whole benefit of running as
         // a task.
         //
-        // The task is wrapped before it runs: a handler that completes inline then
-        // releases its registry entry through the guard, exactly like one that was
-        // detached and cancelled.
-        Some(task) => spawner.run_or_spawn(hub.cancellable(cid, token, task)),
+        // The token is created after the handler is **built** and before the task
+        // **runs**: building a future runs nothing, and this thread is inside
+        // `handle_request`, so a `Cancel` — drained by this same loop — cannot slip
+        // in between. The task is wrapped before it runs, so a handler that
+        // completes inline releases its registry entry through the guard, exactly
+        // like one that was detached and cancelled.
+        Some(DispatchedRequest {
+            task,
+            expects_response,
+        }) => {
+            if expects_response {
+                let token = hub.register(cid);
+                spawner.run_or_spawn(hub.cancellable(cid, token, task));
+            } else {
+                // One-way: the caller registered no handler and reads nothing, so
+                // there is no call to register and none to cancel. The task runs
+                // as-is, and `CallContext::cancellation()` answers `None` inside
+                // it — the honest answer to "can this call be cancelled?".
+                spawner.run_or_spawn(task);
+            }
+        }
         // An unknown method is answered too: silence would leave the caller
         // waiting for the transport timeout instead of naming the mistake. The
-        // call is answered at once, so it is not in flight and must not stay
-        // registered. The id is named in hexadecimal, exactly like the
-        // `UnknownService` rejection: the provider cannot invert a hash it does
-        // not know.
-        None => {
-            hub.unregister(&cid);
-            reject(
-                channel,
-                header,
-                hub,
-                RpcError::UnknownMethod(format!("{:#010x}", header.method_id())),
-            );
-        }
+        // call is answered at once and was never registered. The id is named in
+        // hexadecimal, exactly like the `UnknownService` rejection: the provider
+        // cannot invert a hash it does not know.
+        None => reject(
+            channel,
+            header,
+            hub,
+            RpcError::UnknownMethod(format!("{:#010x}", header.method_id())),
+        ),
     }
 }
 
@@ -847,12 +858,16 @@ mod tests {
         let header = RpcHeader::request(method_id_of("echo"), 7, 1);
 
         let sink = SharedCollector::default();
-        let task = table
+        let dispatched = table
             .get(&7)
             .unwrap()
             .dispatch(method_id_of("echo"), header, b"x", Box::new(sink.clone()))
             .expect("the first dispatcher has `echo`");
-        crate::rt::block_on(task);
+        assert!(
+            dispatched.expects_response,
+            "a method registered with `method` answers"
+        );
+        crate::rt::block_on(dispatched.task);
         assert_eq!(sink.take().len(), 1);
 
         // The second dispatcher has no `echo` method: no task, nothing emitted.
@@ -923,6 +938,43 @@ mod tests {
                     Box::new(CollectEmitter::new())
                 )
                 .is_none()
+        );
+    }
+
+    /// The same lookup that finds the handler says whether the call expects an
+    /// answer: the transport needs no second probe to classify a request.
+    #[test]
+    fn dispatch_reports_whether_the_method_expects_a_response() {
+        let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(7, 1));
+        dispatcher.method(method_id_of("echo"), |_header, _payload, _emitter| {
+            Box::pin(async {})
+        });
+        dispatcher.oneway_method(method_id_of("notify"), |_header, _payload, _emitter| {
+            Box::pin(async {})
+        });
+
+        let header = RpcHeader::request(method_id_of("echo"), 7, 1);
+        let answered = dispatcher
+            .dispatch(
+                method_id_of("echo"),
+                header,
+                b"x",
+                Box::new(CollectEmitter::new()),
+            )
+            .expect("`echo` is registered");
+        assert!(answered.expects_response);
+
+        let notification = dispatcher
+            .dispatch(
+                method_id_of("notify"),
+                header,
+                b"x",
+                Box::new(CollectEmitter::new()),
+            )
+            .expect("`notify` is registered, one-way or not");
+        assert!(
+            !notification.expects_response,
+            "a one-way method is registered so it can be run, not because it answers"
         );
     }
 

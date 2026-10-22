@@ -16,7 +16,7 @@ use proc_macro2::{Ident, Span};
 use syn::{ItemTrait, LitInt, LitStr, TraitItem, Type, Visibility};
 
 use crate::SERVICE_NAME_LEN;
-use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name};
+use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_type};
 
 /// Optional parameters of the `#[service]` macro.
 ///
@@ -219,12 +219,19 @@ pub struct RpcMethod {
     pub arg_names: Vec<Ident>,
     /// Argument types, in the same order as [`RpcMethod::arg_names`].
     pub arg_types: Vec<Type>,
-    /// Declared return type (`Observable<T, E>`).
+    /// Declared return type (`Observable<T, E>`), `()` for a one-way method.
     pub output_type: Type,
-    /// `T` of the declared return type.
+    /// `T` of the declared return type, `()` for a one-way method.
     pub ok_type: Type,
-    /// `E` of the declared return type.
+    /// `E` of the declared return type, `()` for a one-way method.
     pub err_type: Type,
+    /// Whether the method is a **notification**.
+    ///
+    /// The signature is the marker: no return type is a one-way call, published
+    /// without a handler and never answered. A return type must be
+    /// `Observable<T, E>`, which is what keeps the two vocabularies from being
+    /// confused — a value-producing body cannot compile without its type.
+    pub oneway: bool,
 }
 
 /// Everything the generators need about one `#[service]` trait.
@@ -327,16 +334,37 @@ impl ServiceModel {
             }
         }
 
-        let output_type = match &method.sig.output {
-            syn::ReturnType::Type(_, ty) => (**ty).clone(),
-            syn::ReturnType::Default => {
-                return Err(syn::Error::new_spanned(
-                    &method.sig,
-                    "RPC methods must declare a return type, e.g. `-> Observable<T, E>`",
-                ));
+        // The signature *is* the marker: `async fn f(..);` is a one-way
+        // notification (`()` returned, no response ever published), and any
+        // declared return type must be an `Observable<T, E>`. A method meant to
+        // answer has a body that produces a value, so it cannot silently compile
+        // without its return type — the two cases cannot be confused by mistake.
+        let (oneway, output_type, ok_type, err_type) = match &method.sig.output {
+            syn::ReturnType::Type(_, ty) => {
+                let output_type = (**ty).clone();
+                // `-> ()` is the one shape a developer writes *thinking* it means
+                // "nothing comes back". It is rejected with the alternative that
+                // does: drop the return type, or answer `Observable<(), E>`.
+                if is_unit_type(&output_type) {
+                    return Err(syn::Error::new_spanned(
+                        &method.sig.output,
+                        "`-> ()` is not an RPC return type: remove the return type (`;`) to \
+                         declare a one-way notification, or return `Observable<(), E>` to \
+                         answer with no value",
+                    ));
+                }
+                let (ok_type, err_type) = extract_rpc_result_types(&output_type)?;
+                (false, output_type, (*ok_type).clone(), (*err_type).clone())
             }
+            // No return type: nothing is answered. The three types are unit so
+            // the generators that only describe the *request* can stay generic.
+            syn::ReturnType::Default => (
+                true,
+                syn::parse_quote! { () },
+                syn::parse_quote! { () },
+                syn::parse_quote! { () },
+            ),
         };
-        let (ok_type, err_type) = extract_rpc_result_types(&output_type)?;
 
         Ok(RpcMethod {
             var_name: Ident::new(&g_variant_name(&fn_name_str), fn_name.span()),
@@ -344,8 +372,9 @@ impl ServiceModel {
             arg_names,
             arg_types,
             output_type,
-            ok_type: (*ok_type).clone(),
-            err_type: (*err_type).clone(),
+            ok_type,
+            err_type,
+            oneway,
         })
     }
 
@@ -461,24 +490,46 @@ mod tests {
         assert!(validate_name(NameKind::Group, "-dash", Span::call_site()).is_err());
     }
 
+    /// The signature is the marker: no return type means one-way.
     #[test]
-    fn a_method_without_a_return_type_is_refused() {
+    fn a_method_without_a_return_type_is_a_one_way_notification() {
+        let model = model(
+            quote! {},
+            quote! {
+                trait Db {
+                    async fn notify(&self, message: String);
+                    async fn get(&self) -> Observable<String, String>;
+                }
+            },
+        );
+
+        assert!(model.methods[0].oneway, "no return type: one-way");
+        // The untyped fields are unit so the generators that only describe the
+        // request can stay generic; nothing renders them for a one-way method.
+        assert_eq!(model.methods[0].ok_type.to_token_stream_string(), "()");
+        assert_eq!(model.methods[0].err_type.to_token_stream_string(), "()");
+        assert!(!model.methods[1].oneway, "an Observable answers");
+    }
+
+    /// `-> ()` is the shape a developer writes *thinking* it means "nothing comes
+    /// back". It is refused, and the message names the two forms that do work.
+    #[test]
+    fn an_explicit_unit_return_type_is_refused_with_the_two_alternatives() {
         let attr: ServiceAttr = syn::parse2(quote! {}).unwrap();
         let item: ItemTrait = syn::parse2(quote! {
             trait Db {
-                async fn broken(&self);
+                async fn broken(&self) -> ();
             }
         })
         .unwrap();
 
         let err = match ServiceModel::read(&attr, &item) {
-            Ok(_) => panic!("a method without a return type must be refused"),
+            Ok(_) => panic!("an explicit `-> ()` must be refused"),
             Err(e) => e,
         };
-        assert!(
-            err.to_string().contains("must declare a return type"),
-            "{err}"
-        );
+        let message = err.to_string();
+        assert!(message.contains("one-way notification"), "{message}");
+        assert!(message.contains("Observable<(), E>"), "{message}");
     }
 
     #[test]

@@ -27,6 +27,8 @@ pub enum GatewayErrorCode {
     Transport,
     /// The peer did not answer within the bridge deadline.
     Timeout,
+    /// The method is one-way: it never answers, so it has no result to return.
+    OneWay,
     /// The service returned a business error, carried by the payload.
     Business,
     /// The JS dispatcher could not be reached (callback dropped or refusing).
@@ -52,6 +54,7 @@ impl GatewayErrorCode {
             Self::NoProvider => "E_NO_PROVIDER",
             Self::Transport => "E_TRANSPORT",
             Self::Timeout => "E_TIMEOUT",
+            Self::OneWay => "E_ONE_WAY",
             Self::Business => "E_BUSINESS",
             Self::Callback => "E_CALLBACK",
             Self::PendingLimit => "E_PENDING_LIMIT",
@@ -123,7 +126,7 @@ mod tests {
 
     #[test]
     fn every_code_renders_a_distinct_prefix() {
-        const CODES: [GatewayErrorCode; 13] = [
+        const CODES: [GatewayErrorCode; 14] = [
             GatewayErrorCode::GatewayState,
             GatewayErrorCode::UnknownService,
             GatewayErrorCode::UnknownMethod,
@@ -131,6 +134,7 @@ mod tests {
             GatewayErrorCode::NoProvider,
             GatewayErrorCode::Transport,
             GatewayErrorCode::Timeout,
+            GatewayErrorCode::OneWay,
             GatewayErrorCode::Business,
             GatewayErrorCode::Callback,
             GatewayErrorCode::PendingLimit,

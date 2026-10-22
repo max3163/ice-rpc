@@ -37,9 +37,10 @@ use std::sync::Arc;
 ///
 /// # Errors
 /// `E_UNKNOWN_SERVICE`, `E_UNKNOWN_METHOD`, `E_INVALID_ARGS`, `E_NO_PROVIDER`,
-/// `E_TRANSPORT`, or `E_BUSINESS` when the service failed **or completed without
-/// emitting any value** — a bare `null` could not be told apart from a real
-/// `null` payload. See [`GatewayErrorCode`].
+/// `E_TRANSPORT`, `E_ONE_WAY` when the method is a notification, or
+/// `E_BUSINESS` when the service failed **or completed without emitting any
+/// value** — a bare `null` could not be told apart from a real `null` payload.
+/// See [`GatewayErrorCode`].
 pub async fn call_ipc_method(
     table: &'static [GatewayService],
     service: &str,
@@ -49,6 +50,9 @@ pub async fn call_ipc_method(
     match call_outcome(table, service, method, args, ReadMode::First).await? {
         JsonOutcome::Value(value) => Ok(value),
         JsonOutcome::Nothing => Err(no_value(service, method)),
+        // A value was asked for and none can ever exist: naming the contract
+        // beats returning a `null` that looks like a real payload.
+        JsonOutcome::Accepted { .. } => Err(one_way(service, method)),
     }
 }
 
@@ -71,6 +75,9 @@ pub async fn call_ipc_method_stream(
         JsonOutcome::Value(Value::Array(values)) => Ok(values),
         JsonOutcome::Value(other) => Ok(vec![other]),
         JsonOutcome::Nothing => Ok(Vec::new()),
+        // Zero values will ever arrive, and the caller asked for a stream: saying
+        // so is more useful than an empty array that looks like a silent service.
+        JsonOutcome::Accepted { .. } => Err(one_way(service, method)),
     }
 }
 
@@ -121,6 +128,19 @@ fn no_value(service: &str, method: &str) -> GatewayError {
     GatewayError::new(
         GatewayErrorCode::Business,
         format!("'{service}.{method}' completed without emitting a value"),
+    )
+}
+
+/// Builds the `E_ONE_WAY` failure of a call that asked for a result.
+///
+/// A one-way method is a notification: the sample was published, and no answer
+/// will ever exist. Returning `null` (or an empty array) would make it look like
+/// an answered call that carried nothing — the very confusion
+/// [`JsonOutcome::Nothing`] exists to avoid.
+fn one_way(service: &str, method: &str) -> GatewayError {
+    GatewayError::new(
+        GatewayErrorCode::OneWay,
+        format!("'{service}.{method}' is a one-way method and has no result"),
     )
 }
 

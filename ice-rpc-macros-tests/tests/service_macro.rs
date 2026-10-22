@@ -161,7 +161,33 @@ fn test_all_service_parameters_compile() {
     let _ = &client;
 }
 
-// Test 10: the liveness probe generated on every proxy
+// Test 10: a method with no return type is a one-way notification
+
+#[service("NotifyService", group = "notify")]
+#[async_trait::async_trait]
+pub trait NotifyService: Send + Sync + 'static {
+    /// No return type: nothing comes back.
+    async fn notify(&self, message: String);
+}
+
+/// The generated caller is **synchronous** and answers the emitter's own
+/// question — was the sample taken — instead of a result that cannot exist.
+#[test]
+fn test_one_way_caller_is_synchronous_and_returns_delivery() {
+    fn caller(proxy: &NotifyServiceProxy, message: String) -> Result<bool, ice_rpc::RpcError> {
+        proxy.notify(message)
+    }
+
+    // The trait keeps the notification shape, which is what `dyn Trait` and the
+    // gateway use.
+    fn _trait_shape(service: &dyn NotifyService) {
+        std::mem::drop(service.notify(String::new()));
+    }
+
+    let _ = caller;
+}
+
+// Test 11: the liveness probe generated on every proxy
 
 /// `{Proxy}::is_provider_connected()` needs no proxy instance and, above all,
 /// answers instead of failing when the channel was never created: that is what

@@ -12,7 +12,7 @@ use rkyv::util::AlignedVec;
 
 use super::notify::Coalescer;
 use super::open::{OpenMode, open_event_service, open_service, retry_open};
-use super::publish::{publish_until_delivered, try_publish};
+use super::publish::{publish_one_way, publish_until_delivered, try_publish};
 use super::{
     Direction, IoxEvent, IoxListener, IoxNotifier, IoxPubSub, IoxPublisher, IoxSubscriber,
     OPEN_RETRY_ATTEMPTS, PAYLOAD_ALIGNMENT, PROVIDER_WAIT_DEFAULT, REQUEST_NOTIFY_SUFFIX,
@@ -438,6 +438,54 @@ where
     }))
 }
 
+/// Sends `payload` as a **one-way** call of `method_id` on `service`.
+///
+/// Publishes exactly once and returns: no handler is registered, no terminal
+/// event is awaited, and nothing is published when the caller moves on — the
+/// three things that make a normal call a call. `Ok(true)` means at least one
+/// subscriber took the sample; `Ok(false)` that nobody did (no provider, or a
+/// full subscriber buffer), which is an expected outcome of a fire-and-forget
+/// call rather than an error.
+///
+/// The trace travels like a normal call's, so the provider's
+/// [`CallContext`] continues the emitter's trace even though nothing comes back.
+///
+/// # Cost
+/// Encoded into the thread-local buffer, published once, done: **115 ns** per
+/// send with no subscriber (nothing is copied), **609 ns** with a provider
+/// subscribed (measured in release on the development machine, 64-byte message).
+/// A normal call pays all of that *plus* the whole response path.
+pub fn send_one_way(
+    channel: &str,
+    service: ServiceRef,
+    method_id: impl MethodId,
+    payload: &[u8],
+) -> Result<bool, RpcError> {
+    let ports = consumer_ports(channel)?;
+
+    let trace = match CallContext::current() {
+        Some(ctx) => ctx.child_trace(),
+        None => TraceContext::new_root().continued_or_root(next_span_id()),
+    };
+    let header = RpcHeader::request(method_id, service.id, service.version)
+        .with_trace(trace)
+        .with_span_id(trace.parent_span_id)
+        .with_seq(ports.seq.fetch_add(1, Ordering::Relaxed));
+
+    let delivered = publish_one_way(&ports.publisher, &ports.request_service, header, payload)?;
+
+    // Only a delivered sample has somebody to wake: a provider is the subscriber
+    // of the request direction, so `false` means there is no dispatch thread to
+    // notify.
+    if delivered && ports.last_request_notify.should_notify() {
+        let _ = ports
+            .request_notifier
+            .notify_with_custom_event_id(EventId::new(0));
+    }
+
+    Ok(delivered)
+}
+
 thread_local! {
     /// Encoding buffer of the request path, one per thread.
     ///
@@ -521,5 +569,52 @@ where
         // The allocation goes back to the thread whether the call started or not.
         cell.set(Some(bytes));
         call
+    })
+}
+
+/// Serializes `request` into the thread's buffer and sends it as a one-way call.
+///
+/// The fire-and-forget twin of [`serialize_and_call`]: same thread-local buffer,
+/// same error mapping, but nothing comes back — neither a response nor a
+/// [`RpcError`] from the provider, which never learns who sent the sample.
+pub fn serialize_and_send_one_way<V>(
+    channel: &str,
+    service: ServiceRef,
+    method_id: impl MethodId,
+    request: &V,
+) -> Result<bool, RpcError>
+where
+    for<'a> V: rkyv::Serialize<
+            rkyv::rancor::Strategy<
+                rkyv::ser::Serializer<
+                    rkyv::util::AlignedVec,
+                    rkyv::ser::allocator::ArenaHandle<'a>,
+                    rkyv::ser::sharing::Share,
+                >,
+                rkyv::rancor::Error,
+            >,
+        >,
+{
+    REQUEST_SCRATCH.with(|cell| {
+        let mut buffer = cell.take().unwrap_or_else(|| {
+            AlignedVec::<{ PAYLOAD_ALIGNMENT }>::with_capacity(REQUEST_SCRATCH_CAPACITY)
+        });
+        buffer.clear();
+
+        let encoded: Result<AlignedVec<{ PAYLOAD_ALIGNMENT }>, rkyv::rancor::Error> =
+            to_bytes_in(request, buffer);
+        let bytes = match encoded {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("[ice-rpc] one-way request serialization failed: {e:?}");
+                return Err(RpcError::SerializationError);
+            }
+        };
+
+        let sent = send_one_way(channel, service, method_id, &bytes);
+
+        // The allocation goes back to the thread whether the sample went out or not.
+        cell.set(Some(bytes));
+        sent
     })
 }

@@ -29,8 +29,8 @@ use crate::model::{ServiceAttr, ServiceModel};
 
 use crate::codegen::{
     client::{
-        ClientGenInput, ClientMethodGenInput, gen_client_lifecycle, gen_client_method,
-        gen_client_struct,
+        ClientGenInput, ClientMethodGenInput, ClientOnewayGenInput, gen_client_lifecycle,
+        gen_client_method, gen_client_oneway_method, gen_client_struct,
     },
     decoder::{DecoderGenInput, DecoderMethod, gen_decoder},
     json::{
@@ -39,9 +39,11 @@ use crate::codegen::{
     },
     lifecycle::{LifecycleGenInput, gen_lifecycle},
     proxy::{
-        ProxyGenInput, ProxyMethodGenInput, gen_proxy, gen_proxy_blocking_method, gen_proxy_method,
+        ProxyGenInput, ProxyMethodGenInput, ProxyOnewayGenInput, gen_proxy,
+        gen_proxy_blocking_method, gen_proxy_method, gen_proxy_oneway_call,
+        gen_proxy_oneway_method,
     },
-    server::{ServerGenInput, gen_native_method, gen_server},
+    server::{ServerGenInput, gen_native_method, gen_native_oneway_method, gen_server},
 };
 
 /// The JSON view of the model's methods.
@@ -60,6 +62,7 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
             arg_types: method.arg_types.clone(),
             ok_type: method.ok_type.clone(),
             err_type: method.err_type.clone(),
+            oneway: method.oneway,
         })
         .collect()
 }
@@ -69,12 +72,30 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version`, `group` and `max_slice_len`.
+/// `"LogicalName"`, `version`, `group`, `max_slice_len` and `blocking`.
 ///
 /// `max_slice_len` sizes the initial slice of the channel's publishers. It is a
 /// property of the **channel** (the `group`), so every service of a group must
 /// declare the same value; when omitted, the runtime default
 /// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
+///
+/// # The return type decides the kind of call
+///
+/// - `async fn f(..) -> Observable<T, E>` is a **request/response** method: the
+///   caller gets a stream, and the provider answers.
+/// - `async fn f(..);` — **no return type** — is a **one-way** method: the call is
+///   published once, nothing is answered, and no terminal event exists. The
+///   generated caller is therefore synchronous and returns
+///   `Result<bool, RpcError>`, where the `bool` says whether a subscriber took
+///   the sample; the provider handler runs and emits nothing.
+///
+/// There is no marker attribute and no implicit shape: a value-producing body
+/// cannot compile without its return type, so the two vocabularies cannot be
+/// confused by mistake. An explicit `-> ()` is refused with both alternatives
+/// named — drop the return type, or answer `Observable<(), E>`.
+///
+/// A one-way method is already synchronous, so the `blocking` parameter adds no
+/// `{method}_blocking` twin for it.
 ///
 /// Automatically injects the async-trait attribute
 /// (`#[ice_rpc::codegen::async_trait::async_trait]`), `Send + Sync + 'static`
@@ -165,6 +186,7 @@ fn expand_service_with(
     let mut req_variants = Vec::new();
     let mut client_methods = Vec::new();
     let mut proxy_blocking_methods = Vec::new();
+    let mut proxy_oneway_calls = Vec::new();
     let mut server_native_methods = Vec::new();
     let mut json_provider_methods = Vec::new();
     let mut node_methods = Vec::new();
@@ -178,50 +200,91 @@ fn expand_service_with(
         let arg_names: Vec<&Ident> = method.arg_names.iter().collect();
         let arg_types: Vec<&Type> = method.arg_types.iter().collect();
 
+        // The request enum carries the arguments of *every* method: a one-way
+        // call travels as a `Request` sample like any other, only its handler
+        // never answers.
         req_variants.push(quote! {
             #var_name { #(#arg_names: #arg_types),* } = #discriminant
         });
 
-        client_methods.push(gen_client_method(&ClientMethodGenInput {
-            visibility,
-            fn_name,
-            var_name,
-            arg_names: &arg_names,
-            arg_types: &arg_types,
-            ok_type: &method.ok_type,
-            err_type: &method.err_type,
-            req_enum_name,
-            group: &group_lit,
-            service_ref: &service_ref,
-            blocking,
-        }));
+        if method.oneway {
+            client_methods.push(gen_client_oneway_method(&ClientOnewayGenInput {
+                visibility,
+                fn_name,
+                var_name,
+                arg_names: &arg_names,
+                arg_types: &arg_types,
+                req_enum_name,
+                group: &group_lit,
+                service_ref: &service_ref,
+            }));
 
-        server_native_methods.push(gen_native_method(
-            proxy_name,
-            fn_name,
-            var_name,
-            &arg_names,
-            req_enum_name,
-        ));
+            server_native_methods.push(gen_native_oneway_method(
+                proxy_name,
+                fn_name,
+                var_name,
+                &arg_names,
+                req_enum_name,
+            ));
 
-        if features.json {
-            json_provider_methods.push(gen_json_provider_method(proxy_name, fn_name));
+            let proxy_oneway_input = ProxyOnewayGenInput {
+                fn_name,
+                arg_names: &arg_names,
+                arg_types: &arg_types,
+                mode_name,
+                visibility,
+                json_provider: features.json,
+            };
+            node_methods.push(gen_proxy_oneway_method(&proxy_oneway_input));
+            proxy_oneway_calls.push(gen_proxy_oneway_call(&proxy_oneway_input));
+            // A one-way method is already synchronous: the `blocking` parameter
+            // adds no `{method}_blocking` twin for it.
+        } else {
+            client_methods.push(gen_client_method(&ClientMethodGenInput {
+                visibility,
+                fn_name,
+                var_name,
+                arg_names: &arg_names,
+                arg_types: &arg_types,
+                ok_type: &method.ok_type,
+                err_type: &method.err_type,
+                req_enum_name,
+                group: &group_lit,
+                service_ref: &service_ref,
+                blocking,
+            }));
+
+            server_native_methods.push(gen_native_method(
+                proxy_name,
+                fn_name,
+                var_name,
+                &arg_names,
+                req_enum_name,
+            ));
+
+            let proxy_method_input = ProxyMethodGenInput {
+                fn_name,
+                arg_names: &arg_names,
+                arg_types: &arg_types,
+                output_type: &method.output_type,
+                mode_name,
+                service_ref: &service_ref,
+                service_name: &service_name,
+                visibility,
+                json_provider: features.json,
+            };
+            node_methods.push(gen_proxy_method(&proxy_method_input));
+            if blocking {
+                proxy_blocking_methods.push(gen_proxy_blocking_method(&proxy_method_input));
+            }
         }
 
-        let proxy_method_input = ProxyMethodGenInput {
-            fn_name,
-            arg_names: &arg_names,
-            arg_types: &arg_types,
-            output_type: &method.output_type,
-            mode_name,
-            service_ref: &service_ref,
-            service_name: &service_name,
-            visibility,
-            json_provider: features.json,
-        };
-        node_methods.push(gen_proxy_method(&proxy_method_input));
-        if blocking {
-            proxy_blocking_methods.push(gen_proxy_blocking_method(&proxy_method_input));
+        if features.json {
+            json_provider_methods.push(gen_json_provider_method(
+                proxy_name,
+                fn_name,
+                method.oneway,
+            ));
         }
 
         // Collects the data for the generated decoder (`Display` + decoder).
@@ -232,6 +295,7 @@ fn expand_service_with(
                 arg_names: method.arg_names.clone(),
                 ok_type: method.ok_type.clone(),
                 err_type: method.err_type.clone(),
+                oneway: method.oneway,
             });
         }
     }
@@ -265,6 +329,7 @@ fn expand_service_with(
         max_slice_len: &max_slice_len,
         node_methods: &node_methods,
         blocking_methods: &proxy_blocking_methods,
+        oneway_calls: &proxy_oneway_calls,
         json_provider: features.json,
     };
     let proxy_output = gen_proxy(&proxy_input);

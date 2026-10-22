@@ -51,6 +51,7 @@
 //! ```json
 //! {"status":"ok","data":{...}}
 //! {"status":"ok"}                       // the service emitted no value
+//! {"status":"accepted","delivered":true} // one-way method: no answer exists
 //! {"status":"error","error":"message"}
 //! ```
 //!
@@ -58,10 +59,16 @@
 //! |---|---|
 //! | the call succeeded | `200` |
 //! | the service emitted no value | `200`, without `data` |
+//! | **one-way method** | **`202`**, with `delivered` |
 //! | invalid arguments, or a business error | `400` |
 //! | the transport failed | `502` |
 //! | unknown service, or unknown method | `404` |
 //! | another HTTP verb | `405` |
+//!
+//! `202 Accepted` is the honest answer for a one-way method: the gateway
+//! published the request, and **no answer will ever exist**. `delivered` says
+//! whether a subscriber took the sample; it is not an acknowledgement that the
+//! service processed it, so `delivered: false` is still a `202`, not an error.
 //!
 //! Only the reading of **one** value is exposed: a browser cannot consume an
 //! endless stream, and waiting for every value would buffer it in memory.
@@ -398,6 +405,15 @@ async fn invoke_service(
         // A service may complete without emitting anything: a legitimate answer,
         // reported without `data` rather than as a failure.
         Ok(JsonOutcome::Nothing) => json_response(conn, 200, serde_json::json!({ "status": "ok" })),
+        // A one-way method never answers, so `202 Accepted` is the honest
+        // status: the request was published, and nothing was processed *for this
+        // request*. `delivered: false` (nobody was subscribed) is still an
+        // accepted outcome, not an error.
+        Ok(JsonOutcome::Accepted { delivered }) => json_response(
+            conn,
+            202,
+            serde_json::json!({ "status": "accepted", "delivered": delivered }),
+        ),
         Err(error) => {
             // A transport failure is not the caller's mistake, so it is the only
             // one that is not reported as a bad request.

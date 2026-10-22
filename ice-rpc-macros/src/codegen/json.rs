@@ -31,8 +31,13 @@ pub struct JsonMethod {
     pub var_name: Ident,
     pub arg_names: Vec<Ident>,
     pub arg_types: Vec<Type>,
+    /// Success type `T` of `Observable<T, E>` (`()` for a one-way method).
     pub ok_type: Type,
+    /// Error type `E` of `Observable<T, E>` (`()` for a one-way method).
     pub err_type: Type,
+    /// Whether the method is a notification: it has no result to convert, and the
+    /// JSON view answers `JsonOutcome::Accepted` (HTTP `202`) instead of a value.
+    pub oneway: bool,
 }
 
 /// Generates the provider-side `deserialize_request_to_value(method, bytes)`.
@@ -183,6 +188,9 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
 
     let match_arms: Vec<TokenStream> = methods
         .iter()
+        // A one-way method never emits a response: there is no `WireEvent` to
+        // build for it, and no arm to emit.
+        .filter(|m| !m.oneway)
         .map(|m| {
             let fn_name_str = m.fn_name.to_string();
             let ok_type = &m.ok_type;
@@ -339,6 +347,35 @@ fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
     let helper = helper_name(method);
     let arg_names = &method.arg_names;
     let extraction = gen_arg_extraction(&fn_name_str, arg_names, &method.arg_types);
+
+    if method.oneway {
+        // A one-way method has no stream to read: `read_json` would wait
+        // `JSON_CALL_TIMEOUT` for an event that never exists. The inherent caller
+        // is synchronous, and its `bool` maps straight onto `JsonOutcome::Accepted`.
+        let call = if arg_names.is_empty() {
+            quote! { self.#fn_name() }
+        } else {
+            quote! { self.#fn_name(#(#arg_names),*) }
+        };
+        let doc = format!(
+            " The JSON view of `{fn_name_str}`: decodes the arguments and publishes the \
+             one-way notification. No result exists to read."
+        );
+        return quote! {
+            #[doc = #doc]
+            async fn #helper(
+                &self,
+                args: ice_rpc::codegen::serde_json::Value,
+                _read: ice_rpc::codegen::ReadMode,
+            ) -> ice_rpc::codegen::JsonResult {
+                #extraction
+                match #call {
+                    Ok(delivered) => Ok(ice_rpc::codegen::JsonOutcome::Accepted { delivered }),
+                    Err(e) => Err(ice_rpc::codegen::JsonCallError::Transport(e.to_string())),
+                }
+            }
+        };
+    }
 
     let call = if arg_names.is_empty() {
         quote! { self.#fn_name().await }
@@ -509,8 +546,65 @@ fn with_error_suffix(prefix: &str) -> String {
 /// Like the native dispatcher, the handler is wrapped in `call_scoped`, so
 /// `CallContext::current()` works inside a JSON-served method and a call it emits
 /// continues the incoming trace instead of starting a new root.
-pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident) -> TokenStream {
+pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: bool) -> TokenStream {
     let method_name_str = fn_name.to_string();
+
+    if oneway {
+        // A one-way method served by a JSON host publishes nothing: the host is
+        // handed the call, and its answer stream — if it opens one — is dropped,
+        // because there is no caller waiting for it. The dispatcher is told the
+        // method is one-way, so it registers no in-flight entry either.
+        return quote! {
+            {
+                dispatcher.oneway_method(
+                    ice_rpc::codegen::method_id_of(#method_name_str),
+                    move |header: ice_rpc::codegen::RpcHeader,
+                          payload: &[u8],
+                          _emitter: ice_rpc::codegen::OwnedEmitter|
+                          -> ice_rpc::codegen::BoxResponseFuture {
+                        let ctx = ice_rpc::codegen::CallContext::new(
+                            &header,
+                            <#proxy_name>::SERVICE_NAME,
+                            #method_name_str,
+                        );
+                        let args =
+                            #proxy_name::deserialize_request_to_value(#method_name_str, payload);
+                        ice_rpc::codegen::call_scoped(
+                            ctx,
+                            async move {
+                                let Some(args) = args
+                                else {
+                                    ice_rpc::codegen::log::error!(
+                                        "[{}::{}] Failed to deserialize the one-way request",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str
+                                    );
+                                    return;
+                                };
+                                match ice_rpc::codegen::dispatch_json(
+                                    header.correlation_id,
+                                    <#proxy_name>::SERVICE_NAME,
+                                    #method_name_str,
+                                    args,
+                                ) {
+                                    // Nothing is emitted, by contract: dropping the
+                                    // stream is how the host learns the call is over.
+                                    Ok(events) => drop(events),
+                                    Err(e) => ice_rpc::codegen::log::error!(
+                                        "[{}::{}] one-way JSON dispatch failed: {}",
+                                        <#proxy_name>::SERVICE_NAME,
+                                        #method_name_str,
+                                        e
+                                    ),
+                                }
+                            },
+                        )
+                    },
+                );
+            }
+        };
+    }
+
     quote! {
         {
             dispatcher.method(

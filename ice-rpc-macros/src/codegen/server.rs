@@ -178,3 +178,77 @@ pub fn gen_native_method(
         }
     }
 }
+
+/// Generates one `ServiceDispatcher::oneway_method(...)` registration.
+///
+/// Same decode-and-scope shape as [`gen_native_method`], with the two differences
+/// a notification implies:
+///
+/// - the handler **never touches its emitter**, so no sample is ever published on
+///   the response channel — that is what makes the call one-way on the wire;
+/// - a payload that does not decode is **logged and dropped**, not answered: the
+///   caller registered no handler, so a rejection would be written for nobody.
+///   The emitter stays available in the closure for a future diagnostic, which is
+///   why it is bound but unused.
+///
+/// The `CallContext` is still installed around every poll, so the implementation
+/// can read the trace of the notification it serves even though it never replies.
+pub fn gen_native_oneway_method(
+    proxy_name: &Ident,
+    fn_name: &Ident,
+    var_name: &Ident,
+    arg_names: &[&Ident],
+    req_enum_name: &Ident,
+) -> TokenStream {
+    let method_name_str = fn_name.to_string();
+
+    quote! {
+        {
+            let service_impl = self.service_impl.clone();
+            dispatcher.oneway_method(
+                ice_rpc::codegen::method_id_of(#method_name_str),
+                move |header: ice_rpc::codegen::RpcHeader,
+                      payload: &[u8],
+                      _emitter: ice_rpc::codegen::OwnedEmitter|
+                      -> ice_rpc::codegen::BoxResponseFuture {
+                    let ctx = ice_rpc::codegen::CallContext::new(
+                        &header,
+                        <#proxy_name>::SERVICE_NAME,
+                        #method_name_str,
+                    );
+                    let impl_ref = service_impl.clone();
+                    let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
+                        Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
+                        // Nothing waits for an answer, so a decoding failure cannot
+                        // be reported to anyone: it is logged, and the notification
+                        // is dropped.
+                        Err(e) => {
+                            ice_rpc::codegen::log::error!(
+                                "[{}::{}] one-way payload decoding failed: {:?}",
+                                <#proxy_name>::SERVICE_NAME,
+                                #method_name_str,
+                                e
+                            );
+                            return Box::pin(async {});
+                        }
+                        Ok(_) => {
+                            ice_rpc::codegen::log::error!(
+                                "[{}::{}] one-way payload is another method's variant",
+                                <#proxy_name>::SERVICE_NAME,
+                                #method_name_str
+                            );
+                            return Box::pin(async {});
+                        }
+                    };
+                    ice_rpc::codegen::call_scoped(
+                        ctx,
+                        async move {
+                            let (#(#arg_names),*) = request;
+                            impl_ref.#fn_name(#(#arg_names),*).await;
+                        },
+                    )
+                },
+            );
+        }
+    }
+}

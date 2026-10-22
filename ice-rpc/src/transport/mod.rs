@@ -30,7 +30,7 @@ pub use bridge::{
     BoxResponseFuture, CollectEmitter, OwnedEmitter, ResponseEmitter, ServiceDispatcher,
     emit_rpc_error, observable_to_responses,
 };
-pub use client::{native_call, serialize_and_call};
+pub use client::{native_call, send_one_way, serialize_and_call, serialize_and_send_one_way};
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 

@@ -1,0 +1,5 @@
+error: `-> ()` is not an RPC return type: remove the return type (`;`) to declare a one-way notification, or return `Observable<(), E>` to answer with no value
+ --> tests/compile_fail/unit_return_type.rs:8:28
+  |
+8 |     async fn notify(&self) -> ();
+  |                            ^^^^^

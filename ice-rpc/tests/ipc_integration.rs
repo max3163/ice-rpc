@@ -4,8 +4,11 @@
 //! iceoryx2 node and the global lock do not conflict with the unit tests.
 
 #![allow(clippy::unwrap_used)]
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
-use ice_rpc::transport::{is_provider_connected, native_call, spawn_native_service};
+use ice_rpc::transport::{is_provider_connected, native_call, send_one_way, spawn_native_service};
 use ice_rpc::{CancellationToken, Event, Observable};
 
 /// Encodes a wire event together with the [`EventKind`] the transport stamps in
@@ -248,6 +251,63 @@ fn a_channel_is_connected_only_while_its_provider_serves_it() {
     assert!(
         !is_provider_connected(&channel).expect("the probe must answer"),
         "a stopped provider is no longer connected"
+    );
+}
+
+/// A one-way call is handed to the provider without any answer coming back, and
+/// its `bool` is the only thing the caller can observe.
+#[test]
+fn a_one_way_call_is_delivered_and_never_answered() {
+    let channel = format!("IceRpcIntegration/OneWay{}", std::process::id());
+    let service_id = service_id_of(&channel);
+    let stop = CancellationToken::new();
+    let served = Arc::new(AtomicUsize::new(0));
+
+    let mut dispatcher = ServiceDispatcher::new(ServiceRef::new(service_id, 1));
+    let counter = Arc::clone(&served);
+    dispatcher.oneway_method("notify", move |_header, _payload, _emitter| {
+        // The handler is the whole contract: it runs, and it emits nothing.
+        counter.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async {})
+    });
+    let server = spawn_native_service(&channel, vec![dispatcher], stop.clone());
+
+    // The channel thread opens its ports asynchronously: until a provider
+    // subscribes, a one-way call answers `false` — never an error, and never a
+    // wait.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut delivered = false;
+    while !delivered {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the provider never subscribed to the channel"
+        );
+        delivered = send_one_way(&channel, ServiceRef::new(service_id, 1), "notify", b"hello")
+            .expect("a one-way call must answer, not fail");
+        if !delivered {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    // The sample is served on the channel's thread; the caller never waits for
+    // it, so the test does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while served.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        served.load(Ordering::Relaxed),
+        1,
+        "the provider must have served the notification"
+    );
+
+    stop.cancel();
+    let _ = server.join();
+
+    assert!(
+        !send_one_way(&channel, ServiceRef::new(service_id, 1), "notify", b"bye")
+            .expect("a one-way call must answer, not fail"),
+        "nobody is subscribed any more, which is a `false`, not an error"
     );
 }
 

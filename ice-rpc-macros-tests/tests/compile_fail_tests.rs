@@ -12,9 +12,10 @@ fn compile_fail_validation() {
     t.compile_fail("tests/compile_fail/service_name_underscore_start.rs");
     t.compile_fail("tests/compile_fail/service_name_collision.rs");
     // Method signature validation: reported as `compile_error!` on the method
-    // (not as a panic inside the macro).
+    // (not as a panic inside the macro). A method with *no* return type is valid
+    // (it is a one-way notification); an explicit `-> ()` is not.
     t.compile_fail("tests/compile_fail/invalid_return_type.rs");
-    t.compile_fail("tests/compile_fail/missing_return_type.rs");
+    t.compile_fail("tests/compile_fail/unit_return_type.rs");
     // `#[ice_rpc::main]` only accepts an `async fn main`.
     t.compile_fail("tests/compile_fail/ice_rpc_main_not_async.rs");
 }

@@ -499,6 +499,55 @@ cheap for a readiness endpoint polled every second, and too much for a guard
 before every RPC: make one call first (or poll once), and the cheap path takes
 over.
 
+## One-way methods
+
+A method declared **without a return type** is a notification: one sample
+published, nothing answered, no terminal event. The signature _is_ the marker —
+there is no attribute to add, and a value-producing body cannot compile without
+its return type, so the two vocabularies cannot be confused by mistake:
+
+```rust,ignore
+#[ice_rpc::service("LogSink", group = "logs")]
+#[ice_rpc::async_trait]
+pub trait LogSink: Send + Sync + 'static {
+    /// One-way: no return type, so no answer exists.
+    async fn push(&self, batch: Vec<LogRecord>);
+
+    /// Request/response: a stream comes back.
+    async fn tail(&self, count: u32) -> Observable<Vec<LogRecord>, LogError>;
+}
+```
+
+The generated caller is **synchronous** — there is nothing to await — and returns
+what only the emitter can know:
+
+```rust,ignore
+let sink = ice_rpc::locator().get_blocking::<LogSinkProxy>()?;
+match sink.push(batch) {
+    Ok(true) => {}            // at least one subscriber took the sample
+    Ok(false) => drops += 1,  // nobody subscribed, or the buffer was full
+    Err(e) => errors += 1,    // the emission itself failed
+}
+```
+
+- `Ok(false)` is an ordinary **best-effort** outcome, not an error: the sample was
+  not copied (no subscriber) or could not be accepted (full buffer).
+- Cost, measured in release with a 64-byte message: **115 ns** per call when
+  nobody is subscribed (the payload is not even copied), **609 ns** when a
+  provider is (encode + loan + copy + send). A normal call pays that _plus_ the
+  entire response path.
+- The provider handler still receives its `CallContext`, so it inherits the
+  caller's trace, but the call is not registered as in flight and cannot be
+  cancelled — there is no call left to cancel.
+- The wire is unchanged: a one-way call is a `Request` sample whose handler emits
+  nothing, so no new `EventKind` and no protocol version bump.
+- An explicit `-> ()` is refused with both alternatives named (drop the return
+  type, or answer `Observable<(), E>`). The `blocking` parameter adds no
+  `{method}_blocking` twin: a one-way method is already synchronous.
+- Over the JSON transports the method answers **`202 Accepted`** with
+  `{"status":"accepted","delivered":…}`; over the Node.js bridge a call that asks
+  for a result fails with `E_ONE_WAY`, because no result can ever exist.
+
 ## Clean shutdown
 
 `#[ice_rpc::main]` shuts ice-rpc down for you, including on an early `return` or

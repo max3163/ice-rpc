@@ -49,6 +49,19 @@ pub enum JsonOutcome {
     /// that a bare `null` could not be told apart from a real `null` payload —
     /// and the very difference the two JSON transports used to disagree on.
     Nothing,
+    /// The method is **one-way**: the call was published and *no answer will
+    /// ever exist*. Not to be confused with [`JsonOutcome::Nothing`], which is
+    /// an answered call that carried no value.
+    ///
+    /// `delivered` reports whether at least one subscriber took the sample. It
+    /// is a **local** observation of the emitter (no provider, or a full buffer,
+    /// answers `false`), never an acknowledgement that the service processed the
+    /// value — the JSON transports map it to `202 Accepted`, which is exactly
+    /// that promise.
+    Accepted {
+        /// Whether at least one subscriber received the published sample.
+        delivered: bool,
+    },
 }
 
 /// Why a JSON-mediated call failed.

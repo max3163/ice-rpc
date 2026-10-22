@@ -107,7 +107,14 @@ full = ["http-tokio", "operators"]
 ice-rpc-rx = { workspace = true, default-features = false }
 ice-rpc-macros = { workspace = true }
 log = { workspace = true }
-iceoryx2 = "0.10.0"
+# `default-features = false` drops the `console` logger backend: with no backend
+# the `warn!`/`info!`/`trace!` macros of `iceoryx2-bb-loggers` expand to nothing,
+# so their format strings, `Display` impls and `.rodata` literals leave the link
+# (-110 KiB of stripped `.so` on the Node.js gateway). `std` is the only default
+# that is still wanted. A deployment that needs iceoryx2's own diagnostics back
+# enables `iceoryx2/log` (or `iceoryx2/tracing`), which routes them to the
+# application's logger instead of the terminal.
+iceoryx2 = { version = "0.10.0", default-features = false, features = ["std"] }
 iceoryx2-bb-system-types = "0.10.0"
 iceoryx2-bb-container = "0.10.0"
 iceoryx2-bb-posix = "0.10.0"

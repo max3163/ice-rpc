@@ -155,28 +155,20 @@ impl DatabaseApiServer {
                         >(payload) {
                             Ok(DatabaseApiRequest::Add { a, b }) => (a, b),
                             Err(e) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload decoding failed: {:?}", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "add", e
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "add",
+                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload is another method's variant", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "add"
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "add",
+                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                         };
                         ice_rpc::codegen::call_scoped(
@@ -216,28 +208,20 @@ impl DatabaseApiServer {
                         >(payload) {
                             Ok(DatabaseApiRequest::Get { key }) => (key),
                             Err(e) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload decoding failed: {:?}", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "get", e
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "get",
+                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload is another method's variant", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "get"
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "get",
+                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                         };
                         ice_rpc::codegen::call_scoped(
@@ -277,28 +261,20 @@ impl DatabaseApiServer {
                         >(payload) {
                             Ok(DatabaseApiRequest::Put { key, value }) => (key, value),
                             Err(e) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload decoding failed: {:?}", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "put", e
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "put",
+                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] request payload is another method's variant", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "put"
+                                return ice_rpc::codegen::reject_undecodable(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "put",
+                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
+                                    emitter,
                                 );
-                                let mut emitter = emitter;
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return Box::pin(async {});
                             }
                         };
                         ice_rpc::codegen::call_scoped(
@@ -338,18 +314,18 @@ impl DatabaseApiServer {
                         >(payload) {
                             Ok(DatabaseApiRequest::Notify { message }) => (message),
                             Err(e) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] one-way payload decoding failed: {:?}", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "notify", e
+                                return ice_rpc::codegen::reject_undecodable_oneway(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "notify",
+                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
                                 );
-                                return Box::pin(async {});
                             }
                             Ok(_) => {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] one-way payload is another method's variant", <
-                                    DatabaseApiProxy > ::SERVICE_NAME, "notify"
+                                return ice_rpc::codegen::reject_undecodable_oneway(
+                                    <DatabaseApiProxy>::SERVICE_NAME,
+                                    "notify",
+                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
                                 );
-                                return Box::pin(async {});
                             }
                         };
                         ice_rpc::codegen::call_scoped(

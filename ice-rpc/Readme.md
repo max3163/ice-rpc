@@ -14,21 +14,39 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 - **Crash detection & reconnection** without heartbeat (native iceoryx2 node monitoring).
 - **Three proxy modes**: `Provider`, `Consumer`, `ProviderJson` — the last one
   only when the `json` feature is on.
-- **Optional HTTP gateway** (`http` plus one `http-*` adapter) built on trillium.
-  `http-tokio` runs the server on the application's tokio runtime; the
-  `trillium-smol` adapters run it on the executor trillium embeds, while the
-  ice-rpc tasks stay on the executor of the selected mode. The feature also
-  generates the JSON view of every proxy (`impl JsonInvoker`) — the same one the
-  `json` feature emits, so the two transports cannot drift apart — which is also
-  what keeps `serde_json`'s conversion code out of a binary that never speaks JSON.
-- **Optional JSON host surface** (`json` feature): `#[service]` also generates the
-  rkyv ↔ `serde_json::Value` converters and the `ProviderJson` mode a JSON host
-  dispatches to — the `ice-rpc-nodejs` bridge today. Off by default: a Rust-only
-  deployment does not carry them, and they are about half of the generated code
-  of a service. The `Value` is an in-memory, transport-neutral representation:
-  the Node.js bridge converts it to V8 objects without JSON text. Its measured
-  cost is documented in
+- **Optional HTTP gateway**, one feature per runtime adapter and nothing else to
+  pick: `http-tokio` runs the server on the application's tokio runtime,
+  `http-smol` and `http-threads` use the `trillium-smol` adapters while the
+  ice-rpc tasks stay on the executor of the selected mode. There is no standalone
+  `http` feature — a gateway without an adapter cannot compile, so each name
+  carries both instead of diagnosing the missing half.
+- **JSON in one feature, split by the linker.** `json` generates the whole JSON
+  view of a service: the `impl JsonInvoker` a JSON transport dispatches to (the
+  HTTP gateway, the Node.js consumer side), the rkyv ↔ `serde_json::Value`
+  converters, and the `ProviderJson` mode that serves a service whose
+  implementation is **not Rust** (the `ice-rpc-nodejs` bridge). One switch,
+  because **only the program that opens an entry point knows how it will be
+  called**: a service crate enables `json` when a binary of the build serves or
+  hosts it, and the link step drops the half that binary never reaches. The host
+  block is reachable only from `Proxy::provide_json()`, so a gateway that never
+  constructs such a proxy carries none of it. Measured on the demo services
+  (7 services, 13 methods): with the same `json` feature, the binary is **129 KB
+  smaller** than before the split, and a build with no JSON at all carries none
+  of it. The `Value` is an in-memory, transport-neutral representation: the
+  Node.js bridge converts it to V8 objects without JSON text. Its measured cost
+  is documented in
   [`docs/nodejs-json-bridge-adr.md`](../docs/nodejs-json-bridge-adr.md).
+- **A generated method costs a call, not a copy of the handler.** Everything a
+  method does _identically_ to its siblings lives in `ice-rpc` and is named by the
+  expansion: `json_host_handler` (the `ProviderJson` dispatch loop),
+  `event_from_json` (one host answer → one wire sample), `arg_from_json` /
+  `arg_from_base64` / `take_field` (argument decoding), and the `#[cold]`
+  `reject_*` reporters of every failure path. The macro passes the two
+  per-method converters as function pointers. On the demo services the full
+  expansion (`json` + `monitoring`) went from **1488 to 1048 lines** (−30 %), and
+  the binary built with `json` is **129 KB smaller** than before this rework. What
+  remains per method is the typed part — `serde_json::from_value<T>`, the rkyv
+  encoding — which no helper can share.
 - **Optional out-of-band monitoring** (`monitoring` feature): `#[service]` also
   generates a `{Service}Decoder` (and `Display` on the request enum) so an
   external observer renders the observed payloads in clear text — with each
@@ -75,9 +93,9 @@ facade:
 **Backward compatible.** A crate that already depends on `rkyv` may keep
 `#[derive(rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]`, and one that
 already depends on `async-trait` may keep `#[async_trait::async_trait]`: both
-spellings are recognized and produce the same code. The `json` and `http`
-features additionally require `serde` (`Serialize` + `Deserialize`) on the
-service types, exactly as before.
+spellings are recognized and produce the same code. The `json` feature (and the
+`http-*` ones, which imply it) additionally requires `serde` (`Serialize` +
+`Deserialize`) on the service types, exactly as before.
 
 ## Execution modes
 

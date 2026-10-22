@@ -104,13 +104,19 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// - The `{Trait}Client` struct (IPC consumer)
 /// - The `{Trait}Server` struct (IPC provider)
 /// - The `{Trait}Proxy` struct (Provider/Consumer smart node, plus the
-///   `ProviderJson` mode when the `json` feature is on)
+///   `ProviderJson` mode when the `json` block is on)
 /// - The `ServiceLifecycle`, `ServiceInit`, `ServiceNamed` implementations
 /// - The optional blocks its features ask for: the observer decoder
-///   (`monitoring`), the Node.js converters and `ProviderJson` mode (`json`),
-///   and the JSON view (`impl JsonInvoker`) every JSON transport dispatches to
-///   (`json` or `http`). They follow the Cargo features of this crate, read in
-///   one place (`Features::from_cfg`).
+///   (`monitoring`) and the JSON view (`json`) — the `impl JsonInvoker` every
+///   JSON transport dispatches to, the rkyv ↔ `serde_json::Value` converters,
+///   and the `ProviderJson` mode with its `provide_json()` constructor. They
+///   follow the Cargo features of this crate, read in one place
+///   (`Features::from_cfg`).
+///
+/// The JSON block is emitted whole whatever the deployment: the host half is
+/// reachable only from `provide_json()`, so a binary that never calls it does not
+/// link it. Splitting the block by feature would instead ask every crate that
+/// declares a service to know which process will call it, which a service cannot.
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_service_with(attr.into(), item.into(), Features::from_cfg()).into()
@@ -279,6 +285,9 @@ fn expand_service_with(
             }
         }
 
+        // The JSON *host* side only: these handlers serve a service whose
+        // implementation lives in a JSON host, so a build that only consumes JSON
+        // (the HTTP gateway) must not carry them.
         if features.json {
             json_provider_methods.push(gen_json_provider_method(
                 proxy_name,
@@ -327,10 +336,12 @@ fn expand_service_with(
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
         max_slice_len: &max_slice_len,
+        service_ref: &service_ref,
         node_methods: &node_methods,
         blocking_methods: &proxy_blocking_methods,
         oneway_calls: &proxy_oneway_calls,
         json_provider: features.json,
+        json_provider_methods: &json_provider_methods,
     };
     let proxy_output = gen_proxy(&proxy_input);
 
@@ -342,9 +353,7 @@ fn expand_service_with(
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
         max_slice_len: &max_slice_len,
-        service_ref: &service_ref,
         json_provider: features.json,
-        json_provider_methods: &json_provider_methods,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);
 
@@ -358,8 +367,9 @@ fn expand_service_with(
         req_enum_name,
         methods: json_methods,
     };
-    // The provider-side converters belong to the JSON *host* path only: it is the
-    // one that turns an rkyv request into a JSON value, so they follow `json`.
+    // The provider-side converters: they turn an rkyv request into a JSON value and
+    // a host answer back into a wire sample. Only `provide_json()` reaches them, so
+    // they follow the same flag as the rest of the block and the linker decides.
     let (json_provider_from_request, json_provider_from_response) = if features.json {
         (
             gen_json_provider_from_request_fn(&json_input),
@@ -373,7 +383,7 @@ fn expand_service_with(
     // gateway and the HTTP gateway both consume it, so neither carries generated
     // code of its own and the two cannot drift apart. The reading policy travels
     // as an argument, which is what keeps a single match table.
-    let json_invoker = if features.json || features.http {
+    let json_invoker = if features.json {
         gen_json_invoker_impl(&json_input)
     } else {
         quote! {}

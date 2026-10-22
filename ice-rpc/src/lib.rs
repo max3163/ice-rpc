@@ -307,9 +307,18 @@ pub mod codegen;
 /// by `#[service]`) and one [`JsonDispatcher`](json::JsonDispatcher) per process
 /// (the host side, registered by the gateway).
 ///
-/// Gated behind `json`: a Rust-to-Rust deployment never speaks JSON, so the
-/// converters and their `serde` cost stay out of the build. The HTTP gateway
-/// needs it, so `http` enables `json`.
+/// Gated behind the `json` feature, which turns on the whole view at once: the
+/// [`JsonInvoker`](json::JsonInvoker) a JSON *transport* dispatches to (the HTTP
+/// gateway, the Node.js consumer), the rkyv ↔ `serde_json::Value` converters, and
+/// the `ProviderJson` mode a JSON host serves a non-Rust implementation with.
+///
+/// One switch, because the two halves are not two deployments: what decides
+/// whether a **binary** carries the host half is whether it ever builds a
+/// `ProviderJson` proxy (`Proxy::provide_json()`), and the link step answers that
+/// without help. A service crate has no way to know which process will call it, so
+/// asking it to choose per direction was the wrong place for the decision — and a
+/// Rust-to-Rust deployment still enables nothing, so the converters and their
+/// `serde` cost stay out of its build entirely.
 #[cfg(feature = "json")]
 pub mod json;
 
@@ -317,7 +326,11 @@ pub mod json;
 #[doc(hidden)]
 pub mod transport;
 
-#[cfg(feature = "http")]
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
+    feature = "http-tokio"
+))]
 mod http_gateway;
 
 // ── Public API: service traits ─────────────────────────────────────
@@ -599,7 +612,11 @@ pub fn init_without_ctrl_c() -> ShutdownGuard {
 ///
 /// Prefer the [`start_http_gateway!`] macro which builds the mapping
 /// automatically from the list of exposed proxies.
-#[cfg(feature = "http")]
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
+    feature = "http-tokio"
+))]
 #[doc(hidden)]
 pub async fn start_http_server(
     port: u16,
@@ -626,7 +643,11 @@ pub async fn start_http_server(
 ///     Ok(())
 /// }
 /// ```
-#[cfg(feature = "http")]
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
+    feature = "http-tokio"
+))]
 #[macro_export]
 macro_rules! start_http_gateway {
     ($port:expr, $($proxy:ty),+ $(,)?) => {{

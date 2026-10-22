@@ -29,14 +29,21 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 
 // ── The JSON contract, both sides ────────────────────────────────────
 // One view per service: the macro implements the caller side and calls the host
-// side, which registers itself once with `set_json_dispatcher`. Gated behind
-// `json` alongside the module itself.
+// side, which registers itself once with `set_json_dispatcher`. Gated alongside
+// the module itself, by the `json` feature.
 #[cfg(feature = "json")]
 pub use crate::json::{
     JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonInvoker,
     JsonOutcome, JsonResult, ReadMode, dispatch_json, json_dispatcher, read_json,
     set_json_dispatcher,
 };
+// The host-side conversion of one host answer into a wire sample: the whole
+// envelope dispatch, so `serialize_response_from_value` stays one line per method.
+#[cfg(feature = "json")]
+pub use crate::json::event_from_json;
+// The caller-side argument decoding, likewise: one line per parameter.
+#[cfg(feature = "json")]
+pub use crate::json::{arg_from_base64, arg_from_json, take_field};
 
 // ── Diagnostics ─────────────────────────────────────────────────────
 // The gateway's `version()` reports this instead of a hand-written literal.
@@ -52,19 +59,32 @@ pub use crate::{
 // ── Plumbing invoked by the generated entry points ──────────────────
 pub use crate::{_ProviderService, registry_cancel_token, run_provider_inner};
 
-#[cfg(feature = "http")]
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
+    feature = "http-tokio"
+))]
 pub use crate::start_http_server;
 
 // ── Publish/subscribe transport ─────────────────────────────────────
 // Entry points used by the generated client/server.
 pub use crate::transport::PAYLOAD_ALIGNMENT;
 pub use crate::transport::{
-    BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, OwnedEmitter, ResponseEmitter,
-    ServiceDispatcher, declare_channel_max_slice_len, decode_aligned, emit_rpc_error,
-    is_provider_connected, native_call, observable_to_responses, register_native_service,
-    serialize_and_call, serialize_and_send_one_way, spawn_native_service,
-    start_registered_channels, sweep_orphan_shm_markers,
+    BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, DecodeFailure, OwnedEmitter,
+    ResponseEmitter, ServiceDispatcher, declare_channel_max_slice_len, decode_aligned,
+    emit_rpc_error, is_provider_connected, native_call, observable_to_responses,
+    register_native_service, reject_undecodable, reject_undecodable_oneway, serialize_and_call,
+    serialize_and_send_one_way, spawn_native_service, start_registered_channels,
+    sweep_orphan_shm_markers,
 };
+// The JSON host helpers: the rejection paths and the shared handler body of a
+// `ProviderJson` handler. Gated with the rest of the JSON host surface.
+#[cfg(feature = "json")]
+pub use crate::transport::{
+    RequestToValue, ValueToResponse, json_host_handler, json_host_oneway_handler,
+};
+#[cfg(feature = "json")]
+pub use crate::transport::{reject_json_dispatch, reject_json_request, reject_json_response};
 
 // ── Dependency re-exports used by the generated code ────────────────
 // No `futures` here: the codegen never named it, and the oneshot channel it
@@ -76,12 +96,10 @@ pub use async_lock;
 // expands to `::core::…` only, so reaching it through this path needs no
 // `async-trait` dependency in the service crate.
 pub use async_trait;
-// The JSON converters are the only generated code that names `base64`. The
-// request builder is emitted under `json` alone, but the invoker both JSON
-// bridges dispatch to is emitted under `json` **or** `http` — the gateway needs
-// it, base64 included, for a service with a `Vec<u8>` argument. Both features
-// enable the dependency, so this re-export follows their union, not `json`.
-#[cfg(any(feature = "json", feature = "http"))]
+// The JSON converters are the only generated code that names `base64`. The host
+// converters and the invoker both decode a `Vec<u8>` argument through it, so the
+// re-export follows the union of the two JSON directions.
+#[cfg(feature = "json")]
 pub use base64;
 pub use futures_lite;
 // The link-time registration surface the generated decoders use. The whole crate

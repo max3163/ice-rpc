@@ -18,7 +18,14 @@
 //! [`JsonInvoker`] — a Rust test double, or a future WASM host: they all register
 //! or consume the types below.
 
+#[cfg(feature = "json")]
+use rkyv::util::AlignedVec;
+
 use crate::global::Global;
+#[cfg(feature = "json")]
+use crate::transport::PAYLOAD_ALIGNMENT;
+#[cfg(feature = "json")]
+use crate::types::{EventKind, WireEvent};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -287,6 +294,123 @@ where
             }
         },
     }
+}
+
+// ── Reading one argument, shared by every generated helper ──────────────────
+
+/// Decodes one argument of a call.
+///
+/// Generic over the argument type — the one thing the expansion knows that this
+/// function does not — so a generated helper carries one line per parameter and
+/// the failure message is formatted in a single place.
+#[cfg(feature = "json")]
+pub fn arg_from_json<T>(method: &str, name: &str, value: Value) -> Result<T, JsonCallError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(value).map_err(|e| {
+        JsonCallError::InvalidArgs(format!("invalid parameter '{name}' of '{method}': {e}"))
+    })
+}
+
+/// Same, for a `Vec<u8>` argument, which travels as base64.
+///
+/// Takes the `Option` the caller already has: a missing field and a field of the
+/// wrong type are the same failure for the caller of a JSON method.
+#[cfg(feature = "json")]
+pub fn arg_from_base64(
+    method: &str,
+    name: &str,
+    value: Option<&Value>,
+) -> Result<Vec<u8>, JsonCallError> {
+    use base64::Engine;
+    let text = value.and_then(Value::as_str).ok_or_else(|| {
+        JsonCallError::InvalidArgs(format!(
+            "parameter '{name}' of '{method}' must be a base64 string"
+        ))
+    })?;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|e| {
+            JsonCallError::InvalidArgs(format!(
+                "parameter '{name}' of '{method}' is not valid base64: {e}"
+            ))
+        })
+}
+
+/// Moves one field out of the argument object.
+///
+/// A missing field becomes `Null`, which the decoding reports as an invalid
+/// parameter: one error path for "absent" and "wrong shape", which a JSON caller
+/// cannot tell apart anyway. Moving, not cloning, keeps a large subtree from being
+/// copied just to be read.
+#[cfg(feature = "json")]
+pub fn take_field(args: &mut Value, name: &str) -> Value {
+    args.get_mut(name)
+        .map(std::mem::take)
+        .unwrap_or(Value::Null)
+}
+
+/// Builds and serializes the wire event a JSON host asked for.
+///
+/// The host answers with `{ "type": "next"|"complete"|"error", "data": … }`; this
+/// is the whole conversion, generic over the service's two result types. That is
+/// what keeps the generated `serialize_response_from_value` to one line per
+/// method instead of repeating the envelope dispatch in every arm.
+///
+/// `None` means the envelope or its `data` does not match the declaration; the
+/// handler then reports `SerializationError` to the caller rather than leaving the
+/// call unanswered.
+///
+/// # Bounds
+/// `T` and `E` must be JSON-deserializable — the same requirement the generated
+/// converters already impose through `serde` — and their `WireEvent` must be
+/// rkyv-serializable, which `#[payload]` guarantees.
+#[cfg(feature = "json")]
+pub fn event_from_json<T, E>(value: Value) -> Option<(EventKind, AlignedVec<PAYLOAD_ALIGNMENT>)>
+where
+    T: serde::de::DeserializeOwned,
+    E: serde::de::DeserializeOwned,
+    // The exact strategy `rkyv::to_bytes` uses, spelled out: it is the same
+    // bound `observable_to_responses` carries for the native path.
+    for<'a> WireEvent<T, E>: rkyv::Serialize<
+            rkyv::rancor::Strategy<
+                rkyv::ser::Serializer<
+                    rkyv::util::AlignedVec,
+                    rkyv::ser::allocator::ArenaHandle<'a>,
+                    rkyv::ser::sharing::Share,
+                >,
+                rkyv::rancor::Error,
+            >,
+        >,
+{
+    // `object` is owned: the payload is moved into `from_value`, never cloned.
+    let Value::Object(mut object) = value else {
+        return None;
+    };
+    // A `&'static str` keeps the borrow of `object` from crossing the `remove`
+    // calls below, while preserving the default-`next` rule.
+    let event_type: &'static str = match object.get("type").and_then(|v| v.as_str()) {
+        Some("complete") => "complete",
+        Some("error") => "error",
+        Some("next") | None => "next",
+        Some(_) => return None,
+    };
+    let event: WireEvent<T, E> = match event_type {
+        "next" => WireEvent::Next(serde_json::from_value(object.remove("data")?).ok()?),
+        "complete" => match object.remove("data") {
+            Some(data) => WireEvent::CompleteWith(serde_json::from_value(data).ok()?),
+            None => WireEvent::Complete,
+        },
+        "error" => WireEvent::Error(serde_json::from_value(object.remove("data")?).ok()?),
+        _ => return None,
+    };
+    let kind = event.kind();
+    // Return the rkyv buffer itself, not a `Vec`: the emitter accepts the
+    // `AlignedVec` through its `&[u8]` deref, so no sample is copied.
+    rkyv::to_bytes::<rkyv::rancor::Error>(&event)
+        .ok()
+        .map(|aligned| (kind, aligned))
 }
 
 #[cfg(test)]

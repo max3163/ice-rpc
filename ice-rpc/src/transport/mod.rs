@@ -17,6 +17,9 @@ use crate::types::{RpcError, RpcHeader};
 
 mod bridge;
 mod client;
+// The provider-side JSON handler: one copy per binary, shared by every service.
+#[cfg(feature = "json")]
+mod json_host;
 mod monitor;
 mod notify;
 mod open;
@@ -27,10 +30,15 @@ mod tuning;
 mod waitset;
 
 pub use bridge::{
-    BoxResponseFuture, CollectEmitter, OwnedEmitter, ResponseEmitter, ServiceDispatcher,
-    emit_rpc_error, observable_to_responses,
+    BoxResponseFuture, CollectEmitter, DecodeFailure, OwnedEmitter, ResponseEmitter,
+    ServiceDispatcher, emit_rpc_error, observable_to_responses, reject_undecodable,
+    reject_undecodable_oneway,
 };
+#[cfg(feature = "json")]
+pub use bridge::{reject_json_dispatch, reject_json_request, reject_json_response};
 pub use client::{native_call, send_one_way, serialize_and_call, serialize_and_send_one_way};
+#[cfg(feature = "json")]
+pub use json_host::{RequestToValue, ValueToResponse, json_host_handler, json_host_oneway_handler};
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 

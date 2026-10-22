@@ -383,6 +383,107 @@ pub fn emit_rpc_error(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool 
     }
 }
 
+/// Why a request could not be decoded, for [`reject_undecodable`].
+pub enum DecodeFailure<'a> {
+    /// The payload did not decode as the request enum.
+    Invalid(&'a dyn std::fmt::Debug),
+    /// The payload decoded, but as another method's request variant.
+    WrongVariant,
+}
+
+/// Answers a request whose payload could not be decoded.
+///
+/// `#[cold]` and `#[inline(never)]` are the point: this path runs **never** in a
+/// healthy deployment, and it used to be emitted — formatting, logging and
+/// `emit_rpc_error` included — once per method inside every generated handler.
+/// As one non-generic function it exists once per binary, and the decode match it
+/// sits next to stays small enough to inline well in the hot path.
+pub fn reject_undecodable(
+    service: &'static str,
+    method: &'static str,
+    failure: DecodeFailure<'_>,
+    mut emitter: OwnedEmitter,
+) -> BoxResponseFuture {
+    log_decode_failure(service, method, failure);
+    // The caller registered a handler and waits for an answer: say why.
+    let _ = emit_rpc_error(RpcError::SerializationError, &mut *emitter);
+    Box::pin(async {})
+}
+
+/// Same as [`reject_undecodable`], for a **one-way** method.
+///
+/// Nothing is answered — the emitter is never touched — so the cause is logged
+/// and the notification is dropped.
+pub fn reject_undecodable_oneway(
+    service: &'static str,
+    method: &'static str,
+    failure: DecodeFailure<'_>,
+) -> BoxResponseFuture {
+    log_decode_failure(service, method, failure);
+    Box::pin(async {})
+}
+
+/// Logs why a request could not be decoded, in one place for every method.
+#[cold]
+#[inline(never)]
+fn log_decode_failure(service: &'static str, method: &'static str, failure: DecodeFailure<'_>) {
+    match failure {
+        DecodeFailure::Invalid(error) => {
+            log::error!("[{service}::{method}] request payload decoding failed: {error:?}");
+        }
+        DecodeFailure::WrongVariant => {
+            log::error!("[{service}::{method}] request payload is another method's variant");
+        }
+    }
+}
+
+/// Answers a JSON-host call whose request could not be converted to a `Value`.
+///
+/// Called from inside the handler's task rather than from the channel's thread,
+/// so it takes the emitter by reference and returns `()`: there is no future to
+/// hand back. `#[cold]`/`#[inline(never)]` for the same reason as
+/// [`reject_undecodable`] — the path exists once per binary, not once per method.
+#[cfg(feature = "json")]
+#[cold]
+#[inline(never)]
+pub fn reject_json_request(
+    service: &'static str,
+    method: &'static str,
+    emitter: &mut dyn ResponseEmitter,
+) {
+    log::error!("[{service}::{method}] Failed to deserialize the request");
+    let _ = emit_rpc_error(RpcError::SerializationError, emitter);
+}
+
+/// Answers a JSON-host call the host could not even be asked to serve.
+#[cfg(feature = "json")]
+#[cold]
+#[inline(never)]
+pub fn reject_json_dispatch(
+    service: &'static str,
+    method: &'static str,
+    message: String,
+    emitter: &mut dyn ResponseEmitter,
+) {
+    log::error!("[{service}::{method}] JSON dispatch failed: {message}");
+    // The failure is the provider's, not the framing: reported as an internal
+    // error rather than dropped.
+    let _ = emit_rpc_error(RpcError::Internal(message), emitter);
+}
+
+/// Answers a JSON-host call whose response could not be encoded back.
+#[cfg(feature = "json")]
+#[cold]
+#[inline(never)]
+pub fn reject_json_response(
+    service: &'static str,
+    method: &'static str,
+    emitter: &mut dyn ResponseEmitter,
+) {
+    log::error!("[{service}::{method}] Failed to serialize the JSON response");
+    let _ = emit_rpc_error(RpcError::SerializationError, emitter);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +604,71 @@ mod tests {
             wire.expect("a value must not wait for the event that follows it"),
             Some(WireEvent::Next(1))
         );
+    }
+
+    /// Samples written by a handler into an emitter the test keeps a handle on.
+    type Samples = std::sync::Arc<std::sync::Mutex<Vec<(EventKind, Vec<u8>)>>>;
+
+    /// An emitter whose samples stay readable after the handler consumed it.
+    #[derive(Clone, Default)]
+    struct SharedEmitter(Samples);
+
+    impl SharedEmitter {
+        fn owned(&self) -> OwnedEmitter {
+            Box::new(self.clone())
+        }
+
+        fn take(&self) -> Vec<(EventKind, Vec<u8>)> {
+            let mut samples = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *samples)
+        }
+    }
+
+    impl ResponseEmitter for SharedEmitter {
+        fn emit(&mut self, kind: EventKind, payload: &[u8]) -> bool {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((kind, payload.to_vec()));
+            true
+        }
+    }
+
+    /// A payload that cannot be decoded must still be answered: the caller is
+    /// waiting, so the rejection is a bare `RpcError`, and the helper's future
+    /// is already complete.
+    #[test]
+    fn an_undecodable_request_is_answered_with_a_serialization_error() {
+        let emitter = SharedEmitter::default();
+        let future = reject_undecodable(
+            "Service",
+            "method",
+            DecodeFailure::WrongVariant,
+            emitter.owned(),
+        );
+        crate::rt::block_on(future);
+
+        let samples = emitter.take();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].0, EventKind::RpcError);
+        let error = rkyv::from_bytes::<RpcError, rkyv::rancor::Error>(&samples[0].1)
+            .expect("a rejection carries a bare RpcError");
+        assert_eq!(error, RpcError::SerializationError);
+    }
+
+    /// A one-way request is never answered, not even when it is rejected: there
+    /// is no caller waiting, and the emitter must stay untouched.
+    #[test]
+    fn an_undecodable_one_way_request_is_silently_dropped() {
+        let emitter = SharedEmitter::default();
+        let future = reject_undecodable_oneway(
+            "Service",
+            "method",
+            DecodeFailure::Invalid(&"not this request"),
+        );
+        crate::rt::block_on(future);
+
+        assert!(emitter.take().is_empty(), "a one-way call has no answer");
     }
 
     /// `send_complete_with` enqueues two events, so the channel must have room

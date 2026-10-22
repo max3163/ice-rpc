@@ -73,19 +73,9 @@
 //! Only the reading of **one** value is exposed: a browser cannot consume an
 //! endless stream, and waiting for every value would buffer it in memory.
 
-// trillium is built on one runtime adapter at a time, and the manifest
-// deliberately does not choose: `http` alone deciding the runtime of the gateway
-// would contradict the execution mode the deployment picked.
-#[cfg(not(any(
-    feature = "http-tokio",
-    feature = "http-smol",
-    feature = "http-threads"
-)))]
-compile_error!(
-    "the `http` feature needs one runtime adapter: enable `http-tokio` (tokio), \
-     `http-smol` (smol) or `http-threads` (the default mode)."
-);
-
+// trillium is built on one runtime adapter at a time. There is no "gateway
+// without an adapter" feature to diagnose: each `http-*` name brings its own
+// adapter, and the module is compiled only when one of them is on.
 use crate::json::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
 use async_lock::RwLock;
 use serde_json::Value;

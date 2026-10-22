@@ -176,8 +176,10 @@ fn is_type_vec_u8(ty: &Type) -> bool {
 /// `serialize_response_from_value(method, value) -> Option<(EventKind, AlignedVec)>`.
 ///
 /// The host returns an object `{ "type": "next"|"complete"|"error", "data": … }`;
-/// this builds the matching `WireEvent`, derives its `EventKind` (stamped in the
-/// zero-copy header by the transport) and serializes it to rkyv.
+/// [`event_from_json`](ice_rpc::json::event_from_json) builds the matching
+/// `WireEvent`, derives its `EventKind` (stamped in the zero-copy header by the
+/// transport) and serializes it to rkyv. Only the two result types differ per
+/// method, so the table is one line per method.
 pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStream {
     let JsonGenInput {
         visibility,
@@ -197,51 +199,7 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
             let err_type = &m.err_type;
 
             quote! {
-                #fn_name_str => {
-                    // `object` is owned: the payload is moved into `from_value`,
-                    // never cloned. That is the whole point of destructuring the
-                    // envelope before the method dispatch.
-                    let event = match event_type {
-                        "next" => {
-                            let data: #ok_type = match object.remove("data") {
-                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                },
-                                None => return None,
-                            };
-                            ice_rpc::codegen::WireEvent::Next(data)
-                        }
-                        "complete" => match object.remove("data") {
-                            Some(d) => {
-                                let data: #ok_type = match ice_rpc::codegen::serde_json::from_value(d) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                };
-                                ice_rpc::codegen::WireEvent::CompleteWith(data)
-                            }
-                            None => ice_rpc::codegen::WireEvent::Complete,
-                        },
-                        "error" => {
-                            let err: #err_type = match object.remove("data") {
-                                Some(d) => match ice_rpc::codegen::serde_json::from_value(d) {
-                                    Ok(v) => v,
-                                    Err(_) => return None,
-                                },
-                                None => return None,
-                            };
-                            ice_rpc::codegen::WireEvent::Error(err)
-                        }
-                        _ => return None,
-                    };
-                    let kind = event.kind();
-                    // Return the rkyv buffer itself, not a `Vec`: `to_vec()` would
-                    // allocate and copy the whole sample once more. The emitter
-                    // accepts the `AlignedVec` through its `&[u8]` deref.
-                    ice_rpc::codegen::rkyv::to_bytes::<ice_rpc::codegen::rkyv::rancor::Error>(&event)
-                        .ok()
-                        .map(|aligned| (kind, aligned))
-                }
+                #fn_name_str => ice_rpc::codegen::event_from_json::<#ok_type, #err_type>(value),
             }
         })
         .collect();
@@ -257,17 +215,6 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
                 ice_rpc::codegen::EventKind,
                 ice_rpc::codegen::rkyv::util::AlignedVec<{ ice_rpc::codegen::PAYLOAD_ALIGNMENT }>,
             )> {
-                let ice_rpc::codegen::serde_json::Value::Object(mut object) = value else {
-                    return None;
-                };
-                // A `&'static str` keeps the borrow of `object` from crossing the
-                // `remove` calls below, while preserving the default-`next` rule.
-                let event_type: &'static str = match object.get("type").and_then(|v| v.as_str()) {
-                    Some("complete") => "complete",
-                    Some("error") => "error",
-                    Some("next") | None => "next",
-                    Some(_) => return None,
-                };
                 match method {
                     #(#match_arms)*
                     _ => None,
@@ -432,41 +379,31 @@ fn helper_name(method: &JsonMethod) -> Ident {
 /// Generates the parameter bindings of one method, mirroring the provider-side
 /// convention.
 ///
-/// Every literal the macro knows — the parameter name, the method name — is
-/// **inlined** in the emitted format strings: `format!("unknown key '{key}'")`
-/// reads as a message, where `format!("unknown key '{}'", "key")` reads as
-/// machine output. Only the decoding error itself stays a captured variable.
+/// Each binding is one line: the decoding, the base64 transport and the failure
+/// messages live in `ice_rpc::codegen::{arg_from_json, arg_from_base64,
+/// take_field}`, which are generic over the argument type only — the one thing the
+/// expansion knows that the runtime cannot. A service whose methods reuse a type
+/// therefore decodes it through one instantiation instead of one per parameter.
 fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]) -> TokenStream {
     match arg_names.len() {
+        // Zero arguments: the whole value is the (empty) argument object.
         0 => quote! {},
         1 => {
             let arg_name = &arg_names[0];
             let arg_type = &arg_types[0];
+            let name_str = arg_name.to_string();
             if is_type_vec_u8(arg_type) {
-                let not_a_string =
-                    format!("parameter '{arg_name}' of '{fn_name_str}' must be a base64 string");
-                let undecodable = with_error_suffix(&not_a_string);
                 quote! {
-                    let #arg_name: #arg_type = {
-                        use ice_rpc::codegen::base64::Engine;
-                        let __text = args.as_str().ok_or_else(|| {
-                            ice_rpc::codegen::JsonCallError::InvalidArgs(#not_a_string.to_string())
-                        })?;
-                        ice_rpc::codegen::base64::engine::general_purpose::STANDARD
-                            .decode(__text)
-                            .map_err(|e| ice_rpc::codegen::JsonCallError::InvalidArgs(
-                                format!(#undecodable),
-                            ))?
-                    };
+                    let #arg_name: #arg_type = ice_rpc::codegen::arg_from_base64(
+                        #fn_name_str,
+                        #name_str,
+                        Some(&args),
+                    )?;
                 }
             } else {
-                let invalid = format!("invalid parameter for '{fn_name_str}'");
-                let describe = with_error_suffix(&invalid);
                 quote! {
-                    let #arg_name: #arg_type = ice_rpc::codegen::serde_json::from_value(args)
-                        .map_err(|e| ice_rpc::codegen::JsonCallError::InvalidArgs(
-                            format!(#describe),
-                        ))?;
+                    let #arg_name: #arg_type =
+                        ice_rpc::codegen::arg_from_json(#fn_name_str, #name_str, args)?;
                 }
             }
         }
@@ -477,43 +414,20 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
                 .map(|(name, ty)| {
                     let field_str = name.to_string();
                     if is_type_vec_u8(ty) {
-                        let missing = format!("missing base64 string parameter '{name}'");
-                        let undecodable =
-                            with_error_suffix(&format!("invalid base64 parameter '{name}'"));
                         quote! {
-                            let #name: #ty = {
-                                use ice_rpc::codegen::base64::Engine;
-                                let __text = args
-                                    .get(#field_str)
-                                    .and_then(|v| v.as_str())
-                                    .ok_or_else(|| ice_rpc::codegen::JsonCallError::InvalidArgs(
-                                        #missing.to_string(),
-                                    ))?;
-                                ice_rpc::codegen::base64::engine::general_purpose::STANDARD
-                                    .decode(__text)
-                                    .map_err(|e| ice_rpc::codegen::JsonCallError::InvalidArgs(
-                                        format!(#undecodable),
-                                    ))?
-                            };
+                            let #name: #ty = ice_rpc::codegen::arg_from_base64(
+                                #fn_name_str,
+                                #field_str,
+                                args.get(#field_str),
+                            )?;
                         }
                     } else {
-                        let invalid = with_error_suffix(&format!(
-                            "invalid parameter '{name}' for '{fn_name_str}'"
-                        ));
                         quote! {
-                            let #name: #ty = {
-                                // `args` is owned by the helper: move the field out
-                                // instead of cloning its whole subtree. A missing
-                                // field still becomes `Null`, which `from_value`
-                                // reports as an invalid parameter.
-                                let __value = args
-                                    .get_mut(#field_str)
-                                    .map(std::mem::take)
-                                    .unwrap_or(ice_rpc::codegen::serde_json::Value::Null);
-                                ice_rpc::codegen::serde_json::from_value(__value).map_err(|e| {
-                                    ice_rpc::codegen::JsonCallError::InvalidArgs(format!(#invalid))
-                                })?
-                            };
+                            let #name: #ty = ice_rpc::codegen::arg_from_json(
+                                #fn_name_str,
+                                #field_str,
+                                ice_rpc::codegen::take_field(&mut args, #field_str),
+                            )?;
                         }
                     }
                 })
@@ -526,26 +440,13 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
     }
 }
 
-/// Appends the decoding error to a message prefix.
-///
-/// The emitted code is `format!("<prefix>: {e}")`, `e` being bound by the
-/// surrounding `map_err`, so the two parts read as one sentence in the failure a
-/// caller receives.
-fn with_error_suffix(prefix: &str) -> String {
-    format!("{prefix}: {{e}}")
-}
-
 /// Generates one `ServiceDispatcher::method(...)` registration that bridges an
 /// RPC method to the JSON host.
 ///
-/// A call may carry **several** events: the host pushes intermediate ones and
-/// closes with the terminal one, so a multi-value `Observable` is servable. Each
-/// event becomes its own wire sample. The service name comes from the proxy's own
-/// `SERVICE_NAME`, so no extra parameter is needed.
-///
-/// Like the native dispatcher, the handler is wrapped in `call_scoped`, so
-/// `CallContext::current()` works inside a JSON-served method and a call it emits
-/// continues the incoming trace instead of starting a new root.
+/// The body itself lives in `ice_rpc::codegen::json_host_handler`: it is
+/// service-agnostic, so the expansion names only the two per-method converters the
+/// proxy already exposes and hands them over as function pointers. That is what
+/// keeps one copy of the handler per binary instead of one per method.
 pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: bool) -> TokenStream {
     let method_name_str = fn_name.to_string();
 
@@ -562,42 +463,12 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
                           payload: &[u8],
                           _emitter: ice_rpc::codegen::OwnedEmitter|
                           -> ice_rpc::codegen::BoxResponseFuture {
-                        let ctx = ice_rpc::codegen::CallContext::new(
-                            &header,
+                        ice_rpc::codegen::json_host_oneway_handler(
                             <#proxy_name>::SERVICE_NAME,
                             #method_name_str,
-                        );
-                        let args =
-                            #proxy_name::deserialize_request_to_value(#method_name_str, payload);
-                        ice_rpc::codegen::call_scoped(
-                            ctx,
-                            async move {
-                                let Some(args) = args
-                                else {
-                                    ice_rpc::codegen::log::error!(
-                                        "[{}::{}] Failed to deserialize the one-way request",
-                                        <#proxy_name>::SERVICE_NAME,
-                                        #method_name_str
-                                    );
-                                    return;
-                                };
-                                match ice_rpc::codegen::dispatch_json(
-                                    header.correlation_id,
-                                    <#proxy_name>::SERVICE_NAME,
-                                    #method_name_str,
-                                    args,
-                                ) {
-                                    // Nothing is emitted, by contract: dropping the
-                                    // stream is how the host learns the call is over.
-                                    Ok(events) => drop(events),
-                                    Err(e) => ice_rpc::codegen::log::error!(
-                                        "[{}::{}] one-way JSON dispatch failed: {}",
-                                        <#proxy_name>::SERVICE_NAME,
-                                        #method_name_str,
-                                        e
-                                    ),
-                                }
-                            },
+                            header,
+                            payload,
+                            #proxy_name::deserialize_request_to_value,
                         )
                     },
                 );
@@ -613,110 +484,16 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
                       payload: &[u8],
                       emitter: ice_rpc::codegen::OwnedEmitter|
                       -> ice_rpc::codegen::BoxResponseFuture {
-                    // Built before the coroutine: it is copied into the task, and
-                    // the header itself is not needed past this point. The service
-                    // name is the constant the proxy declares, so the span shows it
-                    // instead of the 4-byte hash the header carries.
-                    let ctx = ice_rpc::codegen::CallContext::new(
-                        &header,
+                    // The service name is the constant the proxy declares, so the
+                    // span shows it instead of the 4-byte hash the header carries.
+                    ice_rpc::codegen::json_host_handler(
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
-                    );
-                    // Decoded **synchronously**, straight from the received sample:
-                    // the borrow ends here, and only the JSON value enters the task,
-                    // which outlives the sample.
-                    let args =
-                        #proxy_name::deserialize_request_to_value(#method_name_str, payload);
-                    // Same wrapper as the native dispatcher: the context is
-                    // installed around every poll, so the JSON-served method reads
-                    // it with `CallContext::current()`, and a call it emits
-                    // continues the incoming trace instead of starting a new root.
-                    ice_rpc::codegen::call_scoped(
-                        ctx,
-                        async move {
-                            let mut emitter = emitter;
-                            let Some(args) = args
-                            else {
-                                ice_rpc::codegen::log::error!(
-                                    "[{}::{}] Failed to deserialize the request",
-                                    <#proxy_name>::SERVICE_NAME,
-                                    #method_name_str
-                                );
-                                let _ = ice_rpc::codegen::emit_rpc_error(
-                                    ice_rpc::codegen::RpcError::SerializationError,
-                                    &mut *emitter,
-                                );
-                                return;
-                            };
-                            // The correlation id is the real one now that the handler
-                            // receives the header: the host can correlate its logs.
-                            let mut events = match ice_rpc::codegen::dispatch_json(
-                                header.correlation_id,
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                args,
-                            ) {
-                                Ok(events) => events,
-                                Err(e) => {
-                                    ice_rpc::codegen::log::error!(
-                                        "[{}::{}] JSON dispatch failed: {}",
-                                        <#proxy_name>::SERVICE_NAME,
-                                        #method_name_str,
-                                        e
-                                    );
-                                    // The failure is the provider's, not the framing:
-                                    // reported as an internal error rather than dropped.
-                                    let _ = ice_rpc::codegen::emit_rpc_error(
-                                        ice_rpc::codegen::RpcError::Internal(e),
-                                        &mut *emitter,
-                                    );
-                                    return;
-                                }
-                            };
-                            // One call may carry several events: the host pushes
-                            // each intermediate one and closes with the terminal
-                            // one. Every event becomes its own wire sample, which
-                            // is what lets a multi-value Observable be served.
-                            // The loop ends when the host closes the call.
-                            while let Some(event) = events.next().await {
-                                let value = match event {
-                                    ice_rpc::codegen::JsonCallEvent::Event(value) => value,
-                                    ice_rpc::codegen::JsonCallEvent::Failed(message) => {
-                                        ice_rpc::codegen::log::error!(
-                                            "[{}::{}] JSON call failed: {}",
-                                            <#proxy_name>::SERVICE_NAME,
-                                            #method_name_str,
-                                            message
-                                        );
-                                        let _ = ice_rpc::codegen::emit_rpc_error(
-                                            ice_rpc::codegen::RpcError::Internal(message),
-                                            &mut *emitter,
-                                        );
-                                        return;
-                                    }
-                                };
-                                match #proxy_name::serialize_response_from_value(#method_name_str, value) {
-                                    Some((kind, sample)) => {
-                                        emitter.emit(kind, &sample);
-                                    }
-                                    // An event that cannot be encoded would leave the
-                                    // call unanswered: it is reported instead of
-                                    // dropped, and the stream stops here.
-                                    None => {
-                                        ice_rpc::codegen::log::error!(
-                                            "[{}::{}] Failed to serialize the JSON response",
-                                            <#proxy_name>::SERVICE_NAME,
-                                            #method_name_str
-                                        );
-                                        let _ = ice_rpc::codegen::emit_rpc_error(
-                                            ice_rpc::codegen::RpcError::SerializationError,
-                                            &mut *emitter,
-                                        );
-                                        return;
-                                    }
-                                }
-                            }
-                        },
+                        header,
+                        payload,
+                        emitter,
+                        #proxy_name::deserialize_request_to_value,
+                        #proxy_name::serialize_response_from_value,
                     )
                 },
             );

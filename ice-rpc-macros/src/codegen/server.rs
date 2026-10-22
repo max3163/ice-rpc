@@ -126,37 +126,27 @@ pub fn gen_native_method(
                         // Fail-fast: a payload that does not decode is answered at
                         // once with a technical error, never dropped — silence
                         // would leave the caller waiting for a transport timeout
-                        // that names nothing.
+                        // that names nothing. The two causes keep their own log
+                        // line, but both live in one `#[cold]` helper rather than
+                        // in every handler.
                         Err(e) => {
-                            ice_rpc::codegen::log::error!(
-                                "[{}::{}] request payload decoding failed: {:?}",
+                            return ice_rpc::codegen::reject_undecodable(
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str,
-                                e
+                                ice_rpc::codegen::DecodeFailure::Invalid(&e),
+                                emitter,
                             );
-                            let mut emitter = emitter;
-                            let _ = ice_rpc::codegen::emit_rpc_error(
-                                ice_rpc::codegen::RpcError::SerializationError,
-                                &mut *emitter,
-                            );
-                            return Box::pin(async {});
                         }
                         // The payload decoded, but as the request variant of
                         // another method: a caller contract violation, answered
-                        // like a decoding failure rather than silently. The log
-                        // line tells the two cases apart.
+                        // like a decoding failure rather than silently.
                         Ok(_) => {
-                            ice_rpc::codegen::log::error!(
-                                "[{}::{}] request payload is another method's variant",
+                            return ice_rpc::codegen::reject_undecodable(
                                 <#proxy_name>::SERVICE_NAME,
-                                #method_name_str
+                                #method_name_str,
+                                ice_rpc::codegen::DecodeFailure::WrongVariant,
+                                emitter,
                             );
-                            let mut emitter = emitter;
-                            let _ = ice_rpc::codegen::emit_rpc_error(
-                                ice_rpc::codegen::RpcError::SerializationError,
-                                &mut *emitter,
-                            );
-                            return Box::pin(async {});
                         }
                     };
                     // Installed around each poll rather than around the whole
@@ -221,23 +211,21 @@ pub fn gen_native_oneway_method(
                         Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
                         // Nothing waits for an answer, so a decoding failure cannot
                         // be reported to anyone: it is logged, and the notification
-                        // is dropped.
+                        // is dropped — in the shared `#[cold]` helper, not in a copy
+                        // of this code per method.
                         Err(e) => {
-                            ice_rpc::codegen::log::error!(
-                                "[{}::{}] one-way payload decoding failed: {:?}",
+                            return ice_rpc::codegen::reject_undecodable_oneway(
                                 <#proxy_name>::SERVICE_NAME,
                                 #method_name_str,
-                                e
+                                ice_rpc::codegen::DecodeFailure::Invalid(&e),
                             );
-                            return Box::pin(async {});
                         }
                         Ok(_) => {
-                            ice_rpc::codegen::log::error!(
-                                "[{}::{}] one-way payload is another method's variant",
+                            return ice_rpc::codegen::reject_undecodable_oneway(
                                 <#proxy_name>::SERVICE_NAME,
-                                #method_name_str
+                                #method_name_str,
+                                ice_rpc::codegen::DecodeFailure::WrongVariant,
                             );
-                            return Box::pin(async {});
                         }
                     };
                     ice_rpc::codegen::call_scoped(

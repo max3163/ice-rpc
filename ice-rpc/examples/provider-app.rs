@@ -47,7 +47,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[cfg(feature = "http")]
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
+    feature = "http-tokio"
+))]
 /// Default port of the HTTP REST gateway (enabled via the
 /// `ICE_HTTP_PORT` environment variable or the `--http` argument).
 const DEFAULT_HTTP_PORT: u16 = 8080;
@@ -437,8 +441,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `#[ice_rpc::main(tokio)]` owns the bootstrap (init + runtime) and the clean
     // shutdown; `run_provider!` only starts the services and waits for Ctrl+C.
 
-    // ── HTTP REST gateway (optional, requires the `http` feature) ──
-    #[cfg(feature = "http")]
+    // ── HTTP REST gateway (optional, requires an `http-*` feature) ──
+    #[cfg(any(
+        feature = "http-threads",
+        feature = "http-smol",
+        feature = "http-tokio"
+    ))]
     {
         let http_port: Option<u16> = std::env::var("ICE_HTTP_PORT")
             .ok()

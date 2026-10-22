@@ -14,10 +14,15 @@ workspace = true
 path = "src/mod.rs"
 
 [features]
-# The Node.js gateway consumes these services through the converters `#[service]`
-# generates, so asking for `napi` is what asks for that code.
-napi = ["ice-rpc/json"]
-http = ["ice-rpc/http"]
+# The JSON view of these services, in one switch: the `impl JsonInvoker` the HTTP
+# gateway dispatches to, the rkyv ↔ `serde_json::Value` converters, and the
+# `ProviderJson` mode the Node.js bridge constructs.
+#
+# One name, and no transport in it: this crate cannot know which process will call
+# its services — only the binary that opens an entry point does, and it enables
+# this feature on this crate. The link step then drops the half that binary never
+# reaches (`provide_json()` for a gateway, the invoker for an addon).
+json = ["ice-rpc/json"]
 # Emits the `{Service}Decoder`s and submits one link-time registration per
 # service, so an out-of-band observer renders the payloads in clear text without
 # this crate exposing a list (see `Decoders::linked()`).

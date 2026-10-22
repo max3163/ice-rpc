@@ -66,21 +66,18 @@ use crate::features::Features;
 const NONE: Features = Features {
     monitoring: false,
     json: false,
-    http: false,
 };
 
 /// The observer decoder alone, which is what the `monitoring` feature asks for.
 const MONITORING: Features = Features {
     monitoring: true,
     json: false,
-    http: false,
 };
 
-/// Every optional block.
+/// Every optional block: the observer decoder and the JSON view.
 const ALL: Features = Features {
     monitoring: true,
     json: true,
-    http: true,
 };
 
 /// The feature sets the expansion is pinned in, and the label naming each one.
@@ -237,44 +234,44 @@ fn compact(rendered: &str) -> String {
 /// Each optional block follows its own flag, in **all** eight combinations.
 ///
 /// This is the contract the goldens cannot express — they show three sets, this
-/// one checks the other five — and it costs a few milliseconds instead of five
-/// more files.
+/// the other combination — and it costs a few milliseconds instead of one more
+/// file.
+///
+/// One JSON flag, so the four blocks of that view travel together: the
+/// `JsonInvoker` implementation, the converters, `provide_json` and the
+/// `ProviderJson` mode. They are not split because a service cannot know which
+/// process will call it; what decides whether a *binary* carries the host half is
+/// that it never constructs a `ProviderJson` proxy, which the linker resolves.
 #[test]
 fn every_optional_block_follows_its_own_flag() {
     for monitoring in [false, true] {
         for json in [false, true] {
-            for http in [false, true] {
-                let features = Features {
-                    monitoring,
-                    json,
-                    http,
-                };
-                let rendered = render(features, quote! {}, CALCULATOR());
+            let features = Features { monitoring, json };
+            let rendered = render(features, quote! {}, CALCULATOR());
 
-                assert_eq!(
-                    rendered.contains("CalculatorDecoder"),
-                    monitoring,
-                    "the observer decoder must follow `monitoring`, in {features}"
-                );
-                assert_eq!(
-                    rendered.contains("deserialize_request_to_value"),
-                    json,
-                    "the Node.js converters must follow `json`, in {features}"
-                );
-                // The Node.js mode is a whole variant and constructor, not only a
-                // pair of converters.
-                assert_eq!(
-                    rendered.contains("fn provide_json"),
-                    json,
-                    "`provide_json` must follow `json`, in {features}"
-                );
-                // One JSON view per service, whichever JSON feature asked for it.
-                assert_eq!(
-                    rendered.contains("impl ice_rpc::codegen::JsonInvoker"),
-                    json || http,
-                    "the JsonInvoker implementation must follow `json` or `http`, in {features}"
-                );
-            }
+            assert_eq!(
+                rendered.contains("CalculatorDecoder"),
+                monitoring,
+                "the observer decoder must follow `monitoring`, in {features}"
+            );
+            assert_eq!(
+                rendered.contains("deserialize_request_to_value"),
+                json,
+                "the host converters must follow `json`, in {features}"
+            );
+            // The host mode is a whole variant and constructor, not only a
+            // pair of converters: they cannot be split from each other.
+            assert_eq!(
+                rendered.contains("fn provide_json"),
+                json,
+                "`provide_json` must follow `json`, in {features}"
+            );
+            // The view a JSON transport dispatches to belongs to the same block.
+            assert_eq!(
+                rendered.contains("impl ice_rpc::codegen::JsonInvoker"),
+                json,
+                "the JsonInvoker implementation must follow `json`, in {features}"
+            );
         }
     }
 }

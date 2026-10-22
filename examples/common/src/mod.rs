@@ -49,8 +49,11 @@
 //! Each one only forwards to the `ice-rpc` feature that switches the generated
 //! code on; this crate exports nothing for them:
 //!
-//! - `napi` → `ice-rpc/json`: the rkyv ↔ JSON converters and the `ProviderJson` mode;
-//! - `http` → `ice-rpc/http`: the `JsonInvoker` view the REST gateway dispatches to;
+//! - `json` → `ice-rpc/json`: the JSON view of every service — the `JsonInvoker`
+//!   the REST gateway dispatches to, and the converters plus `ProviderJson` mode
+//!   the Node.js bridge constructs. One name, because a service does not know
+//!   which process will call it; the binary that opens the entry point enables
+//!   it, and the link step drops the half it never reaches;
 //! - `monitoring` → `ice-rpc/monitoring`: the `{Service}Decoder`s and the
 //!   link-time registration an observer reads back with `Decoders::linked()`.
 

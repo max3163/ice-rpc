@@ -17,15 +17,14 @@ pub struct LifecycleGenInput<'a> {
     /// Expression of the initial slice length of the channel's publishers
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
-    /// Expression of the shared [`ServiceRef`] of the service (id + version).
-    pub service_ref: &'a TokenStream,
     /// Whether the `ProviderJson` branch belongs to the expansion (the
-    /// `json` feature).
+    /// `json` block).
+    ///
+    /// The branch itself names no JSON symbol: `provide_json()` built the
+    /// dispatcher and stored it in the variant, so this arm only hands an opaque
+    /// value to the transport. That is what keeps the JSON host out of every
+    /// binary that never constructs that proxy.
     pub json_provider: bool,
-    /// One native `ServiceDispatcher::method(...)` registration per RPC method,
-    /// used by the `ProviderJson` mode to bridge calls to the Node.js host.
-    /// Empty when `json_provider` is unset.
-    pub json_provider_methods: &'a [TokenStream],
 }
 
 /// Generates the [`ServiceLifecycle`](ice_rpc), `ServiceInit` and
@@ -39,9 +38,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         logical_name_lit,
         group_lit,
         max_slice_len,
-        service_ref,
         json_provider,
-        json_provider_methods,
     } = input;
 
     // Without the feature the enum has no `ProviderJson` variant, so the branch
@@ -49,11 +46,18 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
     // compile.
     let json_provider_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderJson => {
-                // The Node.js host implements the methods: each RPC method
-                // is bridged to the injected dispatch callback.
-                let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(#service_ref);
-                #(#json_provider_methods)*
+            #mode_name::ProviderJson { dispatcher } => {
+                // The dispatcher was built by `provide_json()`: this arm only
+                // hands it over, so it names no JSON symbol and a binary that
+                // never hosts JSON links none of them.
+                let Some(dispatcher) = dispatcher.take()
+                else {
+                    ice_rpc::codegen::log::error!(
+                        "[{}] the JSON dispatcher was already registered",
+                        #logical_name_lit
+                    );
+                    return false;
+                };
                 // Registered on the channel: the channel thread starts
                 // once every provider of the process is registered.
                 // The channel's publishers are sized from this declaration; being
@@ -62,7 +66,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                 if let Err(e) = ice_rpc::codegen::register_native_service(
                     #group_lit,
                     #logical_name_lit,
-                    dispatcher,
+                    *dispatcher,
                 ) {
                     ice_rpc::codegen::log::error!(
                         "[{}] channel registration failed: {e:?}",

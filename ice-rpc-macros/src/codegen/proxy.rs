@@ -18,6 +18,8 @@ pub struct ProxyGenInput<'a> {
     /// Expression of the initial slice length of the channel's publishers
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
+    /// Expression of the shared [`ServiceRef`] of the service (id + version).
+    pub service_ref: &'a TokenStream,
     pub node_methods: &'a [TokenStream],
     /// Blocking twins (`{method}_blocking`) emitted on the **inherent** impl, one
     /// per method when the `blocking` parameter of `#[service]` is set.
@@ -29,8 +31,15 @@ pub struct ProxyGenInput<'a> {
     /// `Result<bool, RpcError>` while `dyn Trait` keeps the notification shape.
     pub oneway_calls: &'a [TokenStream],
     /// Whether the `ProviderJson` mode and its constructor belong to the
-    /// expansion (the `json` feature).
+    /// expansion (the `json` block).
     pub json_provider: bool,
+    /// One JSON `ServiceDispatcher::method(...)` registration per RPC method.
+    ///
+    /// They are consumed by [`provide_json`](gen_proxy), **not** by `init()`:
+    /// building the dispatcher is the only code that names the JSON handlers, so
+    /// a binary that never constructs a `ProviderJson` proxy does not link them.
+    /// Empty when `json_provider` is unset.
+    pub json_provider_methods: &'a [TokenStream],
 }
 
 /// Generates the `{Trait}Proxy` (smart node) with its Provider, Consumer
@@ -46,16 +55,26 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         logical_name_lit,
         group_lit,
         max_slice_len,
+        service_ref,
         node_methods,
         blocking_methods,
         oneway_calls,
         json_provider,
+        json_provider_methods,
     } = input;
 
     // The Node.js mode is a whole variant and constructor, not a flag: without
     // the feature the proxy must not advertise a mode it cannot serve.
+    //
+    // The variant carries the **already built** dispatcher, opaque here: `init()`
+    // only hands it to the transport, so no JSON symbol is reachable from the
+    // lifecycle code and a binary that never hosts JSON links none of it.
     let json_variant = if *json_provider {
-        quote! { ProviderJson, }
+        quote! {
+            ProviderJson {
+                dispatcher: Option<Box<ice_rpc::codegen::ServiceDispatcher>>,
+            },
+        }
     } else {
         quote! {}
     };
@@ -72,10 +91,19 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         quote! {
             /// Builds the proxy of the `ProviderJson` mode: the Node.js host
             /// implements the methods, and each call is bridged to it over IPC.
+            ///
+            /// The dispatcher is built **here**, not in `init()`: this
+            /// constructor is the only place that names the JSON handlers, so a
+            /// binary that never calls it does not link them at all. `init()`
+            /// sees an opaque [`ice_rpc::codegen::ServiceDispatcher`].
             #visibility fn provide_json() -> std::sync::Arc<Self> {
+                let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(#service_ref);
+                #(#json_provider_methods)*
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::ProviderJson),
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::ProviderJson {
+                        dispatcher: Some(Box::new(dispatcher)),
+                    }),
                 })
             }
         }
@@ -259,7 +287,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
 
     let json_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderJson => {
+            #mode_name::ProviderJson { .. } => {
                 ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
                     "ProviderJson: direct calls are not supported — use IPC".into()
                 ))
@@ -323,7 +351,7 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
 
     let json_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderJson => {
+            #mode_name::ProviderJson { .. } => {
                 ice_rpc::Observable::from_technical_error(ice_rpc::RpcError::Internal(
                     "ProviderJson: direct calls are not supported — use IPC".into()
                 ))
@@ -390,7 +418,7 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
 
     let json_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderJson => {
+            #mode_name::ProviderJson { .. } => {
                 // A notification cannot be routed through the JSON bridge: the
                 // bridge answers on behalf of a host, and a one-way call has no
                 // answer to fetch.
@@ -448,7 +476,7 @@ pub fn gen_proxy_oneway_call(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
 
     let json_arm = if *json_provider {
         quote! {
-            #mode_name::ProviderJson => Err(ice_rpc::RpcError::Internal(
+            #mode_name::ProviderJson { .. } => Err(ice_rpc::RpcError::Internal(
                 "ProviderJson: direct calls are not supported — use IPC".into()
             )),
         }

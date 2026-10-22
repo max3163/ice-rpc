@@ -68,38 +68,34 @@ monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # Off by default: a deployment that collects no spans pays neither the dependency
 # nor the span.
 tracing = ["dep:tracing"]
-# The HTTP gateway: the server, and the `JsonInvoker` implementation of every
-# proxy it exposes. That implementation is also the block which keeps
-# `serde_json`'s conversion code in a binary, so it follows the same switch as
-# the gateway: enabling one enables the other.
+# The JSON contract of a service, in **one** switch: the JSON view (`impl
+# JsonInvoker`) a JSON transport dispatches to, the rkyv ↔ `serde_json::Value`
+# converters, and the `ProviderJson` mode the Node.js bridge constructs.
 #
-# trillium needs exactly one runtime adapter, and this feature does **not** pick
-# one. Cargo features are additive, so a manifest cannot express "if tokio then
-# trillium-tokio": leaving the adapter out is what lets each mode choose its own
-# instead of dragging a second runtime in. Each adapter feature enables the mode
-# it belongs to:
+# One switch rather than two because the *entry point* decides what is linked, not
+# the feature: the converters and the JSON handlers are reachable only from
+# `Proxy::provide_json()`, so a binary that never builds such a proxy — the HTTP
+# gateway, a plain Rust provider — does not carry them even with this feature on.
+# Separating "client" and "host" would move that decision back onto every crate
+# that declares a service, which is exactly what a service cannot know.
+#
+# It also enables the `base64` dependency: a `Vec<u8>` argument travels as base64
+# in both directions.
+json = ["ice-rpc-macros/json", "dep:base64"]
+# The HTTP gateway, one feature per runtime adapter. There is deliberately no
+# standalone `http` feature: a gateway without an adapter cannot compile, so each
+# name carries both the gateway and its adapter instead of diagnosing the missing
+# half.
 # - `http-threads` → trillium-smol on the fallback mode;
 # - `http-smol`    → trillium-smol on smol, so the gateway shares the
 #                    application's executor;
 # - `http-tokio`   → trillium-tokio on tokio.
-# Enabling `http` without any of them is a compile error naming the three.
-#
-# The invoker also decodes a byte argument from base64 — the same contract the
-# Node.js bridge uses — so `http` enables the `base64` dependency the invoker
-# names. Without it, a service with a `Vec<u8>` argument would not compile in a
-# gateway that never speaks Node.js: the invoker is emitted for `http` too, and
-# the symbol would be missing.
-http = ["json", "dep:base64", "dep:trillium", "ice-rpc-macros/http"]
-http-threads = ["http", "rt-async", "dep:trillium-smol"]
-http-smol = ["http", "smol", "dep:trillium-smol"]
-http-tokio = ["http", "tokio", "dep:trillium-tokio"]
-# The JSON host surface: the rkyv ↔ `serde_json::Value` converters and the
-# `ProviderJson` mode any JSON host dispatches to — the Node.js gateway today.
-# A Rust-only deployment never calls them.
-json = ["ice-rpc-macros/json", "dep:base64"]
+http-threads = ["json", "rt-async", "dep:trillium", "dep:trillium-smol"]
+http-smol = ["json", "smol", "dep:trillium", "dep:trillium-smol"]
+http-tokio = ["json", "tokio", "dep:trillium", "dep:trillium-tokio"]
 # Not part of `full`: the Node.js gateway is a separate deployment (it links
-# N-API), not another way of serving the same process.
-full = ["http", "tokio", "http-tokio", "operators"]
+# N-API), not another way of serving the same process. It enables `json`.
+full = ["http-tokio", "operators"]
 
 [dependencies]
 # The reactive layer: the stream type, the operators, the multicast primitive

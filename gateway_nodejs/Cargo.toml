@@ -33,8 +33,8 @@ ice-rpc-nodejs = { workspace = true }
 napi = { workspace = true }
 napi-derive = { workspace = true }
 # The example services this reference addon serves, with their JSON view on
-# (`napi` -> `ice-rpc/json`), which every callable `#[service]` needs.
-common = { path = "../examples/common", features = ["napi"] }
+# `json` -> `ice-rpc/json`, which every callable `#[service]` needs.
+common = { path = "../examples/common", features = ["json"] }
 
 [build-dependencies]
 napi-build = { workspace = true }

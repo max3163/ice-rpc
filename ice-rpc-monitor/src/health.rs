@@ -101,7 +101,7 @@ pub struct Scanner {
     last: Option<Instant>,
     snapshot: HealthSnapshot,
     #[cfg(feature = "process-metrics")]
-    system: sysinfo::System,
+    system: Option<sysinfo::System>,
 }
 
 impl Scanner {
@@ -117,7 +117,13 @@ impl Scanner {
             last: None,
             snapshot: HealthSnapshot::default(),
             #[cfg(feature = "process-metrics")]
-            system: sysinfo::System::new(),
+            system: match sysinfo::System::new() {
+                Ok(system) => Some(system),
+                Err(error) => {
+                    log::warn!("process metrics unavailable: {error}");
+                    None
+                }
+            },
         }
     }
 
@@ -177,14 +183,19 @@ impl Scanner {
     fn refresh_processes(&mut self) {
         use sysinfo::{Pid, ProcessesToUpdate};
 
+        let Some(system) = self.system.as_mut() else {
+            self.snapshot.processes.clear();
+            return;
+        };
+
         let pids: Vec<Pid> = self
             .snapshot
             .nodes
             .iter()
             .map(|node| Pid::from_u32(node.pid))
             .collect();
-        self.system
-            .refresh_processes(ProcessesToUpdate::Some(&pids), true);
+
+        system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
 
         let cpu_count = self.cpu_count.max(1) as f32;
         let metrics: Vec<ProcessMetrics> = self
@@ -192,7 +203,7 @@ impl Scanner {
             .nodes
             .iter()
             .filter_map(|node| {
-                let process = self.system.process(Pid::from_u32(node.pid))?;
+                let process = system.process(Pid::from_u32(node.pid))?;
                 let cpu_percent = process.cpu_usage();
                 Some(ProcessMetrics {
                     pid: node.pid,

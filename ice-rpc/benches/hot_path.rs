@@ -17,7 +17,10 @@
 //!   that justified the fast path, not an outstanding optimisation);
 //! - `misc` — the cost of a clock read (`Instant::now()`), which bounds what the
 //!   coalescer may spend per call before deciding to notify, and the cost of a
-//!   `service_id_of("literal")` call site as the generated code writes it.
+//!   `service_id_of("literal")` call site as the generated code writes it;
+//! - `trace_propagation` — what the collector hooks add to the call path: the
+//!   status quo, the same call through the seam with no collector installed, and
+//!   with one, so the atomic load and the function-pointer call are priced apart.
 //!
 //! Every pair is checked to **agree** before being measured, so a variant cannot
 //! win by doing less work.
@@ -244,11 +247,47 @@ fn bench_misc(c: &mut Criterion) {
     group.finish();
 }
 
+/// What the propagation seam costs on the call path.
+///
+/// All three run on the bench thread, which has no ambient call context, so a
+/// call always takes the "outside a handler" branch:
+///
+/// - `without_seam` — the computation the transport did before the seam existed,
+///   reached through the same generic helper (it inlines, so the closure costs
+///   nothing);
+/// - `seam_without_collector` — the same work plus the one atomic load that now
+///   decides whether a collector is installed: this is the **added** per-call
+///   cost of a build that installs nothing;
+/// - `seam_with_collector` — the function-pointer call and the ids it reports.
+fn bench_trace_propagation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("trace_propagation");
+
+    group.bench_function("without_seam", |b| {
+        b.iter(|| black_box(ice_rpc::transport::outgoing_trace_with(|| None)))
+    });
+
+    group.bench_function("seam_without_collector", |b| {
+        b.iter(|| black_box(ice_rpc::transport::outgoing_trace()))
+    });
+
+    let injected = ice_rpc::TraceContext {
+        trace_id: [7u8; 16],
+        parent_span_id: 0xfeed,
+        flags: 1,
+    };
+    group.bench_function("seam_with_collector", |b| {
+        b.iter(|| black_box(ice_rpc::transport::outgoing_trace_with(|| Some(injected))))
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_request_encoding,
     bench_response_decoding,
     bench_per_poll,
-    bench_misc
+    bench_misc,
+    bench_trace_propagation
 );
 criterion_main!(benches);

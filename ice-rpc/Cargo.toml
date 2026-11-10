@@ -65,6 +65,14 @@ monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # feature is on: with it off the delegation is the plain `.await` it always was,
 # with no context, no clock read and no allocation.
 #
+# With this feature on, a collector owns the ids too: `ice_rpc::trace::install`
+# supplies the caller's current span, so a call emitted outside a handler
+# continues that collector's trace instead of minting a root, and every served
+# call hands its context to the collector before the span of the hop is created.
+# The receiver mints that hop's span id itself; ice-rpc's own id stays the
+# fallback a deployment without a collector puts on the wire.
+# The wire format does not change: the same four W3C fields travel in the header.
+#
 # Off by default: a deployment that collects no spans pays neither the dependency
 # nor the span.
 tracing = ["dep:tracing"]

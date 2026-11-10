@@ -272,7 +272,8 @@ impl CallContext {
     /// the wire: there is no header to mirror, so the correlation id is minted
     /// here, the service identity is the callee's own ([`ServiceRef`] plus its
     /// declared name), and the trace continues the ambient one — parenting on the
-    /// span of the call being served — or starts a root when there is none.
+    /// span of the call being served. Outside a handler it takes the installed
+    /// collector's context, and falls back to a new root when there is none.
     ///
     /// `received_at_ns` stays `0` on purpose: nothing was emitted on the wire, so
     /// there is no emission instant to compare with a local clock — and reading
@@ -285,7 +286,7 @@ impl CallContext {
         let correlation_id = next_correlation_id();
         let trace = match Self::current() {
             Some(parent) => parent.child_trace(),
-            None => TraceContext::new_root(),
+            None => Self::injected_trace().unwrap_or_else(TraceContext::new_root),
         };
         Self {
             correlation_id,
@@ -296,6 +297,24 @@ impl CallContext {
             received_at_ns: 0,
             trace,
             span_id: next_span_id(),
+        }
+    }
+
+    /// Trace to send when no ambient context exists on this thread.
+    ///
+    /// A call emitted outside a provider handler has no ambient context, so the
+    /// transport asks the installed collector for the caller's current span.
+    /// Without a collector there is nothing to continue and the call opens a
+    /// trace of its own — the behaviour every build had before the hook existed.
+    #[inline]
+    pub(crate) fn injected_trace() -> Option<TraceContext> {
+        #[cfg(feature = "tracing")]
+        {
+            crate::trace::inject()
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            None
         }
     }
 
@@ -494,7 +513,13 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     #[cfg(feature = "tracing")]
-    let span = ctx.span();
+    let span = {
+        // The collector adopts the incoming context before its span exists, then
+        // mints the span id of this hop itself: the id a downstream call parents
+        // on is the one its own export contains.
+        crate::trace::extract(&ctx.trace());
+        ctx.span()
+    };
 
     Box::pin(CallScope {
         ctx,
@@ -546,6 +571,10 @@ where
     #[cfg(feature = "tracing")]
     {
         let ctx = CallContext::local(service, service_name, method);
+        // Same adoption as a transported hop: the collector continues the caller's
+        // trace and parents this hop on it, or it mints a root trace when the
+        // delegation happens outside any traced work.
+        crate::trace::extract(&ctx.trace());
         let span = ctx.span_local();
         let mut future = std::pin::pin!(future);
         return std::future::poll_fn(move |cx| {

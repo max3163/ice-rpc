@@ -300,6 +300,46 @@ fn spawn_response_dispatcher(channel: String, ports: Arc<ConsumerPorts>) {
     crate::locator::ServiceLocator::global().register_shutdown_handle(handle);
 }
 
+/// Trace to send on a call emitted from this thread.
+///
+/// Outside a handler the installed collector is asked for the caller's span, and
+/// with no collector the call opens a trace of its own — the behaviour every build
+/// had before the hook existed.
+///
+/// Inside a handler the ambient call context already carries the trace to
+/// continue, and it also supplies the hop's span id. The collector's context wins
+/// over it only when it carries that same trace: the span id it reports is then
+/// the one its own export contains, which is what the next hop must parent on. A
+/// collector span sitting in another trace belongs to the application around the
+/// call, not to the call, and must not make the chain jump.
+///
+/// `inject` is a parameter rather than a direct call so the precedence rules are
+/// testable without installing process-wide state.
+pub fn outgoing_trace_with(inject: impl FnOnce() -> Option<TraceContext>) -> TraceContext {
+    let injected = inject();
+
+    if let Some(ctx) = CallContext::current() {
+        return match injected.filter(|trace| trace.trace_id == ctx.trace().trace_id) {
+            Some(trace) => trace,
+            None => ctx.child_trace(),
+        };
+    }
+
+    injected.unwrap_or_else(|| TraceContext::new_root().continued_or_root(next_span_id()))
+}
+
+/// [`outgoing_trace_with`] against the hooks installed for this process.
+pub fn outgoing_trace() -> TraceContext {
+    #[cfg(feature = "tracing")]
+    {
+        outgoing_trace_with(crate::trace::inject)
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        outgoing_trace_with(|| None)
+    }
+}
+
 /// Sends `payload` as the call of `method_id` on `service`, and returns the
 /// streamed responses as an [`Observable`].
 ///
@@ -331,13 +371,10 @@ where
 {
     let ports = consumer_ports(channel)?;
 
-    // A call from a provider handler continues its trace, elsewhere it starts
-    // one; the value is copied immediately and never held across an await.
-    let trace = match CallContext::current() {
-        Some(ctx) => ctx.child_trace(),
-        // Outside any trace: a root that still names its own span as `parent-id`.
-        None => TraceContext::new_root().continued_or_root(next_span_id()),
-    };
+    // A call from a provider handler continues its trace, elsewhere the collector
+    // supplies it, and failing that it starts one; the value is copied immediately
+    // and never held across an await.
+    let trace = outgoing_trace();
     let header = RpcHeader::request(method_id, service.id, service.version)
         .with_trace(trace)
         .with_span_id(trace.parent_span_id)
@@ -438,10 +475,7 @@ pub fn send_one_way(
 ) -> Result<bool, RpcError> {
     let ports = consumer_ports(channel)?;
 
-    let trace = match CallContext::current() {
-        Some(ctx) => ctx.child_trace(),
-        None => TraceContext::new_root().continued_or_root(next_span_id()),
-    };
+    let trace = outgoing_trace();
     let header = RpcHeader::request(method_id, service.id, service.version)
         .with_trace(trace)
         .with_span_id(trace.parent_span_id)
@@ -589,4 +623,85 @@ where
         cell.set(Some(bytes));
         sent
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A context the injected hook could report, distinct from any minted one.
+    fn injected() -> TraceContext {
+        TraceContext {
+            trace_id: [4u8; 16],
+            parent_span_id: 0xfeed,
+            flags: 1,
+        }
+    }
+
+    /// Inside a handler, a collector span in another trace is around the call, not
+    /// part of it: the ambient context is what the hop continues.
+    #[test]
+    fn the_ambient_context_wins_when_the_collector_is_in_another_trace() {
+        let header = RpcHeader::request("method", 1, 1).with_trace(TraceContext::new_root());
+        let ctx = CallContext::new(&header, "Svc", "method");
+        let _scope = ctx.enter_ambient();
+
+        let trace = outgoing_trace_with(|| Some(injected()));
+
+        assert_eq!(
+            trace.trace_id,
+            ctx.trace().trace_id,
+            "the call must not jump to the collector's trace"
+        );
+        assert_eq!(
+            trace.parent_span_id,
+            ctx.span_id(),
+            "the hop is parented on the served call"
+        );
+    }
+
+    /// Inside a handler, a collector that adopted the served trace owns the span id
+    /// of the hop, because that is the id its own export contains.
+    #[test]
+    fn the_collector_of_the_served_trace_supplies_the_hop_span_id() {
+        let header = RpcHeader::request("method", 1, 1).with_trace(TraceContext::new_root());
+        let ctx = CallContext::new(&header, "Svc", "method");
+        let _scope = ctx.enter_ambient();
+
+        let current = TraceContext {
+            trace_id: ctx.trace().trace_id,
+            parent_span_id: 0x4242,
+            flags: 1,
+        };
+        assert_eq!(
+            outgoing_trace_with(|| Some(current)),
+            current,
+            "the collector's span id becomes the parent-id of the next hop"
+        );
+    }
+
+    /// Outside a handler, the collector's context travels unchanged, ids included.
+    #[test]
+    fn the_hook_supplies_the_trace_outside_a_handler() {
+        assert_eq!(
+            outgoing_trace_with(|| Some(injected())),
+            injected(),
+            "the injected ids are copied to the header as-is"
+        );
+    }
+
+    /// With no collector, a call still opens a valid trace of its own.
+    #[test]
+    fn no_hook_starts_a_root_trace() {
+        let trace = outgoing_trace_with(|| None);
+
+        assert!(
+            trace.is_present(),
+            "a call always opens or continues a trace"
+        );
+        assert_ne!(
+            trace.parent_span_id, 0,
+            "a traceparent parent-id is never zero"
+        );
+    }
 }

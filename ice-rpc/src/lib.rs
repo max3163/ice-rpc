@@ -297,6 +297,19 @@ use crate::global::Global;
 #[doc(hidden)]
 pub mod codegen;
 
+/// Propagation seam between a call collector and the wire.
+///
+/// A call emitted outside a provider handler takes its trace from the collector
+/// installed here ([`crate::trace::install`]), and a served call hands its
+/// incoming context to that collector before the span of the hop is created. The
+/// wire format does not change: the header still carries the same W3C fields.
+///
+/// Gated behind the `tracing` feature, because the hook exists for a
+/// `tracing`-based collector. Without it the transport keeps minting a root trace
+/// per call, which is the behaviour every build had before the hook existed.
+#[cfg(feature = "tracing")]
+pub mod trace;
+
 /// The JSON contract of a service, in both directions.
 ///
 /// One [`JsonInvoker`](json::JsonInvoker) per service (the caller side, generated

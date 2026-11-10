@@ -23,6 +23,7 @@
 //! | Service locator | `locator`, [`Global`] | — | first `locator()` call | everywhere | never |
 //! | JSON host pointer | `json`, [`Global`] | — | gateway startup | JSON dispatch | never |
 //! | Notification clock origin | `transport::notify`, [`Global`] | — | first notification | every coalescing check | never |
+//! | Trace propagation hooks | `trace`, [`Global`] | — | first `trace::install` | every emitted call, every served call | never |
 //!
 //! Two raw styles remain on purpose, because they carry no locking policy:
 //! `AtomicBool`/`AtomicU64` for flags and counters, and [`Global`] for values

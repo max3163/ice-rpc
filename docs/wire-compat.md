@@ -11,12 +11,12 @@ refuses to open it later if a process asks for a different one. For an ice-rpc
 channel, that configuration mixes two families — settings compiled into the
 library, and settings the deployment provides:
 
-| Recorded setting | Changed by | Family |
-|---|---|---|
-| user header | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 80 bytes today) | compiled in |
-| payload alignment | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs) | compiled in |
-| payload type | the `Payload` generic of the service definition | compiled in |
-| safe overflow | the `enable_safe_overflow(false)` of the request and response services | compiled in |
+| Recorded setting                      | Changed by                                                                                                                                                                       | Family        |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| user header                           | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 80 bytes today)                                                     | compiled in   |
+| payload alignment                     | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs)                                                                                               | compiled in   |
+| payload type                          | the `Payload` generic of the service definition                                                                                                                                  | compiled in   |
+| safe overflow                         | the `enable_safe_overflow(false)` of the request and response services                                                                                                           | compiled in   |
 | buffer sizes, port limits, node limit | the `[defaults.publish-subscribe]` of the iceoryx2 configuration: `max-publishers`, `max-subscribers`, `max-nodes`, `subscriber-max-buffer-size`, `publisher-max-loaned-samples` | configuration |
 
 The compiled-in family is a **protocol** property: changing one of those requires
@@ -104,13 +104,13 @@ The checks read the header precisely because the payload layout is what changes
 between versions: a guard that had to decode the divergent payload first would be
 doing the very operation it is meant to protect against.
 
-## A third case: a new *value* in a recorded field
+## A third case: a new _value_ in a recorded field
 
 `EventKind` gained a variant for the remote cancellation of a call:
 
-| Value | Variant | Direction | Terminal |
-|---|---|---|---|
-| 5 | `Cancel` | consumer → provider | no |
+| Value | Variant  | Direction           | Terminal |
+| ----- | -------- | ------------------- | -------- |
+| 5     | `Cancel` | consumer → provider | no       |
 
 It is a new **value** of an existing field, not a new field: `RpcHeader` keeps its
 layout, its size (pinned by a unit test), its offsets, the payload alignment and
@@ -149,7 +149,7 @@ never drops a `static`, so it is released explicitly at shutdown.
 ## A provider reaps the dead nodes at startup
 
 iceoryx2 can clean up after dead nodes itself, in three places, all enabled by
-default. ice-rpc turns two of them off on purpose — a *reader* (the observer, a
+default. ice-rpc turns two of them off on purpose — a _reader_ (the observer, a
 one-shot client) must not delete a provider's resources on its way in or out —
 and asks for the cleanup explicitly once, when a provider starts:
 
@@ -157,7 +157,7 @@ and asks for the cleanup explicitly once, when a provider starts:
 [ice-rpc] reaped 1 dead node(s) left by previous runs
 ```
 
-That call reaps the *service and port tags* a dead node left, and with them the
+That call reaps the _service and port tags_ a dead node left, and with them the
 per-port segments. It does **not** reach the `_mgmt` dynamic storage of an event
 service: a marker of that kind survives the reaping, which is why a second call
 follows it, when a provider starts.
@@ -168,7 +168,7 @@ Measured on a kill/restart loop, the leftover count fell back to zero instead of
 growing by one run per kill.
 
 The manual procedure below remains the answer when the state cannot be explained
-by a dead process: a service whose *recorded configuration* differs from the
+by a dead process: a service whose _recorded configuration_ differs from the
 requested one — another build, or a peer that resolves a different `iceoryx2.toml`
 — is not a dead node, so no cleanup removes it. Align the configuration first;
 only leftover state calls for the purge.
@@ -181,13 +181,13 @@ call was routed to, and the **W3C trace context**.
 
 The header is a literal `traceparent` prefix:
 
-| Header field | W3C `traceparent` |
-|---|---|
-| `trace_id [u8; 16]` | `trace-id` |
-| `parent_span_id u64` | `parent-id` (the caller's span) |
-| `span_id u64` | the emitter's own span, unique per span |
-| `flags u8` | `trace-flags` (bit 0: sampled) |
-| `traceparent_version u8` | version byte (`00`) |
+| Header field             | W3C `traceparent`                       |
+| ------------------------ | --------------------------------------- |
+| `trace_id [u8; 16]`      | `trace-id`                              |
+| `parent_span_id u64`     | `parent-id` (the caller's span)         |
+| `span_id u64`            | the emitter's own span, unique per span |
+| `flags u8`               | `trace-flags` (bit 0: sampled)          |
+| `traceparent_version u8` | version byte (`00`)                     |
 
 `TraceContext::traceparent(span_id)` renders the exact
 `00-<trace-id>-<span-id>-<flags>` string for an exporter. A call made outside any
@@ -195,6 +195,17 @@ traced work mints a fresh trace **and** a non-zero parent named after its own
 span; every hop continues the trace and parents on the span id of the hop that
 emitted the call. No OpenTelemetry stack is needed, and the ids are already in the
 W3C shape.
+
+The ids have a single source per process, and a collector may own it: with the
+`tracing` feature on, `ice_rpc::trace::install` supplies the caller's current
+span, so a call emitted outside a handler continues that collector's trace
+instead of minting a root; a served call hands its incoming context to the
+collector before the span of that hop is created, and the receiver mints the span
+id of the hop itself, as W3C requires. A sample whose trace id is zero, or whose
+parent id is zero, is treated as untraced and never reaches the collector. Without
+an installed hook the transport keeps minting a root trace per call, so a build
+that collects nothing emits exactly what it emitted before and the header is
+unchanged.
 
 The service and the method are identified by their **4-byte hash**
 (`service_id_of` / `method_id_of`) rather than their names: the name is
@@ -232,12 +243,12 @@ cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
 2. **Remove the iceoryx2 state.** There are two locations, and only removing
    both is a complete purge:
 
-   | What | OS | Path |
-   |---|---|---|
-   | Root path: configuration, service registry, segments | Windows | `C:\Temp\iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml` |
-   | | Linux and macOS | `/tmp/iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml` |
-   | Shared-memory markers (`iox2_*.shm_state`) | Windows | `C:\Temp` |
-   | | Linux and macOS | `/tmp` |
+   | What                                                 | OS              | Path                                                                                       |
+   | ---------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------ |
+   | Root path: configuration, service registry, segments | Windows         | `C:\Temp\iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml` |
+   |                                                      | Linux and macOS | `/tmp/iceoryx2` (iceoryx2 default), or the `root-path` of the effective `iceoryx2.toml`    |
+   | Shared-memory markers (`iox2_*.shm_state`)           | Windows         | `C:\Temp`                                                                                  |
+   |                                                      | Linux and macOS | `/tmp`                                                                                     |
 
    [`scripts/purge-iceoryx2-root.sh`](../scripts/purge-iceoryx2-root.sh) resolves
    both per OS, shows what they hold, and removes them only with `--yes`. It
@@ -249,6 +260,7 @@ cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
    scripts/purge-iceoryx2-root.sh          # dry run: paths, file counts, sizes
    scripts/purge-iceoryx2-root.sh --yes    # remove them
    ```
+
 3. **Align the configuration, or rebuild.** A configuration mismatch is fixed by
    making every participant resolve the same `iceoryx2.toml`; a compiled-in
    protocol change needs every participant rebuilt. Either way, restart the
@@ -261,7 +273,7 @@ memory-mapped files and keeps one small `<segment>.shm_state` marker per segment
 That marker lives in a directory of its own, taken from the PAL constant
 `TEMP_DIRECTORY` — literally `C:\Temp` on Windows, `/tmp` on Unix — and **not**
 under the root path. It is what `shm_unlink` deletes when a process releases its
-last reference, which is why a process that is *killed* rather than exiting
+last reference, which is why a process that is _killed_ rather than exiting
 leaves it behind: the segment is gone, its marker stays.
 
 Three consequences worth knowing:
@@ -271,10 +283,10 @@ Three consequences worth knowing:
 - each file is 8 bytes, but they accumulate one per segment per run; the ones
   actually observed were all `*.event_mgmt.shm_state` — the `_mgmt` storage of an
   **event service**, the one resource the dead-node reaping does not remove
-  (it stops at the service and port *tags*);
+  (it stops at the service and port _tags_);
 - every segment operation enumerates that directory, which is where the
   `< Win32 API error > ... FindNextFileA ... [ 18 ]` lines on Windows come from.
-  Error 18 is *no more files*: that is the end of the scan, printed through a
+  Error 18 is _no more files_: that is the end of the scan, printed through a
   wrapper that cannot render the message. Their frequency tracks what the
   directory holds, and they are harmless.
 

@@ -36,7 +36,10 @@ pub use bridge::{
 };
 #[cfg(feature = "json")]
 pub use bridge::{reject_json_dispatch, reject_json_request, reject_json_response};
-pub use client::{native_call, send_one_way, serialize_and_call, serialize_and_send_one_way};
+pub use client::{
+    native_call, outgoing_trace, outgoing_trace_with, send_one_way, serialize_and_call,
+    serialize_and_send_one_way,
+};
 #[cfg(feature = "json")]
 pub use json_host::{RequestToValue, ValueToResponse, json_host_handler, json_host_oneway_handler};
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};

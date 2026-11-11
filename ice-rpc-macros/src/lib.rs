@@ -70,7 +70,15 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version`, `group`, `max_slice_len` and `blocking`.
+/// `"LogicalName"`, `version`, `group`, `max_slice_len`, `blocking` and
+/// `no_tracing`.
+///
+/// `no_tracing` opts **this service** out of emitting `tracing` spans while the
+/// `tracing` feature of `ice-rpc` stays on: the call context is still installed
+/// (so `CallContext::current()` keeps its identity, its correlation id and the
+/// incoming W3C trace, and a call it emits keeps propagating), but the hop opens
+/// no span — and never hands its incoming context to the collector, since that
+/// adoption is consumed by the span of the hop.
 ///
 /// `max_slice_len` sizes the initial slice of the channel's publishers. It is a
 /// property of the **channel** (the `group`), so every service of a group must
@@ -155,6 +163,8 @@ fn expand_service_with(
 
     // Whether every method gets a synchronous twin, on client and proxy.
     let blocking = service_attr.blocking;
+    // Whether this service opts out of emitting spans, wherever it is served.
+    let no_tracing = service_attr.no_tracing;
 
     let trait_name = &model.trait_name;
     let visibility = &model.visibility;
@@ -221,6 +231,7 @@ fn expand_service_with(
                 var_name,
                 &arg_names,
                 req_enum_name,
+                no_tracing,
             ));
 
             let proxy_oneway_input = ProxyOnewayGenInput {
@@ -255,6 +266,7 @@ fn expand_service_with(
                 var_name,
                 &arg_names,
                 req_enum_name,
+                no_tracing,
             ));
 
             let proxy_method_input = ProxyMethodGenInput {
@@ -267,6 +279,7 @@ fn expand_service_with(
                 service_name: &service_name,
                 visibility,
                 json_provider: features.json,
+                no_tracing,
             };
             node_methods.push(gen_proxy_method(&proxy_method_input));
             if blocking {
@@ -280,6 +293,7 @@ fn expand_service_with(
                 proxy_name,
                 fn_name,
                 method.oneway,
+                no_tracing,
             ));
         }
 

@@ -83,6 +83,11 @@ pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
 /// value for every poll of that task, so the implementation reads it with
 /// `CallContext::current()` and its signature is untouched.
 ///
+/// `no_tracing` comes from `#[service(..., no_tracing)]` and changes only the
+/// wrapping scope: the context is installed either way, but the hop of an
+/// opted-out service emits no span and the collector is not handed the incoming
+/// context (`call_scoped_untraced`).
+///
 /// A payload that does not decode — or that decodes as another method's request
 /// variant — is answered **immediately** with a `RpcError::SerializationError`,
 /// never dropped: silence would leave the caller waiting for a transport timeout
@@ -94,8 +99,14 @@ pub fn gen_native_method(
     var_name: &Ident,
     arg_names: &[&Ident],
     req_enum_name: &Ident,
+    no_tracing: bool,
 ) -> TokenStream {
     let method_name_str = fn_name.to_string();
+    let scope = if no_tracing {
+        quote! { ice_rpc::codegen::call_scoped_untraced }
+    } else {
+        quote! { ice_rpc::codegen::call_scoped }
+    };
 
     quote! {
         {
@@ -142,7 +153,7 @@ pub fn gen_native_method(
                     };
                     // Installed around each poll: a context held across an await
                     // would label the wrong call.
-                    ice_rpc::codegen::call_scoped(
+                    #scope(
                         ctx,
                         async move {
                             let mut emitter = emitter;
@@ -172,14 +183,23 @@ pub fn gen_native_method(
 ///
 /// The `CallContext` is still installed around every poll, so the implementation
 /// can read the trace of the notification it serves even though it never replies.
+///
+/// `no_tracing` is honoured exactly as in [`gen_native_method`]: the context stays,
+/// the span of the hop does not.
 pub fn gen_native_oneway_method(
     proxy_name: &Ident,
     fn_name: &Ident,
     var_name: &Ident,
     arg_names: &[&Ident],
     req_enum_name: &Ident,
+    no_tracing: bool,
 ) -> TokenStream {
     let method_name_str = fn_name.to_string();
+    let scope = if no_tracing {
+        quote! { ice_rpc::codegen::call_scoped_untraced }
+    } else {
+        quote! { ice_rpc::codegen::call_scoped }
+    };
 
     quote! {
         {
@@ -214,7 +234,7 @@ pub fn gen_native_oneway_method(
                             );
                         }
                     };
-                    ice_rpc::codegen::call_scoped(
+                    #scope(
                         ctx,
                         async move {
                             let (#(#arg_names),*) = request;

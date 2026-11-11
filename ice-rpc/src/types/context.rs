@@ -201,18 +201,12 @@ pub fn next_span_id() -> u64 {
 #[cfg(feature = "tracing")]
 macro_rules! rpc_span {
     ($ctx:expr $(, kind = $kind:expr)?) => {
-        tracing::info_span!(
+        tracing::debug_span!(
             "rpc",
             $(kind = $kind,)?
             service = $ctx.service_name,
             version = $ctx.service_version,
             method = $ctx.method,
-            corr = ?span_fields::Correlation(&$ctx.correlation_id),
-            trace = ?span_fields::TraceId(&$ctx.trace.trace_id),
-            traceparent = ?span_fields::TraceParent(&$ctx.trace, $ctx.span_id),
-            parent = $ctx.trace.parent_span_id,
-            span = $ctx.span_id,
-            sampled = $ctx.trace.is_sampled(),
         )
     };
 }
@@ -512,13 +506,48 @@ pub fn call_scoped<F>(ctx: CallContext, future: F) -> BoxResponseFuture
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    call_scoped_with(ctx, true, future)
+}
+
+/// The [`call_scoped`] envelope of a service declared `#[service(..., no_tracing)]`.
+///
+/// The call context is installed exactly as usual — the implementation reads its
+/// identity and its correlation id, and a call it emits continues its trace — but
+/// this hop **emits no span**, and the collector is not asked to adopt the
+/// incoming context: that one-shot signal is consumed by the span of the hop, and
+/// a state that no span consumes would decorate the next span the collector
+/// creates. Opening a span and handing it a parent are therefore one decision.
+pub fn call_scoped_untraced<F>(ctx: CallContext, future: F) -> BoxResponseFuture
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    call_scoped_with(ctx, false, future)
+}
+
+/// The dispatch of both scopes, with `trace` telling whether the hop emits a span.
+///
+/// `trace` is a compile-time constant at every call site the macro emits, so the
+/// untraced branch is the plain future without a `tracing::Span` to enter: only
+/// the context slot is swapped, once per poll.
+fn call_scoped_with<F>(ctx: CallContext, trace: bool, future: F) -> BoxResponseFuture
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    // Without the feature there is no span to choose, and no extraction hook: the
+    // parameter only exists so the two macros share one body.
+    #[cfg(not(feature = "tracing"))]
+    let _ = trace;
+
     #[cfg(feature = "tracing")]
-    let span = {
+    let span = if trace {
         // The collector adopts the incoming context before its span exists, then
         // mints the span id of this hop itself: the id a downstream call parents
         // on is the one its own export contains.
         crate::trace::extract(&ctx.trace());
         ctx.span()
+    } else {
+        // No span, no adoption: entering `Span::none()` is a no-op.
+        tracing::Span::none()
     };
 
     Box::pin(CallScope {
@@ -568,27 +597,71 @@ pub async fn local_call_scoped<F>(
 where
     F: Future,
 {
+    local_call_scoped_with(service, service_name, method, true, future).await
+}
+
+/// The [`local_call_scoped`] envelope of a service declared
+/// `#[service(..., no_tracing)]`.
+///
+/// The callee still gets its own [`CallContext`] — a direct call keeps its
+/// identity and the trace it emits keeps propagating — but the hop creates no
+/// span, and the collector is not asked to adopt the incoming context: that
+/// one-shot signal is consumed by the span of a hop, and there is none here.
+pub async fn local_call_scoped_untraced<F>(
+    service: ServiceRef,
+    service_name: &'static str,
+    method: &'static str,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    local_call_scoped_with(service, service_name, method, false, future).await
+}
+
+/// The dispatch of both direct-call envelopes, with `trace` telling whether the
+/// hop emits a span.
+async fn local_call_scoped_with<F>(
+    service: ServiceRef,
+    service_name: &'static str,
+    method: &'static str,
+    trace: bool,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
     #[cfg(feature = "tracing")]
     {
         let ctx = CallContext::local(service, service_name, method);
-        // Same adoption as a transported hop: the collector continues the caller's
-        // trace and parents this hop on it, or it mints a root trace when the
-        // delegation happens outside any traced work.
-        crate::trace::extract(&ctx.trace());
-        let span = ctx.span_local();
         let mut future = std::pin::pin!(future);
-        return std::future::poll_fn(move |cx| {
+        if trace {
+            // Same adoption as a transported hop: the collector continues the
+            // caller's trace and parents this hop on it, or it mints a root trace
+            // when the delegation happens outside any traced work.
+            crate::trace::extract(&ctx.trace());
+            let span = ctx.span_local();
+            return std::future::poll_fn(move |cx| {
+                let _ambient = ctx.enter_ambient();
+                let _span = span.enter();
+                future.as_mut().poll(cx)
+            })
+            .await;
+        }
+
+        // `no_tracing`: the context is installed, the hop emits nothing — and the
+        // collector is not handed a context that no span of this hop would adopt.
+        std::future::poll_fn(move |cx| {
             let _ambient = ctx.enter_ambient();
-            let _span = span.enter();
             future.as_mut().poll(cx)
         })
-        .await;
+        .await
     }
 
     // No collector: there is nothing to analyse, so nothing is built.
     #[cfg(not(feature = "tracing"))]
     {
-        let _ = (service, service_name, method);
+        let _ = (service, service_name, method, trace);
         future.await
     }
 }
@@ -1055,6 +1128,54 @@ mod tests {
         );
     }
 
+    /// A service declared `no_tracing` keeps the context and emits no span.
+    ///
+    /// That is the whole contract of the option: the implementation still reads its
+    /// own identity from `CallContext::current()`, but the hop opens no span, so a
+    /// collector sees nothing of it.
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn the_untraced_scope_installs_the_context_and_emits_no_span() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use std::sync::atomic::Ordering;
+
+        let recorder = Arc::new(SpanRecorder::default());
+        let dispatch = tracing::Dispatch::new(Arc::clone(&recorder));
+        let seen = Arc::new(Mutex::new(None));
+        let seen_in_task = Arc::clone(&seen);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let header = RpcHeader::request("ping", 7, 1);
+            pollster::block_on(call_scoped_untraced(
+                CallContext::new(&header, "Ping", "ping"),
+                async move {
+                    *seen_in_task.lock().unwrap_or_else(|e| e.into_inner()) =
+                        CallContext::current().map(|ctx| ctx.method());
+                },
+            ));
+        });
+
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|e| e.into_inner()),
+            Some("ping"),
+            "the context is installed all the same: only the span is gone"
+        );
+        assert!(
+            recorder
+                .names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "an opted-out service emits no span"
+        );
+        assert_eq!(
+            recorder.entered.load(Ordering::Relaxed),
+            0,
+            "and enters nothing"
+        );
+    }
+
     /// The context must follow the **task** being polled, not the thread.
     ///
     /// Two calls of one channel are polled interleaved on the same thread by the
@@ -1207,5 +1328,42 @@ mod tests {
                 "with no collector, no context is built and none is installed"
             );
         }
+    }
+
+    /// The direct-call envelope of an opted-out service: same context, no span.
+    ///
+    /// A provider that delegates in-process to its own `no_tracing` service keeps
+    /// the callee's identity on the ambient slot — which is what the propagation of
+    /// the trace relies on — but the delegation opens no span.
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn a_direct_call_of_an_opted_out_service_emits_no_span() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        let recorder = Arc::new(SpanRecorder::default());
+        let dispatch = tracing::Dispatch::new(Arc::clone(&recorder));
+
+        let observed = tracing::dispatcher::with_default(&dispatch, || {
+            pollster::block_on(local_call_scoped_untraced(
+                ServiceRef::new(7, 3),
+                "Leaf",
+                "reserve",
+                async { CallContext::current() },
+            ))
+        });
+
+        let ctx = observed.expect("the callee still sees its own context");
+        assert_eq!(ctx.service_id(), 7);
+        assert_eq!(ctx.method(), "reserve");
+        assert!(
+            recorder
+                .names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "the delegation of an opted-out service opens no span"
+        );
+        assert_eq!(recorder.entered.load(Ordering::Relaxed), 0);
     }
 }

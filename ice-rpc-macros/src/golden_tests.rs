@@ -301,3 +301,58 @@ fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
         "the client twin publishes through the synchronous call path: {with}"
     );
 }
+
+/// The `no_tracing` parameter decides, per service, whether the hops it serves
+/// open a span — and nowhere else.
+///
+/// Like `blocking`, it is an attribute parameter rather than a Cargo feature: the
+/// expansion happens in the consumer's crate, which does not carry the feature, so
+/// a crate-wide `cfg` could not express "this service, in this process".
+#[test]
+fn the_no_tracing_parameter_selects_the_untraced_helpers() {
+    let traced = render(NONE, quote! { "Calc" }, CALCULATOR());
+    assert!(
+        traced.contains("ice_rpc::codegen::call_scoped("),
+        "a default service serves its calls through the traced scope: {traced}"
+    );
+    assert!(
+        traced.contains("ice_rpc::codegen::local_call_scoped("),
+        "and delegates through the traced direct scope: {traced}"
+    );
+    assert!(
+        !traced.contains("call_scoped_untraced"),
+        "and never names the untraced helper: {traced}"
+    );
+
+    let opted_out = render(NONE, quote! { "Calc", no_tracing }, CALCULATOR());
+    assert!(
+        opted_out.contains("ice_rpc::codegen::call_scoped_untraced("),
+        "an opted-out service serves its calls with no span: {opted_out}"
+    );
+    assert!(
+        opted_out.contains("ice_rpc::codegen::local_call_scoped_untraced("),
+        "and delegates with no span: {opted_out}"
+    );
+    // `call_scoped_untraced(` does not contain `call_scoped(`, so this pins the
+    // traced helper out even though the names share a prefix.
+    assert!(
+        !opted_out.contains("ice_rpc::codegen::call_scoped("),
+        "the traced helper must not appear: {opted_out}"
+    );
+
+    // The JSON host is a second way of serving the same service, and honours the
+    // same option.
+    let json_opted_out = render(ALL, quote! { "Calc", no_tracing }, CALCULATOR());
+    assert!(
+        json_opted_out.contains("ice_rpc::codegen::json_host_handler_untraced("),
+        "the JSON host follows the same flag: {json_opted_out}"
+    );
+
+    // The blocking twin of a proxy method goes through the same choice.
+    let blocking_opted_out = render(NONE, quote! { "Calc", no_tracing, blocking }, CALCULATOR());
+    assert!(
+        compact(&blocking_opted_out)
+            .contains("block_on(ice_rpc::codegen::local_call_scoped_untraced("),
+        "the blocking twin of an opted-out service must not open a span: {blocking_opted_out}"
+    );
+}

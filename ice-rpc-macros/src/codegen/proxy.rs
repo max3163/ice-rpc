@@ -251,6 +251,12 @@ pub struct ProxyMethodGenInput<'a> {
     pub visibility: &'a Visibility,
     /// Whether the `ProviderJson` arm belongs to the expansion.
     pub json_provider: bool,
+    /// Whether the service opted out of spans (`#[service(..., no_tracing)]`).
+    ///
+    /// A direct call of such a service still installs the callee's `CallContext`,
+    /// but the hop emits no span, so the delegation uses
+    /// `local_call_scoped_untraced`.
+    pub no_tracing: bool,
 }
 
 /// Generates the body of a proxy delegation method.
@@ -275,9 +281,15 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
         service_name,
         visibility: _,
         json_provider,
+        no_tracing,
     } = input;
 
     let method_name_str = fn_name.to_string();
+    let local_scope = if *no_tracing {
+        quote! { ice_rpc::codegen::local_call_scoped_untraced }
+    } else {
+        quote! { ice_rpc::codegen::local_call_scoped }
+    };
 
     let json_arm = if *json_provider {
         quote! {
@@ -297,7 +309,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
             match &*mode {
                 #mode_name::Provider { local_impl, .. } => {
                     // A direct call carries no wire: its context comes from the callee.
-                    ice_rpc::codegen::local_call_scoped(
+                    #local_scope(
                         #service_ref,
                         #service_name,
                         #method_name_str,
@@ -332,10 +344,16 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
         service_name,
         visibility,
         json_provider,
+        no_tracing,
     } = input;
 
     let method_name_str = fn_name.to_string();
     let blocking_name = format_ident!("{}_blocking", fn_name);
+    let local_scope = if *no_tracing {
+        quote! { ice_rpc::codegen::local_call_scoped_untraced }
+    } else {
+        quote! { ice_rpc::codegen::local_call_scoped }
+    };
     let blocking_doc = format!(
         "Blocking twin of [`{fn_name}`]: reads the mode without an `.await` and \
          returns the response stream directly, for a caller that runs no async \
@@ -360,7 +378,7 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
             let mode = self.mode.read_blocking();
             match &*mode {
                 #mode_name::Provider { local_impl, .. } => {
-                    ice_rpc::rt::block_on(ice_rpc::codegen::local_call_scoped(
+                    ice_rpc::rt::block_on(#local_scope(
                         #service_ref,
                         #service_name,
                         #method_name_str,

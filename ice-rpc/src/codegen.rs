@@ -11,9 +11,10 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 // ── Rx vocabulary, wire header and name limits ──────────────────────
 pub use crate::types::{
     CORRELATION_ID_LEN, CallContext, EventKind, NodeId, PROTOCOL_VERSION, RpcError, RpcHeader,
-    SERVICE_NAME_LEN, Sender, ServiceRef, WireEvent, call_scoped, channel, fmt_correlation_id,
-    local_call_scoped, method_id_of, next_correlation_id, now_ns, parse_correlation_id,
-    raw_pid_to_u32, service_id_of, unbounded_channel,
+    SERVICE_NAME_LEN, Sender, ServiceRef, WireEvent, call_scoped, call_scoped_untraced, channel,
+    fmt_correlation_id, local_call_scoped, local_call_scoped_untraced, method_id_of,
+    next_correlation_id, now_ns, parse_correlation_id, raw_pid_to_u32, service_id_of,
+    unbounded_channel,
 };
 
 // The hashers the transport uses, so benchmarks price the shipped implementation.
@@ -78,7 +79,8 @@ pub use crate::transport::{
 // `ProviderJson` handler. Gated with the rest of the JSON host surface.
 #[cfg(feature = "json")]
 pub use crate::transport::{
-    RequestToValue, ValueToResponse, json_host_handler, json_host_oneway_handler,
+    RequestToValue, ValueToResponse, json_host_handler, json_host_handler_untraced,
+    json_host_oneway_handler, json_host_oneway_handler_untraced,
 };
 #[cfg(feature = "json")]
 pub use crate::transport::{reject_json_dispatch, reject_json_request, reject_json_response};

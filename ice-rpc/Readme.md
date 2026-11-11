@@ -191,7 +191,7 @@ flux.
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
 - `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id;
-- `max_slice_len` and `blocking` — see _Configuration_ below.
+- `max_slice_len`, `blocking` and `no_tracing` — see _Configuration_ below.
 
 ```rust,ignore
 #[service("MyService", version = 1, group = "db")]
@@ -673,6 +673,23 @@ Every service of a group must declare the same `max_slice_len`; an omitted value
 falls back to `DEFAULT_MAX_SLICE_LEN` (256). Setting
 `publisher-allocation-strategy = "PowerOfTwo"` in the configuration lets a
 publisher grow past that initial size instead of refusing the sample.
+
+### Per-service tracing
+
+With the `tracing` feature on, every served call opens one `rpc` span carrying
+the ids of the call. A service can opt out of that span while the rest of the
+process keeps collecting:
+
+```rust,ignore
+#[service("AuditLog", group = "db", no_tracing)]
+```
+
+The call context is still installed: `CallContext::current()` keeps the service
+name, the correlation id and the incoming W3C trace, and a call the service emits
+continues that trace. Only the span of the hop disappears — and with it the
+adoption signal handed to the collector, since a context no span consumes would
+decorate the next one. A provider that delegates in-process to that service, and
+the JSON host serving it, follow the same flag.
 
 ### Process allocator
 

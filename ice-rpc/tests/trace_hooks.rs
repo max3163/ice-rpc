@@ -13,7 +13,7 @@
 
 use std::sync::Mutex;
 
-use ice_rpc::codegen::{RpcHeader, ServiceRef, call_scoped};
+use ice_rpc::codegen::{RpcHeader, ServiceRef, call_scoped, call_scoped_untraced};
 use ice_rpc::rt::block_on;
 use ice_rpc::{CallContext, TraceContext};
 
@@ -92,5 +92,20 @@ fn an_installed_collector_feeds_and_receives_the_trace_ids() {
     assert_eq!(
         after, before,
         "an absent trace must not reach the collector"
+    );
+
+    // A hop of a `no_tracing` service opens no span, so it must not hand its
+    // context over either: the adoption is a one-shot signal that the span of the
+    // hop consumes, and leaving it pending would decorate the next span created.
+    let opted_out = CallContext::new(&header, "Svc", "method");
+    block_on(call_scoped_untraced(opted_out, async {}));
+
+    let after = EXTRACTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+    assert_eq!(
+        after, before,
+        "an opted-out hop must not reach the collector"
     );
 }

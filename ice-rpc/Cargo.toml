@@ -73,6 +73,12 @@ monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # fallback a deployment without a collector puts on the wire.
 # The wire format does not change: the same four W3C fields travel in the header.
 #
+# A service can opt out of the span of its own hops with
+# `#[service(..., no_tracing)]`, while the feature stays on for the rest of the
+# process: its calls still install the call context and keep propagating the trace,
+# but the hop opens no span — and never hands its incoming context to the collector,
+# since that adoption is consumed by the span of the hop.
+#
 # Off by default: a deployment that collects no spans pays neither the dependency
 # nor the span.
 tracing = ["dep:tracing"]

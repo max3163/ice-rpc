@@ -8,6 +8,8 @@
 //! the handler per binary instead of one per method, and turns each generated
 //! closure into a call.
 
+use std::future::Future;
+
 use rkyv::util::AlignedVec;
 
 use super::bridge::{reject_json_dispatch, reject_json_request, reject_json_response};
@@ -45,11 +47,70 @@ pub fn json_host_handler(
 ) -> BoxResponseFuture {
     // Built before the coroutine: copied into the task, unused afterwards.
     let ctx = CallContext::new(&header, service, method);
+    crate::types::call_scoped(
+        ctx,
+        json_host_body(
+            service,
+            method,
+            header,
+            payload,
+            emitter,
+            request_to_value,
+            value_to_response,
+        ),
+    )
+}
+
+/// The [`json_host_handler`] of a service declared
+/// `#[service(..., no_tracing)]`.
+///
+/// Same body, wrapped in [`call_scoped_untraced`](crate::types::call_scoped_untraced):
+/// the call context is still installed, but the hop emits no span.
+pub fn json_host_handler_untraced(
+    service: &'static str,
+    method: &'static str,
+    header: RpcHeader,
+    payload: &[u8],
+    emitter: OwnedEmitter,
+    request_to_value: RequestToValue,
+    value_to_response: ValueToResponse,
+) -> BoxResponseFuture {
+    let ctx = CallContext::new(&header, service, method);
+    crate::types::call_scoped_untraced(
+        ctx,
+        json_host_body(
+            service,
+            method,
+            header,
+            payload,
+            emitter,
+            request_to_value,
+            value_to_response,
+        ),
+    )
+}
+
+/// The body both ranged entry points share, decoded once and left unboxed.
+///
+/// Returning the future rather than a boxed one lets each entry point choose its
+/// scope — [`call_scoped`](crate::types::call_scoped) or its untraced twin —
+/// without the body knowing either, and keeps the argument count of every
+/// function at seven. The decode stays synchronous: only the JSON value enters
+/// the task, since the sample is borrowed and the future is `'static`.
+fn json_host_body(
+    service: &'static str,
+    method: &'static str,
+    header: RpcHeader,
+    payload: &[u8],
+    emitter: OwnedEmitter,
+    request_to_value: RequestToValue,
+    value_to_response: ValueToResponse,
+) -> impl Future<Output = ()> + Send + 'static {
     // Decoded synchronously from the sample: only the JSON value enters the task.
     let args = request_to_value(method, payload);
     let correlation_id = header.correlation_id;
 
-    crate::types::call_scoped(ctx, async move {
+    async move {
         let mut emitter = emitter;
         let Some(args) = args else {
             reject_json_request(service, method, &mut *emitter);
@@ -83,7 +144,7 @@ pub fn json_host_handler(
                 }
             }
         }
-    })
+    }
 }
 
 /// Serves one **one-way** JSON call.
@@ -100,10 +161,40 @@ pub fn json_host_oneway_handler(
     request_to_value: RequestToValue,
 ) -> BoxResponseFuture {
     let ctx = CallContext::new(&header, service, method);
+    crate::types::call_scoped(
+        ctx,
+        json_host_oneway_body(service, method, header, payload, request_to_value),
+    )
+}
+
+/// The [`json_host_oneway_handler`] of a service declared
+/// `#[service(..., no_tracing)]`.
+pub fn json_host_oneway_handler_untraced(
+    service: &'static str,
+    method: &'static str,
+    header: RpcHeader,
+    payload: &[u8],
+    request_to_value: RequestToValue,
+) -> BoxResponseFuture {
+    let ctx = CallContext::new(&header, service, method);
+    crate::types::call_scoped_untraced(
+        ctx,
+        json_host_oneway_body(service, method, header, payload, request_to_value),
+    )
+}
+
+/// The body both one-way entry points share, decoded once and left unboxed.
+fn json_host_oneway_body(
+    service: &'static str,
+    method: &'static str,
+    header: RpcHeader,
+    payload: &[u8],
+    request_to_value: RequestToValue,
+) -> impl Future<Output = ()> + Send + 'static {
     let args = request_to_value(method, payload);
     let correlation_id = header.correlation_id;
 
-    crate::types::call_scoped(ctx, async move {
+    async move {
         let Some(args) = args else {
             log::error!("[{service}::{method}] Failed to deserialize the one-way request");
             return;
@@ -113,5 +204,5 @@ pub fn json_host_oneway_handler(
             Ok(events) => drop(events),
             Err(e) => log::error!("[{service}::{method}] one-way JSON dispatch failed: {e}"),
         }
-    })
+    }
 }

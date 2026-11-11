@@ -442,10 +442,23 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
 /// service-agnostic, so the expansion names only the two per-method converters the
 /// proxy already exposes and hands them over as function pointers. That is what
 /// keeps one copy of the handler per binary instead of one per method.
-pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: bool) -> TokenStream {
+///
+/// `no_tracing` selects the `_untraced` twin of each handler, which installs the
+/// call context without opening a span.
+pub fn gen_json_provider_method(
+    proxy_name: &Ident,
+    fn_name: &Ident,
+    oneway: bool,
+    no_tracing: bool,
+) -> TokenStream {
     let method_name_str = fn_name.to_string();
 
     if oneway {
+        let handler = if no_tracing {
+            quote! { ice_rpc::codegen::json_host_oneway_handler_untraced }
+        } else {
+            quote! { ice_rpc::codegen::json_host_oneway_handler }
+        };
         // One-way: the host is handed the call and its answer stream, if any, is
         // dropped; the dispatcher registers no in-flight entry.
         return quote! {
@@ -456,7 +469,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
                           payload: &[u8],
                           _emitter: ice_rpc::codegen::OwnedEmitter|
                           -> ice_rpc::codegen::BoxResponseFuture {
-                        ice_rpc::codegen::json_host_oneway_handler(
+                        #handler(
                             <#proxy_name>::SERVICE_NAME,
                             #method_name_str,
                             header,
@@ -469,6 +482,12 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
         };
     }
 
+    let handler = if no_tracing {
+        quote! { ice_rpc::codegen::json_host_handler_untraced }
+    } else {
+        quote! { ice_rpc::codegen::json_host_handler }
+    };
+
     quote! {
         {
             dispatcher.method(
@@ -478,7 +497,7 @@ pub fn gen_json_provider_method(proxy_name: &Ident, fn_name: &Ident, oneway: boo
                       emitter: ice_rpc::codegen::OwnedEmitter|
                       -> ice_rpc::codegen::BoxResponseFuture {
                     // The service name shows in the span instead of the header hash.
-                    ice_rpc::codegen::json_host_handler(
+                    #handler(
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
                         header,

@@ -41,7 +41,10 @@ pub use client::{
     serialize_and_send_one_way,
 };
 #[cfg(feature = "json")]
-pub use json_host::{RequestToValue, ValueToResponse, json_host_handler, json_host_oneway_handler};
+pub use json_host::{
+    RequestToValue, ValueToResponse, json_host_handler, json_host_handler_untraced,
+    json_host_oneway_handler, json_host_oneway_handler_untraced,
+};
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 

@@ -25,7 +25,8 @@ mod wire;
 
 pub use consts::*;
 pub use context::{
-    BoxResponseFuture, CallContext, TraceContext, call_scoped, local_call_scoped, next_span_id,
+    BoxResponseFuture, CallContext, TraceContext, call_scoped, call_scoped_untraced,
+    local_call_scoped, local_call_scoped_untraced, next_span_id,
 };
 
 // The transport installs the call token around every poll; the accessor is public.

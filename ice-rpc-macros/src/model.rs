@@ -38,6 +38,12 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_
 ///   the `Observable` directly instead of a future, so the caller never spells
 ///   `block_on` for the call. Off by default — a service that does not need it
 ///   pays neither the method nor its documentation.
+/// - `#[service(..., no_tracing)]` → this service emits **no** `tracing` span of
+///   its own, even when the `tracing` feature of `ice-rpc` is on. The call
+///   context is still installed, so the implementation keeps its identity, its
+///   correlation id and the incoming W3C trace, and the trace keeps propagating
+///   to the calls it emits; only the span of the hop disappears. Off by default —
+///   a deployment that collects every hop declares nothing.
 /// - `#[service("MyService", version = 2, group = "db")]` → all.
 #[derive(Debug)]
 pub struct ServiceAttr {
@@ -51,6 +57,8 @@ pub struct ServiceAttr {
     pub max_slice_len: Option<usize>,
     /// Whether a blocking twin of every method is generated (`blocking`).
     pub blocking: bool,
+    /// Whether this service opts out of emitting spans (`no_tracing`).
+    pub no_tracing: bool,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -60,6 +68,7 @@ impl syn::parse::Parse for ServiceAttr {
         let mut service_version: u16 = 1;
         let mut max_slice_len: Option<usize> = None;
         let mut blocking: bool = false;
+        let mut no_tracing: bool = false;
 
         if input.is_empty() {
             return Ok(Self {
@@ -68,6 +77,7 @@ impl syn::parse::Parse for ServiceAttr {
                 service_version,
                 max_slice_len,
                 blocking,
+                no_tracing,
             });
         }
 
@@ -80,6 +90,9 @@ impl syn::parse::Parse for ServiceAttr {
                 if ident == "blocking" {
                     // A bare flag: no `= value`, but the separating comma is consumed.
                     blocking = true;
+                } else if ident == "no_tracing" {
+                    // A bare flag, like `blocking`: the service opts out of spans.
+                    no_tracing = true;
                 } else if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitStr = input.parse()?;
@@ -120,6 +133,7 @@ impl syn::parse::Parse for ServiceAttr {
             service_version,
             max_slice_len,
             blocking,
+            no_tracing,
         })
     }
 }

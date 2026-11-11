@@ -689,45 +689,6 @@ impl Future for CallScope {
     }
 }
 
-/// Lazy renderers for the span fields of a call.
-///
-/// `?value` records a `Debug` field, so the formatting below runs **only if a
-/// subscriber records it** — a provider whose subscriber filters the field out
-/// pays nothing, and no `String` is built on the hot path.
-#[cfg(feature = "tracing")]
-mod span_fields {
-    use std::fmt;
-
-    use crate::types::header::{CORRELATION_ID_LEN, fmt_correlation_id};
-
-    /// Correlation id, rendered as the UUID-like string an observer logs.
-    pub(super) struct Correlation<'a>(pub(super) &'a [u8; CORRELATION_ID_LEN]);
-
-    impl fmt::Debug for Correlation<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(&fmt_correlation_id(self.0))
-        }
-    }
-
-    /// Trace id, rendered as hexadecimal.
-    pub(super) struct TraceId<'a>(pub(super) &'a [u8; 16]);
-
-    impl fmt::Debug for TraceId<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(&super::hex_trace_id(self.0))
-        }
-    }
-
-    /// The W3C `traceparent` of a call, rendered lazily.
-    pub(super) struct TraceParent<'a>(pub(super) &'a super::TraceContext, pub(super) u64);
-
-    impl fmt::Debug for TraceParent<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(&self.0.traceparent(self.1))
-        }
-    }
-}
-
 /// Installs `token` as the cancellation token of the call being polled on this
 /// thread, returning the scope that restores the previous one.
 ///

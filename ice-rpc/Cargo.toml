@@ -68,7 +68,9 @@ monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # With this feature on, a collector owns the ids too: `ice_rpc::trace::install`
 # supplies the caller's current span, so a call emitted outside a handler
 # continues that collector's trace instead of minting a root, and every served
-# call hands its context to the collector before the span of the hop is created.
+# call whose span the collector's filter accepts hands its context to the
+# collector before that span is created — a span the filter rejects would leave
+# the one-shot adoption pending for the next span of the thread.
 # The receiver mints that hop's span id itself; ice-rpc's own id stays the
 # fallback a deployment without a collector puts on the wire.
 # The wire format does not change: the same four W3C fields travel in the header.

@@ -198,15 +198,47 @@ pub fn next_span_id() -> u64 {
 /// contract with the subscriber, and two lists would drift apart. `kind` is
 /// emitted only for the calls that pass it — a transported call has no such
 /// field, so an observer's queries keep meaning what they meant.
+///
+/// The target is written out rather than left to `debug_span!`'s default so that
+/// [`rpc_span_enabled!`] can name the very same target: the filter check is only
+/// meaningful if it describes the span it guards.
 #[cfg(feature = "tracing")]
 macro_rules! rpc_span {
     ($ctx:expr $(, kind = $kind:expr)?) => {
         tracing::debug_span!(
+            target: module_path!(),
             "rpc",
             $(kind = $kind,)?
             service = $ctx.service_name,
             version = $ctx.service_version,
             method = $ctx.method,
+        )
+    };
+}
+
+/// Whether the collector's filter accepts the span [`rpc_span!`] would create.
+///
+/// The adoption of an incoming context is a one-shot signal that the span of the
+/// hop consumes, so it must be handed over only when that span will exist: a
+/// span the filter rejects consumes nothing, and the pending context would
+/// decorate the next span the collector creates on the thread. Opening the span
+/// and handing it a parent are therefore one decision.
+///
+/// The check names the same level and target as [`rpc_span!`], and the field
+/// names common to every `rpc` span, or a filter that selects spans by field
+/// would answer about a different span than the one it guards. The answer is not
+/// a guarantee: `tracing` documents that a filter matching on field *values*, a
+/// file or a line can still disagree. A span rejected in that case simply goes
+/// unadopted; no signal is left pending.
+#[cfg(feature = "tracing")]
+macro_rules! rpc_span_enabled {
+    () => {
+        tracing::span_enabled!(
+            target: module_path!(),
+            tracing::Level::DEBUG,
+            service,
+            version,
+            method,
         )
     };
 }
@@ -463,6 +495,37 @@ impl CallContext {
         rpc_span!(self, kind = "local")
     }
 
+    /// The span of a transported call, to which the collector is handed this
+    /// context first.
+    ///
+    /// [`rpc_span_enabled!`] decides both: the collector is asked to adopt the
+    /// incoming context only when it will create the span of this hop, which is
+    /// what keeps the one-shot signal from outliving the hop that consumes it.
+    /// `Span::none()` when the filter rejects the span, so a caller keeps one
+    /// code path and entering the result stays a no-op.
+    #[cfg(feature = "tracing")]
+    fn traced_span(&self) -> tracing::Span {
+        if !rpc_span_enabled!() {
+            return tracing::Span::none();
+        }
+        // The collector adopts the incoming context before its span exists, then
+        // mints the span id of this hop itself: the id a downstream call parents
+        // on is the one its own export contains.
+        crate::trace::extract(&self.trace());
+        self.span()
+    }
+
+    /// The [`CallContext::traced_span`] of a **direct** call, marked `kind =
+    /// "local"`.
+    #[cfg(feature = "tracing")]
+    fn traced_local_span(&self) -> tracing::Span {
+        if !rpc_span_enabled!() {
+            return tracing::Span::none();
+        }
+        crate::trace::extract(&self.trace());
+        self.span_local()
+    }
+
     /// Installs this context as the ambient one for the current thread, tracing
     /// span included, for the duration of one **synchronous** scope.
     ///
@@ -540,11 +603,7 @@ where
 
     #[cfg(feature = "tracing")]
     let span = if trace {
-        // The collector adopts the incoming context before its span exists, then
-        // mints the span id of this hop itself: the id a downstream call parents
-        // on is the one its own export contains.
-        crate::trace::extract(&ctx.trace());
-        ctx.span()
+        ctx.traced_span()
     } else {
         // No span, no adoption: entering `Span::none()` is a no-op.
         tracing::Span::none()
@@ -638,9 +697,9 @@ where
         if trace {
             // Same adoption as a transported hop: the collector continues the
             // caller's trace and parents this hop on it, or it mints a root trace
-            // when the delegation happens outside any traced work.
-            crate::trace::extract(&ctx.trace());
-            let span = ctx.span_local();
+            // when the delegation happens outside any traced work — provided the
+            // collector's filter accepts the span of the hop.
+            let span = ctx.traced_local_span();
             return std::future::poll_fn(move |cx| {
                 let _ambient = ctx.enter_ambient();
                 let _span = span.enter();

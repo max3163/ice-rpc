@@ -35,10 +35,15 @@
 //! - The extraction hook is a one-shot signal. A collector must consume it when it
 //!   creates the span of the hop and clear it, because the next span created on the
 //!   same thread would otherwise adopt a parent that is not its own.
-//! - The collector must create that span at a level its filter accepts: ice-rpc
-//!   creates it with `info_span!`, so a filter below `INFO` would leave the signal
-//!   unconsumed. ice-rpc cannot observe the collector's filter, so this is the
-//!   collector's responsibility.
+//! - The signal is only handed over when the span of the hop will exist: before
+//!   adopting, ice-rpc asks the collector whether the `DEBUG` span it is about to
+//!   create — same target, same level, with the field names every hop carries —
+//!   would be enabled, and skips the adoption when the answer is no. A rejected
+//!   span would consume nothing, and the pending context would decorate the next
+//!   span the collector creates on the thread. A filter more specific than that
+//!   pre-check (one that matches field *values*, a span name, a file or a line)
+//!   can still disagree; the hop then goes unadopted instead of leaving a signal
+//!   behind.
 //! - The extraction hook is never called for a sample whose trace id is zero or
 //!   whose parent id is zero: the first carries no trace, the second is malformed
 //!   per W3C (a `traceparent` `parent-id` is never zero).
@@ -48,7 +53,9 @@
 //! # Cost
 //!
 //! One atomic load per emitted call and per served call, then a function-pointer
-//! call. Nothing is allocated and no lock is taken.
+//! call; a served call also asks the collector's filter about its span before
+//! adopting, which is one more subscriber call on the same path. Nothing is
+//! allocated and no lock is taken.
 //!
 //! [`TraceContext`]: crate::TraceContext
 

@@ -70,8 +70,8 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version`, `group`, `max_slice_len`, `blocking` and
-/// `no_tracing`.
+/// `"LogicalName"`, `version`, `group`, `max_slice_len`, `blocking`,
+/// `no_tracing` and `no_monitoring`.
 ///
 /// `no_tracing` opts **this service** out of emitting `tracing` spans while the
 /// `tracing` feature of `ice-rpc` stays on: the call context is still installed
@@ -79,6 +79,16 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// incoming W3C trace, and a call it emits keeps propagating), but the hop opens
 /// no span — and never hands its incoming context to the collector, since that
 /// adoption is consumed by the span of the hop.
+///
+/// `no_monitoring` opts **this service** out of the automatic observation while
+/// the `monitoring` feature of `ice-rpc` stays on: its decoder is not submitted
+/// to the link-time `DECODERS` registry, and its channel is submitted to
+/// `HIDDEN_CHANNELS` so `discover_channels` skips it. The generated decoder
+/// remains available for an explicit
+/// [`register`](ice_rpc::monitor::ServiceDecoder) — only the automatic path is
+/// off. The opt-out is at **channel** granularity: a service sharing a `group`
+/// hides the whole channel, so the services that must stay observable need a
+/// distinct group.
 ///
 /// `max_slice_len` sizes the initial slice of the channel's publishers. It is a
 /// property of the **channel** (the `group`), so every service of a group must
@@ -165,6 +175,8 @@ fn expand_service_with(
     let blocking = service_attr.blocking;
     // Whether this service opts out of emitting spans, wherever it is served.
     let no_tracing = service_attr.no_tracing;
+    // Whether this service opts out of the automatic observation.
+    let no_monitoring = service_attr.no_monitoring;
 
     let trait_name = &model.trait_name;
     let visibility = &model.visibility;
@@ -388,6 +400,10 @@ fn expand_service_with(
     // Opt-in `monitoring` decoding: the only part forcing `Display` on every type.
     let decoder_output = if features.monitoring {
         let decoder_name = Ident::new(&format!("{trait_name}Decoder"), trait_name.span());
+        // `no_monitoring` keeps the decoder but hides its channel from automatic
+        // discovery; the channel is the `group`, resolved to the logical name when
+        // the service declares none.
+        let hidden_channel = no_monitoring.then_some(group_lit.as_str());
         let decoder_input = DecoderGenInput {
             visibility,
             trait_name,
@@ -395,6 +411,7 @@ fn expand_service_with(
             decoder_name: &decoder_name,
             logical_name_lit: logical_name_lit.as_str(),
             methods: &decoder_methods,
+            hidden_channel,
         };
         gen_decoder(&decoder_input)
     } else {

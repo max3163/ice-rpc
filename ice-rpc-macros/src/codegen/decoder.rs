@@ -16,6 +16,10 @@
 //! The registration is what lets an observer list nothing: the linker collects
 //! one entry per `#[service]` linked into the binary, and
 //! `Decoders::linked()` turns them into the registry.
+//!
+//! A service declared `no_monitoring` submits its **channel** into
+//! `HIDDEN_CHANNELS` instead, so automatic discovery skips it while the decoder
+//! stays available for an explicit registration.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -54,6 +58,12 @@ pub struct DecoderGenInput<'a> {
     pub logical_name_lit: &'a str,
     /// One entry per RPC method.
     pub methods: &'a [DecoderMethod],
+    /// Channel whose automatic observation this service opts out of.
+    ///
+    /// `None` submits the decoder into `DECODERS`, as a monitored service does.
+    /// `Some(channel)` keeps the decoder but submits the channel into
+    /// `HIDDEN_CHANNELS` instead, so an observer's automatic discovery skips it.
+    pub hidden_channel: Option<&'a str>,
 }
 
 /// Generates the `Display` implementation and the `{Trait}Decoder`.
@@ -65,6 +75,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         decoder_name,
         logical_name_lit,
         methods,
+        hidden_channel,
     } = input;
 
     // One static per service, named after the trait: a duplicate logical name keeps
@@ -76,6 +87,43 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         ),
         proc_macro2::Span::call_site(),
     );
+
+    // `no_monitoring` trades the automatic decoder registration for a channel
+    // opt-out: the decoder stays reachable by name, but the observer's inventory
+    // lists the channel as hidden instead of the service as observable.
+    let registration = match hidden_channel {
+        None => quote! {
+            // Nothing refers to this static: the linker collects every entry into one
+            // slice. `linkme` symbols come from the facade's re-export.
+            #[allow(dead_code)]
+            #[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
+            #[linkme(crate = ice_rpc::codegen::linkme)]
+            static #registration_name: ice_rpc::monitor::DecoderRegistration =
+                ice_rpc::monitor::DecoderRegistration {
+                    service_name: #logical_name_lit,
+                    build: #decoder_name::build,
+                };
+        },
+        Some(channel) => {
+            let hidden_name = Ident::new(
+                &format!("__ICE_RPC_HIDDEN_{}", trait_name.to_string().to_uppercase()),
+                proc_macro2::Span::call_site(),
+            );
+            let channel_lit = LitStr::new(channel, proc_macro2::Span::call_site());
+            quote! {
+                // `no_monitoring`: the linker collects the channel so that
+                // automatic discovery skips it, while the decoder above remains
+                // available for an explicit registration.
+                #[allow(dead_code)]
+                #[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::HIDDEN_CHANNELS)]
+                #[linkme(crate = ice_rpc::codegen::linkme)]
+                static #hidden_name: ice_rpc::monitor::HiddenChannelRegistration =
+                    ice_rpc::monitor::HiddenChannelRegistration {
+                        channel: #channel_lit,
+                    };
+            }
+        }
+    };
 
     let mut display_arms = Vec::new();
     let mut request_arms = Vec::new();
@@ -175,16 +223,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
             }
         }
 
-        // Nothing refers to this static: the linker collects every entry into one
-        // slice. `linkme` symbols come from the facade's re-export.
-        #[allow(dead_code)]
-        #[ice_rpc::codegen::linkme::distributed_slice(ice_rpc::monitor::DECODERS)]
-        #[linkme(crate = ice_rpc::codegen::linkme)]
-        static #registration_name: ice_rpc::monitor::DecoderRegistration =
-            ice_rpc::monitor::DecoderRegistration {
-                service_name: #logical_name_lit,
-                build: #decoder_name::build,
-            };
+        #registration
 
         impl ice_rpc::monitor::ServiceDecoder for #decoder_name {
             fn request(

@@ -238,6 +238,12 @@ fn strip_direction_suffix(name: &str) -> Option<&str> {
 /// `_req` or `_resp`; each channel is returned once. The notification services
 /// (`_req_notify` / `_resp_notify`) use the `Event` pattern and are ignored.
 ///
+/// A channel a linked service declared `#[service(..., no_monitoring)]` on is
+/// skipped: that declaration is the per-service opt-out of **automatic**
+/// observation, and an operator can still name the channel explicitly in an
+/// observer's configuration. The opt-out is channel-wide, so every service
+/// sharing a `group` is skipped with it.
+///
 /// # Errors
 /// Returns a [`RpcError`] when the service listing itself fails.
 pub fn discover_channels() -> Result<Vec<String>, RpcError> {
@@ -249,6 +255,7 @@ pub fn discover_channels() -> Result<Vec<String>, RpcError> {
             details.static_details.messaging_pattern(),
             MessagingPattern::PublishSubscribe(_)
         ) && let Some(channel) = strip_direction_suffix(details.static_details.name().as_str())
+            && !crate::monitor::is_hidden_channel(channel)
         {
             channels.insert(channel.to_owned());
         }

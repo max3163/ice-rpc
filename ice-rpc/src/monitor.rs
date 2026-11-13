@@ -15,6 +15,11 @@
 //! implementation of the service types, or with their [`Debug`](std::fmt::Debug)
 //! implementation when they have none (see [`render_value!`]).
 //!
+//! A service declared `#[service(..., no_monitoring)]` stays out of that
+//! automatic inventory: it submits its **channel** into `HIDDEN_CHANNELS`
+//! instead, so [`discover_channels`] skips it and [`Decoders::linked`] does not
+//! carry it. Its decoder is still generated and can be registered explicitly.
+//!
 //! # Two concerns, two modules
 //!
 //! - `inventory` answers *what is running*: the iceoryx2 nodes and their
@@ -41,9 +46,12 @@ pub use decode::{
 // `Decoders::linked()`.
 #[cfg(feature = "monitoring")]
 pub use decode::{DECODERS, DecoderRegistration};
+// The channel opt-outs `no_monitoring` submits at link time.
+#[cfg(feature = "monitoring")]
+pub use inventory::{HIDDEN_CHANNELS, HiddenChannelRegistration};
 pub use inventory::{
-    Iceoryx2Layout, NodeHealth, NodeInfo, ServiceInfo, ServiceRole, iceoryx2_layout, list_nodes,
-    list_services,
+    Iceoryx2Layout, NodeHealth, NodeInfo, ServiceInfo, ServiceRole, iceoryx2_layout,
+    is_hidden_channel, list_nodes, list_services,
 };
 
 // Plumbing of the generated `monitoring` code: `render_value!` resolves these names.

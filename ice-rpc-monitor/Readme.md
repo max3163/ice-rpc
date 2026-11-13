@@ -67,6 +67,13 @@ another crate must reference it once (`use common as _;`, or any type of it). No
 registration, no constructor call, no startup cost: the entries are `const`
 values read in place.
 
+A service declared `#[service(..., no_monitoring)]` stays out of the automatic
+inventory: it submits its channel to `HIDDEN_CHANNELS` instead of its decoder to
+`DECODERS`, so automatic discovery (`discover_channels`, used when the observer
+configuration names no channel) skips it and `Decoders::linked()` does not render
+it. The decoder is still generated, so an observer may register it explicitly and
+name the channel in its configuration when it truly wants those messages.
+
 Decoding is opt-in on purpose: without the `monitoring` feature a plain
 provider/consumer carries no decoder at all — and neither the slice nor the code
 it points to. Without a decoder for a service, its messages are shown as

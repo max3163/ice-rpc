@@ -191,7 +191,7 @@ flux.
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
 - `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id;
-- `max_slice_len`, `blocking` and `no_tracing` — see _Configuration_ below.
+- `max_slice_len`, `blocking`, `no_tracing` and `no_monitoring` — see _Configuration_ below.
 
 ```rust,ignore
 #[service("MyService", version = 1, group = "db")]
@@ -690,6 +690,27 @@ continues that trace. Only the span of the hop disappears — and with it the
 adoption signal handed to the collector, since a context no span consumes would
 decorate the next one. A provider that delegates in-process to that service, and
 the JSON host serving it, follow the same flag.
+
+### Per-service monitoring
+
+With the `monitoring` feature on, every `#[service]` submits a decoder into the
+link-time registry an observer reads back, and its channel appears in automatic
+discovery. A service can opt out of that **automatic** path while the rest of the
+process stays observable:
+
+```rust,ignore
+#[service("AuditLog", group = "audit", no_monitoring)]
+```
+
+Its decoder is no longer submitted to `DECODERS`, and its channel is submitted to
+`HIDDEN_CHANNELS`, which `discover_channels` skips. The decoder itself is still
+generated, so a deployment that truly wants the payloads can register it
+explicitly (`AuditLogDecoder::register(&mut decoders)` or `Decoders::register`)
+and name the channel in the observer configuration.
+
+The opt-out is at **channel** granularity: every service sharing a `group`
+shares one transport, so one opted-out service hides the channel for all of them.
+Give the services that must stay observable their own group.
 
 ### Process allocator
 

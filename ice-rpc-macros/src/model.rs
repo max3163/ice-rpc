@@ -44,6 +44,12 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_
 ///   correlation id and the incoming W3C trace, and the trace keeps propagating
 ///   to the calls it emits; only the span of the hop disappears. Off by default —
 ///   a deployment that collects every hop declares nothing.
+/// - `#[service(..., no_monitoring)]` → this service stays out of the **automatic**
+///   observation: its decoder is not submitted to the link-time registry, and its
+///   channel is hidden from `discover_channels`, so a monitor neither decodes nor
+///   attaches to it by default. The generated decoder remains available for an
+///   explicit registration. Off by default — a deployment that observes every
+///   service declares nothing.
 /// - `#[service("MyService", version = 2, group = "db")]` → all.
 #[derive(Debug)]
 pub struct ServiceAttr {
@@ -59,6 +65,8 @@ pub struct ServiceAttr {
     pub blocking: bool,
     /// Whether this service opts out of emitting spans (`no_tracing`).
     pub no_tracing: bool,
+    /// Whether this service opts out of automatic observation (`no_monitoring`).
+    pub no_monitoring: bool,
 }
 
 impl syn::parse::Parse for ServiceAttr {
@@ -69,6 +77,7 @@ impl syn::parse::Parse for ServiceAttr {
         let mut max_slice_len: Option<usize> = None;
         let mut blocking: bool = false;
         let mut no_tracing: bool = false;
+        let mut no_monitoring: bool = false;
 
         if input.is_empty() {
             return Ok(Self {
@@ -78,6 +87,7 @@ impl syn::parse::Parse for ServiceAttr {
                 max_slice_len,
                 blocking,
                 no_tracing,
+                no_monitoring,
             });
         }
 
@@ -93,6 +103,10 @@ impl syn::parse::Parse for ServiceAttr {
                 } else if ident == "no_tracing" {
                     // A bare flag, like `blocking`: the service opts out of spans.
                     no_tracing = true;
+                } else if ident == "no_monitoring" {
+                    // A bare flag, like `no_tracing`: the service opts out of the
+                    // automatic observation of the decoder registry and discovery.
+                    no_monitoring = true;
                 } else if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitStr = input.parse()?;
@@ -134,6 +148,7 @@ impl syn::parse::Parse for ServiceAttr {
             max_slice_len,
             blocking,
             no_tracing,
+            no_monitoring,
         })
     }
 }

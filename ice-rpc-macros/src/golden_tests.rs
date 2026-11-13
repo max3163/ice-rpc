@@ -356,3 +356,59 @@ fn the_no_tracing_parameter_selects_the_untraced_helpers() {
         "the blocking twin of an opted-out service must not open a span: {blocking_opted_out}"
     );
 }
+
+/// The `no_monitoring` parameter trades the automatic observation of a service
+/// for a channel opt-out, while keeping the generated decoder.
+///
+/// Like `no_tracing`, it is an attribute parameter rather than a Cargo feature:
+/// the expansion happens in the consumer's crate, so a crate-wide `cfg` could not
+/// express "this service, in this process".
+#[test]
+fn the_no_monitoring_parameter_hides_the_channel_instead_of_registering_the_decoder() {
+    let monitored = render(MONITORING, quote! { "Calc" }, CALCULATOR());
+    assert!(
+        monitored.contains("ice_rpc::monitor::DECODERS"),
+        "a default service submits its decoder to the link-time registry: {monitored}"
+    );
+    assert!(
+        !monitored.contains("ice_rpc::monitor::HIDDEN_CHANNELS"),
+        "and hides no channel: {monitored}"
+    );
+
+    let opted_out = render(MONITORING, quote! { "Calc", no_monitoring }, CALCULATOR());
+    assert!(
+        !opted_out.contains("ice_rpc::monitor::DECODERS"),
+        "an opted-out service must not be in the linked decoders: {opted_out}"
+    );
+    assert!(
+        opted_out.contains("ice_rpc::monitor::HIDDEN_CHANNELS"),
+        "its channel must be submitted as hidden: {opted_out}"
+    );
+    assert!(
+        opted_out.contains("CalculatorDecoder"),
+        "the decoder stays available for an explicit registration: {opted_out}"
+    );
+    assert!(
+        opted_out.contains("channel: \"Calc\""),
+        "without a group, the hidden channel is the logical name: {opted_out}"
+    );
+
+    // The hidden channel is the group when the service declares one, because the
+    // transport is per channel and every service of the group shares it.
+    let grouped = render(
+        MONITORING,
+        quote! { "Calc", group = "db", no_monitoring },
+        CALCULATOR(),
+    );
+    assert!(
+        grouped.contains("channel: \"db\""),
+        "the group must be the hidden channel: {grouped}"
+    );
+
+    // Without the `monitoring` feature there is no inventory to opt out of.
+    let unmonitored = render(NONE, quote! { "Calc", no_monitoring }, CALCULATOR());
+    assert!(
+        !unmonitored.contains("HIDDEN_CHANNELS"),
+        "a build without `monitoring` carries no registry: {unmonitored}"
+    );
+}

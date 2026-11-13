@@ -226,6 +226,48 @@ pub fn iceoryx2_layout() -> Iceoryx2Layout {
     }
 }
 
+// ── Opt-outs of automatic observation ───────────────────────────────
+
+/// One channel a linked service opted out of automatic observation.
+///
+/// `#[service(..., no_monitoring)]` submits one of these per service at link
+/// time, in place of the decoder registration. `discover_channels` reads the
+/// slice back, so a channel declared unobservable is not attached to by default —
+/// an operator can still name it explicitly in the observer's configuration.
+#[cfg(feature = "monitoring")]
+pub struct HiddenChannelRegistration {
+    /// Channel whose automatic observation is off: the `group` of the service, or
+    /// its logical name when it declares no group.
+    pub channel: &'static str,
+}
+
+/// Every channel a linked service opted out of automatic observation.
+///
+/// The order across crates is **not** specified; the slice is only ever read
+/// through [`is_hidden_channel`].
+#[cfg(feature = "monitoring")]
+#[linkme::distributed_slice]
+pub static HIDDEN_CHANNELS: [HiddenChannelRegistration] = [..];
+
+/// Whether a linked service declared `#[service(..., no_monitoring)]` on
+/// `channel`.
+///
+/// The answer is channel-wide: every service sharing a `group` shares its
+/// channel, so one opted-out service hides the channel for all of them.
+#[cfg(feature = "monitoring")]
+pub fn is_hidden_channel(channel: &str) -> bool {
+    HIDDEN_CHANNELS
+        .iter()
+        .any(|registration| registration.channel == channel)
+}
+
+/// Without the `monitoring` feature no declaration can opt out, so no channel is
+/// hidden.
+#[cfg(not(feature = "monitoring"))]
+pub fn is_hidden_channel(_channel: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

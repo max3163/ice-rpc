@@ -53,6 +53,12 @@ smol = ["ice-rpc-rx/smol"]
 # provider/consumer never calls that code. Rendering prefers a type's `Display`
 # and falls back to its `Debug`, so a service type carries no formatting
 # requirement of its own.
+#
+# A service can opt out of the **automatic** observation with
+# `#[service(..., no_monitoring)]`: its decoder is not submitted to the link-time
+# registry, and its channel is hidden from `discover_channels`, while the decoder
+# stays available for an explicit registration. The opt-out is channel-wide,
+# since every service sharing a `group` shares its transport.
 monitoring = ["ice-rpc-macros/monitoring", "dep:linkme"]
 # Call tracing: the provider handler enters one `tracing` span per call, carrying
 # the ids of the call (correlation, trace, span, parent, service, method), so the

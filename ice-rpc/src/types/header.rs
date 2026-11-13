@@ -16,7 +16,14 @@ use crate::labels::impl_labels;
 use crate::types::consts::PROTOCOL_VERSION;
 
 /// Correlation id prefixing every request/response pair.
-pub const CORRELATION_ID_LEN: usize = 16;
+///
+/// Eight bytes: the emitter's `u32` process id followed by a per-process `u32`
+/// counter, both big-endian. A live process id is unique on the machine and the
+/// counter is monotonic within a process, so the pair identifies an in-flight
+/// call without a random generator or any padding. It is a transport-level
+/// identifier: unlike the trace fields in [`RpcHeader`], it names one **call**,
+/// not one span, and it is always present.
+pub const CORRELATION_ID_LEN: usize = 8;
 
 /// Returns the current wall-clock time as nanoseconds since the Unix epoch.
 ///
@@ -126,7 +133,7 @@ impl_labels!(EventKind {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, ZeroCopySend)]
 pub struct RpcHeader {
-    /// Request↔response correlation id (16 bytes).
+    /// Request <=> response correlation id (8 bytes).
     pub correlation_id: [u8; CORRELATION_ID_LEN],
     /// Emission timestamp, in nanoseconds since the Unix epoch.
     ///
@@ -420,47 +427,41 @@ impl ServiceRef {
 }
 
 /// Allocates a process-unique correlation id: `pid ++ counter`.
+///
+/// Both halves are `u32` big-endian, which fits the eight bytes of
+/// [`CORRELATION_ID_LEN`]. Uniqueness follows from the process id being unique
+/// among the live processes of the machine and the counter being monotonic within
+/// this process; a counter wrap after more than four billion calls can only
+/// collide with a call still in flight if both were emitted by the same process
+/// and the first is still open.
 #[inline]
 pub fn next_correlation_id() -> [u8; CORRELATION_ID_LEN] {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let pid = u64::from(super::node::cached_pid());
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(1);
+    let pid = super::node::cached_pid();
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut out = [0u8; CORRELATION_ID_LEN];
-    out[..8].copy_from_slice(&pid.to_be_bytes());
-    out[8..].copy_from_slice(&counter.to_be_bytes());
+    out[..4].copy_from_slice(&pid.to_be_bytes());
+    out[4..].copy_from_slice(&counter.to_be_bytes());
     out
 }
 
-/// Formats a correlation id as a UUID-like hexadecimal string.
-pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
-    let [
-        b0,
-        b1,
-        b2,
-        b3,
-        b4,
-        b5,
-        b6,
-        b7,
-        b8,
-        b9,
-        b10,
-        b11,
-        b12,
-        b13,
-        b14,
-        b15,
-    ] = cid;
-    format!(
-        "{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}-{b6:02x}{b7:02x}-\
-         {b8:02x}{b9:02x}-{b10:02x}{b11:02x}{b12:02x}{b13:02x}{b14:02x}{b15:02x}"
-    )
-}
-/// Parses a UUID-like hexadecimal correlation id.
+/// Formats a correlation id as `pid-counter`, both zero-padded hexadecimal.
 ///
-/// Accepts both forms a JavaScript caller may hold: the 36-character dashed
-/// form produced by [`fmt_correlation_id`] and the 32-character undashed one.
+/// The process id and the counter are rendered as two eight-digit groups joined
+/// by a single dash, for seventeen characters in total. This is deliberately
+/// compact: the id is an opaque transport token, not a W3C `traceparent` (that
+/// one is built from the trace fields), so there is no reason to spell it as a
+/// UUID.
+pub fn fmt_correlation_id(cid: &[u8; CORRELATION_ID_LEN]) -> String {
+    let [b0, b1, b2, b3, b4, b5, b6, b7] = cid;
+    format!("{b0:02x}{b1:02x}{b2:02x}{b3:02x}-{b4:02x}{b5:02x}{b6:02x}{b7:02x}")
+}
+
+/// Parses a hexadecimal correlation id.
+///
+/// Accepts both forms a JavaScript caller may hold: the 17-character dashed
+/// form produced by [`fmt_correlation_id`] and the 16-character undashed one.
 /// Performs a single pass and allocates nothing, so it is usable on the hot
 /// path of the Node.js bridge. Returns `None` on any other length, on a
 /// misplaced dash and on a non-hexadecimal digit -- a partially parsed id is
@@ -470,16 +471,19 @@ pub fn parse_correlation_id(text: &str) -> Option<[u8; CORRELATION_ID_LEN]> {
     let undashed_len = CORRELATION_ID_LEN * 2;
     let dashed = if bytes.len() == undashed_len {
         false
-    } else if bytes.len() == undashed_len + 4 {
+    } else if bytes.len() == undashed_len + 1 {
         true
     } else {
         return None;
     };
 
+    // One dash separates the two four-byte groups, after the first half of the
+    // hexadecimal digits.
+    let dash_index = undashed_len / 2;
     let mut out = [0u8; CORRELATION_ID_LEN];
     let mut nibbles = 0usize;
     for (index, byte) in bytes.iter().enumerate() {
-        if dashed && matches!(index, 8 | 13 | 18 | 23) {
+        if dashed && index == dash_index {
             if *byte != b'-' {
                 return None;
             }
@@ -559,21 +563,21 @@ mod tests {
         // Part of the wire contract: iceoryx2 validates the size on open, so every
         // process must agree on the layout.
         assert_eq!(std::mem::align_of::<RpcHeader>(), 8);
-        assert_eq!(std::mem::size_of::<RpcHeader>(), 80);
+        assert_eq!(std::mem::size_of::<RpcHeader>(), 72);
 
         assert_eq!(std::mem::offset_of!(RpcHeader, correlation_id), 0);
-        assert_eq!(std::mem::offset_of!(RpcHeader, timestamp_ns), 16);
-        assert_eq!(std::mem::offset_of!(RpcHeader, seq), 24);
-        assert_eq!(std::mem::offset_of!(RpcHeader, trace_id), 32);
-        assert_eq!(std::mem::offset_of!(RpcHeader, parent_span_id), 48);
-        assert_eq!(std::mem::offset_of!(RpcHeader, span_id), 56);
-        assert_eq!(std::mem::offset_of!(RpcHeader, service_id), 64);
-        assert_eq!(std::mem::offset_of!(RpcHeader, method_id), 68);
-        assert_eq!(std::mem::offset_of!(RpcHeader, traceparent_version), 72);
-        assert_eq!(std::mem::offset_of!(RpcHeader, event_kind), 73);
-        assert_eq!(std::mem::offset_of!(RpcHeader, protocol_version), 74);
-        assert_eq!(std::mem::offset_of!(RpcHeader, service_version), 76);
-        assert_eq!(std::mem::offset_of!(RpcHeader, flags), 78);
+        assert_eq!(std::mem::offset_of!(RpcHeader, timestamp_ns), 8);
+        assert_eq!(std::mem::offset_of!(RpcHeader, seq), 16);
+        assert_eq!(std::mem::offset_of!(RpcHeader, trace_id), 24);
+        assert_eq!(std::mem::offset_of!(RpcHeader, parent_span_id), 40);
+        assert_eq!(std::mem::offset_of!(RpcHeader, span_id), 48);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_id), 56);
+        assert_eq!(std::mem::offset_of!(RpcHeader, method_id), 60);
+        assert_eq!(std::mem::offset_of!(RpcHeader, traceparent_version), 64);
+        assert_eq!(std::mem::offset_of!(RpcHeader, event_kind), 65);
+        assert_eq!(std::mem::offset_of!(RpcHeader, protocol_version), 66);
+        assert_eq!(std::mem::offset_of!(RpcHeader, service_version), 68);
+        assert_eq!(std::mem::offset_of!(RpcHeader, flags), 70);
     }
 
     /// The trace context survives a header round-trip, and the response echoes
@@ -630,15 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn fmt_correlation_id_is_uuid_shaped() {
-        let cid = [
-            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
-            0x66, 0x77,
-        ];
-        assert_eq!(
-            fmt_correlation_id(&cid),
-            "deadbeef-cafe-babe-0011-223344556677"
-        );
+    fn fmt_correlation_id_is_compact() {
+        let cid = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];
+        assert_eq!(fmt_correlation_id(&cid), "deadbeef-cafebabe");
     }
 
     /// An unknown kind must decode to `Error`, never to the terminal `Complete`.
@@ -704,26 +702,20 @@ mod correlation_id_parsing {
     fn roundtrips_the_formatted_form() {
         let cid = next_correlation_id();
         let text = fmt_correlation_id(&cid);
-        assert_eq!(text.len(), 36);
+        assert_eq!(text.len(), 17);
         assert_eq!(parse_correlation_id(&text), Some(cid));
     }
 
     #[test]
     fn accepts_the_undashed_form() {
-        let cid = [
-            0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x00, 0x11,
-            0x22, 0x33,
-        ];
-        assert_eq!(
-            parse_correlation_id("deadbeef0123456789abcdef00112233"),
-            Some(cid)
-        );
+        let cid = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23, 0x45, 0x67];
+        assert_eq!(parse_correlation_id("deadbeef01234567"), Some(cid));
     }
 
     #[test]
     fn accepts_uppercase_hex() {
-        let lower = parse_correlation_id("deadbeef-cafe-babe-0011-223344556677");
-        let upper = parse_correlation_id("DEADBEEF-CAFE-BABE-0011-223344556677");
+        let lower = parse_correlation_id("deadbeef-cafebabe");
+        let upper = parse_correlation_id("DEADBEEF-CAFEBABE");
         assert!(lower.is_some());
         assert_eq!(lower, upper);
     }
@@ -732,9 +724,10 @@ mod correlation_id_parsing {
     fn rejects_bad_lengths_digits_and_dash_positions() {
         assert!(parse_correlation_id("").is_none());
         assert!(parse_correlation_id("deadbeef").is_none());
-        assert!(parse_correlation_id("deadbeef-cafe-babe-0011-22334455667").is_none());
-        assert!(parse_correlation_id("gggggggg-gggg-gggg-gggg-gggggggggggg").is_none());
-        // 36 bytes, but the dashes do not sit at 8/13/18/23.
-        assert!(parse_correlation_id("deadbeef-cafe-bab-e0011-223344556677").is_none());
+        assert!(parse_correlation_id("deadbeef-cafebab").is_none());
+        assert!(parse_correlation_id("deadbeef-cafebabe-00").is_none());
+        assert!(parse_correlation_id("gggggggg-gggggggg").is_none());
+        // 17 bytes, but the dash does not sit at index 8.
+        assert!(parse_correlation_id("deadbee-fcafebabe").is_none());
     }
 }

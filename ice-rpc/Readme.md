@@ -292,7 +292,7 @@ The consumer prints `Hello Alice!`. Stop the provider with Ctrl+C.
 Internal concepts (`NodeId`, `WireEvent`, the transport entry points, …) are
 exposed through the doc-hidden `ice_rpc::codegen` module and used by
 `ice-rpc-macros`. The transport itself is a publish/subscribe pair of channels
-per service, correlated by a 16-byte id: see `ice_rpc::transport`.
+per service, correlated by an 8-byte id: see `ice_rpc::transport`.
 
 ## Consumption
 

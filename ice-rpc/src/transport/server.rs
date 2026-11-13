@@ -232,7 +232,7 @@ struct ResponseHub {
 /// suffices however many consumers share the channel.
 #[derive(Default)]
 struct InFlightCalls {
-    /// A [`FastMap`]: one insert and one remove per request, keyed by the 16-byte
+    /// A [`FastMap`]: one insert and one remove per request, keyed by the 8-byte
     /// correlation id.
     calls: Mutex<FastMap<[u8; CORRELATION_ID_LEN], CancellationToken>>,
 }

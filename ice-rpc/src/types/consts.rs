@@ -29,5 +29,10 @@ pub const SERVICE_NAME_LEN: usize = 64;
 /// `traceparent_version` fields were added for W3C conformance — the header
 /// shrank from 120 to 80 bytes.
 ///
+/// Bumped to `3` when the correlation id shrank from 16 to 8 bytes (a `u32`
+/// process id followed by a `u32` counter): the header shrank from 80 to 72
+/// bytes, which leaves room for future metadata inside iceoryx2's fixed
+/// user-header budget.
+///
 /// [`RpcHeader`]: crate::types::RpcHeader
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;

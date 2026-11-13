@@ -7,7 +7,7 @@
 //! compile-time name, a method id likewise, and correlation ids this process
 //! minted — never chosen by a peer. Two hashers replace it:
 //!
-//! - [`FxHasher`] for byte-shaped keys (the 16-byte correlation ids): one
+//! - [`FxHasher`] for byte-shaped keys (the 8-byte correlation ids): one
 //!   rotate/xor/multiply per 64-bit word;
 //! - [`IdentityHasher`] for small integral keys (the `u32` service and method
 //!   ids), where the value is its own bucket index.
@@ -15,7 +15,7 @@
 //! Both are deterministic, so anything that iterates one of these maps (metrics,
 //! traces) is reproducible run to run instead of depending on a random seed.
 //! `benches/hash_map.rs` prices them against the default on the exact key shapes
-//! the transport uses: a lookup on a 16-byte key falls from ~19 ns to ~3 ns, and
+//! the transport uses: a lookup on an 8-byte key falls from ~19 ns to ~3 ns, and
 //! the register/release cycle from ~42 ns to ~21 ns.
 //!
 //! Cold maps (decoders, metrics, name registries) keep `std::collections::HashMap`:
@@ -127,6 +127,7 @@ impl Hasher for IdentityHasher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::CORRELATION_ID_LEN;
     use std::hash::BuildHasher;
 
     /// Pinned values: a change that would silently move every bucket is caught
@@ -134,8 +135,14 @@ mod tests {
     #[test]
     fn the_hashers_are_deterministic_on_the_key_shapes_they_serve() {
         let fx = BuildHasherDefault::<FxHasher>::default();
-        assert_eq!(fx.hash_one([0u8; 16]), fx.hash_one([0u8; 16]));
-        assert_ne!(fx.hash_one([0u8; 16]), fx.hash_one([1u8; 16]));
+        assert_eq!(
+            fx.hash_one([0u8; CORRELATION_ID_LEN]),
+            fx.hash_one([0u8; CORRELATION_ID_LEN])
+        );
+        assert_ne!(
+            fx.hash_one([0u8; CORRELATION_ID_LEN]),
+            fx.hash_one([1u8; CORRELATION_ID_LEN])
+        );
 
         let id = BuildHasherDefault::<IdentityHasher>::default();
         assert_eq!(id.hash_one(7u32), 7u64);
@@ -197,10 +204,10 @@ mod tests {
         // `pid ++ counter`: keys differing only in their low bytes.
         let fx = BuildHasherDefault::<FxHasher>::default();
         let mut hashes = std::collections::HashSet::new();
-        for counter in 0..1024u64 {
-            let mut key = [0u8; 16];
-            key[..8].copy_from_slice(&4_242u64.to_be_bytes());
-            key[8..].copy_from_slice(&counter.to_be_bytes());
+        for counter in 0..1024u32 {
+            let mut key = [0u8; CORRELATION_ID_LEN];
+            key[..4].copy_from_slice(&4_242u32.to_be_bytes());
+            key[4..].copy_from_slice(&counter.to_be_bytes());
             hashes.insert(fx.hash_one(key));
         }
         assert_eq!(
@@ -229,10 +236,10 @@ mod tests {
 
     #[test]
     fn the_transport_maps_round_trip_their_keys() {
-        let mut fast: FastMap<[u8; 16], u32> = FastMap::default();
-        fast.insert([7u8; 16], 42);
-        assert_eq!(fast.get(&[7u8; 16]), Some(&42));
-        assert_eq!(fast.get(&[8u8; 16]), None);
+        let mut fast: FastMap<[u8; CORRELATION_ID_LEN], u32> = FastMap::default();
+        fast.insert([7u8; CORRELATION_ID_LEN], 42);
+        assert_eq!(fast.get(&[7u8; CORRELATION_ID_LEN]), Some(&42));
+        assert_eq!(fast.get(&[8u8; CORRELATION_ID_LEN]), None);
 
         let mut ids: IdMap<u32, u32> = IdMap::default();
         ids.insert(3, 9);

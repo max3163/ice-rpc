@@ -230,7 +230,7 @@ harness = false
 
 # Prices the default `HashMap` hasher (SipHash) against the candidate custom
 # hashers the transport's maps would use, on the key shapes they actually have
-# (`u32` service ids, 16-byte correlation ids). See `benches/hash_map.rs`.
+# (`u32` service ids, 8-byte correlation ids). See `benches/hash_map.rs`.
 [[bench]]
 name = "hash_map"
 harness = false

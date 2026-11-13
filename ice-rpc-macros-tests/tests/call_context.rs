@@ -76,7 +76,7 @@ fn the_handler_receives_the_request_header() {
 
     let seen = seen.lock().unwrap().clone().expect("the handler ran");
     assert_eq!(seen.method, "echo");
-    assert_eq!(seen.correlation.len(), 36, "uuid-shaped");
+    assert_eq!(seen.correlation.len(), 17, "pid-counter hexadecimal");
     assert_eq!(seen.service_id, service_id);
     assert_eq!(seen.service_version, 1);
     assert!(
@@ -181,7 +181,7 @@ fn the_implementation_reads_the_ambient_context() {
     let seen = probe.before;
     assert_eq!(seen.method, "probe");
     assert_eq!(seen.service_version, 1);
-    assert_eq!(seen.correlation.len(), 36, "uuid-shaped");
+    assert_eq!(seen.correlation.len(), 17, "pid-counter hexadecimal");
     assert_ne!(seen.service_id, 0, "the routed service id is exposed");
     assert!(seen.received_at_ns > 0);
     assert!(

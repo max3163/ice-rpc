@@ -3,7 +3,7 @@
 //! `perf` attributed roughly 2-3 % of both the provider's and the consumer's
 //! self time to `std::collections::HashMap` with its default `RandomState`
 //! (SipHash): `hash_one::<&u32>` (the service and method tables),
-//! `hash_one::<&[u8;16]>` and `Hasher::write` (the correlation-id maps on both
+//! `hash_one::<&[u8;8]>` and `Hasher::write` (the correlation-id maps on both
 //! sides). That default buys hash-flooding resistance the transport does not
 //! need: its keys are internal ids — a `service_id` derived from a compile-time
 //! name, a correlation id this process minted — never attacker-controlled.
@@ -41,26 +41,24 @@ use std::hash::{BuildHasher, BuildHasherDefault};
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use ice_rpc::codegen::{FxHasher, IdentityHasher};
+use ice_rpc::codegen::{CORRELATION_ID_LEN, FxHasher, IdentityHasher};
 
 /// The map types the three candidates stand for.
 type SipMap<K, V> = HashMap<K, V>;
 type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
 
-/// Builds the deterministic 16-byte keys used by the correlation tests.
+/// A correlation id, as the transport keys its maps: eight bytes.
+type Cid = [u8; CORRELATION_ID_LEN];
+
+/// Builds the deterministic 8-byte keys used by the correlation tests.
 ///
-/// A real correlation id is `pid ++ counter`: two distinct 64-bit halves, never
+/// A real correlation id is `pid ++ counter`: two distinct 32-bit halves, never
 /// a repeated byte, which is what makes the hasher do real work.
-fn correlation(seed: u64) -> [u8; 16] {
+fn correlation(seed: u64) -> Cid {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-    let mut out = [0u8; 16];
-    let (chunks, _) = out.as_chunks_mut::<8>();
-    for chunk in chunks {
-        state = state.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
-        *chunk = state.to_le_bytes();
-    }
-    out
+    state = state.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    state.to_le_bytes()
 }
 
 /// A **real** correlation id: `pid ++ counter`, both big-endian, exactly as
@@ -68,10 +66,10 @@ fn correlation(seed: u64) -> [u8; 16] {
 ///
 /// Consecutive calls differ only in the low bytes of the counter, which is the
 /// pattern the maps really see — and the one a weak hasher clusters on.
-fn correlation_real(pid: u64, counter: u64) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out[..8].copy_from_slice(&pid.to_be_bytes());
-    out[8..].copy_from_slice(&counter.to_be_bytes());
+fn correlation_real(pid: u64, counter: u64) -> Cid {
+    let mut out = [0u8; CORRELATION_ID_LEN];
+    out[..4].copy_from_slice(&(pid as u32).to_be_bytes());
+    out[4..].copy_from_slice(&(counter as u32).to_be_bytes());
     out
 }
 
@@ -104,11 +102,11 @@ fn map_get(c: &mut Criterion) {
     // The correlation-id maps: one entry per in-flight call. `1` and `8` are a
     // quiet deployment, `1024` and `16384` the depth a load test reaches.
     for &n in &[1usize, 8, 1024, 16384] {
-        let keys: Vec<[u8; 16]> = (0..n as u64).map(correlation).collect();
+        let keys: Vec<Cid> = (0..n as u64).map(correlation).collect();
         let probe = keys[n / 2];
 
-        let mut sip: SipMap<[u8; 16], u64> = HashMap::new();
-        let mut fx: FxMap<[u8; 16], u64> = HashMap::with_hasher(BuildHasherDefault::default());
+        let mut sip: SipMap<Cid, u64> = HashMap::new();
+        let mut fx: FxMap<Cid, u64> = HashMap::with_hasher(BuildHasherDefault::default());
         for key in &keys {
             sip.insert(*key, 1);
             fx.insert(*key, 1);
@@ -166,13 +164,13 @@ fn map_get_realistic(c: &mut Criterion) {
     const PID: u64 = 0x0000_0000_0000_4d2f;
 
     for &n in &[1024usize, 65_536, 131_072] {
-        let keys: Vec<[u8; 16]> = (0..n as u64)
+        let keys: Vec<Cid> = (0..n as u64)
             .map(|i| correlation_real(PID, i + 1))
             .collect();
         let probe = keys[n / 2];
 
-        let mut sip: SipMap<[u8; 16], u64> = HashMap::new();
-        let mut fx: FxMap<[u8; 16], u64> = HashMap::with_hasher(BuildHasherDefault::default());
+        let mut sip: SipMap<Cid, u64> = HashMap::new();
+        let mut fx: FxMap<Cid, u64> = HashMap::with_hasher(BuildHasherDefault::default());
         for key in &keys {
             sip.insert(*key, 1);
             fx.insert(*key, 1);
@@ -195,14 +193,14 @@ fn map_get_realistic(c: &mut Criterion) {
 fn map_build_realistic(c: &mut Criterion) {
     const PID: u64 = 0x0000_0000_0000_4d2f;
     const N: usize = 65_536;
-    let keys: Vec<[u8; 16]> = (0..N as u64)
+    let keys: Vec<Cid> = (0..N as u64)
         .map(|i| correlation_real(PID, i + 1))
         .collect();
 
     let mut group = c.benchmark_group("map_build_realistic");
     group.bench_function("sip", |b| {
         b.iter(|| {
-            let mut map: SipMap<[u8; 16], u64> = HashMap::with_capacity(N);
+            let mut map: SipMap<Cid, u64> = HashMap::with_capacity(N);
             for key in &keys {
                 map.insert(*key, 1);
             }
@@ -211,7 +209,7 @@ fn map_build_realistic(c: &mut Criterion) {
     });
     group.bench_function("fx", |b| {
         b.iter(|| {
-            let mut map: FxMap<[u8; 16], u64> =
+            let mut map: FxMap<Cid, u64> =
                 HashMap::with_capacity_and_hasher(N, BuildHasherDefault::default());
             for key in &keys {
                 map.insert(*key, 1);
@@ -229,7 +227,7 @@ fn map_insert_remove(c: &mut Criterion) {
     let mut group = c.benchmark_group("map_insert_remove_correlation");
 
     group.bench_function("sip", |b| {
-        let mut map: SipMap<[u8; 16], u64> = HashMap::new();
+        let mut map: SipMap<Cid, u64> = HashMap::new();
         b.iter(|| {
             map.insert(black_box(key), 1);
             black_box(map.remove(black_box(&key)));
@@ -237,7 +235,7 @@ fn map_insert_remove(c: &mut Criterion) {
         assert!(map.is_empty(), "the cycle must be balanced");
     });
     group.bench_function("fx", |b| {
-        let mut map: FxMap<[u8; 16], u64> = HashMap::with_hasher(BuildHasherDefault::default());
+        let mut map: FxMap<Cid, u64> = HashMap::with_hasher(BuildHasherDefault::default());
         b.iter(|| {
             map.insert(black_box(key), 1);
             black_box(map.remove(black_box(&key)));

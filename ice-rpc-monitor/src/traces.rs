@@ -41,7 +41,8 @@ pub enum TraceFormat {
 
 /// One completed call, ready to be serialised.
 pub struct TraceRecord<'a> {
-    /// `correlation_id` formatted as a UUID-like string: the id of **this call**.
+    /// `correlation_id` formatted as `pid-counter` hexadecimal: the id of
+    /// **this call**.
     ///
     /// Named `call_id`, not `trace_id`: a call and a trace are different things,
     /// and the header carries both. One trace spans many calls, across processes.
@@ -259,7 +260,7 @@ mod tests {
 
     fn record() -> TraceRecord<'static> {
         TraceRecord {
-            call_id: "deadbeef-cafe-babe-0011-223344556677",
+            call_id: "deadbeef-cafebabe",
             trace_id: Some("00112233445566778899aabbccddeeff"),
             parent_span_id: 0,
             channel: "DatabaseService",
@@ -278,7 +279,7 @@ mod tests {
     #[test]
     fn a_stats_record_omits_the_message_fields() {
         let json = record().to_json();
-        assert!(json.contains("\"call_id\":\"deadbeef-cafe-babe-0011-223344556677\""));
+        assert!(json.contains("\"call_id\":\"deadbeef-cafebabe\""));
         assert!(json.contains("\"trace_id\":\"00112233445566778899aabbccddeeff\""));
         assert!(json.contains("\"parent_span_id\":0"));
         assert!(json.contains("\"latency_us\":137"));

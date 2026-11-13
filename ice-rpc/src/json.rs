@@ -24,6 +24,7 @@ use rkyv::util::AlignedVec;
 use crate::global::Global;
 #[cfg(feature = "json")]
 use crate::transport::PAYLOAD_ALIGNMENT;
+use crate::types::CORRELATION_ID_LEN;
 #[cfg(feature = "json")]
 use crate::types::{EventKind, WireEvent};
 use serde_json::Value;
@@ -201,7 +202,7 @@ pub trait JsonDispatcher: Send + Sync + 'static {
     /// the generated dispatcher reports it as an internal error.
     fn dispatch_json(
         &self,
-        cid: [u8; 16],
+        cid: [u8; CORRELATION_ID_LEN],
         service: &str,
         method: &str,
         args: Value,
@@ -229,7 +230,7 @@ pub fn json_dispatcher() -> Option<&'static Arc<dyn JsonDispatcher>> {
 /// Returns `Err` when no host was registered; the generated dispatcher logs and
 /// reports it rather than dropping the call.
 pub fn dispatch_json(
-    cid: [u8; 16],
+    cid: [u8; CORRELATION_ID_LEN],
     service: &str,
     method: &str,
     args: Value,
@@ -418,7 +419,7 @@ mod tests {
     impl JsonDispatcher for EchoHost {
         fn dispatch_json(
             &self,
-            _cid: [u8; 16],
+            _cid: [u8; CORRELATION_ID_LEN],
             service: &str,
             method: &str,
             args: Value,
@@ -444,7 +445,7 @@ mod tests {
         // `test_block_on`: the armed deadline needs a runtime for the whole poll.
         let events = crate::rt::test_block_on(async {
             let mut stream = dispatch_json(
-                [7u8; 16],
+                [7u8; CORRELATION_ID_LEN],
                 "DatabaseService",
                 "get_user_age",
                 serde_json::json!({ "name": "Alice" }),

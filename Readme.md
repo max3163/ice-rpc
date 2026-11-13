@@ -11,7 +11,7 @@
 
 The **header is zero-copy** — written and read in place — while the **payload is rkyv-serialized**, copied once into the shared-memory sample, and read in place on the receiving side. [§5](#5-payload-encoding) gives the per-step detail.
 
-From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The transport is iceoryx2's **publish/subscribe**: one request channel and one response channel per logical service, correlated by a 16-byte request id, which keeps the throughput close to the raw bus (see [§4](#4-transport--publishsubscribe-with-correlation-ids)).
+From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The transport is iceoryx2's **publish/subscribe**: one request channel and one response channel per logical service, correlated by an 8-byte request id, which keeps the throughput close to the raw bus (see [§4](#4-transport--publishsubscribe-with-correlation-ids)).
 
 **Requirements.** Rust **1.97** or newer — declared as `rust-version` in the workspace manifest. The floor is imposed by `trillium-http` 1.7.2, reached only through the optional `http` feature family: it calls `usize::bit_width`, stable since 1.97, and declares **no** `rust-version`, so cargo's MSRV-aware resolution cannot see it — only a build run on the floor can. The other candidates sit below it: the optional `process-metrics` feature of `ice-rpc-monitor` (`sysinfo` 0.39) needs **1.95**, `iceoryx2` 0.10 needs **1.89**, and the N-API bindings **1.88**. The declared value is not a claim: a dedicated CI job reads it from this manifest, installs exactly that toolchain and compiles the workspace *and* every optional feature with it, since an optional feature no job builds is where the floor silently drifts — and it did, twice. The workspace also enforces a shared lint baseline, adopted by every member through `[workspace.lints]`: `unsafe_op_in_unsafe_fn`, `missing_docs`, `undocumented_unsafe_blocks` (every `unsafe` block carries a `// SAFETY:` justification) and `unwrap_used` (`unwrap` is banned in library code, since it would turn a recoverable error into a process abort under the release profile's `panic = "abort"`). Test, example and benchmark targets opt out of `unwrap_used` explicitly, at the top of the file.
 
@@ -126,7 +126,7 @@ ice-rpc/                        ← Main crate (library + runtime)
 │   ├── lib.rs                  ← Public exports, cancellation tokens, shutdown()
 │   ├── transport/              ← Publish/subscribe transport: one request and one
 │   │   │                          response channel per channel (group of services),
-│   │   │                          correlated by the 16-byte id of the zero-copy header
+│   │   │                          correlated by the 8-byte id of the zero-copy header
 │   │   ├── mod.rs              ← aliases, shared node, rkyv decode, orphan sweep
 │   │   ├── tuning.rs           ← protocol invariants + runtime tuning constants
 │   │   ├── open.rs             ← service opening + mismatch / stale-state diagnosis
@@ -369,7 +369,7 @@ place by the bus, so it costs no serialization and no allocation.
 
 | Field | Type | Contents |
 |---|---|---|
-| `correlation_id` | `[u8; 16]` | process id ++ counter; identifies one in-flight call |
+| `correlation_id` | `[u8; 8]` | 32-bit process id ++ 32-bit counter; identifies one in-flight call |
 | `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
 | `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
 | `trace_id` | `[u8; 16]` | W3C trace id, shared by every hop of a call tree; zero when no trace is propagated |
@@ -383,8 +383,9 @@ place by the bus, so it costs no serialization and no allocation.
 | `service_version` | `u16` | service API version, validated by the provider and echoed on the responses |
 | `flags` | `u8` | W3C trace flags (bit 0: sampled) |
 
-The header is **80 bytes** (it shrank from 120 when `method_name` — a 32-byte
-`StaticString`, 48 bytes once laid out — became a 4-byte `method_id`). The
+The header is **72 bytes**: it shrank from 120 when `method_name` — a 32-byte
+`StaticString`, 48 bytes once laid out — became a 4-byte `method_id`, and from 80
+when the correlation id became a compact eight-byte `pid ++ counter` token. The
 `trace_id` / `parent_span_id` / `span_id` / `flags` / `traceparent_version`
 fields are the W3C `traceparent` contents, so an exporter can be wired without
 another wire field.
@@ -429,7 +430,7 @@ The monitoring fields make the header **self-describing for an out-of-band
 observer** (`ice-rpc-monitor`): it subscribes to the same services, reads the
 header without touching the rkyv payload, and derives an exact latency
 (`response.timestamp_ns - request.timestamp_ns`) plus its **own** sample loss
-(`seq` holes, scoped by the native `publisher_id`). The layout is **80 bytes**,
+(`seq` holes, scoped by the native `publisher_id`). The layout is **72 bytes**,
 and both its size and every field offset are pinned by a unit test
 ([`the_header_layout_stays_bounded_and_aligned`](ice-rpc/src/types/header.rs:544)):
 iceoryx2 validates the `user_header` size when a service is opened, so every
@@ -558,7 +559,7 @@ touches the payload, while the `detail` mode pays one decode per sample by desig
 The service-name limit is shared with `ice-rpc-macros`, which rejects a longer
 name at compile time: `SERVICE_NAME_LEN` = 64, the limit of the `group` parameter
 of `#[service]`. Method names have **no** limit: the header carries a 4-byte
-`method_id` rather than the name, which is why the header shrank to 80 bytes and
+`method_id` rather than the name, which is why the header shrank to 72 bytes and
 has room for the W3C `span_id` and `traceparent_version` fields.
 
 ### 5.1. Stale iceoryx2 services
@@ -798,7 +799,7 @@ by the dependencies declared via
 │    │                                                                     │
 │    ├─2. consumer_ports("DatabaseService")  [created once, then cached]   │
 │    │                                                                     │
-│    ├─3. cid = next_correlation_id()        ← 16 bytes (pid ++ counter)   │
+│    ├─3. cid = next_correlation_id()        ← 8 bytes (pid ++ counter)   │
 │    │                                                                     │
 │    ├─4. register_response_handler(cid, move |bytes| {                    │
 │    │       decode_aligned::<WireEvent<T, E>>(bytes)                      │

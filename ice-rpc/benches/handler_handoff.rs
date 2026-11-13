@@ -49,7 +49,7 @@ use ice_rpc::codegen::{EventKind, OwnedEmitter, ResponseEmitter, RpcHeader};
 
 /// The header travels **inline** in the emitter, so its size is the copy the
 /// builder pays per request. Pinned: the bench's model would be wrong otherwise.
-const _: () = assert!(std::mem::size_of::<RpcHeader>() == 80);
+const _: () = assert!(std::mem::size_of::<RpcHeader>() == 72);
 
 /// A request shape close to the demos': one owned field.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

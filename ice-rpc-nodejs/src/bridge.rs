@@ -28,8 +28,8 @@ use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::sync::{Mutex, MutexGuard};
 
-/// A correlation id: 16 bytes, rendered as a UUID-like hex string in JS.
-pub type CorrelationId = [u8; 16];
+/// A correlation id: eight bytes, rendered as a compact hex string in JS.
+pub type CorrelationId = [u8; ice_rpc::codegen::CORRELATION_ID_LEN];
 
 /// Maximum number of calls waiting for their first JS event at the same time.
 ///
@@ -51,7 +51,7 @@ type PendingSender = ice_rpc::codegen::async_channel::Sender<Value>;
 ///
 /// Correlation ids are minted by this process (never chosen by a peer), which
 /// is exactly the contract of [`ice_rpc::codegen::FxHasher`]: a deterministic
-/// 16-byte-key hasher, cheaper than the default SipHash on the per-event lookup.
+/// byte-key hasher, cheaper than the default SipHash on the per-event lookup.
 type PendingMap =
     HashMap<CorrelationId, PendingSender, BuildHasherDefault<ice_rpc::codegen::FxHasher>>;
 
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn a_call_is_admitted_then_closed_once() {
         let mut pending = PendingCalls::default();
-        let cid = [7u8; 16];
+        let cid = [7u8; ice_rpc::codegen::CORRELATION_ID_LEN];
         pending.insert(cid, sender()).expect("fresh id is admitted");
         assert_eq!(pending.len(), 1);
 
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn a_duplicate_correlation_id_is_refused() {
         let mut pending = PendingCalls::default();
-        let cid = [9u8; 16];
+        let cid = [9u8; ice_rpc::codegen::CORRELATION_ID_LEN];
         pending.insert(cid, sender()).expect("first is admitted");
         let error = pending
             .insert(cid, sender())
@@ -396,12 +396,12 @@ mod tests {
     fn the_table_is_bounded() {
         let mut pending = PendingCalls::default();
         for index in 0..MAX_PENDING_CALLS {
-            let mut cid = [0u8; 16];
-            cid[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            let mut cid = [0u8; ice_rpc::codegen::CORRELATION_ID_LEN];
+            cid[..4].copy_from_slice(&(index as u32).to_be_bytes());
             pending.insert(cid, sender()).expect("below the limit");
         }
         let error = pending
-            .insert([0xffu8; 16], sender())
+            .insert([0xffu8; ice_rpc::codegen::CORRELATION_ID_LEN], sender())
             .expect_err("the limit must be enforced");
         assert_eq!(error.code(), GatewayErrorCode::PendingLimit);
         assert_eq!(pending.len(), MAX_PENDING_CALLS);

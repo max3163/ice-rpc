@@ -251,7 +251,7 @@
 //! - **ServiceLocator** : registry of the services the process provides, plus a
 //!   lazy cache of the consumer proxies
 //! - **transport** : iceoryx2 publish/subscribe, one channel per group of
-//!   services, correlated by a 16-byte request id (`ice_rpc::transport`)
+//!   services, correlated by an 8-byte request id (`ice_rpc::transport`)
 //! - **dispatch** : one thread per channel receives the requests and polls each
 //!   handler **once**, on that thread. A handler that answers without yielding
 //!   completes there, exactly as if the transport had called it inline; one that

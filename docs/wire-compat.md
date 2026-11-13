@@ -13,7 +13,7 @@ library, and settings the deployment provides:
 
 | Recorded setting                      | Changed by                                                                                                                                                                       | Family        |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| user header                           | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 80 bytes today)                                                     | compiled in   |
+| user header                           | a field added, removed or reordered in `RpcHeader` (its size **and** every offset are pinned by a unit test; 72 bytes today)                                                     | compiled in   |
 | payload alignment                     | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs)                                                                                               | compiled in   |
 | payload type                          | the `Payload` generic of the service definition                                                                                                                                  | compiled in   |
 | safe overflow                         | the `enable_safe_overflow(false)` of the request and response services                                                                                                           | compiled in   |
@@ -216,12 +216,16 @@ unlinked service.
 
 Three consequences worth keeping in mind:
 
-- the header is **80 bytes** today.
+- the header is **72 bytes** today: the correlation id is a compact eight-byte
+  transport token (`u32` process id ++ `u32` counter), distinct from the W3C
+  trace fields that name spans. It is rendered as `pid-counter` hexadecimal, not
+  as a UUID: it is not a `traceparent`.
 - adding or moving fields changes its **size**, and that size is part of what
   iceoryx2 validates when a service is opened: every process on the machine must
   be rebuilt together, exactly like the other compiled-in settings above;
-- a trace id is **per call**. It belongs in the trace records, never in a
-  Prometheus label, where one series per call would explode the cardinality.
+- a correlation id is **per call** and a trace id **per trace**. Both belong in
+  the trace records, never in a Prometheus label, where one series per call would
+  explode the cardinality.
 
 [`ice-rpc/examples/tracing-demo.rs`](../ice-rpc/examples/tracing-demo.rs) runs both
 halves across two real hops — the ids an implementation reads with

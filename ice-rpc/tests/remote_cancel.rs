@@ -23,7 +23,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use ice_rpc::codegen::{EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of};
+use ice_rpc::codegen::{
+    CORRELATION_ID_LEN, EventKind, ServiceDispatcher, ServiceRef, WireEvent, rkyv, service_id_of,
+};
 use ice_rpc::transport::{Direction, DirectionView, native_call, spawn_native_service};
 use ice_rpc::{CallContext, CancellationToken};
 
@@ -116,7 +118,7 @@ fn open_ready_view(channel: &str) -> DirectionView {
 
 /// Drains an observer, returning the kind and the correlation id of every sample
 /// it has seen.
-fn drain(view: &DirectionView) -> Vec<(EventKind, [u8; 16])> {
+fn drain(view: &DirectionView) -> Vec<(EventKind, [u8; CORRELATION_ID_LEN])> {
     let mut seen = Vec::new();
     while let Ok(Some((header, _emitter, _len))) = view.try_receive() {
         seen.push((header.event_kind(), header.correlation_id));
@@ -136,7 +138,7 @@ fn dropping_a_stream_cancels_the_call_on_the_provider() {
     let dropped = Arc::new(AtomicBool::new(false));
     // The provider records the call it serves, so the Cancel observed on the wire
     // can be checked against the call it is supposed to name.
-    let served: Arc<Mutex<Option<[u8; 16]>>> = Arc::new(Mutex::new(None));
+    let served: Arc<Mutex<Option<[u8; CORRELATION_ID_LEN]>>> = Arc::new(Mutex::new(None));
 
     let handler_started = Arc::clone(&started);
     let handler_dropped = Arc::clone(&dropped);
@@ -190,7 +192,7 @@ fn dropping_a_stream_cancels_the_call_on_the_provider() {
         "the provider must abandon the work of the abandoned call"
     );
 
-    let cancels: Vec<[u8; 16]> = drain(&observer)
+    let cancels: Vec<[u8; CORRELATION_ID_LEN]> = drain(&observer)
         .into_iter()
         .filter(|(kind, _)| *kind == EventKind::Cancel)
         .map(|(_, cid)| cid)

@@ -102,14 +102,14 @@ impl TraceContext {
 
     /// Starts a new trace: a fresh id, no parent.
     ///
-    /// Used by a call made outside any traced work. The id is the same
-    /// `pid ++ counter` shape as a correlation id, which makes it unique on a
-    /// machine without pulling in a random generator — and this framework is
-    /// single-machine by construction.
+    /// Used by a call made outside any traced work. The id is a 128-bit
+    /// `pid ++ counter` identifier, which makes it unique on a machine without
+    /// pulling in a random generator — and this framework is single-machine by
+    /// construction.
     #[inline]
     pub fn new_root() -> Self {
         Self {
-            trace_id: next_correlation_id(),
+            trace_id: next_trace_id(),
             parent_span_id: 0,
             flags: 0,
         }
@@ -140,7 +140,7 @@ impl TraceContext {
             self.child_of(span_id)
         } else {
             Self {
-                trace_id: next_correlation_id(),
+                trace_id: next_trace_id(),
                 parent_span_id: span_id,
                 flags: self.flags,
             }
@@ -159,6 +159,23 @@ impl TraceContext {
             self.flags
         )
     }
+}
+
+/// Allocates a 128-bit trace id: `pid ++ counter`, both `u64` big-endian.
+///
+/// Distinct from [`next_correlation_id`], which names a single call in eight
+/// bytes: a trace id is the W3C `trace-id` shared by every hop of a call tree, so
+/// it keeps the full sixteen bytes the standard requires.
+#[inline]
+fn next_trace_id() -> [u8; 16] {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let pid = u64::from(super::node::cached_pid());
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&pid.to_be_bytes());
+    out[8..].copy_from_slice(&counter.to_be_bytes());
+    out
 }
 
 /// Lowercase hexadecimal rendering of a trace id.
@@ -350,7 +367,7 @@ impl CallContext {
         &self.correlation_id
     }
 
-    /// Correlation id formatted as a UUID-like hexadecimal string.
+    /// Correlation id formatted as a compact `pid-counter` hexadecimal string.
     ///
     /// This is the value to log: it is the one an out-of-band observer reads from
     /// the header, so a business log line and the monitor's view can be joined.
@@ -826,8 +843,8 @@ mod tests {
         assert_eq!(ctx.service_version(), 3);
         assert_eq!(ctx.method(), "get_user_age");
         assert_eq!(ctx.received_at_ns(), header.timestamp_ns);
-        // 8 + 4 + 4 + 4 + 12 digits and 4 dashes.
-        assert_eq!(ctx.correlation().len(), 36);
+        // Two eight-digit hexadecimal groups joined by a dash.
+        assert_eq!(ctx.correlation().len(), 17);
     }
 
     #[test]
@@ -1276,7 +1293,7 @@ mod tests {
         );
         assert_eq!(
             ctx.correlation().len(),
-            36,
+            17,
             "a correlation id is still minted: it is what joins a log line to the call"
         );
         assert!(

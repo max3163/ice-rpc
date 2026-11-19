@@ -6,7 +6,6 @@ edition = "2024"
 description = "RPC over iceoryx2 shared memory: zero-copy header, rkyv payload, reconnection, discovery and more"
 license = "Apache-2.0"
 repository = "https://github.com/max3163/ice-rpc"
-homepage = "https://github.com/max3163/ice-rpc"
 documentation = "https://docs.rs/ice-rpc"
 keywords = ["rpc", "ipc", "zerocopy", "iceoryx", "rkyv"]
 categories = ["network-programming", "concurrency"]

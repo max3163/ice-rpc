@@ -39,6 +39,14 @@ impl JsonInvokerRegistry {
     /// The Phoenix Channels gateway uses it at join time: a client joins a
     /// service topic, so an unknown service must be refused before it can push
     /// a call. The registry itself stays lazy; this only reads the factory map.
+    ///
+    /// Only the Channels gateway calls it, so an HTTP-only build would otherwise
+    /// carry a dead method.
+    #[cfg(any(
+        feature = "channels-threads",
+        feature = "channels-smol",
+        feature = "channels-tokio"
+    ))]
     pub(crate) fn has_service(&self, service_name: &str) -> bool {
         self.inner.factories.contains_key(service_name)
     }
@@ -69,7 +77,14 @@ impl JsonInvokerRegistry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "channels-threads",
+        feature = "channels-smol",
+        feature = "channels-tokio"
+    )
+))]
 mod tests {
     use super::*;
 

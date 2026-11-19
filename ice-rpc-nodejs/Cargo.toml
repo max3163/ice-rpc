@@ -6,7 +6,6 @@ edition = "2024"
 description = "Reusable Node.js (N-API) engine for ice-rpc: provides and consumes ice-rpc services from JavaScript, with the service list supplied by the addon"
 license = "Apache-2.0"
 repository = "https://github.com/max3163/ice-rpc"
-homepage = "https://github.com/max3163/ice-rpc"
 documentation = "https://docs.rs/ice-rpc-nodejs"
 keywords = ["rpc", "ipc", "napi", "nodejs", "iceoryx"]
 categories = ["api-bindings", "network-programming"]

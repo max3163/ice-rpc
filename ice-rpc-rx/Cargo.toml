@@ -6,14 +6,30 @@ edition = "2024"
 description = "Reactive stream layer of ice-rpc: Observable, operators, Subject and the execution facade"
 license = "Apache-2.0"
 repository = "https://github.com/max3163/ice-rpc"
-homepage = "https://github.com/max3163/ice-rpc"
 documentation = "https://docs.rs/ice-rpc-rx"
 keywords = ["reactive", "stream", "observable", "rx", "async"]
 categories = ["asynchronous", "concurrency"]
 readme = "Readme.md"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "allow"
+
+# `rt-async` is the default facade, so its three dependencies stay in the graph
+# even when `tokio` or `smol` is selected and shadows the fallback's `imp`
+# module (see this crate's `rt` module). The `unused_dependencies` lint only sees
+# the crates the compiled code names, so it cannot model that mode priority: it
+# would report the fallback dependencies on every build that selects another
+# mode, and its "remove the dependency" suggestion would break `rt-async`. The
+# dependency tree is still checked by the purity step in CI, and every other
+# crate keeps the lint.
+[lints.cargo]
+unused_dependencies = "allow"
 
 [package.metadata.docs.rs]
 # Deliberately not `all-features = true`: the execution modes are mutually

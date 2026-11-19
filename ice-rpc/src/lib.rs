@@ -268,6 +268,7 @@
 //! | `rt` | Execution facade, re-exported from `ice-rpc-rx`: `spawn`, `Spawner`, `sleep`, `block_on`, cancellation |
 //! | `types` | Protocol types (`RpcHeader`, `EventKind`, `WireEvent`) and the reactive vocabulary re-exported from `ice-rpc-rx` |
 //! | `transport` | Publish/subscribe transport: one channel per service, correlation by id, streaming bridge |
+//! | `channels_gateway` | Phoenix Channels gateway over WebSocket, mounted with the HTTP gateway |
 //! | `locator` | `ServiceLocator` : registration, lazy consumer proxies, lifecycle |
 //! | `codegen` | Internal contract for the generated code: wire types, provider primitives, constants, plumbing, dependency re-exports (doc-hidden) |
 
@@ -318,8 +319,10 @@ pub mod trace;
 ///
 /// Gated behind the `json` feature, which turns on the whole view at once: the
 /// [`JsonInvoker`](json::JsonInvoker) a JSON *transport* dispatches to (the HTTP
-/// gateway, the Node.js consumer), the rkyv ↔ `serde_json::Value` converters, and
-/// the `ProviderJson` mode a JSON host serves a non-Rust implementation with.
+/// gateway, the Phoenix Channels gateway, the Node.js consumer), the streaming
+/// view ([`JsonInvoker::invoke_json_stream`](json::JsonInvoker::invoke_json_stream)),
+/// the rkyv ↔ `serde_json::Value` converters, and the `ProviderJson` mode a JSON
+/// host serves a non-Rust implementation with.
 ///
 /// One switch, because the two halves are not two deployments: what decides
 /// whether a **binary** carries the host half is whether it ever builds a
@@ -338,9 +341,33 @@ pub mod transport;
 #[cfg(any(
     feature = "http-threads",
     feature = "http-smol",
+    feature = "http-tokio",
+    feature = "channels-threads",
+    feature = "channels-smol",
+    feature = "channels-tokio"
+))]
+mod gateway_registry;
+
+#[cfg(any(
+    feature = "http-threads",
+    feature = "http-smol",
     feature = "http-tokio"
 ))]
 mod http_gateway;
+
+#[cfg(any(
+    feature = "channels-threads",
+    feature = "channels-smol",
+    feature = "channels-tokio"
+))]
+mod channels_gateway;
+
+#[cfg(any(
+    feature = "channels-threads",
+    feature = "channels-smol",
+    feature = "channels-tokio"
+))]
+mod phoenix;
 
 // ── Public API: service traits ─────────────────────────────────────
 // Only `ServiceInit` is implemented by the developer.
@@ -623,13 +650,25 @@ pub fn init_without_ctrl_c() -> ShutdownGuard {
 #[doc(hidden)]
 pub async fn start_http_server(
     port: u16,
-    factories: std::collections::HashMap<
-        &'static str,
-        fn() -> std::sync::Arc<dyn json::JsonInvoker>,
-    >,
+    factories: std::collections::HashMap<&'static str, json::JsonInvokerFactory>,
 ) {
     http_gateway::start_http_server(port, factories).await;
 }
+
+/// The Phoenix Channels gateway, mounted on the same trillium server as REST.
+///
+/// See [`ChannelsGatewayConfig`] for the endpoint, topic, limits and the join
+/// authorizer. The client is the standard `phoenix` JavaScript package, using
+/// its WebSocket transport.
+#[cfg(any(
+    feature = "channels-threads",
+    feature = "channels-smol",
+    feature = "channels-tokio"
+))]
+pub use channels_gateway::{
+    ChannelsAuthorizer, ChannelsGatewayConfig, JoinContext, channels_handler,
+    start_channels_server, start_channels_server_with_config,
+};
 
 /// Starts the HTTP REST gateway exposing the listed services.
 ///
@@ -656,7 +695,7 @@ macro_rules! start_http_gateway {
     ($port:expr, $($proxy:ty),+ $(,)?) => {{
         let mut __map: std::collections::HashMap<
             &'static str,
-            fn() -> std::sync::Arc<dyn ice_rpc::codegen::JsonInvoker>,
+            ice_rpc::json::JsonInvokerFactory,
         > = std::collections::HashMap::new();
         $(
             __map.insert(
@@ -665,6 +704,43 @@ macro_rules! start_http_gateway {
             );
         )+
         ice_rpc::start_http_server($port, __map)
+    }};
+}
+
+/// Starts the REST and Phoenix Channels gateways on the same trillium server.
+///
+/// Builds the `name → factory` mapping from the listed proxies, then starts the
+/// HTTP gateway and the Phoenix Channels handler on one listener. The browser
+/// connects with the standard `phoenix` JavaScript package; the long-poll
+/// fallback is not supported, so the client must use its WebSocket transport.
+///
+/// # Example
+/// ```rust,ignore
+/// #[ice_rpc::main(tokio)]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     ice_rpc::start_channels_gateway!(8080, DatabaseServiceProxy, ReportServiceProxy).await;
+///     Ok(())
+/// }
+/// ```
+#[cfg(any(
+    feature = "channels-threads",
+    feature = "channels-smol",
+    feature = "channels-tokio"
+))]
+#[macro_export]
+macro_rules! start_channels_gateway {
+    ($port:expr, $($proxy:ty),+ $(,)?) => {{
+        let mut __map: std::collections::HashMap<
+            &'static str,
+            ice_rpc::json::JsonInvokerFactory,
+        > = std::collections::HashMap::new();
+        $(
+            __map.insert(
+                <$proxy>::SERVICE_NAME,
+                || <$proxy>::consume() as std::sync::Arc<dyn ice_rpc::codegen::JsonInvoker>,
+            );
+        )+
+        ice_rpc::start_channels_server($port, __map)
     }};
 }
 

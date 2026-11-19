@@ -20,6 +20,13 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
   ice-rpc tasks stay on the executor of the selected mode. There is no standalone
   `http` feature — a gateway without an adapter cannot compile, so each name
   carries both instead of diagnosing the missing half.
+- **Optional Phoenix Channels gateway** (`channels-tokio`, `channels-smol`,
+  `channels-threads`): the standard `phoenix` JavaScript client reaches the same
+  services over a WebSocket mounted on the **same trillium server** as the REST
+  gateway. `call` answers once, `stream` pushes `next` events, and `cancel` stops
+  a stream. The long-poll transport is not implemented, so the browser uses its
+  WebSocket transport. The details are in
+  [`docs/phoenix-channels-gateway.md`](../docs/phoenix-channels-gateway.md).
 - **JSON in one feature, split by the linker.** `json` generates the whole JSON
   view of a service: the `impl JsonInvoker` a JSON transport dispatches to (the
   HTTP gateway, the Node.js consumer side), the rkyv ↔ `serde_json::Value`
@@ -610,6 +617,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Services are then reachable through `/{service}/{method}`.
+
+## Phoenix Channels gateway (optional)
+
+The `channels-*` features mount a Phoenix Channels handler on the same trillium
+server as REST. Each name implies the matching `http-*` feature, because the
+HTTP feature supplies the server adapter:
+
+```toml
+ice-rpc = { version = "0.4", features = ["channels-tokio"] }
+ice-rpc = { version = "0.4", features = ["channels-smol"] }
+ice-rpc = { version = "0.4", features = ["channels-threads"] }
+```
+
+```rust,ignore
+#[ice_rpc::main(tokio)]
+async fn main() {
+    ice_rpc::start_channels_gateway!(8080, MyServiceProxy).await;
+}
+```
+
+The browser uses the standard `phoenix` package. Each service is its own topic:
+the client joins the service name. Force its WebSocket transport, because the
+long-poll fallback is not implemented.
+
+```js
+import { Socket } from "phoenix";
+
+const socket = new Socket("/socket", { transport: WebSocket });
+const channel = socket.channel("MyService", {});
+channel.join();
+
+channel
+  .push("call", {
+    method: "hello",
+    args: "Alice",
+  })
+  .receive("ok", (reply) => console.log(reply));
+
+channel.on("next", (event) => console.log(event.ref, event.data));
+channel
+  .push("stream", { method: "tail" })
+  .receive("ok", (reply) => console.log("started", reply.ref));
+```
+
+The Phoenix push `ref` is the correlation id: a `call` reply echoes it, and a
+`stream` ack and every `next`/`complete`/`error` event carry it. `cancel` takes
+`{ ref }`. Another service is another channel on the same socket:
+`socket.channel("OtherService", {})`.
+
+`call` answers with one `phx_reply`; `stream` is acknowledged immediately and
+pushes `next` events, then `complete` or `error`; `cancel` stops a stream. The
+protocol, error codes, authorization hook and limits are documented in
+[`docs/phoenix-channels-gateway.md`](../docs/phoenix-channels-gateway.md).
 
 ## Configuration
 

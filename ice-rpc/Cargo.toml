@@ -22,7 +22,7 @@ workspace = true
 # Deliberately not `all-features = true`: the execution modes are mutually
 # exclusive (`tokio` + `smol` is a compile error, see `ice-rpc-rx::rt`), so the
 # documented build picks one full mode and the adapter that belongs to it.
-features = ["tokio", "http-tokio", "monitoring", "json", "tracing"]
+features = ["tokio", "http-tokio", "channels-tokio", "monitoring", "json", "tracing"]
 
 [features]
 # One full execution mode per host runtime, plus a fallback for a deployment
@@ -115,9 +115,26 @@ json = ["ice-rpc-macros/json", "dep:base64"]
 http-threads = ["json", "rt-async", "dep:trillium", "dep:trillium-smol"]
 http-smol = ["json", "smol", "dep:trillium", "dep:trillium-smol"]
 http-tokio = ["json", "tokio", "dep:trillium", "dep:trillium-tokio"]
-# Not part of `full`: the Node.js gateway is a separate deployment (it links
-# N-API), not another way of serving the same process. It enables `json`.
-full = ["http-tokio", "operators"]
+# The Phoenix Channels gateway, mounted on the same trillium server as the HTTP
+# gateway. Each name carries the runtime adapter it belongs to, exactly like the
+# `http-*` features: there is deliberately no standalone `channels` feature,
+# because a gateway without an adapter cannot compile.
+# - `channels-threads` -> trillium-smol on the fallback mode;
+# - `channels-smol`    -> trillium-smol on smol;
+# - `channels-tokio`   -> trillium-tokio on tokio.
+# The HTTP feature supplies the server adapter, so enabling a `channels-*`
+# feature also exposes the REST routes on the same listener. The Phoenix
+# Channels wire protocol is implemented directly on `trillium-websockets` 0.9
+# (the version that preserves the upgrade query string), so the client is the
+# standard `phoenix` JavaScript package. It has no long-poll transport: a browser
+# must use its WebSocket transport.
+channels-threads = ["json", "http-threads", "dep:trillium-websockets"]
+channels-smol = ["json", "http-smol", "dep:trillium-websockets"]
+channels-tokio = ["json", "http-tokio", "dep:trillium-websockets"]
+# One complete tokio deployment: the runtime, both gateways and the reactive
+# operators. The Node.js gateway stays out because it links N-API, which is a
+# separate deployment rather than another way of serving the same process.
+full = ["http-tokio", "channels-tokio", "operators"]
 
 [dependencies]
 # The reactive layer: the stream type, the operators, the multicast primitive
@@ -175,6 +192,11 @@ tokio = { version = "1.30", optional = true, features = ["rt", "rt-multi-thread"
 trillium = { version = "1.4", optional = true }
 trillium-smol = { version = "0.7", optional = true }
 trillium-tokio = { version = "0.6", optional = true }
+# Optional Phoenix Channels gateway, mounted on the same trillium server. The
+# wire protocol is implemented on this crate directly: 0.9 is the first
+# trillium-websockets that preserves the upgrade query string, which is where a
+# Phoenix client carries `vsn`.
+trillium-websockets = { version = "0.9", optional = true }
 
 [dev-dependencies]
 # `default-features = false` drops `env_logger/regex` -> `env_filter/regex` ->
@@ -196,6 +218,14 @@ criterion = "0.8"
 # remains runtime-agnostic.
 tokio = { workspace = true }
 smol = "2"
+# The Phoenix Channels protocol test speaks the Phoenix wire format directly.
+# `async-tungstenite` is dev-only: the library never opens a WebSocket client.
+async-tungstenite = { version = "0.34", features = ["tokio-runtime"] }
+futures-util = "0.3"
+# The protocol test runs the channel handler on the same trillium adapter as
+# the library; the optional dependency is not nameable from an integration test
+# without this dev-dependency.
+trillium-tokio = "0.6"
 # The allocator A/B: the two demo binaries opt in with `#[global_allocator]`, so
 # the measurement is a property of the **deployment**, never of the library.
 # Dev-only, like the rest of the demos.
@@ -317,3 +347,9 @@ required-features = ["rt-async"]
 [[example]]
 name = "quickstart"
 required-features = ["tokio"]
+
+# Phoenix Channels gateway: a provider and the WebSocket gateway in one process.
+# The `phoenix` JavaScript client connects to ws://127.0.0.1:8080/socket/websocket.
+[[example]]
+name = "channels-gateway-app"
+required-features = ["tokio", "channels-tokio"]

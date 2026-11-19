@@ -29,18 +29,18 @@ to `expand_service_with` (see `src/features.rs`). The test therefore expands the
 same trait with the same three sets **in every build**, whatever features that
 build happens to enable:
 
-| Set | File | What it contains |
-|---|---|---|
-| none | `<base>.rs` | the client, server, proxy, lifecycle — nothing optional |
-| `monitoring` | `<base>.monitoring.rs` | the above, plus the `{Trait}Decoder` and the generated `Display` |
-| everything | `<base>.all.rs` | the above, plus the Node.js provider converters and the `JsonInvoker` implementation |
+| Set          | File                   | What it contains                                                                     |
+| ------------ | ---------------------- | ------------------------------------------------------------------------------------ |
+| none         | `<base>.rs`            | the client, server, proxy, lifecycle — nothing optional                              |
+| `monitoring` | `<base>.monitoring.rs` | the above, plus the `{Trait}Decoder` and the generated `Display`                     |
+| everything   | `<base>.all.rs`        | the above, plus the Node.js provider converters and the `JsonInvoker` implementation |
 
 The three sets cover each optional block at least once, and the blocks are
 independent. The eight combinations are checked separately, by assertion, in
 `every_optional_block_follows_its_own_flag` — a golden per combination would be
 eight files, of which a build can only ever check the one it has.
 
-Reading `cfg!` in the test instead would have made it compare a *different*
+Reading `cfg!` in the test instead would have made it compare a _different_
 reference depending on which other crate of the workspace enabled which feature,
 since Cargo unifies features per build.
 
@@ -65,11 +65,11 @@ fixed.
 The minimal set is what a plain Rust service pays for. The delta with `.all.rs` is
 the code a deployment that never speaks Node.js or HTTP no longer compiles:
 
-| Reference | Lines |
-|---|---|
-| `database.rs` | 462 |
-| `database.monitoring.rs` | 572 |
-| `database.all.rs` | 1233 |
+| Reference                | Lines |
+| ------------------------ | ----- |
+| `database.rs`            | 578   |
+| `database.monitoring.rs` | 701   |
+| `database.all.rs`        | 1138  |
 
 These files are **not** rustfmt output and must not be reformatted by hand:
 `cargo fmt` ignores them (they are data, not targets), and running `rustfmt` over

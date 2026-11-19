@@ -36,7 +36,7 @@
 //! | Consumer | How it finds them |
 //! |---|---|
 //! | a provider or a consumer of one service | `ServiceLocator::get::<{Service}Proxy>()`, from the type it needs |
-//! | an observer (`monitoring`) | [`Decoders::linked`], which reads the link-time slice every `#[service]` submits into |
+//! | an observer (`monitoring`) | `Decoders::linked()`, which reads the link-time slice every `#[service]` submits into |
 //! | the Node.js gateway (`napi`) | its **own** list: it maintains a chosen subset, and the compiler checks it against the generated proxies |
 //!
 //! The first two cost nothing to maintain. The third is a list on purpose — a

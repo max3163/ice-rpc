@@ -185,7 +185,7 @@ pub(super) fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
 /// node behind per run — state that the *next* process reaps, and that no
 /// unprivileged one could even delete before the DACL fix.
 ///
-/// Idempotent. A later [`shared_node`] would create a fresh node, which is
+/// Idempotent. A later `shared_node` would create a fresh node, which is
 /// deliberate: the cell is a cache, not a lease.
 ///
 /// Returns whether a node was actually released.

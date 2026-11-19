@@ -17,7 +17,7 @@
 //!
 //! A service declared `#[service(..., no_monitoring)]` stays out of that
 //! automatic inventory: it submits its **channel** into `HIDDEN_CHANNELS`
-//! instead, so [`discover_channels`] skips it and [`Decoders::linked`] does not
+//! instead, so [`discover_channels`] skips it and `Decoders::linked()` does not
 //! carry it. Its decoder is still generated and can be registered explicitly.
 //!
 //! # Two concerns, two modules

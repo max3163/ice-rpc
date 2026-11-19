@@ -75,67 +75,15 @@
 
 // Each `http-*` feature brings its own trillium runtime adapter; the module is
 // compiled only when one of them is on.
-use crate::json::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
-use async_lock::RwLock;
+use crate::gateway_registry::JsonInvokerRegistry;
+use crate::json::{JsonCallError, JsonInvokerFactory, JsonOutcome, ReadMode};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use trillium::{Conn, Handler, Method};
-
-/// Factory creating the JSON view of a service.
-///
-/// The generated `consume()` constructor answers without a provider, so the
-/// service is exposed from startup and a missing provider is reported per call
-/// instead of making the whole route disappear.
-type JsonInvokerFactory = fn() -> Arc<dyn JsonInvoker>;
-
-/// Shared state of the HTTP gateway.
-///
-/// Contains the cache of the JSON views indexed by service name. They are
-/// created lazily on the first call and reused afterwards.
-#[derive(Clone)]
-struct HttpGatewayState {
-    /// JSON view factories (logical name → factory).
-    factories: Arc<HashMap<&'static str, JsonInvokerFactory>>,
-    /// JSON view cache (name → invoker).
-    cache: Arc<RwLock<HashMap<String, Arc<dyn JsonInvoker>>>>,
-}
-
-impl HttpGatewayState {
-    fn new(factories: HashMap<&'static str, JsonInvokerFactory>) -> Self {
-        Self {
-            factories: Arc::new(factories),
-            cache: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    /// Retrieves or creates the JSON view of the requested service.
-    async fn get_or_create(&self, service_name: &str) -> Option<Arc<dyn JsonInvoker>> {
-        // Fast-path: already in the cache.
-        {
-            let cache = self.cache.read().await;
-            if let Some(proxy) = cache.get(service_name) {
-                return Some(proxy.clone());
-            }
-        }
-
-        // Slow-path: build the proxy through the service factory.
-        let factory = self.factories.get(service_name)?;
-        let proxy = factory();
-
-        // Caches for subsequent calls.
-        let mut cache = self.cache.write().await;
-        cache
-            .entry(service_name.to_string())
-            .or_insert_with(|| proxy.clone());
-
-        Some(proxy)
-    }
-}
 
 /// Trillium handler implementing the `/{service}/{method}` REST routes.
 struct HttpGateway {
-    state: HttpGatewayState,
+    registry: JsonInvokerRegistry,
 }
 
 impl Handler for HttpGateway {
@@ -180,12 +128,12 @@ impl Handler for HttpGateway {
                 // Converts the query params into a JSON object.
                 let params = parse_query_string(conn.querystring());
                 let json_params = params_to_json(&params);
-                invoke_service(&self.state, &service, &method, json_params, conn).await
+                invoke_service(&self.registry, &service, &method, json_params, conn).await
             }
             Method::Post => {
                 let body = conn.request_body_string().await.unwrap_or_default();
                 let json_params = serde_json::from_str(&body).unwrap_or(Value::Null);
-                invoke_service(&self.state, &service, &method, json_params, conn).await
+                invoke_service(&self.registry, &service, &method, json_params, conn).await
             }
             _ => json_response(
                 conn,
@@ -342,7 +290,7 @@ fn parse_scalar(s: &str) -> Value {
 /// **One** value is read (`ReadMode::First`): a browser cannot consume an endless
 /// stream, and waiting for every value would buffer it in memory.
 async fn invoke_service(
-    state: &HttpGatewayState,
+    registry: &JsonInvokerRegistry,
     service: &str,
     method: &str,
     params: Value,
@@ -361,7 +309,7 @@ async fn invoke_service(
     }
 
     // Resolves the JSON view of the service.
-    let Some(invoker) = state.get_or_create(service).await else {
+    let Some(invoker) = registry.get_or_create(service).await else {
         return json_response(
             conn,
             404,
@@ -454,39 +402,19 @@ fn is_origin_allowed(origin: &str) -> bool {
     host == allowed || host.ends_with(&format!(".{}", allowed))
 }
 
-/// Starts the HTTP REST gateway server on the specified port.
+/// Builds the REST handler over an existing invoker registry.
 ///
-/// Receives the mapping of the services to expose (`logical name → proxy factory`).
-/// Prefer the [`start_http_gateway!`] macro which builds this mapping
-/// automatically from the list of proxies.
+/// The registry is shared with the Phoenix Channels gateway when both are
+/// mounted on the same server, so a service is instantiated once.
+pub(crate) fn http_handler(registry: JsonInvokerRegistry) -> impl Handler {
+    HttpGateway { registry }
+}
+
+/// Serves a trillium handler on `127.0.0.1:{port}` until the global token fires.
 ///
-/// This function is async and **blocks** until the server stops
-/// (Ctrl+C or [`global_cancel_token`](crate::global_cancel_token)).
-pub async fn start_http_server(
-    port: u16,
-    factories: HashMap<&'static str, fn() -> Arc<dyn JsonInvoker>>,
-) {
-    let handler = HttpGateway {
-        state: HttpGatewayState::new(factories),
-    };
-
-    log::info!(
-        "🌐 ice-rpc HTTP REST gateway started on http://localhost:{}",
-        port
-    );
-    log::info!(
-        "   URL format : http://localhost:{}/{{service}}/{{method}}",
-        port
-    );
-    log::info!(
-        "   Example GET  : curl http://localhost:{}/DatabaseService/get_user_age?name=Alice",
-        port
-    );
-    log::info!(
-        "   Example POST : curl -X POST http://localhost:{}/DatabaseService/get_person -H 'Content-Type: application/json' -d '{{\"nom\":\"Dupont\",\"prenom\":\"Jean\"}}'",
-        port
-    );
-
+/// Both gateways use this function: REST alone, or REST composed with Phoenix
+/// Channels on the same listener.
+pub(crate) async fn serve_trillium(port: u16, handler: impl Handler) {
     // Shutdown driven by the global token; Trillium's own signal handling is off.
     let swansong = trillium::Swansong::new();
     let signal_swansong = swansong.clone();
@@ -522,6 +450,37 @@ pub async fn start_http_server(
             .run_async(handler)
             .await;
     }
+}
+
+/// Starts the HTTP REST gateway server on the specified port.
+///
+/// Receives the mapping of the services to expose (`logical name → proxy factory`).
+/// Prefer the [`start_http_gateway!`] macro which builds this mapping
+/// automatically from the list of proxies.
+///
+/// This function is async and **blocks** until the server stops
+/// (Ctrl+C or [`global_cancel_token`](crate::global_cancel_token)).
+pub async fn start_http_server(port: u16, factories: HashMap<&'static str, JsonInvokerFactory>) {
+    let registry = JsonInvokerRegistry::new(factories);
+
+    log::info!(
+        "🌐 ice-rpc HTTP REST gateway started on http://localhost:{}",
+        port
+    );
+    log::info!(
+        "   URL format : http://localhost:{}/{{service}}/{{method}}",
+        port
+    );
+    log::info!(
+        "   Example GET  : curl http://localhost:{}/DatabaseService/get_user_age?name=Alice",
+        port
+    );
+    log::info!(
+        "   Example POST : curl -X POST http://localhost:{}/DatabaseService/get_person -H 'Content-Type: application/json' -d '{{\"nom\":\"Dupont\",\"prenom\":\"Jean\"}}'",
+        port
+    );
+
+    serve_trillium(port, http_handler(registry)).await;
 
     log::info!("HTTP server stopped.");
 }

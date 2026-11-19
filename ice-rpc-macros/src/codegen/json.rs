@@ -247,14 +247,19 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
         ..
     } = input;
 
+    let call_helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_call_helper).collect();
     let helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_helper).collect();
     let match_arms: Vec<TokenStream> = methods.iter().map(gen_invoker_arm).collect();
+    let stream_helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_stream_helper).collect();
+    let stream_arms: Vec<TokenStream> = methods.iter().map(gen_invoker_stream_arm).collect();
 
     quote! {
         // One inherent helper per method, next to the table that calls it, so the
-        // table stays one line per method.
+        // table stays one line per method. The call helper is shared by both views.
         impl #proxy_name {
+            #(#call_helpers)*
             #(#helpers)*
+            #(#stream_helpers)*
         }
 
         #[ice_rpc::codegen::async_trait::async_trait]
@@ -274,6 +279,86 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
                     _ => None,
                 }
             }
+
+            async fn invoke_json_stream(
+                &self,
+                method: &str,
+                args: ice_rpc::codegen::serde_json::Value,
+                sink: ice_rpc::codegen::JsonEventSink,
+            ) -> Option<()> {
+                let result = match method {
+                    #(#stream_arms)*
+                    _ => return None,
+                };
+                if let Err(error) = result {
+                    let _ = sink.fail(error).await;
+                }
+                Some(())
+            }
+        }
+    }
+}
+
+/// Builds the inherent helper that decodes one method's arguments and invokes it.
+///
+/// Both JSON views share it, so the argument decoding, the base64 transport and
+/// the call exist once per method. A one-way method has no `Observable` to
+/// return: the helper answers the delivery flag, and each view maps it onto its
+/// own terminal event.
+fn gen_invoker_call_helper(method: &JsonMethod) -> TokenStream {
+    let fn_name = &method.fn_name;
+    let fn_name_str = fn_name.to_string();
+    let helper = call_helper_name(method);
+    let arg_names = &method.arg_names;
+    let extraction = gen_arg_extraction(&fn_name_str, arg_names, &method.arg_types);
+    // A zero-argument method does not read `args`; naming it explicitly keeps the
+    // generated code warning-free without an `allow(unused_variables)`.
+    let args_param = if arg_names.is_empty() {
+        quote! { _args }
+    } else {
+        quote! { args }
+    };
+    let doc = format!(
+        " Decodes the arguments of `{fn_name_str}` and calls the method. Shared by the unary \
+         and streaming JSON views so the decoding exists once."
+    );
+
+    if method.oneway {
+        let call = if arg_names.is_empty() {
+            quote! { self.#fn_name() }
+        } else {
+            quote! { self.#fn_name(#(#arg_names),*) }
+        };
+        return quote! {
+            #[doc = #doc]
+            fn #helper(
+                &self,
+                #args_param: ice_rpc::codegen::serde_json::Value,
+            ) -> ::core::result::Result<bool, ice_rpc::codegen::JsonCallError> {
+                #extraction
+                #call.map_err(|e| ice_rpc::codegen::JsonCallError::Transport(e.to_string()))
+            }
+        };
+    }
+
+    let ok_type = &method.ok_type;
+    let err_type = &method.err_type;
+    let call = if arg_names.is_empty() {
+        quote! { self.#fn_name().await }
+    } else {
+        quote! { self.#fn_name(#(#arg_names),*).await }
+    };
+    quote! {
+        #[doc = #doc]
+        async fn #helper(
+            &self,
+            #args_param: ice_rpc::codegen::serde_json::Value,
+        ) -> ::core::result::Result<
+            ice_rpc::Observable<#ok_type, #err_type>,
+            ice_rpc::codegen::JsonCallError,
+        > {
+            #extraction
+            Ok(#call)
         }
     }
 }
@@ -285,21 +370,16 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
 /// a `match` arm cannot use `?`, and the decoding had to live in an `async` block
 /// whose result was awaited inside the arm. Here it has a real `Result` return
 /// type, `?` reads normally, and the arm is left with the dispatch alone.
+///
+/// The decoding and the call live in [`gen_invoker_call_helper`], which the
+/// streaming view also uses, so they are generated once per method.
 fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
     let fn_name = &method.fn_name;
     let fn_name_str = fn_name.to_string();
     let helper = helper_name(method);
-    let arg_names = &method.arg_names;
-    let extraction = gen_arg_extraction(&fn_name_str, arg_names, &method.arg_types);
+    let call_helper = call_helper_name(method);
 
     if method.oneway {
-        // No stream to read: the inherent caller is synchronous and its `bool` maps
-        // onto `JsonOutcome::Accepted`.
-        let call = if arg_names.is_empty() {
-            quote! { self.#fn_name() }
-        } else {
-            quote! { self.#fn_name(#(#arg_names),*) }
-        };
         let doc = format!(
             " The JSON view of `{fn_name_str}`: decodes the arguments and publishes the \
              one-way notification. No result exists to read."
@@ -311,20 +391,11 @@ fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
                 args: ice_rpc::codegen::serde_json::Value,
                 _read: ice_rpc::codegen::ReadMode,
             ) -> ice_rpc::codegen::JsonResult {
-                #extraction
-                match #call {
-                    Ok(delivered) => Ok(ice_rpc::codegen::JsonOutcome::Accepted { delivered }),
-                    Err(e) => Err(ice_rpc::codegen::JsonCallError::Transport(e.to_string())),
-                }
+                let delivered = self.#call_helper(args)?;
+                Ok(ice_rpc::codegen::JsonOutcome::Accepted { delivered })
             }
         };
     }
-
-    let call = if arg_names.is_empty() {
-        quote! { self.#fn_name().await }
-    } else {
-        quote! { self.#fn_name(#(#arg_names),*).await }
-    };
 
     // The leading space makes rustfmt render `/// The …` as written.
     let doc = format!(
@@ -339,8 +410,7 @@ fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
             args: ice_rpc::codegen::serde_json::Value,
             read: ice_rpc::codegen::ReadMode,
         ) -> ice_rpc::codegen::JsonResult {
-            #extraction
-            ice_rpc::codegen::read_json(#call, read).await
+            ice_rpc::codegen::read_json(self.#call_helper(args).await?, read).await
         }
     }
 }
@@ -358,6 +428,77 @@ fn gen_invoker_arm(method: &JsonMethod) -> TokenStream {
     quote! {
         #fn_name_str => Some(self.#helper(args, read).await),
     }
+}
+
+/// Builds the inherent helper streaming one method's events into the sink.
+///
+/// The loop itself lives in `stream_json`, so this helper adds only the call and
+/// the sink. The argument decoding is shared with the unary view through
+/// [`gen_invoker_call_helper`]. A one-way method has no stream: it reports the
+/// `Accepted` event and completes.
+fn gen_invoker_stream_helper(method: &JsonMethod) -> TokenStream {
+    let fn_name = &method.fn_name;
+    let fn_name_str = fn_name.to_string();
+    let helper = stream_helper_name(method);
+    let call_helper = call_helper_name(method);
+    let doc = format!(
+        " The streaming JSON view of `{fn_name_str}`: decodes the arguments, calls the method \
+         and pushes each event into the sink."
+    );
+
+    if method.oneway {
+        return quote! {
+            #[doc = #doc]
+            async fn #helper(
+                &self,
+                args: ice_rpc::codegen::serde_json::Value,
+                sink: ice_rpc::codegen::JsonEventSink,
+            ) -> ice_rpc::codegen::JsonStreamResult {
+                let delivered = self.#call_helper(args)?;
+                let _ = sink
+                    .send(ice_rpc::codegen::JsonStreamEvent::Accepted { delivered })
+                    .await;
+                Ok(())
+            }
+        };
+    }
+
+    quote! {
+        #[doc = #doc]
+        async fn #helper(
+            &self,
+            args: ice_rpc::codegen::serde_json::Value,
+            sink: ice_rpc::codegen::JsonEventSink,
+        ) -> ice_rpc::codegen::JsonStreamResult {
+            ice_rpc::codegen::stream_json(self.#call_helper(args).await?, sink).await
+        }
+    }
+}
+
+/// Builds one `invoke_json_stream` match arm.
+fn gen_invoker_stream_arm(method: &JsonMethod) -> TokenStream {
+    let fn_name_str = method.fn_name.to_string();
+    let helper = stream_helper_name(method);
+
+    quote! {
+        #fn_name_str => self.#helper(args, sink.clone()).await,
+    }
+}
+
+/// Name of the generated call helper of one method.
+fn call_helper_name(method: &JsonMethod) -> Ident {
+    Ident::new(
+        &format!("json_call_of_{}", method.fn_name),
+        method.fn_name.span(),
+    )
+}
+
+/// Name of the generated streaming helper of one method.
+fn stream_helper_name(method: &JsonMethod) -> Ident {
+    Ident::new(
+        &format!("json_stream_of_{}", method.fn_name),
+        method.fn_name.span(),
+    )
 }
 
 /// Name of the generated helper of one method.

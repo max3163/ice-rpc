@@ -84,9 +84,9 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// the `monitoring` feature of `ice-rpc` stays on: its decoder is not submitted
 /// to the link-time `DECODERS` registry, and its channel is submitted to
 /// `HIDDEN_CHANNELS` so `discover_channels` skips it. The generated decoder
-/// remains available for an explicit
-/// [`register`](ice_rpc::monitor::ServiceDecoder) — only the automatic path is
-/// off. The opt-out is at **channel** granularity: a service sharing a `group`
+/// remains available for an explicit `register` on
+/// `ice_rpc::monitor::Decoders` — only the automatic path is off. The opt-out is
+/// at **channel** granularity: a service sharing a `group`
 /// hides the whole channel, so the services that must stay observable need a
 /// distinct group.
 ///

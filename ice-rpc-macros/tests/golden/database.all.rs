@@ -830,12 +830,14 @@ impl DatabaseApiProxy {
 }
 #[allow(missing_docs)]
 impl DatabaseApiProxy {
-    /// The JSON view of `add`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_add(
+    /// Decodes the arguments of `add` and calls the method. Shared by the unary and streaming JSON views so the decoding exists once.
+    async fn json_call_of_add(
         &self,
         args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
+    ) -> ::core::result::Result<
+        ice_rpc::Observable<i32, String>,
+        ice_rpc::codegen::JsonCallError,
+    > {
         let mut args = args;
         let a: i32 = ice_rpc::codegen::arg_from_json(
             "add",
@@ -847,23 +849,27 @@ impl DatabaseApiProxy {
             "b",
             ice_rpc::codegen::take_field(&mut args, "b"),
         )?;
-        ice_rpc::codegen::read_json(self.add(a, b).await, read).await
+        Ok(self.add(a, b).await)
     }
-    /// The JSON view of `get`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_get(
+    /// Decodes the arguments of `get` and calls the method. Shared by the unary and streaming JSON views so the decoding exists once.
+    async fn json_call_of_get(
         &self,
         args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
+    ) -> ::core::result::Result<
+        ice_rpc::Observable<String, String>,
+        ice_rpc::codegen::JsonCallError,
+    > {
         let key: String = ice_rpc::codegen::arg_from_json("get", "key", args)?;
-        ice_rpc::codegen::read_json(self.get(key).await, read).await
+        Ok(self.get(key).await)
     }
-    /// The JSON view of `put`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_put(
+    /// Decodes the arguments of `put` and calls the method. Shared by the unary and streaming JSON views so the decoding exists once.
+    async fn json_call_of_put(
         &self,
         args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
+    ) -> ::core::result::Result<
+        ice_rpc::Observable<(), String>,
+        ice_rpc::codegen::JsonCallError,
+    > {
         let mut args = args;
         let key: String = ice_rpc::codegen::arg_from_json(
             "put",
@@ -875,7 +881,44 @@ impl DatabaseApiProxy {
             "value",
             args.get("value"),
         )?;
-        ice_rpc::codegen::read_json(self.put(key, value).await, read).await
+        Ok(self.put(key, value).await)
+    }
+    /// Decodes the arguments of `notify` and calls the method. Shared by the unary and streaming JSON views so the decoding exists once.
+    fn json_call_of_notify(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+    ) -> ::core::result::Result<bool, ice_rpc::codegen::JsonCallError> {
+        let message: String = ice_rpc::codegen::arg_from_json(
+            "notify",
+            "message",
+            args,
+        )?;
+        self.notify(message)
+            .map_err(|e| ice_rpc::codegen::JsonCallError::Transport(e.to_string()))
+    }
+    /// The JSON view of `add`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
+    async fn json_view_of_add(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
+        ice_rpc::codegen::read_json(self.json_call_of_add(args).await?, read).await
+    }
+    /// The JSON view of `get`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
+    async fn json_view_of_get(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
+        ice_rpc::codegen::read_json(self.json_call_of_get(args).await?, read).await
+    }
+    /// The JSON view of `put`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
+    async fn json_view_of_put(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        read: ice_rpc::codegen::ReadMode,
+    ) -> ice_rpc::codegen::JsonResult {
+        ice_rpc::codegen::read_json(self.json_call_of_put(args).await?, read).await
     }
     /// The JSON view of `notify`: decodes the arguments and publishes the one-way notification. No result exists to read.
     async fn json_view_of_notify(
@@ -883,19 +926,48 @@ impl DatabaseApiProxy {
         args: ice_rpc::codegen::serde_json::Value,
         _read: ice_rpc::codegen::ReadMode,
     ) -> ice_rpc::codegen::JsonResult {
-        let message: String = ice_rpc::codegen::arg_from_json(
-            "notify",
-            "message",
-            args,
-        )?;
-        match self.notify(message) {
-            Ok(delivered) => {
-                Ok(ice_rpc::codegen::JsonOutcome::Accepted {
-                    delivered,
-                })
-            }
-            Err(e) => Err(ice_rpc::codegen::JsonCallError::Transport(e.to_string())),
-        }
+        let delivered = self.json_call_of_notify(args)?;
+        Ok(ice_rpc::codegen::JsonOutcome::Accepted {
+            delivered,
+        })
+    }
+    /// The streaming JSON view of `add`: decodes the arguments, calls the method and pushes each event into the sink.
+    async fn json_stream_of_add(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        sink: ice_rpc::codegen::JsonEventSink,
+    ) -> ice_rpc::codegen::JsonStreamResult {
+        ice_rpc::codegen::stream_json(self.json_call_of_add(args).await?, sink).await
+    }
+    /// The streaming JSON view of `get`: decodes the arguments, calls the method and pushes each event into the sink.
+    async fn json_stream_of_get(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        sink: ice_rpc::codegen::JsonEventSink,
+    ) -> ice_rpc::codegen::JsonStreamResult {
+        ice_rpc::codegen::stream_json(self.json_call_of_get(args).await?, sink).await
+    }
+    /// The streaming JSON view of `put`: decodes the arguments, calls the method and pushes each event into the sink.
+    async fn json_stream_of_put(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        sink: ice_rpc::codegen::JsonEventSink,
+    ) -> ice_rpc::codegen::JsonStreamResult {
+        ice_rpc::codegen::stream_json(self.json_call_of_put(args).await?, sink).await
+    }
+    /// The streaming JSON view of `notify`: decodes the arguments, calls the method and pushes each event into the sink.
+    async fn json_stream_of_notify(
+        &self,
+        args: ice_rpc::codegen::serde_json::Value,
+        sink: ice_rpc::codegen::JsonEventSink,
+    ) -> ice_rpc::codegen::JsonStreamResult {
+        let delivered = self.json_call_of_notify(args)?;
+        let _ = sink
+            .send(ice_rpc::codegen::JsonStreamEvent::Accepted {
+                delivered,
+            })
+            .await;
+        Ok(())
     }
 }
 #[allow(missing_docs)]
@@ -917,6 +989,24 @@ impl ice_rpc::codegen::JsonInvoker for DatabaseApiProxy {
             "notify" => Some(self.json_view_of_notify(args, read).await),
             _ => None,
         }
+    }
+    async fn invoke_json_stream(
+        &self,
+        method: &str,
+        args: ice_rpc::codegen::serde_json::Value,
+        sink: ice_rpc::codegen::JsonEventSink,
+    ) -> Option<()> {
+        let result = match method {
+            "add" => self.json_stream_of_add(args, sink.clone()).await,
+            "get" => self.json_stream_of_get(args, sink.clone()).await,
+            "put" => self.json_stream_of_put(args, sink.clone()).await,
+            "notify" => self.json_stream_of_notify(args, sink.clone()).await,
+            _ => return None,
+        };
+        if let Err(error) = result {
+            let _ = sink.fail(error).await;
+        }
+        Some(())
     }
 }
 #[allow(missing_docs)]

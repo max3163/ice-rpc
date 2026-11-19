@@ -32,9 +32,9 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 // side, registered once with `set_json_dispatcher`. Gated by `json`.
 #[cfg(feature = "json")]
 pub use crate::json::{
-    JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonInvoker,
-    JsonOutcome, JsonResult, ReadMode, dispatch_json, json_dispatcher, read_json,
-    set_json_dispatcher,
+    JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonEventSink,
+    JsonInvoker, JsonInvokerFactory, JsonOutcome, JsonResult, JsonStreamEvent, JsonStreamResult,
+    ReadMode, dispatch_json, json_dispatcher, read_json, set_json_dispatcher, stream_json,
 };
 // Host answer to wire sample: the whole envelope dispatch, one line per method.
 #[cfg(feature = "json")]

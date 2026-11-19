@@ -100,7 +100,7 @@ impl Hasher for FxHasher {
 
 /// Identity hasher: the key **is** its own hash.
 ///
-/// Correct only for small integral keys, which is the contract of [`IdMap`]: the
+/// Correct only for small integral keys, which is the contract of `IdMap`: the
 /// `u32` ids it stores are dense and well spread, so the value doubles as the
 /// bucket index. `write` is unreachable for those keys — `u32::hash` calls
 /// `write_u32` — and does nothing rather than corrupt the state.

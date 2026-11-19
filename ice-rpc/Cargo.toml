@@ -220,7 +220,7 @@ tokio = { workspace = true }
 smol = "2"
 # The Phoenix Channels protocol test speaks the Phoenix wire format directly.
 # `async-tungstenite` is dev-only: the library never opens a WebSocket client.
-async-tungstenite = { version = "0.34", features = ["tokio-runtime"] }
+async-tungstenite = { version = "0.35", features = ["tokio-runtime"] }
 futures-util = "0.3"
 # The protocol test runs the channel handler on the same trillium adapter as
 # the library; the optional dependency is not nameable from an integration test

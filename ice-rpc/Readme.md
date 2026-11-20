@@ -201,7 +201,7 @@ flux.
 `#[service]` also accepts optional parameters:
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
-- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id;
+- `group` (string, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id. The declared name is also generated as `<Proxy>::GROUP`, next to `SERVICE_NAME`, so a caller can name the channel without repeating the literal;
 - `max_slice_len`, `blocking`, `no_tracing` and `no_monitoring` — see _Configuration_ below.
 
 ```rust,ignore

@@ -27,7 +27,9 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_
 ///   the other services of the same group. A channel is the unit of transport:
 ///   it owns one request channel, one response channel and one dispatch thread,
 ///   and the samples are routed by the service id carried in the header.
-///   Defaults to the service name, i.e. one channel per service.
+///   Defaults to the service name, i.e. one channel per service. The resolved
+///   name is exposed as the proxy constant `GROUP`, next to `SERVICE_NAME`, so a
+///   caller never repeats the literal.
 /// - `#[service(..., max_slice_len = 4096)]` → the initial slice length of the
 ///   channel's publishers, in payload elements. It is a property of the
 ///   **channel**, so every service of a group must declare the same value; when

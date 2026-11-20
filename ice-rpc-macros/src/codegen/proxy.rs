@@ -134,6 +134,15 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             /// Logical name of the service, injected by the `#[service]` macro.
             pub const SERVICE_NAME: &'static str = #logical_name_lit;
 
+            /// Channel the service is registered on, injected by the `#[service]`
+            /// macro.
+            ///
+            /// Equal to the `group = "..."` parameter, or to the logical name when
+            /// the parameter is omitted. A constant so a caller can name the
+            /// channel — a readiness probe, a monitor, a test — without repeating
+            /// the literal the declaration already carries.
+            pub const GROUP: &'static str = #group_lit;
+
             #visibility fn provide<T>(implementation: T) -> std::sync::Arc<Self>
             where T: #trait_name + Send + Sync + 'static
             {

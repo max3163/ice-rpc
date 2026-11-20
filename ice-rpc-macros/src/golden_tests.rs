@@ -210,6 +210,12 @@ fn the_default_naming_of_a_bare_trait_is_pinned() {
         rendered.contains("\"calculator\""),
         "the logical name must fall back to the lowercased trait name: {rendered}"
     );
+    // The channel constant carries the same fallback, so a caller reads it from
+    // the proxy instead of repeating the literal.
+    assert!(
+        compact(&rendered).contains("pubconstGROUP:&'staticstr=\"calculator\";"),
+        "the channel constant must fall back to the lowercased trait name: {rendered}"
+    );
     // The version falls back to 1, in the identity client and provider share;
     // compared whitespace-free, since `prettyplease` chooses the wrapping.
     assert!(

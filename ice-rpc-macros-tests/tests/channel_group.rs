@@ -46,6 +46,17 @@ impl GroupBeta for BetaImpl {
     }
 }
 
+/// The declared channel is readable from the proxy, so a caller (a readiness
+/// probe, a monitor, a test) never repeats the literal of `group = "..."`.
+#[test]
+fn the_group_constant_names_the_shared_channel() {
+    assert_eq!(GroupAlphaProxy::GROUP, "sharedchannel");
+    assert_eq!(GroupBetaProxy::GROUP, "sharedchannel");
+    // Two services of one channel agree, while their logical names differ.
+    assert_eq!(GroupAlphaProxy::GROUP, GroupBetaProxy::GROUP);
+    assert_ne!(GroupAlphaProxy::SERVICE_NAME, GroupBetaProxy::SERVICE_NAME);
+}
+
 #[test]
 fn two_services_share_one_channel() {
     init_global();

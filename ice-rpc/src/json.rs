@@ -48,6 +48,11 @@ pub enum ReadMode {
 }
 
 /// What a JSON call produced.
+///
+/// Like [`JsonCallError`], this is a closed vocabulary on the 0.4 line: the three
+/// outcomes are the contract every JSON transport maps to its own answer (a body,
+/// an empty response, an accepted notification), so a new outcome would be a
+/// breaking change rather than an additive one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonOutcome {
     /// One value (`ReadMode::First`), or a JSON array of every value
@@ -73,6 +78,13 @@ pub enum JsonOutcome {
 }
 
 /// Why a JSON-mediated call failed.
+///
+/// The three variants are the **stable vocabulary** every JSON transport maps to
+/// its own codes — an HTTP status, a Node.js `E_*` code — so the enum is
+/// deliberately closed on the 0.4 line: adding a variant would break a
+/// downstream `match`, and a new failure class needs a transport code of its own
+/// anyway. `#[non_exhaustive]` belongs to a release that may break, never to a
+/// 0.4.x patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsonCallError {
     /// A parameter could not be decoded into the declared Rust type.
@@ -81,6 +93,19 @@ pub enum JsonCallError {
     Business(String),
     /// The transport failed, or the host never answered.
     Transport(String),
+}
+
+impl std::fmt::Display for JsonCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The payload already carries a complete sentence, and this mirrors
+            // `ObservableError`'s rendering: the category belongs to the variant,
+            // which a transport maps to its own code, not to the message.
+            Self::InvalidArgs(message) | Self::Business(message) | Self::Transport(message) => {
+                f.write_str(message)
+            }
+        }
+    }
 }
 
 /// What [`JsonInvoker::invoke_json`] returns.
@@ -557,6 +582,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_error_renders_its_message() {
+        // `Display` is the transport-neutral rendering: the category stays on
+        // the variant, the text is what the decoding or the service produced.
+        for (error, message) in [
+            (
+                JsonCallError::InvalidArgs(String::from("bad argument")),
+                "bad argument",
+            ),
+            (JsonCallError::Business(String::from("denied")), "denied"),
+            (
+                JsonCallError::Transport(String::from("link down")),
+                "link down",
+            ),
+        ] {
+            assert_eq!(error.to_string(), message);
+        }
+    }
 
     /// A minimal host: echoes the arguments as one event.
     struct EchoHost;

@@ -152,8 +152,12 @@ tokio runtime, and any `fn(Future) -> T` can be given instead, e.g.
 is why it is the sole mode that can truthfully be called _runtime-free_.
 
 - Service methods return `ice_rpc::Observable<T, E>`. Build one with the
-  stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`); an advanced
-  provider may use the raw channel via `ice_rpc::codegen::channel::<T, E>(capacity)`.
+  stream constructors of the Rx layer (`of`, `from`, `throw_error`, `Subject`,
+  `from_future`); an advanced provider may use the raw channel via
+  `ice_rpc::codegen::channel::<T, E>(capacity)`. A handler that awaits a
+  fallible operation hands its `Result` to `from_future`, which maps `Ok` to one
+  value and `Err` to a business error — a hand-written `into_observable` adapter
+  is no longer needed (see _Fallible handlers_ below).
 - `ice_rpc::rt` exposes `spawn`, `spawn_blocking`, `blocking_call`, `sleep`,
   `block_on`, `oneshot` and `CancellationToken`. A **response deadline** is not
   one of them: it is the `timeout` operator on the stream a call returns.
@@ -233,6 +237,42 @@ async fn run_provider() {
     ice_rpc::run_provider!(GreeterServiceProxy::provide(Greeter)).await
 }
 ```
+
+#### Fallible handlers: `from_future` and `?`
+
+The provider above builds its answer from its arguments alone. When the body
+awaits a fallible call, it produces a `Result`, and `?` is how it propagates a
+failure. `from_future` takes the future yielding that `Result` and maps it onto
+the stream vocabulary: `Ok(value)` emits the value then completes, `Err(error)`
+terminates on the business channel. The service signature keeps
+`Observable<T, E>` — a service never declares `Result` (step 1) — so only the
+body changes.
+
+```rust,ignore
+// Same service, this time holding the dependency its handler calls.
+struct Greeter {
+    directory: std::sync::Arc<NameDirectory>,
+}
+
+#[ice_rpc::async_trait]
+impl GreeterService for Greeter {
+    async fn hello(&self, name: String) -> Observable<String, GreeterError> {
+        // `from_future` requires a `'static` future: clone the shared handle
+        // into the block instead of borrowing `self`.
+        let directory = std::sync::Arc::clone(&self.directory);
+        ice_rpc::from_future(async move {
+            // `?` propagates a business failure out of the async block.
+            let display = directory.display_for(&name).await?;
+            Ok(format!("Hello {display}!"))
+        })
+    }
+}
+```
+
+`from_future` is lazy, like `of`: the block runs at the first poll of the
+returned `Observable`, never while the handler builds it. The same constructor
+lives in `ice_rpc_rx::from_future`, for a consumer that depends on `ice-rpc-rx`
+alone.
 
 ### 3. The consumer
 

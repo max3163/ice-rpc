@@ -1,9 +1,8 @@
-# ADR — Phoenix Channels gateway on `trillium-websockets`
+# ADR — Phoenix Channels gateway with `trillium-channels`
 
 - **Status**: implemented
-- **Scope**: the optional `channels-*` features,
-  [`ice-rpc/src/channels_gateway.rs`](../ice-rpc/src/channels_gateway.rs:1) and
-  [`ice-rpc/src/phoenix.rs`](../ice-rpc/src/phoenix.rs:1)
+- **Scope**: the optional `channels-*` features and
+  [`ice-rpc/src/channels_gateway.rs`](../ice-rpc/src/channels_gateway.rs:1)
 - **Client**: the standard JavaScript `phoenix` package, WebSocket transport
 - **Replaces**: the abandoned Socket.IO plan
   ([`plans/socketio-gateway.md`](../plans/socketio-gateway.md:1))
@@ -15,50 +14,26 @@ N-API with `ice-rpc-nodejs`. A browser needs a push-capable transport for
 services that stream several values, and the project wants to stay on the
 trillium stack rather than add hyper/engine.io.
 
-`trillium-channels` looked like the natural fit: it implements the Phoenix
-Channels wire protocol as a trillium `Handler` and composes with the REST
-handler. It cannot be used as published, however; the next section explains
-why, and the decision records the smallest replacement that keeps the standard
-Phoenix contract.
+`trillium-channels` is the natural fit: it implements the Phoenix Channels wire
+protocol as a trillium `Handler`, composes with the REST handler, and owns the
+V1/V2 framing, the heartbeat and the topic subscriptions.
 
-## Why `trillium-channels` 0.4.0 is not used
+## Dependency on `trillium-channels` 0.5
 
-The published `trillium-channels` 0.4.0 depends on `trillium-websockets
-^0.7.0`. In that version,
-[`WebSocketConn::new`](../../.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/trillium-websockets-0.7.0/src/websocket_connection.rs:80)
-stores `upgrade.path()`, and `Upgrade::path()` already removes the query string.
-[`WebSocketConn::querystring()`](../../.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/trillium-websockets-0.7.0/src/websocket_connection.rs:151)
-therefore always returns an empty string.
+`trillium-channels` 0.5 depends on `trillium-websockets` 0.9, which preserves
+the upgrade query string. `ChannelCentral::connect` therefore reads `vsn=2.0.0`
+and selects the V2 array framing used by the official Phoenix JavaScript
+client.
 
-[`ChannelCentral::connect`](../../.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/trillium-channels-0.4.0/src/channel_central.rs:77)
-reads `vsn` from that query and falls back to `Version::V1` when it is absent.
-The official Phoenix JavaScript client always appends `vsn=2.0.0` and only emits
-V2 array frames, so every client message fails V1 deserialization and is
-silently dropped: joins and pushes never reach the application.
+The gateway implements `ChannelHandler`. `ChannelEvent::reference()` supplies
+the Phoenix `ref` used as the correlation id, and `ChannelClient` carries the
+replies and server pushes. `Channel::allow_join`, `ChannelConn::reject`,
+`ChannelEvent::build_reply` and `ChannelClient::send_event` cover the protocol
+operations this gateway needs.
 
-`trillium-websockets` 0.9.3 fixes this by storing the query string separately,
-but no released `trillium-channels` depends on 0.9 yet. Forcing the newer
-version is not possible without a fork:
-
-- `[patch.crates-io]` and `[replace]` require the patched package to satisfy the
-  dependency's `^0.7.0` requirement. No 0.7.x release contains the fix, and
-  declaring a 0.9.3 source as `0.7.0` is exactly the vendored fork we refuse.
-- A git pin of `trillium-channels` uses `trillium.workspace = true` and
-  `trillium-websockets.workspace = true`. The upstream workspace resolves both
-  through path dependencies, pulling a second `trillium` crate whose `Handler`
-  trait is incompatible with the crates.io `trillium` used by `ice-rpc`.
-- The crate exposes no version override: `ChannelCentral` is `pub(crate)`,
-  `Channel::new` takes only the handler, and `ChannelClient::new` as well as
-  `ChannelEvent::{serialize, deserialize}` are `pub(crate)`.
-- Patches and path dependencies apply only to the workspace root. A published
-  library cannot require its downstream users to reproduce them, so any
-  patch-based gateway would be broken for consumers.
-
-The dedicated codec in [`ice-rpc/src/phoenix.rs`](../ice-rpc/src/phoenix.rs:1)
-is therefore a protocol adapter, not a replacement for the channel library: it
-owns only version negotiation, frame parsing and frame encoding. Routing,
-joins, heartbeats, call tracking and cancellation remain in
-[`channels_gateway.rs`](../ice-rpc/src/channels_gateway.rs:1).
+The previous 0.4 releases pinned `trillium-websockets` 0.7, which dropped that
+query and made the crate negotiate V1; 0.5 removes the need for the temporary
+in-tree codec used by the earlier revision.
 
 ## Decision
 
@@ -78,14 +53,14 @@ the channel handler.
 ### Feature graph
 
 ```toml
-channels-threads = ["json", "http-threads", "dep:trillium-websockets"]
-channels-smol = ["json", "http-smol", "dep:trillium-websockets"]
-channels-tokio = ["json", "http-tokio", "dep:trillium-websockets"]
+channels-threads = ["json", "http-threads", "dep:trillium-channels"]
+channels-smol = ["json", "http-smol", "dep:trillium-channels"]
+channels-tokio = ["json", "http-tokio", "dep:trillium-channels"]
 ```
 
 `full` includes `channels-tokio`: unlike the Node.js gateway, this is another
 transport on the same server, not a separate N-API deployment. A build without
-`channels-*` carries neither `trillium-websockets` nor the codec.
+`channels-*` does not carry `trillium-channels`.
 
 ### Wire contract
 
@@ -136,8 +111,9 @@ The gateway is a third consumer of the JSON contract: `call` uses
 `JsonInvoker::invoke_json`, `stream` uses the additive
 `JsonInvoker::invoke_json_stream`. The macro generates one streaming helper per
 method and the shared [`stream_json`](../ice-rpc/src/json.rs:1) loop maps
-`Observable` events to `JsonStreamEvent`s. A bounded `JsonEventSink` is the
-backpressure and cancellation boundary: a dropped receiver stops the producer.
+`Observable` events to `JsonStreamEvent`s. A bounded `JsonEventSink` limits how
+far the service can run ahead of the forwarding task and is the cancellation
+boundary: a dropped receiver stops the producer.
 
 A one-way method reports `accepted` and completes. A `call` on a multi-value
 method cancels the remainder after the first value, exactly like the HTTP
@@ -166,9 +142,10 @@ gateway is the deployment's responsibility when no authorizer is configured.
   unary operation; `stream` is immune because its ack is immediate.
 - In-flight calls are lost on reconnect; the Phoenix client rejoins, the
   application reissues.
-- The outbound per-connection channel is bounded by `stream_buffer`. A slow
-  client therefore applies backpressure to the service through the
-  `JsonEventSink`, instead of growing an unbounded queue on the server.
+- `trillium-channels` uses an unbounded per-client outbound queue, so a slow
+  socket can buffer events. The bounded `JsonEventSink` still bounds the service
+  side and cancellation; the socket-side queue is an upstream limitation,
+  documented rather than hidden.
 - `max_calls_per_channel` is a per-service-topic limit, and a `ref` is unique
   only inside its topic. Two services may therefore use the same `ref`
   concurrently on one socket, and one service cannot exhaust the in-flight
@@ -176,12 +153,10 @@ gateway is the deployment's responsibility when no authorizer is configured.
 
 ## Testing
 
-- [`ice-rpc/src/phoenix.rs`](../ice-rpc/src/phoenix.rs:1) tests V1/V2 parsing,
-  malformed frames, both reply encodings, version negotiation and query parsing.
 - [`ice-rpc/src/channels_gateway.rs`](../ice-rpc/src/channels_gateway.rs:1)
   tests ref validation, payload parsing, admission limits, duplicate refs,
   per-topic call tables, leave and rejoin isolation, per-call cancellation,
-  shutdown, origin matching and the error code mapping.
+  shutdown, origin matching, outcome payloads and the error code mapping.
 - [`ice-rpc/tests/channels_gateway.rs`](../ice-rpc/tests/channels_gateway.rs:1)
   runs the real `start_channels_server_with_config` entry point and speaks the
   Phoenix V2 array format directly: per-service joins, a second service on the
@@ -195,28 +170,26 @@ gateway is the deployment's responsibility when no authorizer is configured.
 
 ## Alternatives considered
 
-| Alternative                                 | Why not                                                                                               |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Single multiplexed `rpc` topic              | no per-service authorization at join, and every payload must repeat the service name                  |
-| Application-level `id` field                | duplicates the Phoenix `ref` and makes the client invent an identifier                                |
-| Socketioxide (Socket.IO)                    | tokio-only, hyper/engine.io dependency, second listener                                               |
-| Raw WebSocket JSON                          | not the Phoenix Channels stack; the client would be bespoke                                           |
-| Separate `ice-rpc-channels` crate           | the trillium server and invoker registry are already in `ice-rpc`                                     |
-| Vendor or fork `trillium-websockets`        | local maintenance, rejected; also invisible to downstream users of the published crate                |
-| Pin the whole trillium stack to a git rev   | pulls unreleased code, duplicates `trillium` unless every adapter follows, and patches do not publish |
-| Wait for a released `trillium-channels` 0.5 | no release date; the gateway would be unusable in the meantime                                        |
+| Alternative                       | Why not                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| Single multiplexed `rpc` topic    | no per-service authorization at join, and every payload must repeat the service name          |
+| Application-level `id` field      | duplicates the Phoenix `ref` and makes the client invent an identifier                        |
+| Socketioxide (Socket.IO)          | tokio-only, hyper/engine.io dependency, second listener                                       |
+| Raw WebSocket JSON                | not the Phoenix Channels stack; the client would be bespoke                                   |
+| Separate `ice-rpc-channels` crate | the trillium server and invoker registry are already in `ice-rpc`                             |
+| In-tree Phoenix codec             | unnecessary duplication now that `trillium-channels` 0.5 depends on `trillium-websockets` 0.9 |
 
 ## Consequences
 
 - Browsers get push streaming from the existing `JsonInvoker` without a new wire
   format or a second serializer.
-- The dependency is optional and standard: only `trillium-websockets` 0.9 from
+- The dependency is optional and standard: `trillium-channels` 0.5 from
   crates.io, with no local patch, vendored tree or git pin.
-- The protocol surface maintained in-tree is small and covered by its own tests:
-  version negotiation, five-field frame parsing and reply encoding.
+- The Phoenix envelope, heartbeat and subscriptions are maintained upstream; the
+  gateway only owns the RPC semantics (join validation, call table, streaming
+  and cancellation).
+- The per-client outbound queue is unbounded upstream. This is documented; the
+  service side remains bounded by `JsonEventSink`.
 - The gateway trusts the join authorizer for access control; without one, it is
   an unauthenticated network surface and must sit behind an authenticating
   reverse proxy.
-- The upstream dependency problem is documented in a GitHub issue; the codec can
-  be deleted once a released `trillium-channels` supports
-  `trillium-websockets` 0.9.

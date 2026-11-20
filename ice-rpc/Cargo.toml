@@ -123,13 +123,13 @@ http-tokio = ["json", "tokio", "dep:trillium", "dep:trillium-tokio"]
 # - `channels-tokio`   -> trillium-tokio on tokio.
 # The HTTP feature supplies the server adapter, so enabling a `channels-*`
 # feature also exposes the REST routes on the same listener. The Phoenix
-# Channels wire protocol is implemented directly on `trillium-websockets` 0.9
-# (the version that preserves the upgrade query string), so the client is the
-# standard `phoenix` JavaScript package. It has no long-poll transport: a browser
-# must use its WebSocket transport.
-channels-threads = ["json", "http-threads", "dep:trillium-websockets"]
-channels-smol = ["json", "http-smol", "dep:trillium-websockets"]
-channels-tokio = ["json", "http-tokio", "dep:trillium-websockets"]
+# envelope is provided by `trillium-channels` 0.5, which depends on
+# `trillium-websockets` 0.9 and therefore preserves the upgrade query string
+# that carries `vsn`. It has no long-poll transport: a browser must use its
+# WebSocket transport.
+channels-threads = ["json", "http-threads", "dep:trillium-channels"]
+channels-smol = ["json", "http-smol", "dep:trillium-channels"]
+channels-tokio = ["json", "http-tokio", "dep:trillium-channels"]
 # One complete tokio deployment: the runtime, both gateways and the reactive
 # operators. The Node.js gateway stays out because it links N-API, which is a
 # separate deployment rather than another way of serving the same process.
@@ -191,11 +191,10 @@ tokio = { version = "1.30", optional = true, features = ["rt", "rt-multi-thread"
 trillium = { version = "1.4", optional = true }
 trillium-smol = { version = "0.7", optional = true }
 trillium-tokio = { version = "0.6", optional = true }
-# Optional Phoenix Channels gateway, mounted on the same trillium server. The
-# wire protocol is implemented on this crate directly: 0.9 is the first
-# trillium-websockets that preserves the upgrade query string, which is where a
-# Phoenix client carries `vsn`.
-trillium-websockets = { version = "0.9", optional = true }
+# Optional Phoenix Channels gateway, mounted on the same trillium server. 0.5 is
+# the first release that depends on trillium-websockets 0.9, which preserves the
+# upgrade query string where a Phoenix client carries `vsn`.
+trillium-channels = { version = "0.5", optional = true }
 
 [dev-dependencies]
 # `default-features = false` drops `env_logger/regex` -> `env_filter/regex` ->

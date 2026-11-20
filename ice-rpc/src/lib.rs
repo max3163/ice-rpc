@@ -362,13 +362,6 @@ mod http_gateway;
 ))]
 mod channels_gateway;
 
-#[cfg(any(
-    feature = "channels-threads",
-    feature = "channels-smol",
-    feature = "channels-tokio"
-))]
-mod phoenix;
-
 // ── Public API: service traits ─────────────────────────────────────
 // Only `ServiceInit` is implemented by the developer.
 pub use service_traits::ServiceInit;
@@ -657,9 +650,9 @@ pub async fn start_http_server(
 
 /// The Phoenix Channels gateway, mounted on the same trillium server as REST.
 ///
-/// See [`ChannelsGatewayConfig`] for the endpoint, topic, limits and the join
-/// authorizer. The client is the standard `phoenix` JavaScript package, using
-/// its WebSocket transport.
+/// See [`ChannelsGatewayConfig`] for the endpoint, per-service topics, limits
+/// and the join authorizer. The client is the standard `phoenix` JavaScript
+/// package, using its WebSocket transport.
 #[cfg(any(
     feature = "channels-threads",
     feature = "channels-smol",

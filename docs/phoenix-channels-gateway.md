@@ -127,9 +127,22 @@ named by the topic. A token can therefore authorize `Database` without opening
 `Billing`. It returns `Ok(())` or a client-facing reason, sent as an
 `E_UNAUTHORIZED` reply.
 
-An exact-match `allowed_origins` allowlist is checked first. Empty means any
-origin; the gateway logs a warning at startup. Authentication in front of the
-gateway is the deployment's responsibility when no authorizer is configured.
+The WebSocket handshake itself applies the `trillium-websockets` same-origin
+policy: a browser page served from another host than the socket is refused with
+`403 Forbidden`, while a non-browser client that sends no `Origin` is accepted.
+Two configuration points widen it:
+
+- `allowed_origins` lists the exact origins admitted by the handshake. The same
+  exact-match check runs again when a topic is joined, as defence in depth. An
+  empty list keeps the same-origin default.
+- `allow_any_origin` disables the handshake check entirely. It exists for
+  tests, custom schemes and deployments whose public origin differs from the
+  `Host` the gateway receives (TLS-terminating proxy, port mapping), and it
+  takes precedence over `allowed_origins`. The gateway logs a warning at
+  startup, because any page can then open the socket.
+
+Authentication in front of the gateway is the deployment's responsibility when
+no authorizer is configured.
 
 ### Limits
 
@@ -165,6 +178,11 @@ gateway is the deployment's responsibility when no authorizer is configured.
   the reserved `phoenix` topic. A raw client is used instead of the npm package
   so the test is deterministic and needs no JavaScript toolchain; the frames are
   exactly those the `phoenix` client emits.
+- [`ice-rpc/tests/channels_gateway_origin.rs`](../ice-rpc/tests/channels_gateway_origin.rs:1)
+  drives the handshake with an explicit `Origin`: the default refuses a foreign
+  page with `403 Forbidden`, `allow_any_origin` accepts it, and
+  `allowed_origins` admits exactly the listed origin while a client without an
+  `Origin` header stays accepted.
 - `channels-tokio`, `channels-smol` and `channels-threads` are checked
   separately; the WebSocket upgrade path is shared by all three adapters.
 

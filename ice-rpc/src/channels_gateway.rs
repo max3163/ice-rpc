@@ -38,6 +38,16 @@
 //! `{path}/websocket` (default `/socket/websocket`) to the Phoenix handler and
 //! mounts the REST gateway on every other path. The client must use the
 //! WebSocket transport: the long-poll fallback is not implemented.
+//!
+//! # Origin policy
+//!
+//! `trillium-websockets` refuses a browser handshake whose `Origin` does not
+//! name the request host, which prevents a page on another site from opening
+//! the socket with the visitor's credentials. That default is kept: an empty
+//! [`ChannelsGatewayConfig::allowed_origins`] leaves it in place, and
+//! [`ChannelsGatewayConfig::allow_any_origin`] is the explicit opt-out for
+//! tests, a custom scheme or a deployment whose public origin differs from the
+//! `Host` the gateway receives.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -63,8 +73,27 @@ pub struct ChannelsGatewayConfig {
     /// Defaults to `/socket`. The gateway routes `{path}/websocket` because the
     /// Phoenix JavaScript client appends that suffix itself.
     pub path: Cow<'static, str>,
-    /// Exact origins allowed to join. Empty means any origin, logged at startup.
+    /// Exact origins allowed to open the WebSocket and join a topic.
+    ///
+    /// The allowlist is applied to the handshake by `trillium-websockets`, so a
+    /// page served from one of these origins may open the socket even though it
+    /// is not same-origin. When empty, the handshake keeps the same-origin
+    /// default: a browser page must be served from the host it dials, while a
+    /// non-browser client that sends no `Origin` is accepted. The list is
+    /// ignored when [`allow_any_origin`](Self::allow_any_origin) is set.
     pub allowed_origins: Vec<String>,
+    /// Whether the WebSocket handshake accepts a page from any origin.
+    ///
+    /// Defaults to `false`, which enforces the `trillium-websockets` same-origin
+    /// check: a browser page served from another host is refused at the
+    /// handshake with `403 Forbidden`. Set it for tests, a custom scheme, or a
+    /// deployment whose public origin differs from the `Host` the gateway sees
+    /// (a TLS-terminating proxy, a port mapping).
+    ///
+    /// A page from any origin can then open the socket with the visitor's
+    /// ambient credentials, so only enable it when the socket is unauthenticated
+    /// or authenticated by a token the page cannot replay.
+    pub allow_any_origin: bool,
     /// Maximum number of calls in flight on one service topic. Defaults to 32.
     pub max_calls_per_channel: usize,
     /// Capacity of the bounded channel between the service and the forwarding
@@ -90,6 +119,7 @@ impl ChannelsGatewayConfig {
         Self {
             path: Cow::Borrowed("/socket"),
             allowed_origins: Vec::new(),
+            allow_any_origin: false,
             max_calls_per_channel: 32,
             stream_buffer: 16,
             authorizer: None,
@@ -160,10 +190,32 @@ pub fn channels_handler(
     config: ChannelsGatewayConfig,
     factories: HashMap<&'static str, JsonInvokerFactory>,
 ) -> impl trillium::Handler {
-    channel(ChannelsHandler::new(
-        config,
-        JsonInvokerRegistry::new(factories),
-    ))
+    phoenix_channel(config, JsonInvokerRegistry::new(factories))
+}
+
+/// Builds the `trillium-channels` handler with the configured origin policy.
+///
+/// `trillium-channels` keeps the `trillium-websockets` same-origin default, so
+/// the policy has to be set on the handler itself: an exact-match predicate for
+/// [`ChannelsGatewayConfig::allowed_origins`], or an explicit opt-out for
+/// [`ChannelsGatewayConfig::allow_any_origin`].
+fn phoenix_channel(
+    config: ChannelsGatewayConfig,
+    registry: JsonInvokerRegistry,
+) -> impl trillium::Handler {
+    let channel = channel(ChannelsHandler::new(config.clone(), registry));
+    if config.allow_any_origin {
+        channel.allow_any_origin()
+    } else if config.allowed_origins.is_empty() {
+        channel
+    } else {
+        let allowed = config.allowed_origins.clone();
+        channel.allow_origin_fn(move |origin| match origin {
+            // A missing `Origin` means the client is not a browser.
+            None => true,
+            Some(origin) => origin_allowed(origin, &allowed),
+        })
+    }
 }
 
 /// Starts REST and Phoenix Channels on the same trillium server.
@@ -190,7 +242,7 @@ pub async fn start_channels_server_with_config(
     topics.sort_unstable();
     let registry = JsonInvokerRegistry::new(factories);
     let http = crate::http_gateway::http_handler(registry.clone());
-    let channels = channel(ChannelsHandler::new(config.clone(), registry));
+    let channels = phoenix_channel(config.clone(), registry);
     let socket_path = config.websocket_path();
     let handler = RpcGateway {
         http,
@@ -212,8 +264,19 @@ pub async fn start_channels_server_with_config(
         "   client: new Socket(\"{}\", {{ transport: WebSocket }})",
         config.path
     );
-    if config.allowed_origins.is_empty() {
-        log::warn!("Phoenix Channels: no Origin allowlist configured, every origin is accepted");
+    if config.allow_any_origin {
+        log::warn!(
+            "Phoenix Channels: allow_any_origin is set, the WebSocket handshake accepts every Origin"
+        );
+    } else if config.allowed_origins.is_empty() {
+        log::info!(
+            "Phoenix Channels: same-origin WebSocket handshake; set allowed_origins or allow_any_origin to widen it"
+        );
+    } else {
+        log::info!(
+            "Phoenix Channels: {} allowed origin(s) for the WebSocket handshake",
+            config.allowed_origins.len()
+        );
     }
 
     crate::http_gateway::serve_trillium(port, handler).await;
@@ -294,7 +357,8 @@ impl ChannelsHandler {
             return;
         }
 
-        if !self.config.allowed_origins.is_empty()
+        if !self.config.allow_any_origin
+            && !self.config.allowed_origins.is_empty()
             && let Some(origin) = conn.headers().get_str("origin")
             && !origin_allowed(origin, &self.config.allowed_origins)
         {

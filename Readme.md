@@ -13,7 +13,7 @@ The **header is zero-copy** — written and read in place — while the **payloa
 
 From a simple Rust trait annotated with `#[service]`, the procedural macro automatically generates the entire IPC code: client, server, proxy and lifecycle. The transport is iceoryx2's **publish/subscribe**: one request channel and one response channel per logical service, correlated by an 8-byte request id, which keeps the throughput close to the raw bus (see [§4](#4-transport--publishsubscribe-with-correlation-ids)).
 
-**Requirements.** Rust **1.97** or newer — declared as `rust-version` in the workspace manifest. The floor is imposed by `trillium-http` 1.7.2, reached only through the optional `http` feature family: it calls `usize::bit_width`, stable since 1.97, and declares **no** `rust-version`, so cargo's MSRV-aware resolution cannot see it — only a build run on the floor can. The other candidates sit below it: the optional `process-metrics` feature of `ice-rpc-monitor` (`sysinfo` 0.39) needs **1.95**, `iceoryx2` 0.10 needs **1.89**, and the N-API bindings **1.88**. The declared value is not a claim: a dedicated CI job reads it from this manifest, installs exactly that toolchain and compiles the workspace *and* every optional feature with it, since an optional feature no job builds is where the floor silently drifts — and it did, twice. The workspace also enforces a shared lint baseline, adopted by every member through `[workspace.lints]`: `unsafe_op_in_unsafe_fn`, `missing_docs`, `undocumented_unsafe_blocks` (every `unsafe` block carries a `// SAFETY:` justification) and `unwrap_used` (`unwrap` is banned in library code, since it would turn a recoverable error into a process abort under the release profile's `panic = "abort"`). Test, example and benchmark targets opt out of `unwrap_used` explicitly, at the top of the file.
+**Requirements.** Rust **1.97** or newer — declared as `rust-version` in the workspace manifest. The floor is imposed by `trillium-http` 1.7.2, reached only through the optional `http` feature family: it calls `usize::bit_width`, stable since 1.97, and declares **no** `rust-version`, so cargo's MSRV-aware resolution cannot see it — only a build run on the floor can. The other candidates sit below it: the optional `process-metrics` feature of `ice-rpc-monitor` (`sysinfo` 0.39) needs **1.95**, `iceoryx2` 0.10 needs **1.89**, and the N-API bindings **1.88**. The declared value is not a claim: a dedicated CI job reads it from this manifest, installs exactly that toolchain and compiles the workspace _and_ every optional feature with it, since an optional feature no job builds is where the floor silently drifts — and it did, twice. The workspace also enforces a shared lint baseline, adopted by every member through `[workspace.lints]`: `unsafe_op_in_unsafe_fn`, `missing_docs`, `undocumented_unsafe_blocks` (every `unsafe` block carries a `// SAFETY:` justification) and `unwrap_used` (`unwrap` is banned in library code, since it would turn a recoverable error into a process abort under the release profile's `panic = "abort"`). Test, example and benchmark targets opt out of `unwrap_used` explicitly, at the top of the file.
 
 ---
 
@@ -216,14 +216,14 @@ gateway_nodejs/                 ← Reference addon : it names the services it s
 
 ### 2.1. Code generation modules (codegen/)
 
-| Module | Responsibility |
-|---|---|
-| `helpers.rs` | `g_variant_name` (snake→Pascal), `extract_rpc_result_types` |
-| `client.rs` | Generates `{Trait}Client` : serializes the rkyv request and calls `native_call(service, method, payload)`, returning the streamed responses as an `Observable` |
-| `server.rs` | Generates `{Trait}Server` : one `ServiceDispatcher::method(...)` registration per RPC method, each decoding the rkyv request and streaming `observable_to_responses(observable)` |
-| `proxy.rs` | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_json` constructors, Provider/Consumer/ProviderJson delegation |
-| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderJson bridge |
-| `json.rs` | Generates the JSON view of a service, and names no transport : the per-method rkyv ↔ `serde_json::Value` converters the host side needs, plus `impl JsonInvoker` — one match table for every method, with the reading mode (`First` / `All`) as an argument. Both the HTTP gateway and the Node.js bridge dispatch to that same view. |
+| Module         | Responsibility                                                                                                                                                                                                                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `helpers.rs`   | `g_variant_name` (snake→Pascal), `extract_rpc_result_types`                                                                                                                                                                                                                                                                           |
+| `client.rs`    | Generates `{Trait}Client` : serializes the rkyv request and calls `native_call(service, method, payload)`, returning the streamed responses as an `Observable`                                                                                                                                                                        |
+| `server.rs`    | Generates `{Trait}Server` : one `ServiceDispatcher::method(...)` registration per RPC method, each decoding the rkyv request and streaming `observable_to_responses(observable)`                                                                                                                                                      |
+| `proxy.rs`     | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_json` constructors, Provider/Consumer/ProviderJson delegation                                                                                                                                                                               |
+| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderJson bridge                                                                                                                                                                                      |
+| `json.rs`      | Generates the JSON view of a service, and names no transport : the per-method rkyv ↔ `serde_json::Value` converters the host side needs, plus `impl JsonInvoker` — one match table for every method, with the reading mode (`First` / `All`) as an argument. Both the HTTP gateway and the Node.js bridge dispatch to that same view. |
 
 ---
 
@@ -276,13 +276,13 @@ pub trait DatabaseService: Send + Sync + 'static {
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-| Type | Role |
-|---|---|
-| `DatabaseServiceRequest` | Serializable enum (rkyv) with one variant per method |
-| `DatabaseServiceClient` | IPC client : serializes the request and calls the transport |
-| `DatabaseServiceServer` | IPC server : routes a decoded request to its handler |
-| `DatabaseServiceProxy` | Single entry point (Smart Proxy Node, 3 modes) |
-| `DatabaseServiceMode` | `Provider` / `Consumer` / `ProviderJson` enum |
+| Type                     | Role                                                        |
+| ------------------------ | ----------------------------------------------------------- |
+| `DatabaseServiceRequest` | Serializable enum (rkyv) with one variant per method        |
+| `DatabaseServiceClient`  | IPC client : serializes the request and calls the transport |
+| `DatabaseServiceServer`  | IPC server : routes a decoded request to its handler        |
+| `DatabaseServiceProxy`   | Single entry point (Smart Proxy Node, 3 modes)              |
+| `DatabaseServiceMode`    | `Provider` / `Consumer` / `ProviderJson` enum               |
 
 ### 3.2. Optional parameters
 
@@ -292,10 +292,10 @@ pub trait DatabaseService: Send + Sync + 'static {
 #[service("MyService", version = 2, group = "db")]      // version + channel
 ```
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `version` | integer | `1` | Service interface version (part of the request frame). |
-| `group` | string | service name | Channel shared with the other services of the group: one request channel, one response channel and one dispatch thread, routed by the service id. |
+| Parameter | Type    | Default      | Description                                                                                                                                       |
+| --------- | ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | integer | `1`          | Service interface version (part of the request frame).                                                                                            |
+| `group`   | string  | service name | Channel shared with the other services of the group: one request channel, one response channel and one dispatch thread, routed by the service id. |
 
 ---
 
@@ -310,20 +310,20 @@ service name, i.e. one channel per service — the historical layout.
 
 Each channel maps to four iceoryx2 services:
 
-| iceoryx2 service | Direction | Contents |
-|---|---|---|
-| `{channel}_req` | consumer → provider | `RpcHeader` in `user_header` + `rkyv(args)` |
-| `{channel}_resp` | provider → consumer | `RpcHeader` in `user_header` + `rkyv(WireEvent<T, E>)` |
-| `{channel}_req_notify` | event | wake-up signal for the provider |
-| `{channel}_resp_notify` | event | wake-up signal for the consumer |
+| iceoryx2 service        | Direction           | Contents                                               |
+| ----------------------- | ------------------- | ------------------------------------------------------ |
+| `{channel}_req`         | consumer → provider | `RpcHeader` in `user_header` + `rkyv(args)`            |
+| `{channel}_resp`        | provider → consumer | `RpcHeader` in `user_header` + `rkyv(WireEvent<T, E>)` |
+| `{channel}_req_notify`  | event               | wake-up signal for the provider                        |
+| `{channel}_resp_notify` | event               | wake-up signal for the consumer                        |
 
 Grouping is what makes the transport cost independent of the number of services:
 
-| | 50 services, `G = N` | 50 services, `G = 7` | `G = 1` |
-|---|---|---|---|
-| iceoryx2 services | 200 | 28 | 4 |
-| Data segments | 100 | 14 | 2 |
-| Dispatch threads (per process) | 50 | 7 | 1 |
+|                                | 50 services, `G = N` | 50 services, `G = 7` | `G = 1` |
+| ------------------------------ | -------------------- | -------------------- | ------- |
+| iceoryx2 services              | 200                  | 28                   | 4       |
+| Data segments                  | 100                  | 14                   | 2       |
+| Dispatch threads (per process) | 50                   | 7                    | 1       |
 
 A channel is also the unit of **dispatch**, and its thread is a **router**: it
 receives the requests and polls each handler once, on that very thread. A handler
@@ -334,8 +334,8 @@ facade, so a `query_db` awaiting 100 ms does not hold back the next request of t
 same group — which matters most for a `group`, since the group is exactly what
 owns that thread.
 
-The thread is also the channel's **publisher** — and the only one to publish *in
-place*: a handler that answers during its inline poll publishes from it, one that
+The thread is also the channel's **publisher** — and the only one to publish _in
+place_: a handler that answers during its inline poll publishes from it, one that
 yielded publishes from whatever thread of the executor it resumed on. Measured on
 this transport, `loan`+`send` convoy when several threads call them at once
 (2.75 µs of mean on one thread against 10.9 µs with eight); handing the responses
@@ -353,7 +353,7 @@ properties below are measured, and both are the subject of a test:
 
 What the single thread still bounds is the routing and publication throughput: a
 service needing more than ~50k req/s belongs alone in its group (measured ceiling:
-~350k req/s per channel *and* thread).
+~350k req/s per channel _and_ thread).
 
 **Why not iceoryx2's `request_response`?** It allocates one channel (and one data
 segment) per request in flight, which caps the throughput far below what the
@@ -367,21 +367,21 @@ Every sample carries an `RpcHeader` ([`ice_rpc::types::header`](ice-rpc/src/type
 in iceoryx2's `user_header`: a plain `#[repr(C)] ZeroCopySend` struct copied in
 place by the bus, so it costs no serialization and no allocation.
 
-| Field | Type | Contents |
-|---|---|---|
-| `correlation_id` | `[u8; 8]` | 32-bit process id ++ 32-bit counter; identifies one in-flight call |
-| `timestamp_ns` | `u64` | emission time (ns since the Unix epoch), stamped by the emitter |
-| `seq` | `u64` | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed |
-| `trace_id` | `[u8; 16]` | W3C trace id, shared by every hop of a call tree; zero when no trace is propagated |
-| `parent_span_id` | `u64` | W3C `parent-id`: the span of the caller, onto which the receiver parents its own span (never zero for a traced call) |
-| `span_id` | `u64` | W3C `span-id` of the hop that emitted the sample; unique per span and never zero |
-| `service_id` | `u32` | FNV-1a of the service name; selects the dispatcher inside a shared channel |
-| `method_id` | `u32` | FNV-1a of the method name; selects the handler inside the service, before any payload decode |
-| `traceparent_version` | `u8` | W3C `traceparent` version byte (always `0`) |
-| `event_kind` | `u8` | `Request` / `Next` / `Complete` / `Error` / `RpcError` |
-| `protocol_version` | `u16` | framing version, validated by the provider |
-| `service_version` | `u16` | service API version, validated by the provider and echoed on the responses |
-| `flags` | `u8` | W3C trace flags (bit 0: sampled) |
+| Field                 | Type       | Contents                                                                                                             |
+| --------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| `correlation_id`      | `[u8; 8]`  | 32-bit process id ++ 32-bit counter; identifies one in-flight call                                                   |
+| `timestamp_ns`        | `u64`      | emission time (ns since the Unix epoch), stamped by the emitter                                                      |
+| `seq`                 | `u64`      | per-publisher, per-channel monotonic sample counter, read by the observer to count the samples **it** missed         |
+| `trace_id`            | `[u8; 16]` | W3C trace id, shared by every hop of a call tree; zero when no trace is propagated                                   |
+| `parent_span_id`      | `u64`      | W3C `parent-id`: the span of the caller, onto which the receiver parents its own span (never zero for a traced call) |
+| `span_id`             | `u64`      | W3C `span-id` of the hop that emitted the sample; unique per span and never zero                                     |
+| `service_id`          | `u32`      | FNV-1a of the service name; selects the dispatcher inside a shared channel                                           |
+| `method_id`           | `u32`      | FNV-1a of the method name; selects the handler inside the service, before any payload decode                         |
+| `traceparent_version` | `u8`       | W3C `traceparent` version byte (always `0`)                                                                          |
+| `event_kind`          | `u8`       | `Request` / `Next` / `Complete` / `Error` / `RpcError`                                                               |
+| `protocol_version`    | `u16`      | framing version, validated by the provider                                                                           |
+| `service_version`     | `u16`      | service API version, validated by the provider and echoed on the responses                                           |
+| `flags`               | `u8`       | W3C trace flags (bit 0: sampled)                                                                                     |
 
 The header is **72 bytes**: it shrank from 120 when `method_name` — a 32-byte
 `StaticString`, 48 bytes once laid out — became a 4-byte `method_id`, and from 80
@@ -461,7 +461,7 @@ One thread per channel:
 A provider does not start its channel itself: it **registers** its dispatcher
 during `on_init`, and the channel threads start at the end of
 `ServiceLocator::initialize_all`. That ordering is what keeps the guarantee the
-consumer relies on — *a subscriber exists* means *the provider is ready*.
+consumer relies on — _a subscriber exists_ means _the provider is ready_.
 
 ### 4.4. Consumer
 
@@ -477,16 +477,16 @@ One cached publisher and one dispatch thread per **channel**:
 
 ### 4.5. Tuning
 
-| Setting | Value | Why |
-|---|---|---|
-| `subscriber_max_buffer_size` | 1 024 | one term of the memory budget of a channel (see `max_loaned_samples`) |
-| `enable_safe_overflow` | **false** | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport/publish.rs:27) retries: the overflow becomes backpressure instead of data loss |
-| `initial_max_slice_len` | 256 | `slice` memory per sample; larger payloads grow the segment |
-| `max_loaned_samples` | 1 024 | sizes the data segment of a publisher (`max_loaned_samples × ~400 B`): ~400 KB, against ~6.5 MB at the iceoryx2 default of 8 raised to 16 384 — untenable with dozens of services |
-| `max_publishers` / `max_subscribers` | 16 | a channel is shared: every consuming process publishes on it, every provider subscribes to it |
-| `max_nodes` | 32 | processes that can open the same channel at once |
-| WaitSet deadline | 1 ms | bounds the cost of a missed notification |
-| idle spin | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet` |
+| Setting                              | Value        | Why                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------ | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subscriber_max_buffer_size`         | 1 024        | one term of the memory budget of a channel (see `max_loaned_samples`)                                                                                                                                                                                                                                                                         |
+| `enable_safe_overflow`               | **false**    | enabled, a full subscriber buffer silently overwrites its **oldest pending sample** — losing a request that is never answered (a 5 s timeout in the benchmark). Disabled, `send()` reports `0` delivered and [`publish_until_delivered`](ice-rpc/src/transport/publish.rs:27) retries: the overflow becomes backpressure instead of data loss |
+| `initial_max_slice_len`              | 256          | `slice` memory per sample; larger payloads grow the segment                                                                                                                                                                                                                                                                                   |
+| `max_loaned_samples`                 | 1 024        | sizes the data segment of a publisher (`max_loaned_samples × ~400 B`): ~400 KB, against ~6.5 MB at the iceoryx2 default of 8 raised to 16 384 — untenable with dozens of services                                                                                                                                                             |
+| `max_publishers` / `max_subscribers` | 16           | a channel is shared: every consuming process publishes on it, every provider subscribes to it                                                                                                                                                                                                                                                 |
+| `max_nodes`                          | 32           | processes that can open the same channel at once                                                                                                                                                                                                                                                                                              |
+| WaitSet deadline                     | 1 ms         | bounds the cost of a missed notification                                                                                                                                                                                                                                                                                                      |
+| idle spin                            | 2 000 yields | the hot path stays at polling speed, the idle path blocks on the `WaitSet`                                                                                                                                                                                                                                                                    |
 
 ### 4.6. NodeId
 
@@ -532,15 +532,15 @@ sequenceDiagram
     CB->>App: Event::Next(value) reached the caller
 ```
 
-| Step | Byte copy | What happens |
-|---|---|---|
-| Build the value | none | the caller builds its owned args, or the service builds its return value. Not a transport cost |
-| Encode | **no copy**, but serialization | `rkyv` walks the value into a reusable `AlignedVec` with `to_bytes_in`. A request uses the **thread-local** [`REQUEST_SCRATCH`](ice-rpc/src/transport/client.rs:423) — one allocation per thread, reused by every later call; a response uses the scratch [`observable_to_responses`](ice-rpc/src/transport/bridge.rs:157) owns — **one allocation per response stream**, reused for every event of that stream |
-| Publish | **one copy of the whole payload** | [`try_publish`](ice-rpc/src/transport/publish.rs:96) loans a sample and `write_from_slice`s the archive into it: this is where the bytes enter shared memory. The `RpcHeader` rides in the sample's `user_header`, not in the payload |
-| Deliver on the bus | none | iceoryx2 makes the sample visible to its subscribers; the consumer receives a pointer to it |
-| Decode | **none of the raw bytes** | [`decode_aligned`](ice-rpc/src/transport/mod.rs:203) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` **on the sample**. The provider decodes a request straight from the received slice — the `to_vec()` it used to do is gone, which is what keeps a request from paying a second payload-sized copy |
-| Materialise | **no copy**, but deserialization | `from_bytes` validates in place and deserializes into an owned `T`: what is left is **one allocation per variable field**, and that is a `malloc`, not a copy of the payload |
-| Decode, unaligned only | one copy | the fallback: a payload built by hand, or a buffer read outside the transport, is first copied into a 16-byte-aligned `AlignedVec`. The transport never takes that path itself |
+| Step                   | Byte copy                         | What happens                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build the value        | none                              | the caller builds its owned args, or the service builds its return value. Not a transport cost                                                                                                                                                                                                                                                                                                                  |
+| Encode                 | **no copy**, but serialization    | `rkyv` walks the value into a reusable `AlignedVec` with `to_bytes_in`. A request uses the **thread-local** [`REQUEST_SCRATCH`](ice-rpc/src/transport/client.rs:423) — one allocation per thread, reused by every later call; a response uses the scratch [`observable_to_responses`](ice-rpc/src/transport/bridge.rs:157) owns — **one allocation per response stream**, reused for every event of that stream |
+| Publish                | **one copy of the whole payload** | [`try_publish`](ice-rpc/src/transport/publish.rs:96) loans a sample and `write_from_slice`s the archive into it: this is where the bytes enter shared memory. The `RpcHeader` rides in the sample's `user_header`, not in the payload                                                                                                                                                                           |
+| Deliver on the bus     | none                              | iceoryx2 makes the sample visible to its subscribers; the consumer receives a pointer to it                                                                                                                                                                                                                                                                                                                     |
+| Decode                 | **none of the raw bytes**         | [`decode_aligned`](ice-rpc/src/transport/mod.rs:203) sees a 16-byte-aligned payload and calls `rkyv::from_bytes` **on the sample**. The provider decodes a request straight from the received slice — the `to_vec()` it used to do is gone, which is what keeps a request from paying a second payload-sized copy                                                                                               |
+| Materialise            | **no copy**, but deserialization  | `from_bytes` validates in place and deserializes into an owned `T`: what is left is **one allocation per variable field**, and that is a `malloc`, not a copy of the payload                                                                                                                                                                                                                                    |
+| Decode, unaligned only | one copy                          | the fallback: a payload built by hand, or a buffer read outside the transport, is first copied into a 16-byte-aligned `AlignedVec`. The transport never takes that path itself                                                                                                                                                                                                                                  |
 
 The sample is requested with `payload_alignment(Alignment::new(16))`, the
 alignment `rkyv::to_bytes` produces, so a delivered payload is aligned by
@@ -858,13 +858,13 @@ is a file lock held by the node and released by the OS when the process dies.
 `UniqueNodeId::pid()` maps a node back to its process — which is ice-rpc's
 `NodeId`. Liveness is read **on demand** through `alive_pids()` / `is_pid_alive()`.
 
-| Aspect | Behaviour |
-|---|---|
-| **Provider** | The iceoryx2 `Node` created at init already holds the monitoring lock; no extra lock is acquired. |
-| **Clean shutdown** | `transport::release_shared_node()` drops the `Node` (releasing the lock), after the ports; a peer then stops seeing it. |
-| **Read path** | `is_pid_alive(pid)` runs one `Node::list` and reports whether that PID owns an `Alive` node. No background poller is started by the library. |
-| **Cost** | A single `Node::list` costs ~475–680 µs, so it is pulled when observed (e.g. by the monitor's health view) rather than ticked continuously. |
-| **Failure policy** | Conservative: a failed or inconclusive scan reports the node as **alive**, never as a spurious death. |
+| Aspect             | Behaviour                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Provider**       | The iceoryx2 `Node` created at init already holds the monitoring lock; no extra lock is acquired.                                            |
+| **Clean shutdown** | `transport::release_shared_node()` drops the `Node` (releasing the lock), after the ports; a peer then stops seeing it.                      |
+| **Read path**      | `is_pid_alive(pid)` runs one `Node::list` and reports whether that PID owns an `Alive` node. No background poller is started by the library. |
+| **Cost**           | A single `Node::list` costs ~475–680 µs, so it is pulled when observed (e.g. by the monitor's health view) rather than ticked continuously.  |
+| **Failure policy** | Conservative: a failed or inconclusive scan reports the node as **alive**, never as a spurious death.                                        |
 
 See [`ice-rpc-monitor/src/liveness.rs`](ice-rpc-monitor/src/liveness.rs:1) for the
 implementation, [`ice-rpc/examples/node_liveness_probe.rs`](ice-rpc/examples/node_liveness_probe.rs:1)
@@ -925,26 +925,34 @@ sequenceDiagram
 ### 12.2. Node.js API
 
 ```javascript
-const gateway = require('gateway-nodejs');
+const gateway = require("gateway-nodejs");
 
 // 1. Register only the services THIS process provides.
-gateway.registerService('ContextService');
+gateway.registerService("ContextService");
 
 // 2. One dispatcher for every service. The signature is (err, call).
 gateway.init((err, call) => {
-    if (err) return;
-    const { correlationId, service, method, args } = call;
-    // args is a native JS value: N-API converted the intermediate Value tree,
-    // and no JSON.parse is involved.
-    // The terminal envelope carries the outcome: `{ data }` closes with one last
-    // value (a single CompleteWith sample), `{ error }` with a business error,
-    // and `{}` without a value.
-    gateway.resolveNodejsCall(correlationId, { data: store.get(args) });
+  if (err) return;
+  const { correlationId, service, method, args } = call;
+  // args is a native JS value: N-API converted the intermediate Value tree,
+  // and no JSON.parse is involved.
+  // The terminal envelope carries the outcome: `{ data }` closes with one last
+  // value (a single CompleteWith sample), `{ error }` with a business error,
+  // and `{}` without a value.
+  gateway.resolveNodejsCall(correlationId, { data: store.get(args) });
 });
 
 // 3. Consume: the proxy is created on demand, nothing to declare.
-const age = await gateway.callService('DatabaseService', 'get_user_age', 'Alice');
-const values = await gateway.callServiceStream('NotificationService', 'watch', 3);
+const age = await gateway.callService(
+  "DatabaseService",
+  "get_user_age",
+  "Alice",
+);
+const values = await gateway.callServiceStream(
+  "NotificationService",
+  "watch",
+  3,
+);
 
 // 4. Clean shutdown releases the IPC resources.
 await gateway.shutdown();
@@ -957,17 +965,17 @@ never passed as a `type`, so a call can no longer end on a bare `Next`.
 
 ### 12.3. Key points
 
-| Characteristic | Description |
-|---|---|
-| **Single bridge** | One `NodeJsBridge` per gateway, owning the calls JavaScript has not closed yet |
-| **No JSON text** | No `JSON.parse`/`JSON.stringify`: N-API converts the intermediate `serde_json::Value` tree to native JS objects; see [the ADR](docs/nodejs-json-bridge-adr.md) for its measured cost |
-| **Single callback** | One JS dispatcher `(err, call)` for every service and method |
-| **Generated surface** | `#[service]` emits the provider converters and the `JsonInvoker` the consumer side dispatches to; `gateway!` emits the eight N-API functions, so neither can drift from the declaration |
-| **No direct iceoryx2** | Neither `ice-rpc-nodejs` nor an addon depends on `iceoryx2`: everything goes through `ice-rpc` |
-| **Non-blocking calls** | `callService` and `callServiceStream` run on the libuv thread pool; the Node.js event loop is never blocked |
-| **Stable codes** | Every failure starts with a documented code (`E_NO_PROVIDER`, `E_TIMEOUT`, `E_BUSINESS`, …) |
-| **Bounded waits** | The transport thread waits for the first event at most 30 s, and the pending table is capped |
-| **Two-process consumption** | A process cannot consume a service it provides: the locator returns the registered provider proxy |
+| Characteristic              | Description                                                                                                                                                                             |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Single bridge**           | One `NodeJsBridge` per gateway, owning the calls JavaScript has not closed yet                                                                                                          |
+| **No JSON text**            | No `JSON.parse`/`JSON.stringify`: N-API converts the intermediate `serde_json::Value` tree to native JS objects; see [the ADR](docs/nodejs-json-bridge-adr.md) for its measured cost    |
+| **Single callback**         | One JS dispatcher `(err, call)` for every service and method                                                                                                                            |
+| **Generated surface**       | `#[service]` emits the provider converters and the `JsonInvoker` the consumer side dispatches to; `gateway!` emits the eight N-API functions, so neither can drift from the declaration |
+| **No direct iceoryx2**      | Neither `ice-rpc-nodejs` nor an addon depends on `iceoryx2`: everything goes through `ice-rpc`                                                                                          |
+| **Non-blocking calls**      | `callService` and `callServiceStream` run on the libuv thread pool; the Node.js event loop is never blocked                                                                             |
+| **Stable codes**            | Every failure starts with a documented code (`E_NO_PROVIDER`, `E_TIMEOUT`, `E_BUSINESS`, …)                                                                                             |
+| **Bounded waits**           | The transport thread waits for the first event at most 30 s, and the pending table is capped                                                                                            |
+| **Two-process consumption** | A process cannot consume a service it provides: the locator returns the registered provider proxy                                                                                       |
 
 ## 13. HTTP REST gateway
 
@@ -1014,8 +1022,8 @@ The HTTP REST gateway is a built-in HTTP server based on [trillium](https://gith
 │  ┌────────────────────────────────────────────────────────────────────┐  │
 │  │            JsonInvoker (generated once by the macro)               │  │
 │  │                                                                    │  │
-│  │  invoke_json(method, args, ReadMode::First) -> one match table     │  │
-│  │      "get_user_age" => read_json(self.get_user_age(name).await, read)│  │
+│  │  invoke_json_stream(method, args, sink) -> one match table         │  │
+│  │      "get_user_age" => stream_json(self.get_user_age(name).await, sink)│
 │  │      _              => None                   (-> HTTP 404)        │  │
 │  └────────────────────────────────────────────────────────────────────┘  │
 │                                     │                                    │
@@ -1037,25 +1045,23 @@ pub trait JsonInvoker: Send + Sync {
     /// Logical name of the service.
     fn service_name(&self) -> &'static str;
 
-    /// Invokes one method with JSON arguments.
-    ///
-    /// `None` when the service has no such method, so a caller can tell a typo
-    /// from a call that failed.
-    async fn invoke_json(
+    /// Streams the events of one call; `None` when the service has no such
+    /// method, so a caller can tell a typo from a call that failed.
+    async fn invoke_json_stream(
         &self,
         method: &str,
         args: serde_json::Value,
-        read: ReadMode,
-    ) -> Option<Result<JsonOutcome, JsonCallError>>;
+        sink: JsonEventSink,
+    ) -> Option<()>;
 }
 ```
 
-`ReadMode` says how much of the call is read: `First` (the first value — the only
-mode able to serve an endless stream) or `All` (every value, waiting for the
-terminal event). It travels as an **argument**, not as a second entry point, which
-is what keeps a single match table per service; and it is why `JsonOutcome::Nothing`
-exists — a service may legitimately complete without emitting any value, which a
-bare `null` could not be told apart from a real `null` payload.
+There is **one** entry point: every transport derives its answer from the events.
+A unary transport calls `first_json`, which reads the first event and drops the
+call — that cancellation is what makes an endless stream answerable, and it is
+why `JsonOutcome::Nothing` still exists: a service may legitimately complete
+without emitting any value, which a bare `null` could not be told apart from a
+real `null` payload.
 
 This trait is **implemented automatically** by the `#[service]` macro on each Proxy
 type (via the [`ice-rpc-macros/src/codegen/json.rs`](ice-rpc-macros/src/codegen/json.rs:1)
@@ -1065,42 +1071,46 @@ Node.js bridge both dispatch to this single view, so the two cannot drift apart.
 
 ### 13.3. URL and response format
 
-| HTTP method | URL | Parameters | Example |
-|---|---|---|---|
-| `GET` | `/{service}/{method}?arg1=val1&arg2=val2` | Query string | `curl "http://localhost:8080/DatabaseService/get_user_age?name=Alice"` |
-| `POST` | `/{service}/{method}` | JSON body | `curl -X POST http://localhost:8080/DatabaseService/get_person -H 'Content-Type: application/json' -d '{"nom":"Dupont","prenom":"Jean"}'` |
+| HTTP method | URL                                       | Parameters   | Example                                                                                                                                   |
+| ----------- | ----------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`       | `/{service}/{method}?arg1=val1&arg2=val2` | Query string | `curl "http://localhost:8080/DatabaseService/get_user_age?name=Alice"`                                                                    |
+| `POST`      | `/{service}/{method}`                     | JSON body    | `curl -X POST http://localhost:8080/DatabaseService/get_person -H 'Content-Type: application/json' -d '{"nom":"Dupont","prenom":"Jean"}'` |
 
 **Success response :**
+
 ```json
 {"status":"ok","data":{...}}
 ```
 
 **Business error response :**
+
 ```json
-{"status":"error","error":"error message"}
+{ "status": "error", "error": "error message" }
 ```
 
 **Unknown service response (404) :**
+
 ```json
-{"status":"error","error":"Unknown service 'X'. No provider detected."}
+{ "status": "error", "error": "Unknown service 'X'. No provider detected." }
 ```
 
 **Unknown method response (404) :**
+
 ```json
-{"status":"error","error":"Unknown method 'X' for service 'Y'"}
+{ "status": "error", "error": "Unknown method 'X' for service 'Y'" }
 ```
 
 ### 13.4. GET parameter conversion
 
 The query strings are converted automatically to JSON with smart scalar interpretation :
 
-| Raw value | Inferred JSON type |
-|---|---|
-| `"true"` / `"false"` | Boolean |
-| `"null"` / `"none"` | Null |
-| `"42"` / `"-1"` | Integer |
-| `"3.14"` | Floating-point number |
-| `"Alice"` | String |
+| Raw value            | Inferred JSON type    |
+| -------------------- | --------------------- |
+| `"true"` / `"false"` | Boolean               |
+| `"null"` / `"none"`  | Null                  |
+| `"42"` / `"-1"`      | Integer               |
+| `"3.14"`             | Floating-point number |
+| `"Alice"`            | String                |
 
 If a single parameter is present, its value is passed directly (no object). If several parameters are present, they are grouped into a JSON object `{"key1": val1, "key2": val2}`.
 
@@ -1142,6 +1152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 **Key points :**
+
 - [`start_http_gateway!`](ice-rpc/src/lib.rs:448) builds the `name → factory` mapping and starts the gateway
 - The gateway consumes the other ice-rpc services of the process through the `ServiceLocator`
 - The shutdown is graceful : the trillium server stops cleanly via [`global_cancel_token()`](ice-rpc/src/lib.rs)
@@ -1149,12 +1160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 13.7. Code generation — `impl JsonInvoker`
 
-The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro generates the [`JsonInvoker`](ice-rpc/src/json.rs:87) implementation for each Proxy. It is emitted **once per service**, for `json` or `http`, and it names no transport. The generated code performs :
+The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro generates the [`JsonInvoker`](ice-rpc/src/json.rs:176) implementation for each Proxy. It is emitted **once per service**, for `json` or `http`, and it names no transport. The generated code performs :
 
 1. **Match on the method name** → branches to the corresponding RPC method
 2. **JSON deserialization** → conversion of the parameters to the expected Rust types, reported as `JsonCallError::InvalidArgs` when they do not fit
 3. **RPC call** → call of the method on the proxy (local or IPC depending on the mode)
-4. **Reading** → `ice_rpc::codegen::read_json(call, read)`: the one helper carrying the `First` / `All` policy and mapping a business failure onto `JsonCallError::Business`
+4. **Streaming** → `ice_rpc::codegen::stream_json(call, sink)`: one event per value, with a business failure mapped onto `JsonStreamEvent::Failed`; a unary transport calls `first_json`, which takes the first event and cancels the rest
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -1175,12 +1186,12 @@ The [`#[service]`](ice-rpc-macros/src/codegen/json.rs:1) procedural macro genera
 │  │ impl JsonInvoker for DatabaseServiceProxy {                  │  │
 │  │     fn service_name() -> "DatabaseService"                   │  │
 │  │                                                              │  │
-│  │     async fn invoke_json(method, args, read) {               │  │
+│  │     async fn invoke_json_stream(method, args, sink) {        │  │
 │  │         match method {                                       │  │
 │  │             "get_user_age" => {                              │  │
 │  │                 let name: String = from_value(args)?;        │  │
-│  │                 // one line: the policy lives in read_json   │  │
-│  │                 read_json(self.get_user_age(name).await, read)│  │
+│  │                 // one line: the loop lives in stream_json   │  │
+│  │                 stream_json(self.get_user_age(name).await, sink)│
 │  │             }                                                │  │
 │  │             "get_person" => {                                │  │
 │  │                 // multi-params : per-field extraction       │  │
@@ -1313,7 +1324,7 @@ cargo run -p ice-rpc --example remote_cancel --features tokio -- consumer
 
 The repository ships a versioned pre-commit hook in `.githooks/` that runs
 `cargo fmt --all` and re-stages the reformatted Rust files, so a commit cannot
-fail the CI *Format check* step (`cargo fmt --all -- --check`). Enable it **once
+fail the CI _Format check_ step (`cargo fmt --all -- --check`). Enable it **once
 per clone**:
 
 ```bash
@@ -1412,10 +1423,10 @@ the zero-copy `RpcHeader` only.
 
 Two capture modes, because reading the payload is not free:
 
-| Mode | Reads/decodes the payload | Use case |
-|---|---|---|
-| `stats` (default) | never | high throughput: counts, error kinds, exact latency, observer loss |
-| `detail` | yes (decoded) | debugging at moderate throughput: the message content |
+| Mode              | Reads/decodes the payload | Use case                                                           |
+| ----------------- | ------------------------- | ------------------------------------------------------------------ |
+| `stats` (default) | never                     | high throughput: counts, error kinds, exact latency, observer loss |
+| `detail`          | yes (decoded)             | debugging at moderate throughput: the message content              |
 
 Decoding is opt-in: building the service definitions with the `monitoring`
 feature makes `#[service]` generate a `{Service}Decoder` per service and submit

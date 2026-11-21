@@ -17,8 +17,7 @@ use futures_util::StreamExt;
 use ice_rpc::ChannelsGatewayConfig;
 use ice_rpc::codegen::serde_json::{Value, json};
 use ice_rpc::json::{
-    JsonCallError, JsonEventSink, JsonInvoker, JsonInvokerFactory, JsonOutcome, JsonStreamEvent,
-    ReadMode,
+    JsonCallError, JsonEventSink, JsonInvoker, JsonInvokerFactory, JsonStreamEvent,
 };
 
 type Socket = async_tungstenite::WebSocketStream<async_tungstenite::tokio::ConnectStream>;
@@ -31,21 +30,6 @@ impl JsonInvoker for MockInvoker {
         "MockService"
     }
 
-    async fn invoke_json(
-        &self,
-        method: &str,
-        _args: Value,
-        _read: ReadMode,
-    ) -> Option<Result<JsonOutcome, JsonCallError>> {
-        match method {
-            "echo" => Some(Ok(JsonOutcome::Value(json!({ "ok": true })))),
-            "nothing" => Some(Ok(JsonOutcome::Nothing)),
-            "accepted" => Some(Ok(JsonOutcome::Accepted { delivered: true })),
-            "fail" => Some(Err(JsonCallError::Business("no".to_string()))),
-            _ => None,
-        }
-    }
-
     async fn invoke_json_stream(
         &self,
         method: &str,
@@ -53,6 +37,31 @@ impl JsonInvoker for MockInvoker {
         sink: JsonEventSink,
     ) -> Option<()> {
         match method {
+            // The unary shapes: one event, then the terminal.
+            "echo" => {
+                if !sink
+                    .send(JsonStreamEvent::Next(json!({ "ok": true })))
+                    .await
+                {
+                    return Some(());
+                }
+                let _ = sink.send(JsonStreamEvent::Complete).await;
+                Some(())
+            }
+            "nothing" => {
+                let _ = sink.send(JsonStreamEvent::Complete).await;
+                Some(())
+            }
+            "accepted" => {
+                let _ = sink
+                    .send(JsonStreamEvent::Accepted { delivered: true })
+                    .await;
+                Some(())
+            }
+            "fail" => {
+                let _ = sink.fail(JsonCallError::Business("no".to_string())).await;
+                Some(())
+            }
             "values" => {
                 if !sink.send(JsonStreamEvent::Next(json!(1))).await {
                     return Some(());

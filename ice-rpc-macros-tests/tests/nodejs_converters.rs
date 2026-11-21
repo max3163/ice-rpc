@@ -16,7 +16,7 @@
 #![allow(clippy::unwrap_used)] // tests/examples/benches may panic
 
 use ice_rpc::codegen::{
-    EventKind, JsonCallError, JsonInvoker, ReadMode, WireEvent, decode_aligned, serde_json,
+    EventKind, JsonCallError, WireEvent, decode_aligned, first_json, serde_json,
 };
 use ice_rpc::{Observable, ServiceInit};
 use ice_rpc_macros::service;
@@ -195,36 +195,25 @@ fn the_json_provider_mode_proxy_is_registrable() {
 ///
 /// What this pins is exactly what the hand-written table used to get wrong: the
 /// served surface is the **declaration**, so a method that exists is served and a
-/// name that is not declared is not. The reading mode travels as an argument, so
-/// one table answers both entry points.
+/// name that is not declared is not. Every transport consumes the same stream
+/// view; a unary caller goes through `first_json`.
 #[test]
 fn the_generated_json_view_follows_the_declaration() {
     let proxy = ConverterApiProxy::provide_json();
 
     // A name that is not declared is reported as "no such method" (`None`), not
     // as a failure: the gateway turns that into `E_UNKNOWN_METHOD`.
-    let unknown = ice_rpc::rt::test_block_on(proxy.invoke_json(
-        "nope",
-        serde_json::json!({}),
-        ReadMode::First,
-    ));
-    assert!(unknown.is_none(), "an undeclared method must map to None");
-
-    // Reading every value follows the same rule, from the same table.
     let unknown =
-        ice_rpc::rt::test_block_on(proxy.invoke_json("nope", serde_json::json!({}), ReadMode::All));
-    assert!(
-        unknown.is_none(),
-        "an undeclared method must map to None when every value is read too"
-    );
+        ice_rpc::rt::test_block_on(first_json(proxy.as_ref(), "nope", serde_json::json!({})));
+    assert!(unknown.is_none(), "an undeclared method must map to None");
 
     // Arguments that do not fit the declaration are refused as `InvalidArgs`,
     // and the message names the offending parameter. Decoding happens before the
     // call, so this never reaches the bus.
-    let bad = ice_rpc::rt::test_block_on(proxy.invoke_json(
+    let bad = ice_rpc::rt::test_block_on(first_json(
+        proxy.as_ref(),
         "echo",
         serde_json::json!({"text": "hello", "count": "not-a-number"}),
-        ReadMode::First,
     ));
     match bad.expect("a declared method must answer Some") {
         Err(JsonCallError::InvalidArgs(message)) => {
@@ -239,10 +228,10 @@ fn the_generated_json_view_follows_the_declaration() {
     // A declared method is served even when the call itself cannot succeed here:
     // that is the difference the old table could not express, since an
     // undeclared-but-real method was indistinguishable from a typo.
-    let declared = ice_rpc::rt::test_block_on(proxy.invoke_json(
+    let declared = ice_rpc::rt::test_block_on(first_json(
+        proxy.as_ref(),
         "upload",
         serde_json::json!("AQIDBA=="),
-        ReadMode::First,
     ));
     assert!(
         declared.is_some(),

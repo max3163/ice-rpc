@@ -87,7 +87,7 @@ id. A `stream` reuses its push ref in the ack and in every server push: the
 client can match `payload.ref` in `channel.on("next", payload => …)`, and
 `cancel` names that ref. The client never invents an identifier.
 
-`call` reads one value (`ReadMode::First`): the reply is
+`call` reads one value (`first_json`, which cancels the rest of the call): the reply is
 `{"status":"ok","response":{"kind":"value","data":…}}`,
 `{"kind":"nothing"}` or `{"kind":"accepted","delivered":…}`. A failure is
 `{"status":"error","response":{"kind":"E_…","message":…}}`.

@@ -76,7 +76,7 @@
 // Each `http-*` feature brings its own trillium runtime adapter; the module is
 // compiled only when one of them is on.
 use crate::gateway_registry::JsonInvokerRegistry;
-use crate::json::{JsonCallError, JsonInvokerFactory, JsonOutcome, ReadMode};
+use crate::json::{JsonCallError, JsonInvokerFactory, JsonOutcome, first_json};
 use serde_json::Value;
 use std::collections::HashMap;
 use trillium::{Conn, Handler, Method};
@@ -287,8 +287,8 @@ fn parse_scalar(s: &str) -> Value {
 
 /// Calls the service through its JSON view and formats the HTTP response.
 ///
-/// **One** value is read (`ReadMode::First`): a browser cannot consume an endless
-/// stream, and waiting for every value would buffer it in memory.
+/// **One** value is read ([`first_json`]): a browser cannot consume an endless
+/// stream, and the call is cancelled after that first event.
 async fn invoke_service(
     registry: &JsonInvokerRegistry,
     service: &str,
@@ -321,7 +321,7 @@ async fn invoke_service(
     };
 
     // No such method: the route is wrong, answered without touching the bus.
-    let Some(result) = invoker.invoke_json(method, params, ReadMode::First).await else {
+    let Some(result) = first_json(invoker.as_ref(), method, params).await else {
         return json_response(
             conn,
             404,

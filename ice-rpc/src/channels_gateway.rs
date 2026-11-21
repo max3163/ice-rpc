@@ -51,7 +51,7 @@ use trillium_channels::{ChannelConn, ChannelEvent, ChannelHandler, channel};
 use crate::CancellationToken;
 use crate::gateway_registry::JsonInvokerRegistry;
 use crate::json::{
-    JsonCallError, JsonEventSink, JsonInvokerFactory, JsonOutcome, JsonStreamEvent, ReadMode,
+    JsonCallError, JsonEventSink, JsonInvokerFactory, JsonOutcome, JsonStreamEvent, first_json,
 };
 
 /// Configuration of the Phoenix Channels gateway.
@@ -394,7 +394,7 @@ impl ChannelsHandler {
         let args = request.args;
         crate::rt::spawn(async move {
             let cancel = token;
-            let call = invoker.invoke_json(&method, args, ReadMode::First);
+            let call = first_json(invoker.as_ref(), &method, args);
             let cancelled = async move {
                 cancel.cancelled().await;
                 None::<Result<JsonOutcome, JsonCallError>>

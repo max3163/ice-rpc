@@ -904,41 +904,6 @@ impl DatabaseApiProxy {
         self.notify(message)
             .map_err(|e| ice_rpc::codegen::JsonCallError::Transport(e.to_string()))
     }
-    /// The JSON view of `add`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_add(
-        &self,
-        args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
-        ice_rpc::codegen::read_json(self.json_call_of_add(args).await?, read).await
-    }
-    /// The JSON view of `get`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_get(
-        &self,
-        args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
-        ice_rpc::codegen::read_json(self.json_call_of_get(args).await?, read).await
-    }
-    /// The JSON view of `put`: decodes the arguments, calls the method and reads its result. Generated so the dispatch table stays one line per method.
-    async fn json_view_of_put(
-        &self,
-        args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
-        ice_rpc::codegen::read_json(self.json_call_of_put(args).await?, read).await
-    }
-    /// The JSON view of `notify`: decodes the arguments and publishes the one-way notification. No result exists to read.
-    async fn json_view_of_notify(
-        &self,
-        args: ice_rpc::codegen::serde_json::Value,
-        _read: ice_rpc::codegen::ReadMode,
-    ) -> ice_rpc::codegen::JsonResult {
-        let delivered = self.json_call_of_notify(args)?;
-        Ok(ice_rpc::codegen::JsonOutcome::Accepted {
-            delivered,
-        })
-    }
     /// The streaming JSON view of `add`: decodes the arguments, calls the method and pushes each event into the sink.
     async fn json_stream_of_add(
         &self,
@@ -983,20 +948,6 @@ impl DatabaseApiProxy {
 impl ice_rpc::codegen::JsonInvoker for DatabaseApiProxy {
     fn service_name(&self) -> &'static str {
         <DatabaseApiProxy as ice_rpc::codegen::ServiceNamed>::SERVICE_NAME
-    }
-    async fn invoke_json(
-        &self,
-        method: &str,
-        args: ice_rpc::codegen::serde_json::Value,
-        read: ice_rpc::codegen::ReadMode,
-    ) -> Option<ice_rpc::codegen::JsonResult> {
-        match method {
-            "add" => Some(self.json_view_of_add(args, read).await),
-            "get" => Some(self.json_view_of_get(args, read).await),
-            "put" => Some(self.json_view_of_put(args, read).await),
-            "notify" => Some(self.json_view_of_notify(args, read).await),
-            _ => None,
-        }
     }
     async fn invoke_json_stream(
         &self,

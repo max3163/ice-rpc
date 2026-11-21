@@ -14,21 +14,30 @@
 //! # Call flow
 //!
 //! 1. JS: `await gateway.callService('DatabaseService', 'get_user_age', 'Alice')`
-//! 2. N-API → [`call_ipc_method`] → the generated `JsonInvoker::invoke_json`
+//! 2. N-API → [`call_ipc_method`] → the generated
+//!    `JsonInvoker::invoke_json_stream`
 //! 3. Proxy retrieval through [`ice_rpc::ServiceLocator::get`]
 //! 4. Business call (IPC to the remote provider)
-//! 5. The [`JsonOutcome`] of the call: one value (`ReadMode::First`) or every
-//!    value (`ReadMode::All`)
+//! 5. `callService` takes the first event (`first_json`, which cancels the
+//!    rest); `callServiceStream` drains a **finite** stream into an array.
 //!
-//! The reading mode is an **argument**, not a second generated entry point: the
-//! two JavaScript functions share one dispatch, so a method added to a service
-//! is served by both without touching this file.
+//! Both entry points consume the single stream view. `callServiceStream` is a
+//! collecting call, not a push API: a stream that never completes never
+//! resolves.
 
 use crate::error::{GatewayError, GatewayErrorCode};
 use crate::services::{GatewayService, unknown_service_error};
-use ice_rpc::codegen::{JsonCallError, JsonInvoker, JsonOutcome, ReadMode};
+use ice_rpc::codegen::{
+    JsonCallError, JsonEventSink, JsonInvoker, JsonOutcome, JsonStreamEvent, first_json,
+};
 use serde_json::Value;
 use std::sync::Arc;
+
+/// Events buffered between the service and the collecting loop.
+///
+/// Bounds how far the service may run ahead while [`call_ipc_method_stream`]
+/// drains its events; it does not bound the result, which is the array itself.
+const STREAM_EVENTS_BUFFER: usize = 16;
 
 /// Calls a method of a remote IPC service and returns its first value as JSON.
 ///
@@ -47,7 +56,7 @@ pub async fn call_ipc_method(
     method: &str,
     args: Value,
 ) -> Result<Value, GatewayError> {
-    match call_outcome(table, service, method, args, ReadMode::First).await? {
+    match first_outcome(table, service, method, args).await? {
         JsonOutcome::Value(value) => Ok(value),
         JsonOutcome::Nothing => Err(no_value(service, method)),
         // No value can ever exist: naming the contract beats a `null` payload.
@@ -57,46 +66,102 @@ pub async fn call_ipc_method(
 
 /// Calls a method of a remote IPC service and returns **every** value it emits.
 ///
-/// The multi-value counterpart of [`call_ipc_method`], for a service whose
-/// method streams several values before completing: it waits for the terminal
-/// event instead of returning the first value. An empty stream is a legitimate
-/// empty result here, whereas [`call_ipc_method`] has to report a missing value.
+/// The multi-value counterpart of [`call_ipc_method`], for a **finite** stream:
+/// it drains `JsonInvoker::invoke_json_stream` and waits for the terminal event.
+/// An empty stream is a legitimate empty result here, whereas
+/// [`call_ipc_method`] has to report a missing value.
+///
+/// This is a **collecting** call, not a push API: a stream that never completes
+/// never resolves, and the array grows with every value.
 pub async fn call_ipc_method_stream(
     table: &'static [GatewayService],
     service: &str,
     method: &str,
     args: Value,
 ) -> Result<Vec<Value>, GatewayError> {
-    match call_outcome(table, service, method, args, ReadMode::All).await? {
-        // `All` answers with an array; a lone value is wrapped, not dropped.
-        JsonOutcome::Value(Value::Array(values)) => Ok(values),
-        JsonOutcome::Value(other) => Ok(vec![other]),
-        JsonOutcome::Nothing => Ok(Vec::new()),
-        // Nothing will ever arrive: saying so beats an empty array.
-        JsonOutcome::Accepted { .. } => Err(one_way(service, method)),
+    let invoker = resolve_invoker(table, service).await?;
+    let (sink, receiver) = JsonEventSink::bounded(STREAM_EVENTS_BUFFER);
+
+    /// How one drained stream ended.
+    enum Drained {
+        /// The service completed; carries every value it emitted.
+        Completed(Vec<Value>),
+        /// The method is one-way: nothing will ever be answered.
+        Accepted,
+        /// The service or the transport failed.
+        Failed(JsonCallError),
+    }
+
+    let drain = async move {
+        let mut values = Vec::new();
+        while let Ok(event) = receiver.recv().await {
+            match event {
+                JsonStreamEvent::Next(value) => values.push(value),
+                JsonStreamEvent::Complete => return Drained::Completed(values),
+                JsonStreamEvent::Accepted { .. } => return Drained::Accepted,
+                JsonStreamEvent::Failed(error) => return Drained::Failed(error),
+                // A kind this build does not know: refuse it instead of
+                // silently truncating the answer.
+                _ => {
+                    return Drained::Failed(JsonCallError::Transport(
+                        "unsupported stream event".to_string(),
+                    ));
+                }
+            }
+        }
+        // The generated view always reports a terminal event; a producer that
+        // vanished without one is a transport failure, not a clean empty result.
+        Drained::Failed(JsonCallError::Transport(
+            "stream closed before completion".to_string(),
+        ))
+    };
+
+    // The call writes into the sink while `drain` reads it. Polling both at once
+    // is what keeps the bounded sink from filling and stalling the service.
+    let (called, drained) = ice_rpc::codegen::futures_lite::future::zip(
+        invoker.invoke_json_stream(method, args, sink),
+        drain,
+    )
+    .await;
+
+    // `None` is "no such method": the sink was dropped without an event.
+    if called.is_none() {
+        return Err(unknown_method(service, method));
+    }
+
+    match drained {
+        Drained::Completed(values) => Ok(values),
+        Drained::Accepted => Err(one_way(service, method)),
+        Drained::Failed(error) => Err(call_error(error)),
     }
 }
 
-/// Resolves the service, reads its invoker and runs one call.
-async fn call_outcome(
+/// Resolves the service, reads its invoker and takes the first event.
+async fn first_outcome(
     table: &'static [GatewayService],
     service: &str,
     method: &str,
     args: Value,
-    read: ReadMode,
 ) -> Result<JsonOutcome, GatewayError> {
+    let invoker = resolve_invoker(table, service).await?;
+    // `None` means "no such method"; `Some` is returned even when the call fails.
+    match first_json(invoker.as_ref(), method, args).await {
+        Some(result) => result.map_err(call_error),
+        None => Err(unknown_method(service, method)),
+    }
+}
+
+/// Resolves the consumer proxy of `service`, or the error explaining why it is
+/// not reachable.
+async fn resolve_invoker(
+    table: &'static [GatewayService],
+    service: &str,
+) -> Result<Arc<dyn JsonInvoker>, GatewayError> {
     let entry = table
         .iter()
         .find(|entry| entry.name == service)
         .ok_or_else(|| unknown_service_error(table, service))?;
-    let invoker: Arc<dyn JsonInvoker> = (entry.invoker)()
-        .await
-        .ok_or_else(|| no_provider(service))?;
-    // `None` means "no such method"; `Some` is returned even when the call fails.
-    match invoker.invoke_json(method, args, read).await {
-        Some(result) => result.map_err(call_error),
-        None => Err(unknown_method(service, method)),
-    }
+    (entry.invoker)().await.ok_or_else(|| no_provider(service))
 }
 
 /// Maps the failure reported by the generated JSON view onto the gateway codes.
@@ -168,13 +233,58 @@ mod tests {
             "MockService"
         }
 
-        async fn invoke_json(
+        async fn invoke_json_stream(
             &self,
             _method: &str,
             _args: Value,
-            _read: ReadMode,
-        ) -> Option<Result<JsonOutcome, JsonCallError>> {
+            _sink: JsonEventSink,
+        ) -> Option<()> {
             None
+        }
+    }
+
+    /// An invoker whose stream view answers a finite set of events.
+    struct StreamingInvoker;
+
+    #[async_trait::async_trait]
+    impl JsonInvoker for StreamingInvoker {
+        fn service_name(&self) -> &'static str {
+            "StreamService"
+        }
+
+        async fn invoke_json_stream(
+            &self,
+            method: &str,
+            _args: Value,
+            sink: JsonEventSink,
+        ) -> Option<()> {
+            match method {
+                "values" => {
+                    for value in [1, 2, 3] {
+                        if !sink
+                            .send(JsonStreamEvent::Next(serde_json::json!(value)))
+                            .await
+                        {
+                            return Some(());
+                        }
+                    }
+                    let _ = sink.send(JsonStreamEvent::Complete).await;
+                    Some(())
+                }
+                "oneway" => {
+                    let _ = sink
+                        .send(JsonStreamEvent::Accepted { delivered: true })
+                        .await;
+                    Some(())
+                }
+                "fail" => {
+                    let _ = sink
+                        .fail(JsonCallError::Business("denied".to_string()))
+                        .await;
+                    Some(())
+                }
+                _ => None,
+            }
         }
     }
 
@@ -190,6 +300,10 @@ mod tests {
         Box::pin(async { None })
     }
 
+    fn streaming_invoker() -> crate::services::BoxFuture<'static, Option<Arc<dyn JsonInvoker>>> {
+        Box::pin(async { Some(Arc::new(StreamingInvoker) as Arc<dyn JsonInvoker>) })
+    }
+
     static TABLE: &[GatewayService] = &[
         GatewayService {
             name: "MockService",
@@ -200,6 +314,11 @@ mod tests {
             name: "OfflineService",
             provide,
             invoker: absent_invoker,
+        },
+        GatewayService {
+            name: "StreamService",
+            provide,
+            invoker: streaming_invoker,
         },
     ];
 
@@ -255,5 +374,65 @@ mod tests {
         let error = no_value("MockService", "watch");
         assert_eq!(error.code(), GatewayErrorCode::Business);
         assert!(error.message().contains("MockService.watch"));
+    }
+
+    #[test]
+    fn a_finite_stream_is_collected_in_order() {
+        let values = ice_rpc::rt::block_on(call_ipc_method_stream(
+            TABLE,
+            "StreamService",
+            "values",
+            Value::Null,
+        ))
+        .expect("a finite stream completes");
+
+        assert_eq!(
+            values,
+            vec![
+                serde_json::json!(1),
+                serde_json::json!(2),
+                serde_json::json!(3)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_one_way_stream_is_refused() {
+        let error = ice_rpc::rt::block_on(call_ipc_method_stream(
+            TABLE,
+            "StreamService",
+            "oneway",
+            Value::Null,
+        ))
+        .expect_err("a one-way method has no result");
+
+        assert_eq!(error.code(), GatewayErrorCode::OneWay);
+    }
+
+    #[test]
+    fn a_stream_failure_keeps_its_code() {
+        let error = ice_rpc::rt::block_on(call_ipc_method_stream(
+            TABLE,
+            "StreamService",
+            "fail",
+            Value::Null,
+        ))
+        .expect_err("the service failed");
+
+        assert_eq!(error.code(), GatewayErrorCode::Business);
+        assert_eq!(error.message(), "denied");
+    }
+
+    #[test]
+    fn an_unknown_stream_method_is_reported() {
+        let error = ice_rpc::rt::block_on(call_ipc_method_stream(
+            TABLE,
+            "StreamService",
+            "nope",
+            Value::Null,
+        ))
+        .expect_err("no such method");
+
+        assert_eq!(error.code(), GatewayErrorCode::UnknownMethod);
     }
 }

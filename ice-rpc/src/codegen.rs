@@ -34,7 +34,7 @@ pub use crate::service_traits::{ServiceConsumer, ServiceLifecycle, ServiceNamed}
 pub use crate::json::{
     JSON_CALL_TIMEOUT, JsonCallError, JsonCallEvent, JsonCallStream, JsonDispatcher, JsonEventSink,
     JsonInvoker, JsonInvokerFactory, JsonOutcome, JsonResult, JsonStreamEvent, JsonStreamResult,
-    ReadMode, dispatch_json, json_dispatcher, read_json, set_json_dispatcher, stream_json,
+    dispatch_json, first_json, json_dispatcher, set_json_dispatcher, stream_json,
 };
 // Host answer to wire sample: the whole envelope dispatch, one line per method.
 #[cfg(feature = "json")]

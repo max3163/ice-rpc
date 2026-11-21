@@ -27,11 +27,11 @@ For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, th
   `Debug` implementation otherwise;
 - With the `json` feature: the whole JSON view of the service —
   `impl ice_rpc::codegen::JsonInvoker for DatabaseServiceProxy`, the single view
-  every JSON transport dispatches to (the reading mode, `ReadMode::First` /
-  `ReadMode::All`, is an argument of `invoke_json`, so one match table serves the
-  single-value and the streaming entry points alike, and one inherent helper per
-  method, `json_view_of_{method}`, carries the decoding the table would otherwise
-  repeat) — plus the rkyv ↔ `serde_json::Value` converters
+  every JSON transport dispatches to (one entry point, `invoke_json_stream`, so
+  one match table per service; a unary transport calls `first_json`, which reads
+  the first event and cancels the rest; one inherent helper per method,
+  `json_call_of_{method}`, carries the decoding) — plus the rkyv ↔
+  `serde_json::Value` converters
   (`deserialize_request_to_value`, `serialize_response_from_value`), the
   `ProviderJson` mode and its `provide_json()` constructor. The constructor builds
   the JSON dispatcher, so the host half is reachable only from a binary that calls

@@ -377,11 +377,18 @@ lifecycle) is in [`docs/nodejs-gateway-api-v3.md`](../docs/nodejs-gateway-api-v3
 | `registerService(name)`                                         | `void` (throws `E_UNKNOWN_SERVICE`, `E_GATEWAY_STATE`) |
 | `init(callback)`                                                | `void` (`callback` is `(err, call)`)                   |
 | `callService(service, method, args)`                            | `Promise<any>` — the first value                       |
-| `callServiceStream(service, method, args)`                      | `Promise<any[]>` — every value                         |
+| `callServiceStream(service, method, args)`                      | `Promise<any[]>` — every value of a **finite** stream  |
 | `emitNodejsEvent(correlationId, { data })`                      | `void` — push an intermediate value                    |
 | `resolveNodejsCall(correlationId, { data } \| { error } \| {})` | `void` — build the terminal event and close            |
 | `shutdown()`                                                    | `Promise<void>`                                        |
 | `version()`                                                     | `string`                                               |
+
+`callServiceStream` is a **collecting** call, not a push API: it drains
+`JsonInvoker::invoke_json_stream` and resolves once the service completes. A
+stream that never completes therefore never resolves, and the array grows with
+every value. The Phoenix Channels gateway is the push transport for such
+services today; a Node.js push entry point would have to deliver each event
+through a callback and expose a cancellation handle.
 
 ## TypeScript binding
 

@@ -224,11 +224,11 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
 
 /// Generates the consumer-side [`JsonInvoker`] implementation.
 ///
-/// **One** implementation per service, whatever the JSON transport: the Node.js
-/// gateway and the HTTP gateway both consume it, so neither carries generated
-/// code of its own. The reading policy travels as an argument
-/// ([`ReadMode`](ice_rpc::codegen::ReadMode)) rather than as a second entry point,
-/// which is what keeps one match table instead of two.
+/// **One** implementation per service, and **one** entry point: every JSON
+/// transport consumes [`JsonInvoker::invoke_json_stream`] and derives its own
+/// answer from the events. A unary transport calls
+/// [`first_json`](ice_rpc::codegen::first_json), which drops the call after the
+/// first event. There is no second match table and no reading mode.
 ///
 /// # Argument convention
 /// Exactly the provider-side convention, so both directions agree (see
@@ -236,7 +236,7 @@ pub fn gen_json_provider_from_response_fn(input: &JsonGenInput<'_>) -> TokenStre
 ///
 /// # Bounds
 /// `OkType: Serialize` and `ErrType: Display`, imposed by
-/// [`read_json`](ice_rpc::codegen::read_json).
+/// [`stream_json`](ice_rpc::codegen::stream_json).
 ///
 /// Returns `None` for an unknown method, so a caller can tell "no such method"
 /// from "the method failed".
@@ -248,17 +248,14 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
     } = input;
 
     let call_helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_call_helper).collect();
-    let helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_helper).collect();
-    let match_arms: Vec<TokenStream> = methods.iter().map(gen_invoker_arm).collect();
     let stream_helpers: Vec<TokenStream> = methods.iter().map(gen_invoker_stream_helper).collect();
     let stream_arms: Vec<TokenStream> = methods.iter().map(gen_invoker_stream_arm).collect();
 
     quote! {
         // One inherent helper per method, next to the table that calls it, so the
-        // table stays one line per method. The call helper is shared by both views.
+        // table stays one line per method.
         impl #proxy_name {
             #(#call_helpers)*
-            #(#helpers)*
             #(#stream_helpers)*
         }
 
@@ -266,18 +263,6 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
         impl ice_rpc::codegen::JsonInvoker for #proxy_name {
             fn service_name(&self) -> &'static str {
                 <#proxy_name as ice_rpc::codegen::ServiceNamed>::SERVICE_NAME
-            }
-
-            async fn invoke_json(
-                &self,
-                method: &str,
-                args: ice_rpc::codegen::serde_json::Value,
-                read: ice_rpc::codegen::ReadMode,
-            ) -> Option<ice_rpc::codegen::JsonResult> {
-                match method {
-                    #(#match_arms)*
-                    _ => None,
-                }
             }
 
             async fn invoke_json_stream(
@@ -363,73 +348,6 @@ fn gen_invoker_call_helper(method: &JsonMethod) -> TokenStream {
     }
 }
 
-/// Builds the inherent helper carrying the JSON view of one method.
-///
-/// It is an **inherent** method, and not part of the `JsonInvoker`
-/// implementation, for one reason: `invoke_json` answers `Option<Result<…>>`, so
-/// a `match` arm cannot use `?`, and the decoding had to live in an `async` block
-/// whose result was awaited inside the arm. Here it has a real `Result` return
-/// type, `?` reads normally, and the arm is left with the dispatch alone.
-///
-/// The decoding and the call live in [`gen_invoker_call_helper`], which the
-/// streaming view also uses, so they are generated once per method.
-fn gen_invoker_helper(method: &JsonMethod) -> TokenStream {
-    let fn_name = &method.fn_name;
-    let fn_name_str = fn_name.to_string();
-    let helper = helper_name(method);
-    let call_helper = call_helper_name(method);
-
-    if method.oneway {
-        let doc = format!(
-            " The JSON view of `{fn_name_str}`: decodes the arguments and publishes the \
-             one-way notification. No result exists to read."
-        );
-        return quote! {
-            #[doc = #doc]
-            async fn #helper(
-                &self,
-                args: ice_rpc::codegen::serde_json::Value,
-                _read: ice_rpc::codegen::ReadMode,
-            ) -> ice_rpc::codegen::JsonResult {
-                let delivered = self.#call_helper(args)?;
-                Ok(ice_rpc::codegen::JsonOutcome::Accepted { delivered })
-            }
-        };
-    }
-
-    // The leading space makes rustfmt render `/// The …` as written.
-    let doc = format!(
-        " The JSON view of `{fn_name_str}`: decodes the arguments, calls the method and reads \
-         its result. Generated so the dispatch table stays one line per method."
-    );
-
-    quote! {
-        #[doc = #doc]
-        async fn #helper(
-            &self,
-            args: ice_rpc::codegen::serde_json::Value,
-            read: ice_rpc::codegen::ReadMode,
-        ) -> ice_rpc::codegen::JsonResult {
-            ice_rpc::codegen::read_json(self.#call_helper(args).await?, read).await
-        }
-    }
-}
-
-/// Builds one invoker match arm: the dispatch, and nothing else.
-///
-/// The whole "first value vs every value" policy and the mapping of a business
-/// error live in `read_json`; the decoding lives in the generated helper. What is
-/// left here is the table, and a table reads best when each line names what it
-/// calls.
-fn gen_invoker_arm(method: &JsonMethod) -> TokenStream {
-    let fn_name_str = method.fn_name.to_string();
-    let helper = helper_name(method);
-
-    quote! {
-        #fn_name_str => Some(self.#helper(args, read).await),
-    }
-}
-
 /// Builds the inherent helper streaming one method's events into the sink.
 ///
 /// The loop itself lives in `stream_json`, so this helper adds only the call and
@@ -497,17 +415,6 @@ fn call_helper_name(method: &JsonMethod) -> Ident {
 fn stream_helper_name(method: &JsonMethod) -> Ident {
     Ident::new(
         &format!("json_stream_of_{}", method.fn_name),
-        method.fn_name.span(),
-    )
-}
-
-/// Name of the generated helper of one method.
-///
-/// Prefixed, so it cannot collide with a method of the service: the trait methods
-/// keep their own names on the proxy.
-fn helper_name(method: &JsonMethod) -> Ident {
-    Ident::new(
-        &format!("json_view_of_{}", method.fn_name),
         method.fn_name.span(),
     )
 }

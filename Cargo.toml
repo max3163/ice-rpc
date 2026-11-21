@@ -133,3 +133,16 @@ tokio = { version = "1.30", features = ["full"] }
 napi = { version = "3", default-features = false, features = ["napi4", "napi8", "serde-json", "compat-mode", "dyn-symbols"] }
 napi-derive = "3"
 napi-build = "2"
+# The shared-memory transport. Declared once so the version and the feature
+# policy cannot drift between the core and the observer:
+# `default-features = false` drops the `console` logger backend: with no backend
+# the `warn!`/`info!`/`trace!` macros of `iceoryx2-bb-loggers` expand to nothing,
+# so their format strings, `Display` impls and `.rodata` literals leave the link
+# (-110 KiB of stripped `.so` on the Node.js gateway). `std` is the only default
+# that is still wanted. A deployment that needs iceoryx2's own diagnostics back
+# enables `iceoryx2/log` (or `iceoryx2/tracing`), which routes them to the
+# application's logger instead of the terminal.
+iceoryx2 = { version = "0.10.1", default-features = false, features = ["std"] }
+# `SignalHandler` (the `WaitSet` termination path) and the `shm_open` marker
+# sweep. Used by `ice-rpc` and by `ice-rpc-monitor`'s shutdown bridge.
+iceoryx2-bb-posix = "0.10.1"

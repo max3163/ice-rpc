@@ -18,7 +18,7 @@
 //! section; `value_clone` prices that clone on its own, because the bridge's
 //! envelope normalization does it once per event.
 //!
-//! Run with: `cargo bench -p ice-rpc --bench json_value_cost`.
+//! Run with: `cargo bench -p ice-rpc --features json --bench json_value_cost`.
 
 #![allow(clippy::unwrap_used)] // benchmarks may panic
 

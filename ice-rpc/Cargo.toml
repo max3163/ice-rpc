@@ -289,9 +289,13 @@ harness = false
 # encode it accompanies. The bridge has no JSON text; this bench measures the
 # intermediate tree, which is the most a napi-object fast path could remove.
 # See `benches/json_value_cost.rs`.
+#
+# It reads the `serde` derives `#[payload]` adds only when the `json` feature is
+# on, so a default-feature build must skip it instead of failing.
 [[bench]]
 name = "json_value_cost"
 harness = false
+required-features = ["json"]
 
 # ── Demo applications ───────────────────────────────────────────────
 # Hosted here so a single crate ships the library, its examples and its benches.

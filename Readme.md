@@ -25,24 +25,22 @@ From a simple Rust trait annotated with `#[service]`, the procedural macro autom
 sequenceDiagram
     actor App as Application
     participant Proxy as DatabaseServiceProxy
-    participant Client as DatabaseServiceClient
     participant SHM as iceoryx2 shared memory
-    participant Server as DatabaseServiceServer
+    participant Dispatcher as native dispatcher
     participant Impl as DatabaseServiceImpl
 
     App->>Proxy: get_user_age("Alice")
-    Proxy->>Client: get_user_age("Alice")
-    Client->>Client: rkyv(req) → cid ++ [method][payload]
-    Client->>SHM: publish on "DatabaseService_req"
-    Client->>SHM: notify("DatabaseService_req_notify")
-    SHM-->>Server: WaitSet woken up
-    Server->>Server: decode cid, method, payload
-    Server->>Impl: get_user_age("Alice")
-    Impl-->>Server: Observable { Next(30), Complete }
-    Server->>SHM: publish on "DatabaseService_resp" (cid ++ rkyv(WireEvent))
-    Server->>SHM: notify("DatabaseService_resp_notify")
-    SHM-->>Client: WaitSet woken up, route by cid
-    Client-->>App: Ok(30)
+    Proxy->>Proxy: Consumer mode → rkyv(req) → cid ++ [service][method][payload]
+    Proxy->>SHM: serialize_and_call() publishes on "DatabaseService_req"
+    Proxy->>SHM: notify("DatabaseService_req_notify")
+    SHM-->>Dispatcher: WaitSet woken up
+    Dispatcher->>Dispatcher: decode cid, method, payload
+    Dispatcher->>Impl: get_user_age("Alice")
+    Impl-->>Dispatcher: Observable { Next(30), Complete }
+    Dispatcher->>SHM: publish on "DatabaseService_resp" (cid ++ rkyv(WireEvent))
+    Dispatcher->>SHM: notify("DatabaseService_resp_notify")
+    SHM-->>Proxy: WaitSet woken up, route by cid
+    Proxy-->>App: Ok(30)
 ```
 
 ### Crash detection and restart
@@ -175,8 +173,7 @@ ice-rpc-macros/                 ← Procedural macros crate
 │   └── codegen/
 │       ├── mod.rs              ← sub-modules specialized by role
 │       ├── helpers.rs          ← g_variant_name(), extract_rpc_result_types()
-│       ├── client.rs           ← {Trait}Client : rkyv request → native_call
-│       ├── server.rs           ← {Trait}Server : per-method ServiceDispatcher
+│       ├── server.rs           ← native_dispatcher : per-method registration
 │       ├── proxy.rs            ← {Trait}Proxy : Provider/Consumer/ProviderJson modes
 │       ├── lifecycle.rs        ← ServiceLifecycle/ServiceInit/ServiceNamed
 │       │                          (+ spawn_native_service for the provider)
@@ -216,14 +213,13 @@ gateway_nodejs/                 ← Reference addon : it names the services it s
 
 ### 2.1. Code generation modules (codegen/)
 
-| Module         | Responsibility                                                                                                                                                                                                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `helpers.rs`   | `g_variant_name` (snake→Pascal), `extract_rpc_result_types`                                                                                                                                                                                                                                                                           |
-| `client.rs`    | Generates `{Trait}Client` : serializes the rkyv request and calls `native_call(service, method, payload)`, returning the streamed responses as an `Observable`                                                                                                                                                                        |
-| `server.rs`    | Generates `{Trait}Server` : one `ServiceDispatcher::method(...)` registration per RPC method, each decoding the rkyv request and streaming `observable_to_responses(observable)`                                                                                                                                                      |
-| `proxy.rs`     | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_json` constructors, Provider/Consumer/ProviderJson delegation                                                                                                                                                                               |
-| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderJson bridge                                                                                                                                                                                      |
-| `json.rs`      | Generates the JSON view of a service, and names no transport : the per-method rkyv ↔ `serde_json::Value` converters the host side needs, plus `impl JsonInvoker` — one match table for every method, with the reading mode (`First` / `All`) as an argument. Both the HTTP gateway and the Node.js bridge dispatch to that same view. |
+| Module         | Responsibility                                                                                                                                                                                                                                                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `helpers.rs`   | `g_variant_name` (snake→Pascal), `extract_rpc_result_types`                                                                                                                                                                                                                                                                                                            |
+| `server.rs`    | Generates `{Trait}Proxy::native_dispatcher` : one `ServiceDispatcher` registration per RPC method; each handler is built by the shared generic runtime (`transport::native_host`), decodes the rkyv request and streams `observable_to_responses(observable)`                                                                                                          |
+| `proxy.rs`     | Generates `{Trait}Proxy` (RwLock<Mode>), `provide`/`provide_with_init`/`consume`/`provide_json` constructors, Provider/Consumer/ProviderJson delegation                                                                                                                                                                                                                |
+| `lifecycle.rs` | Generates `impl ServiceLifecycle` (starts the provider's transport service), `impl ServiceNamed`, `impl ServiceInit` and the ProviderJson bridge                                                                                                                                                                                                                       |
+| `json.rs`      | Generates the JSON view of a service: the per-method rkyv ↔ `serde_json::Value` converters the host side needs, plus `impl JsonInvoker` — one match table for every method over `invoke_json_stream`. A unary transport calls `first_json`, which reads the first event and cancels the rest. Both the HTTP gateway and the Node.js bridge dispatch to that same view. |
 
 ---
 
@@ -256,8 +252,6 @@ pub trait DatabaseService: Send + Sync + 'static {
 │  │ Automatically generated types                               │ │
 │  │                                                             │ │
 │  │  DatabaseServiceRequest   ← rkyv enum (1 variant/method)    │ │
-│  │  DatabaseServiceClient    ← IPC client (native_call)        │ │
-│  │  DatabaseServiceServer    ← IPC server (ServiceDispatcher)  │ │
 │  │  DatabaseServiceProxy     ← Smart Proxy (3 modes)           │ │
 │  │  DatabaseServiceMode      ← Provider | Consumer |           │ │
 │  │                                ProviderJson               │ │
@@ -270,19 +264,24 @@ pub trait DatabaseService: Send + Sync + 'static {
 │  │  ServiceNamed      → const SERVICE_NAME + service_name()    │ │
 │  │  ServiceInit       → on_init() + dependencies()             │ │
 │  │  {Trait} for Proxy → 3-mode delegation                      │ │
+│  │  Proxy::native_dispatcher → provider-side registration      │ │
 │  │  deserialize_request_to_value  (static)                     │ │
 │  │  serialize_response_from_value (static)                     │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-| Type                     | Role                                                        |
-| ------------------------ | ----------------------------------------------------------- |
-| `DatabaseServiceRequest` | Serializable enum (rkyv) with one variant per method        |
-| `DatabaseServiceClient`  | IPC client : serializes the request and calls the transport |
-| `DatabaseServiceServer`  | IPC server : routes a decoded request to its handler        |
-| `DatabaseServiceProxy`   | Single entry point (Smart Proxy Node, 3 modes)              |
-| `DatabaseServiceMode`    | `Provider` / `Consumer` / `ProviderJson` enum               |
+| Type                       | Role                                                      |
+| -------------------------- | --------------------------------------------------------- |
+| `DatabaseServiceRequest`   | Serializable enum (rkyv) with one variant per method      |
+| `DatabaseServiceProxy`     | Single entry point (Smart Proxy Node, 3 modes)            |
+| `DatabaseServiceMode`      | `Provider` / `Consumer` / `ProviderJson` enum             |
+| `Proxy::native_dispatcher` | Provider-side `ServiceDispatcher`: one handler per method |
+
+The macro no longer generates a `{Trait}Client` or a `{Trait}Server` type: the
+consumer half is a mode of the proxy, and the provider half is the
+`native_dispatcher` constructor, whose per-method handlers all share the same
+generic implementation.
 
 ### 3.2. Optional parameters
 
@@ -618,7 +617,7 @@ addressing is entirely static. What remains is **liveness**:
 │  ┌──────────────────────────┐ ┌──────────────────────────┐          │
 │  │  MODE 1: PROVIDER        │ │  MODE 2: CONSUMER        │          │
 │  │                          │ │                          │          │
-│  │  local_impl: Arc<dyn Tr> │ │  ipc_client: Arc<Client> │          │
+│  │  local_impl: Arc<dyn Tr> │ │  no local state          │          │
 │  │  init_hook: Arc<dyn Init>│ │                          │          │
 │  │  server_started: bool    │ │                          │          │
 │  │                          │ │                          │          │
@@ -655,11 +654,20 @@ impl DatabaseService for DatabaseServiceProxy {
         match &*mode {
             Mode::Provider { local_impl, .. } => {
                 // Direct local call, without serialization
-                local_impl.get_user_age(name).await
-            },
-            Mode::Consumer { ipc_client } => {
-                // Remote call through the publish/subscribe transport
-                ipc_client.get_user_age(name).await
+                ice_rpc::codegen::local_call_scoped(
+                    Self::SERVICE, Self::SERVICE_NAME, "get_user_age",
+                    local_impl.get_user_age(name),
+                ).await
+            }
+            Mode::Consumer => {
+                // Remote call: the request is serialized and published on the channel
+                let req_val = DatabaseServiceRequest::GetUserAge { name };
+                ice_rpc::codegen::serialize_and_call::<i32, DatabaseError, _>(
+                    "db",
+                    Self::SERVICE,
+                    ice_rpc::codegen::method_id_of("get_user_age"),
+                    &req_val,
+                ).unwrap_or_else(ice_rpc::Observable::from_technical_error)
             }
             Mode::ProviderJson => {
                 // Calls arrive over IPC and are bridged to the JS host
@@ -748,7 +756,7 @@ by the dependencies declared via
 │  │     → Application initialization (DB connection, TOML file...)    │
 │  │     → Returns false → initialize_all() fails                      │
 │  │                                                                   │
-│  ├─ 2. dispatcher = Server::new(local_impl).native_dispatcher()      │
+│  ├─ 2. dispatcher = Proxy::native_dispatcher(local_impl.clone())     │
 │  │                                                                   │
 │  └─ 3. spawn_native_service(name, dispatcher, cancel_token)          │
 │        └─ one background thread:                                     │
@@ -793,7 +801,7 @@ by the dependencies declared via
 │  proxy.get_user_age("Alice")                                             │
 │    │                                                                     │
 │    ▼                                                                     │
-│  Client::get_user_age()                                                  │
+│  Proxy → consumer mode (serialize_and_call)                              │
 │    │                                                                     │
 │    ├─1. rkyv::to_bytes_in(Request::GetUserAge { name: "Alice" })         │
 │    │                                                                     │

@@ -104,13 +104,13 @@ fn test_proxy_provide_with_init_creates_provider_with_deps() {
     let _proxy = CalculatorProxy::provide_with_init(CalcWithInit(CalcImpl));
 }
 
-// Test 5: the client struct is Send + Sync
+// Test 5: the proxy struct is Send + Sync
 
 #[test]
-fn test_client_struct_is_send_sync() {
-    let client = CalculatorClient::new();
-    let _: &dyn Send = &client;
-    let _: &dyn Sync = &client;
+fn test_proxy_struct_is_send_sync() {
+    let proxy = CalculatorProxy::consume();
+    let _: &dyn Send = &proxy;
+    let _: &dyn Sync = &proxy;
 }
 
 // Test 7: a service name of exactly 64 bytes (= SERVICE_NAME_LEN) is accepted
@@ -143,8 +143,8 @@ pub trait VersionedService: Send + Sync + 'static {
 
 #[test]
 fn test_versioned_service_compiles() {
-    let client = VersionedServiceClient::new();
-    let _ = &client;
+    let proxy = VersionedServiceProxy::consume();
+    let _ = &proxy;
 }
 
 // Test 9: several `#[service]` parameters at once
@@ -157,8 +157,8 @@ pub trait AllParamsService: Send + Sync + 'static {
 
 #[test]
 fn test_all_service_parameters_compile() {
-    let client = AllParamsServiceClient::new();
-    let _ = &client;
+    let proxy = AllParamsServiceProxy::consume();
+    let _ = &proxy;
 }
 
 // Test 10: a method with no return type is a one-way notification

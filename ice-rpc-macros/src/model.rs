@@ -35,11 +35,11 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_
 ///   **channel**, so every service of a group must declare the same value; when
 ///   omitted, the runtime default (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
 /// - `#[service(..., blocking)]` → also generate a **blocking** twin of every
-///   method (`{method}_blocking`) on both the `{Trait}Client` and the
-///   `{Trait}Proxy`, for a consumer that runs no async runtime: the twin returns
-///   the `Observable` directly instead of a future, so the caller never spells
-///   `block_on` for the call. Off by default — a service that does not need it
-///   pays neither the method nor its documentation.
+///   method (`{method}_blocking`) on the `{Trait}Proxy`, for a consumer that runs
+///   no async runtime: the twin returns the `Observable` directly instead of a
+///   future, so the caller never spells `block_on` for the call. Off by default —
+///   a service that does not need it pays neither the method nor its
+///   documentation.
 /// - `#[service(..., no_tracing)]` → this service emits **no** `tracing` span of
 ///   its own, even when the `tracing` feature of `ice-rpc` is on. The call
 ///   context is still installed, so the implementation keeps its identity, its
@@ -278,10 +278,6 @@ pub struct ServiceModel {
     pub max_slice_len: Option<usize>,
     /// `{Trait}Request`.
     pub req_enum_name: Ident,
-    /// `{Trait}Client`.
-    pub client_name: Ident,
-    /// `{Trait}Server`.
-    pub server_name: Ident,
     /// `{Trait}Proxy`.
     pub proxy_name: Ident,
     /// `{Trait}Mode`.
@@ -333,8 +329,6 @@ impl ServiceModel {
             service_version: attr.service_version,
             max_slice_len: attr.max_slice_len,
             req_enum_name: Ident::new(&format!("{trait_name}Request"), trait_name.span()),
-            client_name: Ident::new(&format!("{trait_name}Client"), trait_name.span()),
-            server_name: Ident::new(&format!("{trait_name}Server"), trait_name.span()),
             proxy_name: Ident::new(&format!("{trait_name}Proxy"), trait_name.span()),
             mode_name: Ident::new(&format!("{trait_name}Mode"), trait_name.span()),
             init_default_name: Ident::new(
@@ -434,8 +428,6 @@ mod tests {
     fn the_generated_type_names_derive_from_the_trait() {
         let model = model(quote! { "Db" }, quote! { trait GetPerson { } });
         assert_eq!(model.req_enum_name.to_string(), "GetPersonRequest");
-        assert_eq!(model.client_name.to_string(), "GetPersonClient");
-        assert_eq!(model.server_name.to_string(), "GetPersonServer");
         assert_eq!(model.proxy_name.to_string(), "GetPersonProxy");
         assert_eq!(model.mode_name.to_string(), "GetPersonMode");
     }

@@ -294,17 +294,18 @@ fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
     let with = render(NONE, quote! { "Calc", blocking }, CALCULATOR());
     assert_eq!(
         with.matches("fn add_blocking").count(),
-        2,
-        "the twin is generated on both the client and the proxy: {with}"
+        1,
+        "the twin is generated once, on the proxy: {with}"
     );
-    // The twin reads the mode lock blocking; the client twin calls synchronously.
+    // The twin reads the mode lock blocking; the Consumer arm shares the
+    // synchronous call expression with the async method.
     assert!(
         with.contains("read_blocking"),
         "the proxy twin must read the mode without an await: {with}"
     );
     assert!(
         with.contains("serialize_and_call"),
-        "the client twin publishes through the synchronous call path: {with}"
+        "the Consumer arm publishes through the synchronous call path: {with}"
     );
 }
 
@@ -318,32 +319,32 @@ fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
 fn the_no_tracing_parameter_selects_the_untraced_helpers() {
     let traced = render(NONE, quote! { "Calc" }, CALCULATOR());
     assert!(
-        traced.contains("ice_rpc::codegen::call_scoped("),
-        "a default service serves its calls through the traced scope: {traced}"
+        traced.contains("ice_rpc::codegen::native_handler("),
+        "a default service serves its calls through the traced handler: {traced}"
     );
     assert!(
         traced.contains("ice_rpc::codegen::local_call_scoped("),
         "and delegates through the traced direct scope: {traced}"
     );
     assert!(
-        !traced.contains("call_scoped_untraced"),
-        "and never names the untraced helper: {traced}"
+        !traced.contains("native_handler_untraced"),
+        "and never names the untraced handler: {traced}"
     );
 
     let opted_out = render(NONE, quote! { "Calc", no_tracing }, CALCULATOR());
     assert!(
-        opted_out.contains("ice_rpc::codegen::call_scoped_untraced("),
+        opted_out.contains("ice_rpc::codegen::native_handler_untraced("),
         "an opted-out service serves its calls with no span: {opted_out}"
     );
     assert!(
         opted_out.contains("ice_rpc::codegen::local_call_scoped_untraced("),
         "and delegates with no span: {opted_out}"
     );
-    // `call_scoped_untraced(` does not contain `call_scoped(`, so this pins the
-    // traced helper out even though the names share a prefix.
+    // `native_handler_untraced(` does not contain `native_handler(`, so this
+    // pins the traced handler out even though the names share a prefix.
     assert!(
-        !opted_out.contains("ice_rpc::codegen::call_scoped("),
-        "the traced helper must not appear: {opted_out}"
+        !opted_out.contains("ice_rpc::codegen::native_handler("),
+        "the traced handler must not appear: {opted_out}"
     );
 
     // The JSON host is a second way of serving the same service, and honours the

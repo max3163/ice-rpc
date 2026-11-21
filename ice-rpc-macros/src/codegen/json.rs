@@ -17,27 +17,15 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, Type, Visibility};
 
+use crate::model::RpcMethod;
+
 /// Common parameters of the JSON generation.
 pub struct JsonGenInput<'a> {
     pub visibility: &'a Visibility,
     pub proxy_name: &'a Ident,
     pub req_enum_name: &'a Ident,
-    pub methods: Vec<JsonMethod>,
-}
-
-/// Description of a method for the JSON generation (owned data).
-pub struct JsonMethod {
-    pub fn_name: Ident,
-    pub var_name: Ident,
-    pub arg_names: Vec<Ident>,
-    pub arg_types: Vec<Type>,
-    /// Success type `T` of `Observable<T, E>` (`()` for a one-way method).
-    pub ok_type: Type,
-    /// Error type `E` of `Observable<T, E>` (`()` for a one-way method).
-    pub err_type: Type,
-    /// Whether the method is a notification: it has no result to convert, and the
-    /// JSON view answers `JsonOutcome::Accepted` (HTTP `202`) instead of a value.
-    pub oneway: bool,
+    /// The methods of the service, read once by the model.
+    pub methods: &'a [RpcMethod],
 }
 
 /// Generates the provider-side `deserialize_request_to_value(method, bytes)`.
@@ -290,7 +278,7 @@ pub fn gen_json_invoker_impl(input: &JsonGenInput<'_>) -> TokenStream {
 /// the call exist once per method. A one-way method has no `Observable` to
 /// return: the helper answers the delivery flag, and each view maps it onto its
 /// own terminal event.
-fn gen_invoker_call_helper(method: &JsonMethod) -> TokenStream {
+fn gen_invoker_call_helper(method: &RpcMethod) -> TokenStream {
     let fn_name = &method.fn_name;
     let fn_name_str = fn_name.to_string();
     let helper = call_helper_name(method);
@@ -354,7 +342,7 @@ fn gen_invoker_call_helper(method: &JsonMethod) -> TokenStream {
 /// the sink. The argument decoding is shared with the unary view through
 /// [`gen_invoker_call_helper`]. A one-way method has no stream: it reports the
 /// `Accepted` event and completes.
-fn gen_invoker_stream_helper(method: &JsonMethod) -> TokenStream {
+fn gen_invoker_stream_helper(method: &RpcMethod) -> TokenStream {
     let fn_name = &method.fn_name;
     let fn_name_str = fn_name.to_string();
     let helper = stream_helper_name(method);
@@ -394,7 +382,7 @@ fn gen_invoker_stream_helper(method: &JsonMethod) -> TokenStream {
 }
 
 /// Builds one `invoke_json_stream` match arm.
-fn gen_invoker_stream_arm(method: &JsonMethod) -> TokenStream {
+fn gen_invoker_stream_arm(method: &RpcMethod) -> TokenStream {
     let fn_name_str = method.fn_name.to_string();
     let helper = stream_helper_name(method);
 
@@ -404,7 +392,7 @@ fn gen_invoker_stream_arm(method: &JsonMethod) -> TokenStream {
 }
 
 /// Name of the generated call helper of one method.
-fn call_helper_name(method: &JsonMethod) -> Ident {
+fn call_helper_name(method: &RpcMethod) -> Ident {
     Ident::new(
         &format!("json_call_of_{}", method.fn_name),
         method.fn_name.span(),
@@ -412,7 +400,7 @@ fn call_helper_name(method: &JsonMethod) -> Ident {
 }
 
 /// Name of the generated streaming helper of one method.
-fn stream_helper_name(method: &JsonMethod) -> Ident {
+fn stream_helper_name(method: &RpcMethod) -> Ident {
     Ident::new(
         &format!("json_stream_of_{}", method.fn_name),
         method.fn_name.span(),
@@ -495,13 +483,12 @@ fn gen_arg_extraction(fn_name_str: &str, arg_names: &[Ident], arg_types: &[Type]
 /// call context without opening a span.
 pub fn gen_json_provider_method(
     proxy_name: &Ident,
-    fn_name: &Ident,
-    oneway: bool,
+    method: &RpcMethod,
     no_tracing: bool,
 ) -> TokenStream {
-    let method_name_str = fn_name.to_string();
+    let method_name_str = method.fn_name.to_string();
 
-    if oneway {
+    if method.oneway {
         let handler = if no_tracing {
             quote! { ice_rpc::codegen::json_host_oneway_handler_untraced }
         } else {

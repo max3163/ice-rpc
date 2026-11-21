@@ -1,244 +1,136 @@
-//! Codegen: `{Trait}Server` struct and its native request/response dispatcher.
+//! Codegen: the native dispatcher of a service.
+//!
+//! The per-method body lives in `ice_rpc::transport::native_host`; this module
+//! emits one registration per method, carrying only the request decoding and the
+//! call closure. There is no `{Trait}Server` type any more: the dispatcher is an
+//! inherent function of the proxy, built from the implementation it already
+//! holds.
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, Visibility};
+use syn::Ident;
 
-/// Generation parameters of the server struct.
-pub struct ServerGenInput<'a> {
-    /// The user's `#[service]` trait.
-    pub trait_name: &'a Ident,
-    /// Visibility inherited from the trait.
-    pub visibility: &'a Visibility,
-    /// Name of the generated server type (`{Trait}Server`).
-    pub server_name: &'a Ident,
-    /// One `ServiceDispatcher::method(...)` registration per RPC method.
-    pub server_native_methods: &'a [TokenStream],
-    /// Expression of the shared [`ServiceRef`] of the service (id + version).
-    pub service_ref: &'a TokenStream,
-}
+use crate::model::RpcMethod;
 
-/// Generates the `{Trait}Server` struct and its native dispatcher.
+/// Generates the proxy's `native_dispatcher` associated function.
 ///
-/// The service is exposed through the iceoryx2 native request/response
-/// transport: one [`ServiceDispatcher`](ice_rpc) entry per RPC method, each of
-/// them decoding the rkyv request enum and streaming the resulting `Observable`
-/// back as rkyv `WireEvent` samples.
-pub fn gen_server(input: &ServerGenInput<'_>) -> TokenStream {
-    let ServerGenInput {
-        trait_name,
-        visibility,
-        server_name,
-        server_native_methods,
-        service_ref,
-    } = input;
+/// The function builds the `ServiceDispatcher` the transport registers on the
+/// channel. Every handler is a call to the shared runtime entry point
+/// (`native_handler` or its `_untraced` twin); what varies per method is the
+/// decode closure and the call closure.
+pub fn gen_native_dispatcher(
+    proxy_name: &Ident,
+    trait_name: &Ident,
+    req_enum_name: &Ident,
+    methods: &[RpcMethod],
+    no_tracing: bool,
+    service_ref: &TokenStream,
+) -> TokenStream {
+    let handler = if no_tracing {
+        quote! { ice_rpc::codegen::native_handler_untraced }
+    } else {
+        quote! { ice_rpc::codegen::native_handler }
+    };
+    let oneway_handler = if no_tracing {
+        quote! { ice_rpc::codegen::native_oneway_handler_untraced }
+    } else {
+        quote! { ice_rpc::codegen::native_oneway_handler }
+    };
+
+    let registrations: Vec<TokenStream> = methods
+        .iter()
+        .map(|method| {
+            gen_registration(proxy_name, req_enum_name, method, &handler, &oneway_handler)
+        })
+        .collect();
 
     quote! {
-        #[derive(Clone)]
-        #visibility struct #server_name {
-            service_impl: std::sync::Arc<dyn #trait_name>,
-        }
-
-        impl #server_name {
-            fn new(service_impl: std::sync::Arc<dyn #trait_name>) -> std::sync::Arc<Self> {
-                std::sync::Arc::new(Self { service_impl })
-            }
-
+        impl #proxy_name {
             /// Builds the native `request_response` dispatcher of this service.
-            ///
-            /// Each RPC method is registered with its own handler: it decodes
-            /// the rkyv request enum from the payload, invokes the local
-            /// implementation, and streams the resulting `Observable` through
-            /// `observable_to_responses`.
-            ///
-            /// Each handler returns a **task**, which the transport polls once on
-            /// the channel's thread before detaching it: a handler that answers
-            /// without yielding runs on that thread, one that `await`s runs as a
-            /// task and cannot hold back the next request.
-            fn native_dispatcher(self: std::sync::Arc<Self>) -> ice_rpc::codegen::ServiceDispatcher {
+            fn native_dispatcher(
+                service_impl: std::sync::Arc<dyn #trait_name>,
+            ) -> ice_rpc::codegen::ServiceDispatcher {
                 let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(#service_ref);
-                #(#server_native_methods)*
+                #(#registrations)*
                 dispatcher
             }
         }
     }
 }
 
-/// Generates one `ServiceDispatcher::method(...)` registration for the native
-/// request/response transport.
-///
-/// The handler returns a **task**: the received sample is borrowed, decoded
-/// **synchronously**, and only the owned request enters the boxed future. The
-/// transport polls that future once on the channel's thread and detaches it only
-/// if it yields, so a call that waits on a database cannot hold back the next
-/// request of the same `group` — while a call that answers from memory pays no hop
-/// at all.
-///
-/// The borrow may not cross the future — `BoxResponseFuture` is `'static` — which
-/// is what makes the decode synchronous: it happens while the sample is alive,
-/// and the future owns its result. The sample is aligned by construction, so
-/// `decode_aligned` reads it **in place**: no `to_vec`, no realignment.
-///
-/// The handler installs the `CallContext` of the call it serves as an ambient
-/// value for every poll of that task, so the implementation reads it with
-/// `CallContext::current()` and its signature is untouched.
-///
-/// `no_tracing` comes from `#[service(..., no_tracing)]` and changes only the
-/// wrapping scope: the context is installed either way, but the hop of an
-/// opted-out service emits no span and the collector is not handed the incoming
-/// context (`call_scoped_untraced`).
-///
-/// A payload that does not decode — or that decodes as another method's request
-/// variant — is answered **immediately** with a `RpcError::SerializationError`,
-/// never dropped: silence would leave the caller waiting for a transport timeout
-/// that names nothing. Every request routed to a known service and method is
-/// therefore answered, which is what makes the whole protocol fail-fast.
-pub fn gen_native_method(
+/// One `ServiceDispatcher::method`/`oneway_method` registration.
+fn gen_registration(
     proxy_name: &Ident,
-    fn_name: &Ident,
-    var_name: &Ident,
-    arg_names: &[&Ident],
     req_enum_name: &Ident,
-    no_tracing: bool,
+    method: &RpcMethod,
+    handler: &TokenStream,
+    oneway_handler: &TokenStream,
 ) -> TokenStream {
+    let fn_name = &method.fn_name;
+    let var_name = &method.var_name;
+    let arg_names = &method.arg_names;
+    let arg_types = &method.arg_types;
     let method_name_str = fn_name.to_string();
-    let scope = if no_tracing {
-        quote! { ice_rpc::codegen::call_scoped_untraced }
-    } else {
-        quote! { ice_rpc::codegen::call_scoped }
+
+    // The decode closure: the request enum variant becomes the method's
+    // arguments. `Ok(())` for a zero-argument method, the value itself for one
+    // argument, a tuple for two or more — the same shape the call closure takes.
+    let decode = quote! {
+        |payload| {
+            match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
+                Ok(#req_enum_name::#var_name { #(#arg_names),* }) => Ok((#(#arg_names),*)),
+                Err(e) => Err(ice_rpc::codegen::DecodeFailure::Invalid(format!("{e:?}"))),
+                Ok(_) => Err(ice_rpc::codegen::DecodeFailure::WrongVariant),
+            }
+        }
     };
+
+    if method.oneway {
+        return quote! {
+            {
+                let service_impl = service_impl.clone();
+                dispatcher.oneway_method(
+                    ice_rpc::codegen::method_id_of(#method_name_str),
+                    move |header: ice_rpc::codegen::RpcHeader,
+                          payload: &[u8],
+                          _emitter: ice_rpc::codegen::OwnedEmitter|
+                          -> ice_rpc::codegen::BoxResponseFuture {
+                        let impl_ref = service_impl.clone();
+                        #oneway_handler(
+                            <#proxy_name>::SERVICE_NAME,
+                            #method_name_str,
+                            header,
+                            payload,
+                            #decode,
+                            move |(#(#arg_names),*): (#(#arg_types),*)| async move {
+                                impl_ref.#fn_name(#(#arg_names),*).await;
+                            },
+                        )
+                    },
+                );
+            }
+        };
+    }
 
     quote! {
         {
-            let service_impl = self.service_impl.clone();
+            let service_impl = service_impl.clone();
             dispatcher.method(
                 ice_rpc::codegen::method_id_of(#method_name_str),
                 move |header: ice_rpc::codegen::RpcHeader,
                       payload: &[u8],
                       emitter: ice_rpc::codegen::OwnedEmitter|
                       -> ice_rpc::codegen::BoxResponseFuture {
-                    // Built before the coroutine: copied into the task, and the
-                    // service name shows in the span instead of the 4-byte hash.
-                    let ctx = ice_rpc::codegen::CallContext::new(
-                        &header,
+                    let impl_ref = service_impl.clone();
+                    #handler(
                         <#proxy_name>::SERVICE_NAME,
                         #method_name_str,
-                    );
-                    // Cloned per invocation: the closure is `Fn`.
-                    let impl_ref = service_impl.clone();
-                    // Decoded here, while the sample is borrowed: the future is
-                    // `'static` and may not hold the slice.
-                    let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
-                        Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
-                        // Fail-fast: an undecodable payload is answered at once,
-                        // never dropped, from one `#[cold]` helper.
-                        Err(e) => {
-                            return ice_rpc::codegen::reject_undecodable(
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                                emitter,
-                            );
-                        }
-                        // Another method's variant: a contract violation, answered
-                        // like a decoding failure.
-                        Ok(_) => {
-                            return ice_rpc::codegen::reject_undecodable(
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                ice_rpc::codegen::DecodeFailure::WrongVariant,
-                                emitter,
-                            );
-                        }
-                    };
-                    // Installed around each poll: a context held across an await
-                    // would label the wrong call.
-                    #scope(
-                        ctx,
-                        async move {
-                            let mut emitter = emitter;
-                            let (#(#arg_names),*) = request;
-                            let stream = impl_ref.#fn_name(#(#arg_names),*).await;
-                            // Awaited, never blocked on.
-                            ice_rpc::codegen::observable_to_responses(stream, &mut *emitter).await;
-                        },
-                    )
-                },
-            );
-        }
-    }
-}
-
-/// Generates one `ServiceDispatcher::oneway_method(...)` registration.
-///
-/// Same decode-and-scope shape as [`gen_native_method`], with the two differences
-/// a notification implies:
-///
-/// - the handler **never touches its emitter**, so no sample is ever published on
-///   the response channel — that is what makes the call one-way on the wire;
-/// - a payload that does not decode is **logged and dropped**, not answered: the
-///   caller registered no handler, so a rejection would be written for nobody.
-///   The emitter stays available in the closure for a future diagnostic, which is
-///   why it is bound but unused.
-///
-/// The `CallContext` is still installed around every poll, so the implementation
-/// can read the trace of the notification it serves even though it never replies.
-///
-/// `no_tracing` is honoured exactly as in [`gen_native_method`]: the context stays,
-/// the span of the hop does not.
-pub fn gen_native_oneway_method(
-    proxy_name: &Ident,
-    fn_name: &Ident,
-    var_name: &Ident,
-    arg_names: &[&Ident],
-    req_enum_name: &Ident,
-    no_tracing: bool,
-) -> TokenStream {
-    let method_name_str = fn_name.to_string();
-    let scope = if no_tracing {
-        quote! { ice_rpc::codegen::call_scoped_untraced }
-    } else {
-        quote! { ice_rpc::codegen::call_scoped }
-    };
-
-    quote! {
-        {
-            let service_impl = self.service_impl.clone();
-            dispatcher.oneway_method(
-                ice_rpc::codegen::method_id_of(#method_name_str),
-                move |header: ice_rpc::codegen::RpcHeader,
-                      payload: &[u8],
-                      _emitter: ice_rpc::codegen::OwnedEmitter|
-                      -> ice_rpc::codegen::BoxResponseFuture {
-                    let ctx = ice_rpc::codegen::CallContext::new(
-                        &header,
-                        <#proxy_name>::SERVICE_NAME,
-                        #method_name_str,
-                    );
-                    let impl_ref = service_impl.clone();
-                    let request = match ice_rpc::codegen::decode_aligned::<#req_enum_name>(payload) {
-                        Ok(#req_enum_name::#var_name { #(#arg_names),* }) => (#(#arg_names),*),
-                        // Nothing waits for an answer: log it and drop the notification.
-                        Err(e) => {
-                            return ice_rpc::codegen::reject_undecodable_oneway(
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                            );
-                        }
-                        Ok(_) => {
-                            return ice_rpc::codegen::reject_undecodable_oneway(
-                                <#proxy_name>::SERVICE_NAME,
-                                #method_name_str,
-                                ice_rpc::codegen::DecodeFailure::WrongVariant,
-                            );
-                        }
-                    };
-                    #scope(
-                        ctx,
-                        async move {
-                            let (#(#arg_names),*) = request;
-                            impl_ref.#fn_name(#(#arg_names),*).await;
+                        header,
+                        payload,
+                        emitter,
+                        #decode,
+                        move |(#(#arg_names),*): (#(#arg_types),*)| async move {
+                            impl_ref.#fn_name(#(#arg_names),*).await
                         },
                     )
                 },

@@ -70,10 +70,10 @@ pub use crate::transport::PAYLOAD_ALIGNMENT;
 pub use crate::transport::{
     BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, DecodeFailure, OwnedEmitter,
     ResponseEmitter, ServiceDispatcher, declare_channel_max_slice_len, decode_aligned,
-    emit_rpc_error, is_provider_connected, native_call, observable_to_responses,
-    register_native_service, reject_undecodable, reject_undecodable_oneway, serialize_and_call,
-    serialize_and_send_one_way, spawn_native_service, start_registered_channels,
-    sweep_orphan_shm_markers,
+    emit_rpc_error, is_provider_connected, native_call, native_handler, native_handler_untraced,
+    native_oneway_handler, native_oneway_handler_untraced, observable_to_responses,
+    register_native_service, serialize_and_call, serialize_and_send_one_way, spawn_native_service,
+    start_registered_channels, sweep_orphan_shm_markers,
 };
 // The JSON host helpers: the rejection paths and the shared handler body of a
 // `ProviderJson` handler. Gated with the rest of the JSON host surface.

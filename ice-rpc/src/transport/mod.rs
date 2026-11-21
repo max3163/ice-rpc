@@ -21,6 +21,8 @@ mod client;
 #[cfg(feature = "json")]
 mod json_host;
 mod monitor;
+// The provider-side native handler, shared by every service.
+mod native_host;
 mod notify;
 mod open;
 mod publish;
@@ -46,6 +48,9 @@ pub use json_host::{
     json_host_oneway_handler, json_host_oneway_handler_untraced,
 };
 pub use monitor::{DirectionView, Emitter, discover_channels, is_provider_connected};
+pub use native_host::{
+    native_handler, native_handler_untraced, native_oneway_handler, native_oneway_handler_untraced,
+};
 pub use server::{register_native_service, spawn_native_service, start_registered_channels};
 
 // Tunables are read through these names so `tuning.rs` stays the single source.

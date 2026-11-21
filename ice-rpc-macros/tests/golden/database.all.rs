@@ -32,110 +32,16 @@ impl DatabaseApiProxy {
     );
 }
 #[allow(missing_docs)]
-pub struct DatabaseApiClient;
-#[allow(missing_docs)]
-impl DatabaseApiClient {
-    pub fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self)
-    }
-    pub async fn add(&self, a: i32, b: i32) -> ice_rpc::Observable<i32, String> {
-        let req_val = DatabaseApiRequest::Add { a, b };
-        ice_rpc::codegen::serialize_and_call::<
-            i32,
-            String,
-            _,
-        >(
-                "db",
-                <DatabaseApiProxy>::SERVICE,
-                ice_rpc::codegen::method_id_of("add"),
-                &req_val,
-            )
-            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
-    }
-    pub async fn get(&self, key: String) -> ice_rpc::Observable<String, String> {
-        let req_val = DatabaseApiRequest::Get { key };
-        ice_rpc::codegen::serialize_and_call::<
-            String,
-            String,
-            _,
-        >(
-                "db",
-                <DatabaseApiProxy>::SERVICE,
-                ice_rpc::codegen::method_id_of("get"),
-                &req_val,
-            )
-            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
-    }
-    pub async fn put(
-        &self,
-        key: String,
-        value: Vec<u8>,
-    ) -> ice_rpc::Observable<(), String> {
-        let req_val = DatabaseApiRequest::Put {
-            key,
-            value,
-        };
-        ice_rpc::codegen::serialize_and_call::<
-            (),
-            String,
-            _,
-        >(
-                "db",
-                <DatabaseApiProxy>::SERVICE,
-                ice_rpc::codegen::method_id_of("put"),
-                &req_val,
-            )
-            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
-    }
-    ///One-way call of [`notify`]: publishes the request and returns, without waiting for anything. `Ok(true)` means at least one subscriber took the sample, `Ok(false)` that nobody did (no provider, or a full buffer) — an expected outcome of a fire-and-forget call, not an error.
-    pub fn notify(&self, message: String) -> Result<bool, ice_rpc::RpcError> {
-        let req_val = DatabaseApiRequest::Notify {
-            message,
-        };
-        ice_rpc::codegen::serialize_and_send_one_way(
-            "db",
-            <DatabaseApiProxy>::SERVICE,
-            ice_rpc::codegen::method_id_of("notify"),
-            &req_val,
-        )
-    }
-}
-#[allow(missing_docs)]
-#[ice_rpc::codegen::async_trait::async_trait]
-impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiClient {
-    async fn init(&self) -> bool {
-        true
-    }
-}
-#[allow(missing_docs)]
-#[derive(Clone)]
-pub struct DatabaseApiServer {
-    service_impl: std::sync::Arc<dyn DatabaseApi>,
-}
-#[allow(missing_docs)]
-impl DatabaseApiServer {
-    fn new(service_impl: std::sync::Arc<dyn DatabaseApi>) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { service_impl })
-    }
+impl DatabaseApiProxy {
     /// Builds the native `request_response` dispatcher of this service.
-    ///
-    /// Each RPC method is registered with its own handler: it decodes
-    /// the rkyv request enum from the payload, invokes the local
-    /// implementation, and streams the resulting `Observable` through
-    /// `observable_to_responses`.
-    ///
-    /// Each handler returns a **task**, which the transport polls once on
-    /// the channel's thread before detaching it: a handler that answers
-    /// without yielding runs on that thread, one that `await`s runs as a
-    /// task and cannot hold back the next request.
     fn native_dispatcher(
-        self: std::sync::Arc<Self>,
+        service_impl: std::sync::Arc<dyn DatabaseApi>,
     ) -> ice_rpc::codegen::ServiceDispatcher {
         let mut dispatcher = ice_rpc::codegen::ServiceDispatcher::new(
             <DatabaseApiProxy>::SERVICE,
         );
         {
-            let service_impl = self.service_impl.clone();
+            let service_impl = service_impl.clone();
             dispatcher
                 .method(
                     ice_rpc::codegen::method_id_of("add"),
@@ -144,51 +50,35 @@ impl DatabaseApiServer {
                         payload: &[u8],
                         emitter: ice_rpc::codegen::OwnedEmitter,
                     | -> ice_rpc::codegen::BoxResponseFuture {
-                        let ctx = ice_rpc::codegen::CallContext::new(
-                            &header,
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::codegen::native_handler(
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "add",
-                        );
-                        let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::codegen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Add { a, b }) => (a, b),
-                            Err(e) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "add",
-                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                                    emitter,
-                                );
-                            }
-                            Ok(_) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "add",
-                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
-                                    emitter,
-                                );
-                            }
-                        };
-                        ice_rpc::codegen::call_scoped(
-                            ctx,
-                            async move {
-                                let mut emitter = emitter;
-                                let (a, b) = request;
-                                let stream = impl_ref.add(a, b).await;
-                                ice_rpc::codegen::observable_to_responses(
-                                        stream,
-                                        &mut *emitter,
-                                    )
-                                    .await;
+                            header,
+                            payload,
+                            emitter,
+                            |payload| {
+                                match ice_rpc::codegen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(payload) {
+                                    Ok(DatabaseApiRequest::Add { a, b }) => Ok((a, b)),
+                                    Err(e) => {
+                                        Err(
+                                            ice_rpc::codegen::DecodeFailure::Invalid(format!("{e:?}")),
+                                        )
+                                    }
+                                    Ok(_) => Err(ice_rpc::codegen::DecodeFailure::WrongVariant),
+                                }
+                            },
+                            move |(a, b): (i32, i32)| async move {
+                                impl_ref.add(a, b).await
                             },
                         )
                     },
                 );
         }
         {
-            let service_impl = self.service_impl.clone();
+            let service_impl = service_impl.clone();
             dispatcher
                 .method(
                     ice_rpc::codegen::method_id_of("get"),
@@ -197,51 +87,33 @@ impl DatabaseApiServer {
                         payload: &[u8],
                         emitter: ice_rpc::codegen::OwnedEmitter,
                     | -> ice_rpc::codegen::BoxResponseFuture {
-                        let ctx = ice_rpc::codegen::CallContext::new(
-                            &header,
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::codegen::native_handler(
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "get",
-                        );
-                        let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::codegen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Get { key }) => (key),
-                            Err(e) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "get",
-                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                                    emitter,
-                                );
-                            }
-                            Ok(_) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "get",
-                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
-                                    emitter,
-                                );
-                            }
-                        };
-                        ice_rpc::codegen::call_scoped(
-                            ctx,
-                            async move {
-                                let mut emitter = emitter;
-                                let (key) = request;
-                                let stream = impl_ref.get(key).await;
-                                ice_rpc::codegen::observable_to_responses(
-                                        stream,
-                                        &mut *emitter,
-                                    )
-                                    .await;
+                            header,
+                            payload,
+                            emitter,
+                            |payload| {
+                                match ice_rpc::codegen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(payload) {
+                                    Ok(DatabaseApiRequest::Get { key }) => Ok((key)),
+                                    Err(e) => {
+                                        Err(
+                                            ice_rpc::codegen::DecodeFailure::Invalid(format!("{e:?}")),
+                                        )
+                                    }
+                                    Ok(_) => Err(ice_rpc::codegen::DecodeFailure::WrongVariant),
+                                }
                             },
+                            move |(key): (String)| async move { impl_ref.get(key).await },
                         )
                     },
                 );
         }
         {
-            let service_impl = self.service_impl.clone();
+            let service_impl = service_impl.clone();
             dispatcher
                 .method(
                     ice_rpc::codegen::method_id_of("put"),
@@ -250,51 +122,37 @@ impl DatabaseApiServer {
                         payload: &[u8],
                         emitter: ice_rpc::codegen::OwnedEmitter,
                     | -> ice_rpc::codegen::BoxResponseFuture {
-                        let ctx = ice_rpc::codegen::CallContext::new(
-                            &header,
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::codegen::native_handler(
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "put",
-                        );
-                        let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::codegen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Put { key, value }) => (key, value),
-                            Err(e) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "put",
-                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                                    emitter,
-                                );
-                            }
-                            Ok(_) => {
-                                return ice_rpc::codegen::reject_undecodable(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "put",
-                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
-                                    emitter,
-                                );
-                            }
-                        };
-                        ice_rpc::codegen::call_scoped(
-                            ctx,
-                            async move {
-                                let mut emitter = emitter;
-                                let (key, value) = request;
-                                let stream = impl_ref.put(key, value).await;
-                                ice_rpc::codegen::observable_to_responses(
-                                        stream,
-                                        &mut *emitter,
-                                    )
-                                    .await;
+                            header,
+                            payload,
+                            emitter,
+                            |payload| {
+                                match ice_rpc::codegen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(payload) {
+                                    Ok(DatabaseApiRequest::Put { key, value }) => {
+                                        Ok((key, value))
+                                    }
+                                    Err(e) => {
+                                        Err(
+                                            ice_rpc::codegen::DecodeFailure::Invalid(format!("{e:?}")),
+                                        )
+                                    }
+                                    Ok(_) => Err(ice_rpc::codegen::DecodeFailure::WrongVariant),
+                                }
+                            },
+                            move |(key, value): (String, Vec<u8>)| async move {
+                                impl_ref.put(key, value).await
                             },
                         )
                     },
                 );
         }
         {
-            let service_impl = self.service_impl.clone();
+            let service_impl = service_impl.clone();
             dispatcher
                 .oneway_method(
                     ice_rpc::codegen::method_id_of("notify"),
@@ -303,35 +161,26 @@ impl DatabaseApiServer {
                         payload: &[u8],
                         _emitter: ice_rpc::codegen::OwnedEmitter,
                     | -> ice_rpc::codegen::BoxResponseFuture {
-                        let ctx = ice_rpc::codegen::CallContext::new(
-                            &header,
+                        let impl_ref = service_impl.clone();
+                        ice_rpc::codegen::native_oneway_handler(
                             <DatabaseApiProxy>::SERVICE_NAME,
                             "notify",
-                        );
-                        let impl_ref = service_impl.clone();
-                        let request = match ice_rpc::codegen::decode_aligned::<
-                            DatabaseApiRequest,
-                        >(payload) {
-                            Ok(DatabaseApiRequest::Notify { message }) => (message),
-                            Err(e) => {
-                                return ice_rpc::codegen::reject_undecodable_oneway(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "notify",
-                                    ice_rpc::codegen::DecodeFailure::Invalid(&e),
-                                );
-                            }
-                            Ok(_) => {
-                                return ice_rpc::codegen::reject_undecodable_oneway(
-                                    <DatabaseApiProxy>::SERVICE_NAME,
-                                    "notify",
-                                    ice_rpc::codegen::DecodeFailure::WrongVariant,
-                                );
-                            }
-                        };
-                        ice_rpc::codegen::call_scoped(
-                            ctx,
-                            async move {
-                                let (message) = request;
+                            header,
+                            payload,
+                            |payload| {
+                                match ice_rpc::codegen::decode_aligned::<
+                                    DatabaseApiRequest,
+                                >(payload) {
+                                    Ok(DatabaseApiRequest::Notify { message }) => Ok((message)),
+                                    Err(e) => {
+                                        Err(
+                                            ice_rpc::codegen::DecodeFailure::Invalid(format!("{e:?}")),
+                                        )
+                                    }
+                                    Ok(_) => Err(ice_rpc::codegen::DecodeFailure::WrongVariant),
+                                }
+                            },
+                            move |(message): (String)| async move {
                                 impl_ref.notify(message).await;
                             },
                         )
@@ -354,7 +203,7 @@ pub enum DatabaseApiMode {
         init_hook: std::sync::Arc<dyn ice_rpc::ServiceInit>,
         server_started: bool,
     },
-    Consumer { ipc_client: std::sync::Arc<DatabaseApiClient> },
+    Consumer,
     ProviderJson { dispatcher: Option<Box<ice_rpc::codegen::ServiceDispatcher>> },
 }
 #[allow(missing_docs)]
@@ -413,9 +262,7 @@ impl DatabaseApiProxy {
         ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
         std::sync::Arc::new(Self {
             deps: vec![],
-            mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Consumer {
-                ipc_client: DatabaseApiClient::new(),
-            }),
+            mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Consumer),
         })
     }
     /// Whether a provider is currently connected to this service's
@@ -559,7 +406,17 @@ impl DatabaseApiProxy {
                 ice_rpc::rt::block_on(local_impl.notify(message));
                 Ok(true)
             }
-            DatabaseApiMode::Consumer { ipc_client } => ipc_client.notify(message),
+            DatabaseApiMode::Consumer => {
+                let req_val = DatabaseApiRequest::Notify {
+                    message,
+                };
+                ice_rpc::codegen::serialize_and_send_one_way(
+                    "db",
+                    <DatabaseApiProxy>::SERVICE,
+                    ice_rpc::codegen::method_id_of("notify"),
+                    &req_val,
+                )
+            }
             DatabaseApiMode::ProviderJson { .. } => {
                 Err(
                     ice_rpc::RpcError::Internal(
@@ -585,7 +442,20 @@ impl DatabaseApi for DatabaseApiProxy {
                     )
                     .await
             }
-            DatabaseApiMode::Consumer { ipc_client } => ipc_client.add(a, b).await,
+            DatabaseApiMode::Consumer => {
+                let req_val = DatabaseApiRequest::Add { a, b };
+                ice_rpc::codegen::serialize_and_call::<
+                    i32,
+                    String,
+                    _,
+                >(
+                        "db",
+                        <DatabaseApiProxy>::SERVICE,
+                        ice_rpc::codegen::method_id_of("add"),
+                        &req_val,
+                    )
+                    .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+            }
             DatabaseApiMode::ProviderJson { .. } => {
                 ice_rpc::Observable::from_technical_error(
                     ice_rpc::RpcError::Internal(
@@ -607,7 +477,20 @@ impl DatabaseApi for DatabaseApiProxy {
                     )
                     .await
             }
-            DatabaseApiMode::Consumer { ipc_client } => ipc_client.get(key).await,
+            DatabaseApiMode::Consumer => {
+                let req_val = DatabaseApiRequest::Get { key };
+                ice_rpc::codegen::serialize_and_call::<
+                    String,
+                    String,
+                    _,
+                >(
+                        "db",
+                        <DatabaseApiProxy>::SERVICE,
+                        ice_rpc::codegen::method_id_of("get"),
+                        &req_val,
+                    )
+                    .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+            }
             DatabaseApiMode::ProviderJson { .. } => {
                 ice_rpc::Observable::from_technical_error(
                     ice_rpc::RpcError::Internal(
@@ -629,7 +512,23 @@ impl DatabaseApi for DatabaseApiProxy {
                     )
                     .await
             }
-            DatabaseApiMode::Consumer { ipc_client } => ipc_client.put(key, value).await,
+            DatabaseApiMode::Consumer => {
+                let req_val = DatabaseApiRequest::Put {
+                    key,
+                    value,
+                };
+                ice_rpc::codegen::serialize_and_call::<
+                    (),
+                    String,
+                    _,
+                >(
+                        "db",
+                        <DatabaseApiProxy>::SERVICE,
+                        ice_rpc::codegen::method_id_of("put"),
+                        &req_val,
+                    )
+                    .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+            }
             DatabaseApiMode::ProviderJson { .. } => {
                 ice_rpc::Observable::from_technical_error(
                     ice_rpc::RpcError::Internal(
@@ -645,8 +544,18 @@ impl DatabaseApi for DatabaseApiProxy {
             DatabaseApiMode::Provider { local_impl, .. } => {
                 local_impl.notify(message).await;
             }
-            DatabaseApiMode::Consumer { ipc_client } => {
-                let _ = ipc_client.notify(message);
+            DatabaseApiMode::Consumer => {
+                let _ = {
+                    let req_val = DatabaseApiRequest::Notify {
+                        message,
+                    };
+                    ice_rpc::codegen::serialize_and_send_one_way(
+                        "db",
+                        <DatabaseApiProxy>::SERVICE,
+                        ice_rpc::codegen::method_id_of("notify"),
+                        &req_val,
+                    )
+                };
             }
             DatabaseApiMode::ProviderJson { .. } => {
                 ice_rpc::codegen::log::warn!(
@@ -700,8 +609,9 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                         );
                         return false;
                     }
-                    let dispatcher = DatabaseApiServer::new(local_impl.clone())
-                        .native_dispatcher();
+                    let dispatcher = DatabaseApiProxy::native_dispatcher(
+                        local_impl.clone(),
+                    );
                     ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
                     if let Err(e) = ice_rpc::codegen::register_native_service(
                         "db",
@@ -722,7 +632,7 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                 }
                 true
             }
-            DatabaseApiMode::Consumer { ipc_client } => ipc_client.init().await,
+            DatabaseApiMode::Consumer => true,
         }
     }
 }

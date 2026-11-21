@@ -26,13 +26,9 @@ use crate::features::Features;
 use crate::model::{ServiceAttr, ServiceModel};
 
 use crate::codegen::{
-    client::{
-        ClientGenInput, ClientMethodGenInput, ClientOnewayGenInput, gen_client_lifecycle,
-        gen_client_method, gen_client_oneway_method, gen_client_struct,
-    },
-    decoder::{DecoderGenInput, DecoderMethod, gen_decoder},
+    decoder::{DecoderGenInput, gen_decoder},
     json::{
-        JsonGenInput, JsonMethod, gen_json_invoker_impl, gen_json_provider_from_request_fn,
+        JsonGenInput, gen_json_invoker_impl, gen_json_provider_from_request_fn,
         gen_json_provider_from_response_fn, gen_json_provider_method,
     },
     lifecycle::{LifecycleGenInput, gen_lifecycle},
@@ -41,29 +37,8 @@ use crate::codegen::{
         gen_proxy_blocking_method, gen_proxy_method, gen_proxy_oneway_call,
         gen_proxy_oneway_method,
     },
-    server::{ServerGenInput, gen_native_method, gen_native_oneway_method, gen_server},
+    server::gen_native_dispatcher,
 };
-
-/// The JSON view of the model's methods.
-///
-/// A narrow projection of [`ServiceModel`], **not** a second reading of the
-/// trait: the JSON converters need the same names and the same types as
-/// everybody else, so re-deriving them could only let the two disagree.
-fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
-    model
-        .methods
-        .iter()
-        .map(|method| JsonMethod {
-            fn_name: method.fn_name.clone(),
-            var_name: method.var_name.clone(),
-            arg_names: method.arg_names.clone(),
-            arg_types: method.arg_types.clone(),
-            ok_type: method.ok_type.clone(),
-            err_type: method.err_type.clone(),
-            oneway: method.oneway,
-        })
-        .collect()
-}
 
 /// `#[service]` attribute macro: generates the Proxy, Client, Server, and the
 /// lifecycle code for an RPC service trait.
@@ -117,10 +92,10 @@ fn json_methods(model: &ServiceModel) -> Vec<JsonMethod> {
 /// (`#[ice_rpc::codegen::async_trait::async_trait]`), `Send + Sync + 'static`
 /// as supertraits, and generates:
 /// - The `{Trait}Request` enum (rkyv-serializable)
-/// - The `{Trait}Client` struct (IPC consumer)
-/// - The `{Trait}Server` struct (IPC provider)
 /// - The `{Trait}Proxy` struct (Provider/Consumer smart node, plus the
-///   `ProviderJson` mode when the `json` block is on)
+///   `ProviderJson` mode when the `json` block is on), whose `Consumer` mode is
+///   the IPC consumer and whose `native_dispatcher()` constructor builds the
+///   provider-side `ServiceDispatcher`
 /// - The `ServiceLifecycle`, `ServiceInit`, `ServiceNamed` implementations
 /// - The optional blocks its features ask for: the observer decoder
 ///   (`monitoring`) and the JSON view (`json`) — the `impl JsonInvoker` every
@@ -192,8 +167,6 @@ fn expand_service_with(
     };
 
     let req_enum_name = &model.req_enum_name;
-    let client_name = &model.client_name;
-    let server_name = &model.server_name;
     let proxy_name = &model.proxy_name;
     let mode_name = &model.mode_name;
     let init_default_name = &model.init_default_name;
@@ -205,17 +178,13 @@ fn expand_service_with(
     let service_name = quote! { <#proxy_name>::SERVICE_NAME };
 
     let mut req_variants = Vec::new();
-    let mut client_methods = Vec::new();
     let mut proxy_blocking_methods = Vec::new();
     let mut proxy_oneway_calls = Vec::new();
-    let mut server_native_methods = Vec::new();
     let mut json_provider_methods = Vec::new();
     let mut node_methods = Vec::new();
-    let mut decoder_methods: Vec<DecoderMethod> = Vec::new();
 
     // One pass over the model; the discriminant is the position in the trait.
     for (discriminant, method) in model.numbered_methods() {
-        let fn_name = &method.fn_name;
         let var_name = &method.var_name;
         let arg_names: Vec<&Ident> = method.arg_names.iter().collect();
         let arg_types: Vec<&Type> = method.arg_types.iter().collect();
@@ -226,66 +195,23 @@ fn expand_service_with(
         });
 
         if method.oneway {
-            client_methods.push(gen_client_oneway_method(&ClientOnewayGenInput {
-                visibility,
-                fn_name,
-                var_name,
-                arg_names: &arg_names,
-                arg_types: &arg_types,
+            let proxy_oneway_input = ProxyOnewayGenInput {
+                method,
                 req_enum_name,
                 group: &group_lit,
-                service_ref: &service_ref,
-            }));
-
-            server_native_methods.push(gen_native_oneway_method(
-                proxy_name,
-                fn_name,
-                var_name,
-                &arg_names,
-                req_enum_name,
-                no_tracing,
-            ));
-
-            let proxy_oneway_input = ProxyOnewayGenInput {
-                fn_name,
-                arg_names: &arg_names,
-                arg_types: &arg_types,
                 mode_name,
                 visibility,
                 json_provider: features.json,
+                service_ref: &service_ref,
             };
             node_methods.push(gen_proxy_oneway_method(&proxy_oneway_input));
             proxy_oneway_calls.push(gen_proxy_oneway_call(&proxy_oneway_input));
             // Already synchronous: no `{method}_blocking` twin.
         } else {
-            client_methods.push(gen_client_method(&ClientMethodGenInput {
-                visibility,
-                fn_name,
-                var_name,
-                arg_names: &arg_names,
-                arg_types: &arg_types,
-                ok_type: &method.ok_type,
-                err_type: &method.err_type,
+            let proxy_method_input = ProxyMethodGenInput {
+                method,
                 req_enum_name,
                 group: &group_lit,
-                service_ref: &service_ref,
-                blocking,
-            }));
-
-            server_native_methods.push(gen_native_method(
-                proxy_name,
-                fn_name,
-                var_name,
-                &arg_names,
-                req_enum_name,
-                no_tracing,
-            ));
-
-            let proxy_method_input = ProxyMethodGenInput {
-                fn_name,
-                arg_names: &arg_names,
-                arg_types: &arg_types,
-                output_type: &method.output_type,
                 mode_name,
                 service_ref: &service_ref,
                 service_name: &service_name,
@@ -301,49 +227,23 @@ fn expand_service_with(
 
         // JSON host side only: a build that merely consumes JSON must not carry them.
         if features.json {
-            json_provider_methods.push(gen_json_provider_method(
-                proxy_name,
-                fn_name,
-                method.oneway,
-                no_tracing,
-            ));
-        }
-
-        // Collects the data for the generated decoder (`Display` + decoder).
-        if features.monitoring {
-            decoder_methods.push(DecoderMethod {
-                method_name: method.fn_name.to_string(),
-                var_name: var_name.clone(),
-                arg_names: method.arg_names.clone(),
-                ok_type: method.ok_type.clone(),
-                err_type: method.err_type.clone(),
-                oneway: method.oneway,
-            });
+            json_provider_methods.push(gen_json_provider_method(proxy_name, method, no_tracing));
         }
     }
 
-    let client_input = ClientGenInput {
-        visibility,
-        client_name,
-        client_methods: &client_methods,
-    };
-    let client_struct = gen_client_struct(&client_input);
-    let client_lifecycle = gen_client_lifecycle(&client_input);
-
-    let server_input = ServerGenInput {
+    let native_dispatcher = gen_native_dispatcher(
+        proxy_name,
         trait_name,
-        visibility,
-        server_name,
-        server_native_methods: &server_native_methods,
-        service_ref: &service_ref,
-    };
-    let server_output = gen_server(&server_input);
+        req_enum_name,
+        &model.methods,
+        no_tracing,
+        &service_ref,
+    );
 
     let proxy_input = ProxyGenInput {
         trait_name,
         visibility,
         proxy_name,
-        client_name,
         mode_name,
         init_default_name,
         logical_name_lit: &logical_name_lit,
@@ -361,7 +261,6 @@ fn expand_service_with(
     let lifecycle_input = LifecycleGenInput {
         trait_name,
         proxy_name,
-        server_name,
         mode_name,
         logical_name_lit: &logical_name_lit,
         group_lit: &group_lit,
@@ -372,12 +271,11 @@ fn expand_service_with(
 
     // The three optional blocks: inputs always built, only the generator call is
     // skipped, so nothing can drift into "declared but unused".
-    let json_methods: Vec<JsonMethod> = json_methods(&model);
     let json_input = JsonGenInput {
         visibility,
         proxy_name,
         req_enum_name,
-        methods: json_methods,
+        methods: &model.methods,
     };
     // Provider-side converters, reached only by `provide_json()`.
     let (json_provider_from_request, json_provider_from_response) = if features.json {
@@ -410,7 +308,7 @@ fn expand_service_with(
             req_enum_name,
             decoder_name: &decoder_name,
             logical_name_lit: logical_name_lit.as_str(),
-            methods: &decoder_methods,
+            methods: &model.methods,
             hidden_channel,
         };
         gen_decoder(&decoder_input)
@@ -442,10 +340,7 @@ fn expand_service_with(
                 );
         }
 
-        #client_struct
-        #client_lifecycle
-
-        #server_output
+        #native_dispatcher
 
         #proxy_output
 

@@ -6,19 +6,18 @@ This crate provides the `#[service]` attribute macro: from a single annotated tr
 
 ## Macros
 
-| Macro                               | Role                                                                          |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `#[service]` / `#[service("Name")]` | Generates Request, Client, Server, Proxy, Mode and lifecycle implementations. |
+| Macro                               | Role                                                                             |
+| ----------------------------------- | -------------------------------------------------------------------------------- |
+| `#[service]` / `#[service("Name")]` | Generates Request, Proxy, Mode, native dispatcher and lifecycle implementations. |
 
 ## Generated types
 
 For a trait `DatabaseService` annotated with `#[service("DatabaseService")]`, the macro generates:
 
 - `DatabaseServiceRequest` — rkyv-serializable enum (one variant per method);
-- `DatabaseServiceClient` — IPC client with an atomic `NodeId` cache and automatic reconnection;
-- `DatabaseServiceServer` — IPC server with a dispatch channel;
 - `DatabaseServiceProxy` — smart proxy supporting `Provider`, `Consumer` and `ProviderJson` modes;
 - `DatabaseServiceMode` — the mode enum;
+- `DatabaseServiceProxy::native_dispatcher` — the provider-side `ServiceDispatcher`, one handler per method;
 - `ServiceLifecycle`, `ServiceNamed` and `ServiceInit` implementations.
 - With the `monitoring` feature only: `impl Display for DatabaseServiceRequest`,
   `DatabaseServiceDecoder` and one **link-time registration** of it into
@@ -93,13 +92,13 @@ pub trait MyService: Send + Sync + 'static {
 }
 ```
 
-| Parameter       | Type    | Default      | Description                                                                                                                                                                                                                                           |
-| --------------- | ------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`       | integer | `1`          | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.                                                                                                                           |
-| `group`         | string  | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.                                                                           |
-| `blocking`      | flag    | off          | Generates a synchronous twin `{method}_blocking` of **every** method, on both the `{Trait}Client` and the `{Trait}Proxy`. It returns the `Observable` directly, so a consumer with no async runtime calls the service without `.await` or `block_on`. |
-| `no_tracing`    | flag    | off          | This service emits no `tracing` span of its own while the call context — identity, correlation id and incoming W3C trace — is still installed and propagated.                                                                                         |
-| `no_monitoring` | flag    | off          | This service stays out of automatic observation: its decoder is not submitted to the link-time registry and its channel is hidden from `discover_channels`. The decoder remains available for an explicit registration.                               |
+| Parameter       | Type    | Default      | Description                                                                                                                                                                                                             |
+| --------------- | ------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`       | integer | `1`          | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.                                                                                             |
+| `group`         | string  | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.                                             |
+| `blocking`      | flag    | off          | Generates a synchronous twin `{method}_blocking` of **every** method on the `{Trait}Proxy`. It returns the `Observable` directly, so a consumer with no async runtime calls the service without `.await` or `block_on`. |
+| `no_tracing`    | flag    | off          | This service emits no `tracing` span of its own while the call context — identity, correlation id and incoming W3C trace — is still installed and propagated.                                                           |
+| `no_monitoring` | flag    | off          | This service stays out of automatic observation: its decoder is not submitted to the link-time registry and its channel is hidden from `discover_channels`. The decoder remains available for an explicit registration. |
 
 The macro does not bound the response wait: use the `Observable` operators
 (`timeout`, `take_until`) to bound the latency, or the silence between two values

@@ -374,9 +374,13 @@ pub fn emit_rpc_error(err: RpcError, emitter: &mut dyn ResponseEmitter) -> bool 
 }
 
 /// Why a request could not be decoded, for [`reject_undecodable`].
-pub enum DecodeFailure<'a> {
+///
+/// Owned rather than borrowing: the decoding runs in a closure, and a reference
+/// to a locally formatted rkyv error could not outlive it. The path is cold, so
+/// the message is formatted once, here.
+pub enum DecodeFailure {
     /// The payload did not decode as the request enum.
-    Invalid(&'a dyn std::fmt::Debug),
+    Invalid(String),
     /// The payload decoded, but as another method's request variant.
     WrongVariant,
 }
@@ -391,7 +395,7 @@ pub enum DecodeFailure<'a> {
 pub fn reject_undecodable(
     service: &'static str,
     method: &'static str,
-    failure: DecodeFailure<'_>,
+    failure: DecodeFailure,
     mut emitter: OwnedEmitter,
 ) -> BoxResponseFuture {
     log_decode_failure(service, method, failure);
@@ -407,7 +411,7 @@ pub fn reject_undecodable(
 pub fn reject_undecodable_oneway(
     service: &'static str,
     method: &'static str,
-    failure: DecodeFailure<'_>,
+    failure: DecodeFailure,
 ) -> BoxResponseFuture {
     log_decode_failure(service, method, failure);
     Box::pin(async {})
@@ -416,10 +420,10 @@ pub fn reject_undecodable_oneway(
 /// Logs why a request could not be decoded, in one place for every method.
 #[cold]
 #[inline(never)]
-fn log_decode_failure(service: &'static str, method: &'static str, failure: DecodeFailure<'_>) {
+fn log_decode_failure(service: &'static str, method: &'static str, failure: DecodeFailure) {
     match failure {
         DecodeFailure::Invalid(error) => {
-            log::error!("[{service}::{method}] request payload decoding failed: {error:?}");
+            log::error!("[{service}::{method}] request payload decoding failed: {error}");
         }
         DecodeFailure::WrongVariant => {
             log::error!("[{service}::{method}] request payload is another method's variant");
@@ -652,7 +656,7 @@ mod tests {
         let future = reject_undecodable_oneway(
             "Service",
             "method",
-            DecodeFailure::Invalid(&"not this request"),
+            DecodeFailure::Invalid("not this request".to_string()),
         );
         crate::rt::block_on(future);
 

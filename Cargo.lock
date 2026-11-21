@@ -1167,7 +1167,6 @@ dependencies = [
 name = "ice-rpc-macros"
 version = "0.4.3"
 dependencies = [
- "log",
  "prettyplease 0.3.0",
  "proc-macro2",
  "quote",

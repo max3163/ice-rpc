@@ -7,7 +7,7 @@ From a single `#[service]`-annotated trait, the procedural macro generates the e
 ## Features
 
 - **Zero-copy IPC transport** through iceoryx2 shared memory.
-- **Code generation** with `#[service]`: Request enum, Client, Server, Proxy and lifecycle.
+- **Code generation** with `#[service]`: Request enum, Proxy (Provider / Consumer / ProviderJson), native dispatcher and lifecycle.
 - **Lazy consumer proxies** (discovery and connection handled by iceoryx2 on the
   first call) and **dependency-aware topological initialization** of the local
   services — a dependency provided by another process never blocks the startup.
@@ -193,10 +193,10 @@ pub trait GreeterService {
 }
 ```
 
-The macro generates `GreeterServiceRequest`, `GreeterServiceClient`,
-`GreeterServiceServer`, `GreeterServiceProxy` and `GreeterServiceMode`. A service
-method returns `Observable<T, E>` — never a `Result`: the error travels inside the
-flux.
+The macro generates `GreeterServiceRequest`, `GreeterServiceProxy` and
+`GreeterServiceMode`, plus a `native_dispatcher` constructor on the proxy for the
+provider side. A service method returns `Observable<T, E>` — never a `Result`: the
+error travels inside the flux.
 
 `#[service]` also accepts optional parameters:
 

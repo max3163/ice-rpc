@@ -1,6 +1,5 @@
-//! Codegen: sub-modules specialized by role (client, server, proxy, etc.).
+//! Codegen: sub-modules specialized by role (server, proxy, etc.).
 
-pub mod client;
 // Compiled whatever the build asks for: a generator is called according to
 // `Features`, never to `cfg!` — see `crate::features`.
 #[cfg_attr(not(feature = "monitoring"), allow(dead_code))]

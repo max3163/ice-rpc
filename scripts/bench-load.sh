@@ -5,9 +5,11 @@
 # concurrency modes (sequential / pipeline / blast) and stores one JSON result
 # per mode. The provider is stopped automatically at the end.
 #
+# The file is tracked without the executable bit, so call it through bash.
+#
 # Usage:
-#   scripts/bench-load.sh
-#   WORKERS=8 REQUESTS=500 OUT_DIR=target/bench-results scripts/bench-load.sh
+#   bash scripts/bench-load.sh
+#   WORKERS=8 REQUESTS=500 OUT_DIR=target/bench-results bash scripts/bench-load.sh
 
 set -euo pipefail
 

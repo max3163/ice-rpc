@@ -23,26 +23,10 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, LitStr, Type, Visibility};
+use syn::{Ident, LitStr, Visibility};
 
 use super::helpers::is_unit_type;
-
-/// One RPC method, as needed by the decoder.
-pub struct DecoderMethod {
-    /// Method name; the wire carries its [`method_id_of`](ice_rpc::codegen::method_id_of) only.
-    pub method_name: String,
-    /// Generated request-enum variant of this method.
-    pub var_name: Ident,
-    /// Argument names, bound by the request-enum variant.
-    pub arg_names: Vec<Ident>,
-    /// Success type `T` of `Observable<T, E>` (`()` for a one-way method).
-    pub ok_type: Type,
-    /// Error type `E` of `Observable<T, E>` (`()` for a one-way method).
-    pub err_type: Type,
-    /// Whether the method is a notification: it never emits a response, so it has
-    /// no payload to render on the response channel.
-    pub oneway: bool,
-}
+use crate::model::RpcMethod;
 
 /// Parameters of the decoder generation.
 pub struct DecoderGenInput<'a> {
@@ -57,7 +41,7 @@ pub struct DecoderGenInput<'a> {
     /// Logical service name.
     pub logical_name_lit: &'a str,
     /// One entry per RPC method.
-    pub methods: &'a [DecoderMethod],
+    pub methods: &'a [RpcMethod],
     /// Channel whose automatic observation this service opts out of.
     ///
     /// `None` submits the decoder into `DECODERS`, as a monitored service does.
@@ -132,7 +116,8 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
 
     for method in methods.iter() {
         let var_name = &method.var_name;
-        let method_lit = LitStr::new(&method.method_name, var_name.span());
+        let method_name = method.fn_name.to_string();
+        let method_lit = LitStr::new(&method_name, var_name.span());
         let arg_names = &method.arg_names;
 
         // The wire carries only the method id: this table resolves it back to a name.
@@ -143,7 +128,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
         });
 
         // `method(arg=…)`, each argument rendered by `render_value!`.
-        let mut format = String::from(method.method_name.as_str());
+        let mut format = method_name;
         format.push('(');
         for (index, arg) in arg_names.iter().enumerate() {
             if index > 0 {

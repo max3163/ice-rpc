@@ -9,7 +9,6 @@ use syn::Ident;
 pub struct LifecycleGenInput<'a> {
     pub trait_name: &'a Ident,
     pub proxy_name: &'a Ident,
-    pub server_name: &'a Ident,
     pub mode_name: &'a Ident,
     pub logical_name_lit: &'a str,
     /// Channel the service is registered on (the `group` of `#[service]`).
@@ -33,7 +32,6 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
     let LifecycleGenInput {
         trait_name,
         proxy_name,
-        server_name,
         mode_name,
         logical_name_lit,
         group_lit,
@@ -96,7 +94,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             }
 
                             // Registered: the thread starts in `initialize_all`.
-                            let dispatcher = #server_name::new(local_impl.clone()).native_dispatcher();
+                            let dispatcher = #proxy_name::native_dispatcher(local_impl.clone());
                             ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                             if let Err(e) = ice_rpc::codegen::register_native_service(
                                 #group_lit,
@@ -119,7 +117,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                         }
                         true
                     },
-                    #mode_name::Consumer { ipc_client } => ipc_client.init().await,
+                    #mode_name::Consumer => true,
                 }
             }
         }

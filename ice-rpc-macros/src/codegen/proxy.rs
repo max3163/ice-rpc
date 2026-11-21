@@ -4,12 +4,13 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, Visibility};
 
+use crate::model::RpcMethod;
+
 /// Proxy generation parameters.
 pub struct ProxyGenInput<'a> {
     pub trait_name: &'a Ident,
     pub visibility: &'a Visibility,
     pub proxy_name: &'a Ident,
-    pub client_name: &'a Ident,
     pub mode_name: &'a Ident,
     pub init_default_name: &'a Ident,
     pub logical_name_lit: &'a str,
@@ -49,7 +50,6 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         trait_name,
         visibility,
         proxy_name,
-        client_name,
         mode_name,
         init_default_name,
         logical_name_lit,
@@ -120,7 +120,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 init_hook:      std::sync::Arc<dyn ice_rpc::ServiceInit>,
                 server_started: bool,
             },
-            Consumer { ipc_client: std::sync::Arc<#client_name> },
+            Consumer,
             #json_variant
         }
 
@@ -180,9 +180,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
                 ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
                 std::sync::Arc::new(Self {
                     deps: vec![],
-                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Consumer {
-                        ipc_client: #client_name::new(),
-                    }),
+                    mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Consumer),
                 })
             }
 
@@ -243,13 +241,11 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
 /// Parameters of one proxy delegation method.
 pub struct ProxyMethodGenInput<'a> {
     /// The RPC method being delegated to.
-    pub fn_name: &'a Ident,
-    /// Parameter names, in declaration order.
-    pub arg_names: &'a [&'a Ident],
-    /// Parameter types, in declaration order.
-    pub arg_types: &'a [&'a syn::Type],
-    /// The method's declared return type (the `Observable`).
-    pub output_type: &'a syn::Type,
+    pub method: &'a RpcMethod,
+    /// The generated request enum (`{Trait}Request`).
+    pub req_enum_name: &'a Ident,
+    /// Channel the request is published on (the `group` of `#[service]`).
+    pub group: &'a str,
     /// The generated mode enum (`{Trait}Mode`).
     pub mode_name: &'a Ident,
     /// The service identity constant: `<Proxy>::SERVICE`.
@@ -261,11 +257,38 @@ pub struct ProxyMethodGenInput<'a> {
     /// Whether the `ProviderJson` arm belongs to the expansion.
     pub json_provider: bool,
     /// Whether the service opted out of spans (`#[service(..., no_tracing)]`).
-    ///
-    /// A direct call of such a service still installs the callee's `CallContext`,
-    /// but the hop emits no span, so the delegation uses
-    /// `local_call_scoped_untraced`.
     pub no_tracing: bool,
+}
+
+/// The synchronous IPC call of one method, shared by the delegating method and
+/// its blocking twin.
+fn gen_call_expr(input: &ProxyMethodGenInput<'_>) -> TokenStream {
+    let ProxyMethodGenInput {
+        method,
+        req_enum_name,
+        group,
+        service_ref,
+        ..
+    } = input;
+    let fn_name = &method.fn_name;
+    let var_name = &method.var_name;
+    let arg_names = &method.arg_names;
+    let ok_type = &method.ok_type;
+    let err_type = &method.err_type;
+    let method_name_str = fn_name.to_string();
+
+    quote! {
+        {
+            let req_val = #req_enum_name::#var_name { #(#arg_names),* };
+            ice_rpc::codegen::serialize_and_call::<#ok_type, #err_type, _>(
+                #group,
+                #service_ref,
+                ice_rpc::codegen::method_id_of(#method_name_str),
+                &req_val,
+            )
+            .unwrap_or_else(ice_rpc::Observable::from_technical_error)
+        }
+    }
 }
 
 /// Generates the body of a proxy delegation method.
@@ -276,24 +299,26 @@ pub struct ProxyMethodGenInput<'a> {
 /// parented on the caller's. The `#[cfg]` lives in that helper, never here — this
 /// file is compiled by `ice-rpc-macros`, which does not carry the feature.
 ///
-/// In Consumer mode, calls the IPC client.
+/// In Consumer mode, publishes the call directly; there is no client type
+/// between the proxy and the transport.
 /// In ProviderJson mode — only when `json_provider` is set — returns an error: the
 /// calls go through IPC to the channel the bridge registered.
 pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
     let ProxyMethodGenInput {
-        fn_name,
-        arg_names,
-        arg_types,
-        output_type,
+        method,
         mode_name,
         service_ref,
         service_name,
-        visibility: _,
         json_provider,
         no_tracing,
+        ..
     } = input;
-
+    let fn_name = &method.fn_name;
+    let arg_names = &method.arg_names;
+    let arg_types = &method.arg_types;
+    let output_type = &method.output_type;
     let method_name_str = fn_name.to_string();
+
     let local_scope = if *no_tracing {
         quote! { ice_rpc::codegen::local_call_scoped_untraced }
     } else {
@@ -312,6 +337,8 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
         quote! {}
     };
 
+    let call = gen_call_expr(input);
+
     quote! {
         async fn #fn_name(&self, #(#arg_names: #arg_types),*) -> #output_type {
             let mode = self.mode.read().await;
@@ -326,9 +353,7 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
                     )
                     .await
                 },
-                #mode_name::Consumer { ipc_client } => {
-                    ipc_client.#fn_name(#(#arg_names),*).await
-                }
+                #mode_name::Consumer => #call,
                 #json_arm
             }
         }
@@ -344,20 +369,22 @@ pub fn gen_proxy_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
 /// [`ice_rpc::rt::block_on`], the one future the light facade keeps.
 pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream {
     let ProxyMethodGenInput {
-        fn_name,
-        arg_names,
-        arg_types,
-        output_type,
+        method,
         mode_name,
         service_ref,
         service_name,
         visibility,
         json_provider,
         no_tracing,
+        ..
     } = input;
-
+    let fn_name = &method.fn_name;
+    let arg_names = &method.arg_names;
+    let arg_types = &method.arg_types;
+    let output_type = &method.output_type;
     let method_name_str = fn_name.to_string();
     let blocking_name = format_ident!("{}_blocking", fn_name);
+
     let local_scope = if *no_tracing {
         quote! { ice_rpc::codegen::local_call_scoped_untraced }
     } else {
@@ -381,6 +408,8 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
         quote! {}
     };
 
+    let call = gen_call_expr(input);
+
     quote! {
         #[doc = #blocking_doc]
         #visibility fn #blocking_name(&self, #(#arg_names: #arg_types),*) -> #output_type {
@@ -394,9 +423,7 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
                         local_impl.#fn_name(#(#arg_names),*),
                     ))
                 },
-                #mode_name::Consumer { ipc_client } => {
-                    ipc_client.#blocking_name(#(#arg_names),*)
-                }
+                #mode_name::Consumer => #call,
                 #json_arm
             }
         }
@@ -406,17 +433,47 @@ pub fn gen_proxy_blocking_method(input: &ProxyMethodGenInput<'_>) -> TokenStream
 /// Parameters of one **one-way** proxy method.
 pub struct ProxyOnewayGenInput<'a> {
     /// The RPC method delegated to.
-    pub fn_name: &'a Ident,
-    /// Parameter names, in declaration order.
-    pub arg_names: &'a [&'a Ident],
-    /// Parameter types, in declaration order.
-    pub arg_types: &'a [&'a syn::Type],
+    pub method: &'a RpcMethod,
+    /// The generated request enum (`{Trait}Request`).
+    pub req_enum_name: &'a Ident,
+    /// Channel the request is published on (the `group` of `#[service]`).
+    pub group: &'a str,
     /// The generated mode enum (`{Trait}Mode`).
     pub mode_name: &'a Ident,
     /// Visibility of the proxy type.
     pub visibility: &'a Visibility,
     /// Whether the `ProviderJson` arm belongs to the expansion.
     pub json_provider: bool,
+    /// The service identity constant: `<Proxy>::SERVICE`.
+    pub service_ref: &'a TokenStream,
+}
+
+/// The synchronous one-way call of one method, shared by the trait
+/// implementation and the inherent caller.
+fn gen_oneway_call_expr(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
+    let ProxyOnewayGenInput {
+        method,
+        req_enum_name,
+        group,
+        service_ref,
+        ..
+    } = input;
+    let fn_name = &method.fn_name;
+    let var_name = &method.var_name;
+    let arg_names = &method.arg_names;
+    let method_name_str = fn_name.to_string();
+
+    quote! {
+        {
+            let req_val = #req_enum_name::#var_name { #(#arg_names),* };
+            ice_rpc::codegen::serialize_and_send_one_way(
+                #group,
+                #service_ref,
+                ice_rpc::codegen::method_id_of(#method_name_str),
+                &req_val,
+            )
+        }
+    }
 }
 
 /// Generates the **trait implementation** body of a one-way method.
@@ -428,13 +485,14 @@ pub struct ProxyOnewayGenInput<'a> {
 /// `proxy.method(..)` resolves to *it*, not to this.
 pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
     let ProxyOnewayGenInput {
-        fn_name,
-        arg_names,
-        arg_types,
+        method,
         mode_name,
-        visibility: _,
         json_provider,
+        ..
     } = input;
+    let fn_name = &method.fn_name;
+    let arg_names = &method.arg_names;
+    let arg_types = &method.arg_types;
 
     let json_arm = if *json_provider {
         quote! {
@@ -450,6 +508,8 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
         quote! {}
     };
 
+    let call = gen_oneway_call_expr(input);
+
     quote! {
         async fn #fn_name(&self, #(#arg_names: #arg_types),*) {
             let mode = self.mode.read().await;
@@ -457,9 +517,9 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
                 #mode_name::Provider { local_impl, .. } => {
                     local_impl.#fn_name(#(#arg_names),*).await;
                 }
-                #mode_name::Consumer { ipc_client } => {
+                #mode_name::Consumer => {
                     // The emitter's local outcome cannot be reported by this signature.
-                    let _ = ipc_client.#fn_name(#(#arg_names),*);
+                    let _ = #call;
                 }
                 #json_arm
             }
@@ -475,13 +535,15 @@ pub fn gen_proxy_oneway_method(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
 /// and the sample counts as delivered, since the sink is right there.
 pub fn gen_proxy_oneway_call(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
     let ProxyOnewayGenInput {
-        fn_name,
-        arg_names,
-        arg_types,
+        method,
         mode_name,
         visibility,
         json_provider,
+        ..
     } = input;
+    let fn_name = &method.fn_name;
+    let arg_names = &method.arg_names;
+    let arg_types = &method.arg_types;
 
     let doc = format!(
         "One-way call of [`{fn_name}`]: publishes the notification and returns. \
@@ -500,6 +562,8 @@ pub fn gen_proxy_oneway_call(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
         quote! {}
     };
 
+    let call = gen_oneway_call_expr(input);
+
     quote! {
         #[doc = #doc]
         #visibility fn #fn_name(&self, #(#arg_names: #arg_types),*)
@@ -511,9 +575,7 @@ pub fn gen_proxy_oneway_call(input: &ProxyOnewayGenInput<'_>) -> TokenStream {
                     ice_rpc::rt::block_on(local_impl.#fn_name(#(#arg_names),*));
                     Ok(true)
                 }
-                #mode_name::Consumer { ipc_client } => {
-                    ipc_client.#fn_name(#(#arg_names),*)
-                }
+                #mode_name::Consumer => #call,
                 #json_arm
             }
         }

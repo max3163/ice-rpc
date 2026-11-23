@@ -12,11 +12,64 @@
 //! other passes had rejected, and a name could be accepted for one role and
 //! refused for the other.
 
-use proc_macro2::{Ident, Span};
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{ToTokens, quote};
 use syn::{ItemTrait, LitInt, LitStr, TraitItem, Type, Visibility};
 
 use crate::SERVICE_NAME_LEN;
 use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_type};
+
+/// How the **channel** of a service is named in `#[service]`.
+///
+/// Both forms resolve to the same `&'static str` in the generated code, so the
+/// transport never distinguishes them at runtime.
+// No `Debug` derive: `syn::ExprPath` does not implement it without the
+// `extra-traits` feature of `syn`, so the path is rendered as tokens below.
+#[derive(Clone)]
+pub enum ChannelName {
+    /// A string literal written in the attribute, or the logical-name default.
+    ///
+    /// The value is known while the macro expands, so it is validated there.
+    Literal(String),
+    /// A path to a `&'static str` constant, possibly declared in another crate.
+    ///
+    /// The macro cannot read the value: the generated code checks it during
+    /// constant evaluation, so an invalid name still fails the build.
+    Path(syn::ExprPath),
+}
+
+impl std::fmt::Debug for ChannelName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(name) => formatter.debug_tuple("Literal").field(name).finish(),
+            Self::Path(path) => formatter
+                .debug_tuple("Path")
+                .field(&path.to_token_stream().to_string())
+                .finish(),
+        }
+    }
+}
+
+impl ChannelName {
+    /// Tokens naming the channel, usable wherever a `&'static str` is expected.
+    pub fn to_tokens(&self) -> TokenStream {
+        match self {
+            Self::Literal(name) => {
+                let lit = LitStr::new(name, Span::call_site());
+                quote!(#lit)
+            }
+            Self::Path(path) => path.to_token_stream(),
+        }
+    }
+
+    /// The name as written, when the channel is spelled as a literal.
+    pub fn literal(&self) -> Option<&str> {
+        match self {
+            Self::Literal(name) => Some(name),
+            Self::Path(_) => None,
+        }
+    }
+}
 
 /// Optional parameters of the `#[service]` macro.
 ///
@@ -30,6 +83,11 @@ use crate::codegen::helpers::{extract_rpc_result_types, g_variant_name, is_unit_
 ///   Defaults to the service name, i.e. one channel per service. The resolved
 ///   name is exposed as the proxy constant `GROUP`, next to `SERVICE_NAME`, so a
 ///   caller never repeats the literal.
+/// - `#[service(..., group = common::SHARED)]` → the same channel, named through
+///   a path to a `&'static str` constant: several service crates can share one
+///   channel without repeating the literal. A literal is validated while the
+///   macro expands; a constant is validated during constant evaluation, so both
+///   forms fail the build rather than a runtime name check.
 /// - `#[service(..., max_slice_len = 4096)]` → the initial slice length of the
 ///   channel's publishers, in payload elements. It is a property of the
 ///   **channel**, so every service of a group must declare the same value; when
@@ -58,7 +116,7 @@ pub struct ServiceAttr {
     /// Explicit logical name, or `None` to derive it from the trait name.
     pub logical_name: Option<String>,
     /// Channel shared with the other services of the same group.
-    pub group: Option<String>,
+    pub group: Option<ChannelName>,
     /// Service interface version carried in the RPC header.
     pub service_version: u16,
     /// Initial slice length of the channel's publishers, when declared.
@@ -74,7 +132,7 @@ pub struct ServiceAttr {
 impl syn::parse::Parse for ServiceAttr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut logical_name: Option<String> = None;
-        let mut group: Option<String> = None;
+        let mut group: Option<ChannelName> = None;
         let mut service_version: u16 = 1;
         let mut max_slice_len: Option<usize> = None;
         let mut blocking: bool = false;
@@ -111,8 +169,14 @@ impl syn::parse::Parse for ServiceAttr {
                     no_monitoring = true;
                 } else if ident == "group" {
                     input.parse::<syn::Token![=]>()?;
-                    let lit: LitStr = input.parse()?;
-                    group = Some(lit.value());
+                    // The literal is the historical form and is validated while the
+                    // macro expands. A path names a constant the macro cannot read,
+                    // so the generated code checks it during constant evaluation.
+                    group = Some(if input.peek(LitStr) {
+                        ChannelName::Literal(input.parse::<LitStr>()?.value())
+                    } else {
+                        ChannelName::Path(input.parse()?)
+                    });
                 } else if ident == "version" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
@@ -168,7 +232,9 @@ impl NameKind {
     const fn parameter(self) -> &'static str {
         match self {
             NameKind::Service => "Use #[service(\"ShortName\")] to specify a shorter name.",
-            NameKind::Group => "Use #[service(..., group = \"ShortName\")].",
+            NameKind::Group => {
+                "Use #[service(..., group = \"ShortName\")], or a path to a &'static str constant."
+            }
         }
     }
 
@@ -271,7 +337,7 @@ pub struct ServiceModel {
     /// Logical service name (`#[service("Name")]`, or the trait name lowercased).
     pub logical_name: String,
     /// Channel shared by the services of the same group.
-    pub group: String,
+    pub group: ChannelName,
     /// Service interface version carried in the RPC header.
     pub service_version: u16,
     /// Initial slice length of the channel's publishers, when declared.
@@ -309,8 +375,16 @@ impl ServiceModel {
             .unwrap_or_else(|| trait_name.to_string().to_lowercase());
         validate_name(NameKind::Service, &logical_name, trait_name.span())?;
 
-        let group = attr.group.clone().unwrap_or_else(|| logical_name.clone());
-        validate_name(NameKind::Group, &group, trait_name.span())?;
+        // No group: the service is alone in its channel, named after itself.
+        let group = attr
+            .group
+            .clone()
+            .unwrap_or_else(|| ChannelName::Literal(logical_name.clone()));
+        // Only a literal can be read here: a path names a constant the macro
+        // cannot evaluate, checked by the generated code instead.
+        if let Some(name) = group.literal() {
+            validate_name(NameKind::Group, name, trait_name.span())?;
+        }
 
         let methods = trait_item
             .items
@@ -421,7 +495,42 @@ mod tests {
         let model = model(quote! {}, quote! { trait MyService { } });
         assert_eq!(model.logical_name, "myservice");
         // With no group, the service is alone in its channel.
-        assert_eq!(model.group, "myservice");
+        assert_eq!(model.group.literal(), Some("myservice"));
+    }
+
+    #[test]
+    fn the_group_keeps_a_literal_verbatim() {
+        let model = model(quote! { group = "db" }, quote! { trait Db { } });
+        assert_eq!(model.group.literal(), Some("db"));
+    }
+
+    #[test]
+    fn the_group_accepts_a_shared_constant_path() {
+        let model = model(
+            quote! { group = common::SHARED_CHANNEL },
+            quote! { trait Db { } },
+        );
+        // The macro cannot read a constant, so it keeps the path for codegen.
+        assert_eq!(model.group.literal(), None);
+        assert_eq!(
+            model.group.to_tokens().to_string(),
+            quote!(common::SHARED_CHANNEL).to_string()
+        );
+    }
+
+    #[test]
+    fn an_invalid_group_literal_is_refused_at_expansion() {
+        let attr: ServiceAttr =
+            syn::parse2(quote! { group = "Bad.Name" }).expect("attribute should parse");
+        let item: ItemTrait = syn::parse2(quote! { trait Db { } }).expect("trait should parse");
+        let err = match ServiceModel::read(&attr, &item) {
+            Ok(_) => panic!("an invalid group literal must be refused"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().to_lowercase().contains("channel name"),
+            "{err}"
+        );
     }
 
     #[test]

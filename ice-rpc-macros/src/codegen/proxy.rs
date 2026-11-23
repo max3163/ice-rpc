@@ -15,7 +15,7 @@ pub struct ProxyGenInput<'a> {
     pub init_default_name: &'a Ident,
     pub logical_name_lit: &'a str,
     /// Channel the service belongs to (the `group` of `#[service]`).
-    pub group_lit: &'a str,
+    pub group: &'a TokenStream,
     /// Expression of the initial slice length of the channel's publishers
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
@@ -53,7 +53,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         mode_name,
         init_default_name,
         logical_name_lit,
-        group_lit,
+        group,
         max_slice_len,
         service_ref,
         node_methods,
@@ -137,11 +137,11 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             /// Channel the service is registered on, injected by the `#[service]`
             /// macro.
             ///
-            /// Equal to the `group = "..."` parameter, or to the logical name when
-            /// the parameter is omitted. A constant so a caller can name the
-            /// channel — a readiness probe, a monitor, a test — without repeating
-            /// the literal the declaration already carries.
-            pub const GROUP: &'static str = #group_lit;
+            /// Equal to the `group` parameter — a literal or a shared `&'static str`
+            /// constant — or to the logical name when the parameter is omitted. A
+            /// constant so a caller can name the channel — a readiness probe, a
+            /// monitor, a test — without repeating the declaration.
+            pub const GROUP: &'static str = #group;
 
             #visibility fn provide<T>(implementation: T) -> std::sync::Arc<Self>
             where T: #trait_name + Send + Sync + 'static
@@ -177,7 +177,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
 
             #visibility fn consume() -> std::sync::Arc<Self> {
                 // The channel's publishers are sized from this one declaration.
-                ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                ice_rpc::codegen::declare_channel_max_slice_len(#group, #max_slice_len);
                 std::sync::Arc::new(Self {
                     deps: vec![],
                     mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Consumer),
@@ -215,7 +215,7 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             /// connected" answer would hide a deployment problem no amount of
             /// retrying resolves.
             #visibility fn is_provider_connected() -> Result<bool, ice_rpc::RpcError> {
-                ice_rpc::codegen::is_provider_connected(#group_lit)
+                ice_rpc::codegen::is_provider_connected(#group)
             }
 
             #provide_json
@@ -244,8 +244,9 @@ pub struct ProxyMethodGenInput<'a> {
     pub method: &'a RpcMethod,
     /// The generated request enum (`{Trait}Request`).
     pub req_enum_name: &'a Ident,
-    /// Channel the request is published on (the `group` of `#[service]`).
-    pub group: &'a str,
+    /// Channel the request is published on (the `group` of `#[service]`), as
+    /// tokens: a literal or a path to a shared constant.
+    pub group: &'a TokenStream,
     /// The generated mode enum (`{Trait}Mode`).
     pub mode_name: &'a Ident,
     /// The service identity constant: `<Proxy>::SERVICE`.
@@ -436,8 +437,9 @@ pub struct ProxyOnewayGenInput<'a> {
     pub method: &'a RpcMethod,
     /// The generated request enum (`{Trait}Request`).
     pub req_enum_name: &'a Ident,
-    /// Channel the request is published on (the `group` of `#[service]`).
-    pub group: &'a str,
+    /// Channel the request is published on (the `group` of `#[service]`), as
+    /// tokens: a literal or a path to a shared constant.
+    pub group: &'a TokenStream,
     /// The generated mode enum (`{Trait}Mode`).
     pub mode_name: &'a Ident,
     /// Visibility of the proxy type.

@@ -202,3 +202,34 @@ fn test_proxy_reports_whether_a_provider_is_connected() {
         "no provider serves this channel in the test process"
     );
 }
+
+// Test 12: `group` accepts a shared `&'static str` constant
+
+/// Channel shared by the service below, as a `common` crate would expose it.
+pub const SHARED_CHANNEL: &str = "shared-const-channel";
+
+/// A second shared name, reached through a module path.
+pub mod channel_names {
+    /// Channel of the service declared below.
+    pub const DB: &str = "const-db";
+}
+
+#[service("SharedConstA", group = SHARED_CHANNEL)]
+#[async_trait::async_trait]
+pub trait SharedConstA: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+#[service("SharedConstB", group = channel_names::DB)]
+#[async_trait::async_trait]
+pub trait SharedConstB: Send + Sync + 'static {
+    async fn ping(&self) -> Observable<(), String>;
+}
+
+/// The generated constant is the shared one, so a caller reads the channel from
+/// `GROUP` and no service repeats the literal.
+#[test]
+fn test_group_accepts_a_shared_constant() {
+    assert_eq!(SharedConstAProxy::GROUP, SHARED_CHANNEL);
+    assert_eq!(SharedConstBProxy::GROUP, channel_names::DB);
+}

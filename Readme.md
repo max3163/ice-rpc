@@ -289,12 +289,13 @@ generic implementation.
 #[service]                                             // logical name = trait name in lowercase
 #[service("MyService")]                                // explicit logical name
 #[service("MyService", version = 2, group = "db")]      // version + channel
+#[service("MyService", group = common::SHARED_CHANNEL)] // channel shared through a constant
 ```
 
-| Parameter | Type    | Default      | Description                                                                                                                                       |
-| --------- | ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version` | integer | `1`          | Service interface version (part of the request frame).                                                                                            |
-| `group`   | string  | service name | Channel shared with the other services of the group: one request channel, one response channel and one dispatch thread, routed by the service id. |
+| Parameter | Type              | Default      | Description                                                                                                                                       |
+| --------- | ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | integer           | `1`          | Service interface version (part of the request frame).                                                                                            |
+| `group`   | string or `const` | service name | Channel shared with the other services of the group: one request channel, one response channel and one dispatch thread, routed by the service id. |
 
 ---
 
@@ -306,6 +307,11 @@ A **channel** is the unit of transport: one request channel, one response channe
 and one dispatch thread. Every service of the same group
 (`#[service("GetPerson", group = "db")]`) shares them; `group` defaults to the
 service name, i.e. one channel per service — the historical layout.
+
+`group` also accepts a path to a `&'static str` constant
+(`#[service("GetPerson", group = common::SHARED_CHANNEL)]`), which is how several
+crates share a channel without repeating the literal: `common` declares the name
+once, and every declaration reads it back from `GetPersonProxy::GROUP`.
 
 Each channel maps to four iceoryx2 services:
 

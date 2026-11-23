@@ -419,3 +419,41 @@ fn the_no_monitoring_parameter_hides_the_channel_instead_of_registering_the_deco
         "a build without `monitoring` carries no registry: {unmonitored}"
     );
 }
+
+/// A channel named by a shared constant is emitted as that path, and carries the
+/// constant-evaluation check the macro cannot perform itself.
+///
+/// The literal form stays checked at expansion time, which is why no second check
+/// is emitted for it: one name, one diagnostic.
+#[test]
+fn a_group_given_as_a_constant_path_is_emitted_verbatim_and_checked_at_compile_time() {
+    let shared = compact(&render(
+        MONITORING,
+        quote! { "Calc", group = common::SHARED_CHANNEL, no_monitoring },
+        CALCULATOR(),
+    ));
+    assert!(
+        shared.contains("pubconstGROUP:&'staticstr=common::SHARED_CHANNEL;"),
+        "the path travels to the constant unchanged: {shared}"
+    );
+    assert!(
+        shared.contains(
+            "const_:()=ice_rpc::codegen::const_ensure_channel_name(common::SHARED_CHANNEL);"
+        ),
+        "a shared channel name is checked during constant evaluation: {shared}"
+    );
+    assert!(
+        shared.contains("channel:common::SHARED_CHANNEL"),
+        "the hidden channel is the shared constant too: {shared}"
+    );
+
+    let literal = compact(&render(
+        MONITORING,
+        quote! { "Calc", group = "db" },
+        CALCULATOR(),
+    ));
+    assert!(
+        !literal.contains("const_ensure_channel_name"),
+        "a literal must not be checked twice: {literal}"
+    );
+}

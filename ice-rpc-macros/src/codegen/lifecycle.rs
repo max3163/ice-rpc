@@ -11,8 +11,9 @@ pub struct LifecycleGenInput<'a> {
     pub proxy_name: &'a Ident,
     pub mode_name: &'a Ident,
     pub logical_name_lit: &'a str,
-    /// Channel the service is registered on (the `group` of `#[service]`).
-    pub group_lit: &'a str,
+    /// Channel the service is registered on (the `group` of `#[service]`), as
+    /// tokens: a literal or a path to a shared constant.
+    pub group: &'a TokenStream,
     /// Expression of the initial slice length of the channel's publishers
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
@@ -34,7 +35,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
         proxy_name,
         mode_name,
         logical_name_lit,
-        group_lit,
+        group,
         max_slice_len,
         json_provider,
     } = input;
@@ -54,9 +55,9 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                 };
                 // Registered on the channel, whose publishers are sized from this
                 // declaration; the thread starts once every provider registered.
-                ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                ice_rpc::codegen::declare_channel_max_slice_len(#group, #max_slice_len);
                 if let Err(e) = ice_rpc::codegen::register_native_service(
-                    #group_lit,
+                    #group,
                     #logical_name_lit,
                     *dispatcher,
                 ) {
@@ -69,7 +70,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                 ice_rpc::codegen::log::info!(
                     "[{}] JSON provider registered on channel '{}'.",
                     #logical_name_lit,
-                    #group_lit
+                    #group
                 );
                 true
             }
@@ -95,9 +96,9 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
 
                             // Registered: the thread starts in `initialize_all`.
                             let dispatcher = #proxy_name::native_dispatcher(local_impl.clone());
-                            ice_rpc::codegen::declare_channel_max_slice_len(#group_lit, #max_slice_len);
+                            ice_rpc::codegen::declare_channel_max_slice_len(#group, #max_slice_len);
                             if let Err(e) = ice_rpc::codegen::register_native_service(
-                                #group_lit,
+                                #group,
                                 #logical_name_lit,
                                 dispatcher,
                             ) {
@@ -112,7 +113,7 @@ pub fn gen_lifecycle(input: &LifecycleGenInput<'_>) -> TokenStream {
                             ice_rpc::codegen::log::info!(
                                 "[{}] native service registered on channel '{}'.",
                                 stringify!(#trait_name),
-                                #group_lit
+                                #group
                             );
                         }
                         true

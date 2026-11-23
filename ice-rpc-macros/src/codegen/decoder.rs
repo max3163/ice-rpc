@@ -44,10 +44,12 @@ pub struct DecoderGenInput<'a> {
     pub methods: &'a [RpcMethod],
     /// Channel whose automatic observation this service opts out of.
     ///
-    /// `None` submits the decoder into `DECODERS`, as a monitored service does.
-    /// `Some(channel)` keeps the decoder but submits the channel into
-    /// `HIDDEN_CHANNELS` instead, so an observer's automatic discovery skips it.
-    pub hidden_channel: Option<&'a str>,
+    /// Tokens of the channel name — a literal, or the path of the shared constant
+    /// the attribute names. `None` submits the decoder into `DECODERS`, as a
+    /// monitored service does. `Some(channel)` keeps the decoder but submits the
+    /// channel into `HIDDEN_CHANNELS` instead, so an observer's automatic
+    /// discovery skips it.
+    pub hidden_channel: Option<&'a TokenStream>,
 }
 
 /// Generates the `Display` implementation and the `{Trait}Decoder`.
@@ -93,7 +95,6 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
                 &format!("__ICE_RPC_HIDDEN_{}", trait_name.to_string().to_uppercase()),
                 proc_macro2::Span::call_site(),
             );
-            let channel_lit = LitStr::new(channel, proc_macro2::Span::call_site());
             quote! {
                 // `no_monitoring`: the linker collects the channel so that
                 // automatic discovery skips it, while the decoder above remains
@@ -103,7 +104,7 @@ pub fn gen_decoder(input: &DecoderGenInput<'_>) -> TokenStream {
                 #[linkme(crate = ice_rpc::codegen::linkme)]
                 static #hidden_name: ice_rpc::monitor::HiddenChannelRegistration =
                     ice_rpc::monitor::HiddenChannelRegistration {
-                        channel: #channel_lit,
+                        channel: #channel,
                     };
             }
         }

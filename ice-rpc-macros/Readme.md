@@ -90,15 +90,22 @@ pub trait MyService: Send + Sync + 'static {
 pub trait MyService: Send + Sync + 'static {
     async fn hello(&self, name: String) -> Observable<String, MyError>;
 }
+
+// The channel may also come from a constant shared by several crates:
+// `pub const SHARED_CHANNEL: &str = "db";` in a `common` crate.
+#[service("OtherService", group = common::SHARED_CHANNEL)]
+pub trait OtherService: Send + Sync + 'static {
+    async fn hello(&self, name: String) -> Observable<String, MyError>;
+}
 ```
 
-| Parameter       | Type    | Default      | Description                                                                                                                                                                                                             |
-| --------------- | ------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`       | integer | `1`          | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.                                                                                             |
-| `group`         | string  | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id.                                             |
-| `blocking`      | flag    | off          | Generates a synchronous twin `{method}_blocking` of **every** method on the `{Trait}Proxy`. It returns the `Observable` directly, so a consumer with no async runtime calls the service without `.await` or `block_on`. |
-| `no_tracing`    | flag    | off          | This service emits no `tracing` span of its own while the call context — identity, correlation id and incoming W3C trace — is still installed and propagated.                                                           |
-| `no_monitoring` | flag    | off          | This service stays out of automatic observation: its decoder is not submitted to the link-time registry and its channel is hidden from `discover_channels`. The decoder remains available for an explicit registration. |
+| Parameter       | Type              | Default      | Description                                                                                                                                                                                                                                            |
+| --------------- | ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `version`       | integer           | `1`          | Service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`.                                                                                                                            |
+| `group`         | string or `const` | service name | **Channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id. A `&'static str` constant path avoids repeating the literal across crates. |
+| `blocking`      | flag              | off          | Generates a synchronous twin `{method}_blocking` of **every** method on the `{Trait}Proxy`. It returns the `Observable` directly, so a consumer with no async runtime calls the service without `.await` or `block_on`.                                |
+| `no_tracing`    | flag              | off          | This service emits no `tracing` span of its own while the call context — identity, correlation id and incoming W3C trace — is still installed and propagated.                                                                                          |
+| `no_monitoring` | flag              | off          | This service stays out of automatic observation: its decoder is not submitted to the link-time registry and its channel is hidden from `discover_channels`. The decoder remains available for an explicit registration.                                |
 
 The macro does not bound the response wait: use the `Observable` operators
 (`timeout`, `take_until`) to bound the latency, or the silence between two values
@@ -109,6 +116,9 @@ of a streaming response.
 At expansion time, the macro validates:
 
 - service name length (`<= 64` characters) and allowed characters (ASCII alphanumeric, `_`, `-`);
+- the same rules for a `group` given as a literal. A `group` given as a constant path
+  is checked during constant evaluation, so an invalid shared name fails the build
+  too — just from the `const` item the macro emits rather than from the expansion;
 - method name length (`<= 64` characters);
 - service name uniqueness (a duplicate logical name in the same binary is a compile-time error).
 

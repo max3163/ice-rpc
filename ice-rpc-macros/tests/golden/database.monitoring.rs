@@ -216,10 +216,10 @@ impl DatabaseApiProxy {
     /// Channel the service is registered on, injected by the `#[service]`
     /// macro.
     ///
-    /// Equal to the `group = "..."` parameter, or to the logical name when
-    /// the parameter is omitted. A constant so a caller can name the
-    /// channel — a readiness probe, a monitor, a test — without repeating
-    /// the literal the declaration already carries.
+    /// Equal to the `group` parameter — a literal or a shared `&'static str`
+    /// constant — or to the logical name when the parameter is omitted. A
+    /// constant so a caller can name the channel — a readiness probe, a
+    /// monitor, a test — without repeating the declaration.
     pub const GROUP: &'static str = "db";
     pub fn provide<T>(implementation: T) -> std::sync::Arc<Self>
     where

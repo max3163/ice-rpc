@@ -23,7 +23,7 @@ use quote::quote;
 use syn::{Ident, ItemTrait, Type};
 
 use crate::features::Features;
-use crate::model::{ServiceAttr, ServiceModel};
+use crate::model::{ChannelName, ServiceAttr, ServiceModel};
 
 use crate::codegen::{
     decoder::{DecoderGenInput, gen_decoder},
@@ -69,6 +69,14 @@ use crate::codegen::{
 /// property of the **channel** (the `group`), so every service of a group must
 /// declare the same value; when omitted, the runtime default
 /// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
+///
+/// `group` names the **channel** a service shares with the others of its group.
+/// It accepts a string literal (`group = "db"`) or a path to a `&'static str`
+/// constant (`group = common::SHARED_CHANNEL`), so several crates can share one
+/// channel without repeating the literal. A literal is validated while the macro
+/// expands; a constant is validated during constant evaluation, so both forms
+/// fail the build instead of the first iceoryx2 call. The resolved name stays
+/// reachable as `{Trait}Proxy::GROUP`.
 ///
 /// # The return type decides the kind of call
 ///
@@ -156,7 +164,8 @@ fn expand_service_with(
     let trait_name = &model.trait_name;
     let visibility = &model.visibility;
     let logical_name_lit = model.logical_name.clone();
-    let group_lit = model.group.clone();
+    // Tokens, not a literal: the channel may be a path to a shared constant.
+    let group = model.group.to_tokens();
     let service_version = model.service_version;
 
     // The default lives in `ice-rpc` (`DEFAULT_MAX_SLICE_LEN`), so the two crates
@@ -198,7 +207,7 @@ fn expand_service_with(
             let proxy_oneway_input = ProxyOnewayGenInput {
                 method,
                 req_enum_name,
-                group: &group_lit,
+                group: &group,
                 mode_name,
                 visibility,
                 json_provider: features.json,
@@ -211,7 +220,7 @@ fn expand_service_with(
             let proxy_method_input = ProxyMethodGenInput {
                 method,
                 req_enum_name,
-                group: &group_lit,
+                group: &group,
                 mode_name,
                 service_ref: &service_ref,
                 service_name: &service_name,
@@ -247,7 +256,7 @@ fn expand_service_with(
         mode_name,
         init_default_name,
         logical_name_lit: &logical_name_lit,
-        group_lit: &group_lit,
+        group: &group,
         max_slice_len: &max_slice_len,
         service_ref: &service_ref,
         node_methods: &node_methods,
@@ -263,7 +272,7 @@ fn expand_service_with(
         proxy_name,
         mode_name,
         logical_name_lit: &logical_name_lit,
-        group_lit: &group_lit,
+        group: &group,
         max_slice_len: &max_slice_len,
         json_provider: features.json,
     };
@@ -301,7 +310,7 @@ fn expand_service_with(
         // `no_monitoring` keeps the decoder but hides its channel from automatic
         // discovery; the channel is the `group`, resolved to the logical name when
         // the service declares none.
-        let hidden_channel = no_monitoring.then_some(group_lit.as_str());
+        let hidden_channel = no_monitoring.then_some(&group);
         let decoder_input = DecoderGenInput {
             visibility,
             trait_name,
@@ -314,6 +323,18 @@ fn expand_service_with(
         gen_decoder(&decoder_input)
     } else {
         quote! {}
+    };
+
+    // A channel named by a shared constant cannot be validated while the macro
+    // expands: the value is read during constant evaluation, so an invalid name
+    // still fails the build instead of the first iceoryx2 call. A literal was
+    // already validated by the model, and checking it twice would only cost a
+    // second, differently worded error.
+    let channel_name_check = match &model.group {
+        ChannelName::Path(path) => quote! {
+            const _: () = ice_rpc::codegen::const_ensure_channel_name(#path);
+        },
+        ChannelName::Literal(_) => quote! {},
     };
 
     // Unique symbol: a name collision fails at link time.
@@ -351,6 +372,8 @@ fn expand_service_with(
         #json_invoker
 
         #decoder_output
+
+        #channel_name_check
 
         #[doc(hidden)]
         #[unsafe(no_mangle)]

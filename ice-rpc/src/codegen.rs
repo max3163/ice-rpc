@@ -12,8 +12,8 @@ pub use crate::shutdown::{clear_ipc_cleanup, register_ipc_cleanup};
 pub use crate::types::{
     CORRELATION_ID_LEN, CallContext, EventKind, NodeId, PROTOCOL_VERSION, RpcError, RpcHeader,
     SERVICE_NAME_LEN, Sender, ServiceRef, WireEvent, call_scoped, call_scoped_untraced, channel,
-    fmt_correlation_id, local_call_scoped, local_call_scoped_untraced, method_id_of,
-    next_correlation_id, now_ns, parse_correlation_id, raw_pid_to_u32, service_id_of,
+    const_ensure_channel_name, fmt_correlation_id, local_call_scoped, local_call_scoped_untraced,
+    method_id_of, next_correlation_id, now_ns, parse_correlation_id, raw_pid_to_u32, service_id_of,
     unbounded_channel,
 };
 

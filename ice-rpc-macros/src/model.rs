@@ -71,6 +71,19 @@ impl ChannelName {
     }
 }
 
+/// How the publishers of a channel grow when a payload exceeds `max_slice_len`.
+///
+/// The attribute value is a string: `allocation = "grow"` (default) or
+/// `allocation = "fixed"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AllocationPolicy {
+    /// Grow past the initial slice length (`AllocationStrategy::PowerOfTwo`).
+    #[default]
+    Grow,
+    /// Treat the initial slice length as a hard cap (`AllocationStrategy::Static`).
+    Fixed,
+}
+
 /// Optional parameters of the `#[service]` macro.
 ///
 /// - `#[service]` → the logical name = the trait name in lowercase.
@@ -92,6 +105,15 @@ impl ChannelName {
 ///   channel's publishers, in payload elements. It is a property of the
 ///   **channel**, so every service of a group must declare the same value; when
 ///   omitted, the runtime default (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
+/// - `#[service(..., max_loaned_samples = 8)]` → how many samples a publisher may
+///   loan in parallel. This is a throughput/memory trade-off: raising it lets more
+///   calls be in flight, but multiplies the size of a grown data segment. It is a
+///   property of the **channel**; when omitted, iceoryx2's default of 2 applies.
+/// - `#[service(..., allocation = "fixed")]` → what happens when a payload
+///   exceeds `max_slice_len`: `"grow"` (the default) lets the publisher grow
+///   past the initial slice, `"fixed"` makes it a hard cap. Like `max_slice_len`,
+///   it is a property of the **channel**, so every service of a group must
+///   declare the same value.
 /// - `#[service(..., blocking)]` → also generate a **blocking** twin of every
 ///   method (`{method}_blocking`) on the `{Trait}Proxy`, for a consumer that runs
 ///   no async runtime: the twin returns the `Observable` directly instead of a
@@ -121,6 +143,10 @@ pub struct ServiceAttr {
     pub service_version: u16,
     /// Initial slice length of the channel's publishers, when declared.
     pub max_slice_len: Option<usize>,
+    /// Maximum samples a publisher may loan in parallel, when declared.
+    pub max_loaned_samples: Option<usize>,
+    /// How the channel's publishers grow when a payload exceeds `max_slice_len`.
+    pub allocation: AllocationPolicy,
     /// Whether a blocking twin of every method is generated (`blocking`).
     pub blocking: bool,
     /// Whether this service opts out of emitting spans (`no_tracing`).
@@ -135,6 +161,8 @@ impl syn::parse::Parse for ServiceAttr {
         let mut group: Option<ChannelName> = None;
         let mut service_version: u16 = 1;
         let mut max_slice_len: Option<usize> = None;
+        let mut max_loaned_samples: Option<usize> = None;
+        let mut allocation = AllocationPolicy::default();
         let mut blocking: bool = false;
         let mut no_tracing: bool = false;
         let mut no_monitoring: bool = false;
@@ -145,6 +173,8 @@ impl syn::parse::Parse for ServiceAttr {
                 group,
                 service_version,
                 max_slice_len,
+                max_loaned_samples,
+                allocation,
                 blocking,
                 no_tracing,
                 no_monitoring,
@@ -181,6 +211,21 @@ impl syn::parse::Parse for ServiceAttr {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
                     service_version = lit.base10_parse::<u16>()?;
+                } else if ident == "allocation" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitStr = input.parse()?;
+                    allocation = match lit.value().as_str() {
+                        "grow" => AllocationPolicy::Grow,
+                        "fixed" => AllocationPolicy::Fixed,
+                        other => {
+                            return Err(syn::Error::new(
+                                lit.span(),
+                                format!(
+                                    "allocation must be \"grow\" or \"fixed\", got \"{other}\""
+                                ),
+                            ));
+                        }
+                    };
                 } else if ident == "max_slice_len" {
                     input.parse::<syn::Token![=]>()?;
                     let lit: LitInt = input.parse()?;
@@ -193,6 +238,18 @@ impl syn::parse::Parse for ServiceAttr {
                         ));
                     }
                     max_slice_len = Some(value);
+                } else if ident == "max_loaned_samples" {
+                    input.parse::<syn::Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    let value = lit.base10_parse::<usize>()?;
+                    // iceoryx2 cannot create a publisher that may not loan one sample.
+                    if value == 0 {
+                        return Err(syn::Error::new(
+                            lit.span(),
+                            "max_loaned_samples must be greater than 0",
+                        ));
+                    }
+                    max_loaned_samples = Some(value);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -212,6 +269,8 @@ impl syn::parse::Parse for ServiceAttr {
             group,
             service_version,
             max_slice_len,
+            max_loaned_samples,
+            allocation,
             blocking,
             no_tracing,
             no_monitoring,
@@ -342,6 +401,10 @@ pub struct ServiceModel {
     pub service_version: u16,
     /// Initial slice length of the channel's publishers, when declared.
     pub max_slice_len: Option<usize>,
+    /// Maximum samples a publisher may loan in parallel, when declared.
+    pub max_loaned_samples: Option<usize>,
+    /// How the channel's publishers grow when a payload exceeds `max_slice_len`.
+    pub allocation: AllocationPolicy,
     /// `{Trait}Request`.
     pub req_enum_name: Ident,
     /// `{Trait}Proxy`.
@@ -402,6 +465,8 @@ impl ServiceModel {
             group,
             service_version: attr.service_version,
             max_slice_len: attr.max_slice_len,
+            max_loaned_samples: attr.max_loaned_samples,
+            allocation: attr.allocation,
             req_enum_name: Ident::new(&format!("{trait_name}Request"), trait_name.span()),
             proxy_name: Ident::new(&format!("{trait_name}Proxy"), trait_name.span()),
             mode_name: Ident::new(&format!("{trait_name}Mode"), trait_name.span()),
@@ -496,6 +561,43 @@ mod tests {
         assert_eq!(model.logical_name, "myservice");
         // With no group, the service is alone in its channel.
         assert_eq!(model.group.literal(), Some("myservice"));
+    }
+
+    #[test]
+    fn the_loan_limit_is_optional() {
+        let attr: ServiceAttr = syn::parse2(quote! {}).expect("attribute should parse");
+        assert_eq!(attr.max_loaned_samples, None);
+
+        let attr: ServiceAttr =
+            syn::parse2(quote! { max_loaned_samples = 8 }).expect("attribute should parse");
+        assert_eq!(attr.max_loaned_samples, Some(8));
+    }
+
+    #[test]
+    fn a_zero_loan_limit_is_refused() {
+        let err = syn::parse2::<ServiceAttr>(quote! { max_loaned_samples = 0 })
+            .expect_err("zero loans must be refused");
+        assert!(err.to_string().contains("greater than 0"), "{err}");
+    }
+
+    #[test]
+    fn the_allocation_policy_defaults_to_grow() {
+        let attr: ServiceAttr = syn::parse2(quote! {}).expect("attribute should parse");
+        assert_eq!(attr.allocation, AllocationPolicy::Grow);
+    }
+
+    #[test]
+    fn the_allocation_policy_accepts_fixed() {
+        let attr: ServiceAttr =
+            syn::parse2(quote! { allocation = "fixed" }).expect("attribute should parse");
+        assert_eq!(attr.allocation, AllocationPolicy::Fixed);
+    }
+
+    #[test]
+    fn an_invalid_allocation_policy_is_refused() {
+        let err = syn::parse2::<ServiceAttr>(quote! { allocation = "best-fit" })
+            .expect_err("an unknown policy must be refused");
+        assert!(err.to_string().contains("\"grow\" or \"fixed\""), "{err}");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use quote::quote;
 use syn::{Ident, ItemTrait, Type};
 
 use crate::features::Features;
-use crate::model::{ChannelName, ServiceAttr, ServiceModel};
+use crate::model::{AllocationPolicy, ChannelName, ServiceAttr, ServiceModel};
 
 use crate::codegen::{
     decoder::{DecoderGenInput, gen_decoder},
@@ -45,8 +45,8 @@ use crate::codegen::{
 ///
 /// # Parameters
 ///
-/// `"LogicalName"`, `version`, `group`, `max_slice_len`, `blocking`,
-/// `no_tracing` and `no_monitoring`.
+/// `"LogicalName"`, `version`, `group`, `max_slice_len`, `max_loaned_samples`,
+/// `allocation`, `blocking`, `no_tracing` and `no_monitoring`.
 ///
 /// `no_tracing` opts **this service** out of emitting `tracing` spans while the
 /// `tracing` feature of `ice-rpc` stays on: the call context is still installed
@@ -69,6 +69,17 @@ use crate::codegen::{
 /// property of the **channel** (the `group`), so every service of a group must
 /// declare the same value; when omitted, the runtime default
 /// (`DEFAULT_MAX_SLICE_LEN`, 256) applies.
+///
+/// `max_loaned_samples` caps how many samples a publisher may loan in parallel.
+/// It is a throughput/memory trade-off: a larger value lets more calls be in
+/// flight, but multiplies the size of a grown data segment. When omitted,
+/// iceoryx2's default of 2 applies.
+///
+/// `allocation` controls what happens when a payload exceeds `max_slice_len`:
+/// `"grow"` (the default) lets the publisher grow, so a larger message still
+/// travels; `"fixed"` makes the initial slice length a hard cap and a larger
+/// payload fails with an `RpcError`. Like `max_slice_len`, it is a property of
+/// the **channel**, so every service of a group must declare the same value.
 ///
 /// `group` names the **channel** a service shares with the others of its group.
 /// It accepts a string literal (`group = "db"`) or a path to a `&'static str`
@@ -174,6 +185,18 @@ fn expand_service_with(
         Some(value) => quote! { #value },
         None => quote! { ice_rpc::codegen::DEFAULT_MAX_SLICE_LEN },
     };
+    // Same rule for the loan limit: absent from the attribute, it stays at
+    // iceoryx2's default instead of silently hiding the channel's bottleneck.
+    let max_loaned_samples = match model.max_loaned_samples {
+        Some(value) => quote! { #value },
+        None => quote! { ice_rpc::codegen::DEFAULT_MAX_LOANED_SAMPLES },
+    };
+    // The default lives in `ice-rpc` too: the channel grows unless the service
+    // explicitly asks for a fixed slice.
+    let allocation_policy = match model.allocation {
+        AllocationPolicy::Grow => quote! { ice_rpc::codegen::AllocationPolicy::Grow },
+        AllocationPolicy::Fixed => quote! { ice_rpc::codegen::AllocationPolicy::Fixed },
+    };
 
     let req_enum_name = &model.req_enum_name;
     let proxy_name = &model.proxy_name;
@@ -258,6 +281,8 @@ fn expand_service_with(
         logical_name_lit: &logical_name_lit,
         group: &group,
         max_slice_len: &max_slice_len,
+        max_loaned_samples: &max_loaned_samples,
+        allocation_policy: &allocation_policy,
         service_ref: &service_ref,
         node_methods: &node_methods,
         blocking_methods: &proxy_blocking_methods,
@@ -274,6 +299,8 @@ fn expand_service_with(
         logical_name_lit: &logical_name_lit,
         group: &group,
         max_slice_len: &max_slice_len,
+        max_loaned_samples: &max_loaned_samples,
+        allocation_policy: &allocation_policy,
         json_provider: features.json,
     };
     let lifecycle_output = gen_lifecycle(&lifecycle_input);

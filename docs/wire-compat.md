@@ -17,14 +17,16 @@ library, and settings the deployment provides:
 | payload alignment                     | `PAYLOAD_ALIGNMENT` in [`transport/tuning.rs`](../ice-rpc/src/transport/tuning.rs)                                                                                               | compiled in   |
 | payload type                          | the `Payload` generic of the service definition                                                                                                                                  | compiled in   |
 | safe overflow                         | the `enable_safe_overflow(false)` of the request and response services                                                                                                           | compiled in   |
-| buffer sizes, port limits, node limit | the `[defaults.publish-subscribe]` of the iceoryx2 configuration: `max-publishers`, `max-subscribers`, `max-nodes`, `subscriber-max-buffer-size`, `publisher-max-loaned-samples` | configuration |
+| buffer sizes, port limits, node limit | the floors of `build_iceoryx2_config` in [`config.rs`](../ice-rpc/src/config.rs), raisable through `[defaults.publish-subscribe]` in the iceoryx2 configuration | compiled in, overridable |
 
 The compiled-in family is a **protocol** property: changing one of those requires
 bumping `PROTOCOL_VERSION` and rebuilding every participant together. The
-configuration family is a **deployment** property: `ice-rpc` pins none of it, so
-each process opens the service with whatever it resolves — which is why all
-participants of a channel must resolve the same `iceoryx2.toml` (see the
-`Configuration` section of the [`ice-rpc` Readme](../ice-rpc/Readme.md)).
+service-capacity family has a **compiled-in floor**: `ice-rpc` raises iceoryx2's
+conservative defaults to the capacity its channels need, and a deployment can
+raise them further in `iceoryx2.toml`. Because iceoryx2 records the static
+configuration when a service is created, all participants of a channel must
+still resolve the same effective values (see the `Configuration` section of the
+[`ice-rpc` Readme](../ice-rpc/Readme.md)).
 
 Two facts follow:
 
@@ -169,9 +171,9 @@ growing by one run per kill.
 
 The manual procedure below remains the answer when the state cannot be explained
 by a dead process: a service whose _recorded configuration_ differs from the
-requested one — another build, or a peer that resolves a different `iceoryx2.toml`
-— is not a dead node, so no cleanup removes it. Align the configuration first;
-only leftover state calls for the purge.
+requested one — another build with different compiled-in floors, or a peer that
+resolves a different `iceoryx2.toml` — is not a dead node, so no cleanup removes
+it. Align the configuration first; only leftover state calls for the purge.
 
 ## The call context and its trace ids
 
@@ -266,9 +268,10 @@ cargo run -p ice-rpc --example tracing-demo --features tokio,tracing -- consumer
    ```
 
 3. **Align the configuration, or rebuild.** A configuration mismatch is fixed by
-   making every participant resolve the same `iceoryx2.toml`; a compiled-in
-   protocol change needs every participant rebuilt. Either way, restart the
-   provider first, then the consumers.
+   making every participant resolve the same effective values — the same
+   `iceoryx2.toml` and the same compiled-in floors; a compiled-in protocol change
+   needs every participant rebuilt. Either way, restart the provider first, then
+   the consumers.
 
 ## The other half of the state: the shared-memory markers
 

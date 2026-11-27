@@ -68,11 +68,13 @@ pub use crate::start_http_server;
 // Entry points used by the generated client/server.
 pub use crate::transport::PAYLOAD_ALIGNMENT;
 pub use crate::transport::{
-    BoxResponseFuture, CollectEmitter, DEFAULT_MAX_SLICE_LEN, DecodeFailure, OwnedEmitter,
-    ResponseEmitter, ServiceDispatcher, declare_channel_max_slice_len, decode_aligned,
-    emit_rpc_error, is_provider_connected, native_call, native_handler, native_handler_untraced,
-    native_oneway_handler, native_oneway_handler_untraced, observable_to_responses,
-    register_native_service, serialize_and_call, serialize_and_send_one_way, spawn_native_service,
+    AllocationPolicy, BoxResponseFuture, CollectEmitter, DEFAULT_MAX_LOANED_SAMPLES,
+    DEFAULT_MAX_SLICE_LEN, DecodeFailure, OwnedEmitter, ResponseEmitter, ServiceDispatcher,
+    declare_channel_allocation_policy, declare_channel_max_loaned_samples,
+    declare_channel_max_slice_len, decode_aligned, emit_rpc_error, is_provider_connected,
+    native_call, native_handler, native_handler_untraced, native_oneway_handler,
+    native_oneway_handler_untraced, observable_to_responses, register_native_service,
+    serialize_and_call, serialize_and_send_one_way, spawn_native_service,
     start_registered_channels, sweep_orphan_shm_markers,
 };
 // The JSON host helpers: the rejection paths and the shared handler body of a

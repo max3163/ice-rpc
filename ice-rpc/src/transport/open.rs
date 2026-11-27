@@ -38,16 +38,17 @@ pub(super) enum OpenMode {
 
 /// What to do when the peers disagree on a service's configuration.
 ///
-/// The service limits are no longer pinned by the library: the deployment owns
-/// them through the iceoryx2 configuration, so this failure is a deployment
-/// concern, not leftover state — removing the iceoryx2 root path would not help,
-/// because the same divergent configuration comes back on the next start.
-const REMEDY_CONFIG: &str = "the iceoryx2 configuration resolved by this process differs from the \
+/// The service limits have a compiled-in floor from `build_iceoryx2_config` and
+/// can be raised by the deployment through the iceoryx2 configuration, so this
+/// failure is a deployment concern, not leftover state — removing the iceoryx2
+/// root path would not help, because the same divergent configuration comes back
+/// on the next start.
+const REMEDY_CONFIG: &str = "the effective iceoryx2 configuration of this process differs from the \
                              one recorded when the service was created: payload alignment, \
                              overflow behavior, buffer sizes or port limits. Every participant of \
-                             this channel must resolve the same iceoryx2 configuration (notably \
-                             its `[defaults.publish-subscribe]`) and speak the same protocol \
-                             version";
+                             this channel must resolve the same configuration (the same compiled-in \
+                             floors and the same `[defaults.publish-subscribe]` overrides) and \
+                             speak the same protocol version";
 
 /// What to do when the bus state itself is unusable.
 ///

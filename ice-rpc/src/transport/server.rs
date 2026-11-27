@@ -53,6 +53,8 @@ pub(super) struct ChannelPorts {
 /// Opens every port of one channel, provider side.
 pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError> {
     let max_slice_len = super::channel_max_slice_len(channel);
+    let max_loaned_samples = super::channel_max_loaned_samples(channel);
+    let allocation_strategy = super::channel_allocation_strategy(channel);
     let node = shared_node()?;
     let request_service = open_service(&node, channel, REQUEST_SUFFIX, OpenMode::CreateOrOpen)?;
     let response_service = open_service(&node, channel, RESPONSE_SUFFIX, OpenMode::CreateOrOpen)?;
@@ -78,11 +80,14 @@ pub(super) fn open_channel_ports(channel: &str) -> Result<ChannelPorts, RpcError
         .create()
         .map_err(|e| transport_error("request listener", e))?;
     // Declared by the service before its ports were opened (see
-    // `declare_channel_max_slice_len`); other publisher settings come from the
-    // iceoryx2 configuration.
+    // `declare_channel_max_slice_len`, `declare_channel_max_loaned_samples` and
+    // `declare_channel_allocation_policy`); other publisher settings come from
+    // the iceoryx2 configuration.
     let publisher = response_service
         .publisher_builder()
         .initial_max_slice_len(max_slice_len)
+        .max_loaned_samples(max_loaned_samples)
+        .allocation_strategy(allocation_strategy)
         .create()
         .map_err(|e| transport_error("response publisher", e))?;
     let response_notifier = response_notify

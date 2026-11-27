@@ -84,12 +84,16 @@ pub struct WorkloadScalars {
 
 /// Benchmark workload over representative request shapes.
 ///
-/// No `max_slice_len` is declared: with `publisher-allocation-strategy =
-/// "power-of-two"` in the iceoryx2 configuration, the publisher grows the
-/// sample past the channel's initial 256 B instead of refusing it, so the
-/// representative payloads (up to 32 KiB) travel without pinning a 64 MiB
-/// segment per channel.
-#[service("WorkloadService")]
+/// No `max_slice_len` is declared: the channel's default allocation policy is
+/// `Grow`, so the publisher grows the sample past the initial 256 B instead of
+/// refusing it, and the representative payloads (up to 32 KiB) travel without
+/// pinning a fixed large segment per channel.
+///
+/// `max_loaned_samples = 64` is an explicit benchmark choice: the harness keeps
+/// several calls in flight, and the default of 2 would report saturation instead
+/// of measuring throughput. The value multiplies the grown data segment, so a
+/// production deployment must size it to its own concurrency.
+#[service("WorkloadService", max_loaned_samples = 64)]
 pub trait WorkloadService {
     /// Echoes the length of one text field.
     ///

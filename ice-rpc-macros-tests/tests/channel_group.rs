@@ -16,7 +16,7 @@ fn init_global() {
     GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
-#[service("GroupAlpha", group = "sharedchannel")]
+#[service("GroupAlpha", group = "sharedchannel", max_loaned_samples = 64)]
 #[async_trait::async_trait]
 pub trait GroupAlpha: Send + Sync + 'static {
     async fn alpha(&self, value: i32) -> Observable<i32, String>;
@@ -31,7 +31,7 @@ impl GroupAlpha for AlphaImpl {
     }
 }
 
-#[service("GroupBeta", group = "sharedchannel")]
+#[service("GroupBeta", group = "sharedchannel", max_loaned_samples = 64)]
 #[async_trait::async_trait]
 pub trait GroupBeta: Send + Sync + 'static {
     async fn beta(&self, value: i32) -> Observable<i32, String>;

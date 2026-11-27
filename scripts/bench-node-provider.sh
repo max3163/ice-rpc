@@ -20,8 +20,8 @@
 # The addon must be built first; from `gateway_nodejs/`:
 #   npm ci && npm run build        # or `npm run build:debug` for the test profile
 #
-# Both processes run from the workspace root so they resolve the same
-# `./config/iceoryx2.toml`, exactly like the other two-process benchmarks.
+# Both processes run from the workspace root and share the default iceoryx2
+# root path; the library pins the service limits, so no config file is needed.
 
 set -euo pipefail
 

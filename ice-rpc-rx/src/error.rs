@@ -8,7 +8,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 pub enum RpcError {
     /// Payload serialization/deserialization failure.
     SerializationError,
-    /// iceoryx2 transport failure (loan, send, receive, port creation).
+    /// iceoryx2 transport failure (loan, send, receive, port creation), including
+    /// publisher loan-limit saturation.
     TransportError(String),
     /// Waiting deadline exceeded.
     Timeout,

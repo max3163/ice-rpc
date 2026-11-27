@@ -149,7 +149,14 @@ fn test_versioned_service_compiles() {
 
 // Test 9: several `#[service]` parameters at once
 
-#[service("AllParamsService", version = 3, group = "allparams")]
+#[service(
+    "AllParamsService",
+    version = 3,
+    group = "allparams",
+    max_slice_len = 4096,
+    max_loaned_samples = 8,
+    allocation = "fixed"
+)]
 #[async_trait::async_trait]
 pub trait AllParamsService: Send + Sync + 'static {
     async fn ping(&self) -> Observable<(), String>;

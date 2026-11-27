@@ -257,6 +257,11 @@ impl DatabaseApiProxy {
     }
     pub fn consume() -> std::sync::Arc<Self> {
         ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
+        ice_rpc::codegen::declare_channel_max_loaned_samples("db", 8usize);
+        ice_rpc::codegen::declare_channel_allocation_policy(
+            "db",
+            ice_rpc::codegen::AllocationPolicy::Fixed,
+        );
         std::sync::Arc::new(Self {
             deps: vec![],
             mode: ice_rpc::codegen::async_lock::RwLock::new(DatabaseApiMode::Consumer),
@@ -453,6 +458,11 @@ impl ice_rpc::codegen::ServiceLifecycle for DatabaseApiProxy {
                         local_impl.clone(),
                     );
                     ice_rpc::codegen::declare_channel_max_slice_len("db", 4096usize);
+                    ice_rpc::codegen::declare_channel_max_loaned_samples("db", 8usize);
+                    ice_rpc::codegen::declare_channel_allocation_policy(
+                        "db",
+                        ice_rpc::codegen::AllocationPolicy::Fixed,
+                    );
                     if let Err(e) = ice_rpc::codegen::register_native_service(
                         "db",
                         "Database",

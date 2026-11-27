@@ -19,6 +19,12 @@ pub struct ProxyGenInput<'a> {
     /// Expression of the initial slice length of the channel's publishers
     /// (`#[service(max_slice_len = N)]`, or the runtime default).
     pub max_slice_len: &'a TokenStream,
+    /// Expression of the channel's publisher loan limit
+    /// (`#[service(max_loaned_samples = N)]`, or the runtime default).
+    pub max_loaned_samples: &'a TokenStream,
+    /// Expression of the channel's allocation policy
+    /// (`#[service(allocation = "grow" | "fixed")]`, or the runtime default).
+    pub allocation_policy: &'a TokenStream,
     /// Expression of the shared [`ServiceRef`] of the service (id + version).
     pub service_ref: &'a TokenStream,
     pub node_methods: &'a [TokenStream],
@@ -55,6 +61,8 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
         logical_name_lit,
         group,
         max_slice_len,
+        max_loaned_samples,
+        allocation_policy,
         service_ref,
         node_methods,
         blocking_methods,
@@ -176,8 +184,18 @@ pub fn gen_proxy(input: &ProxyGenInput<'_>) -> TokenStream {
             }
 
             #visibility fn consume() -> std::sync::Arc<Self> {
-                // The channel's publishers are sized from this one declaration.
+                // The channel's publishers are sized and configured from these
+                // two declarations, so a consumer observes the same policy as
+                // the provider.
                 ice_rpc::codegen::declare_channel_max_slice_len(#group, #max_slice_len);
+                ice_rpc::codegen::declare_channel_max_loaned_samples(
+                    #group,
+                    #max_loaned_samples,
+                );
+                ice_rpc::codegen::declare_channel_allocation_policy(
+                    #group,
+                    #allocation_policy,
+                );
                 std::sync::Arc::new(Self {
                     deps: vec![],
                     mode: ice_rpc::codegen::async_lock::RwLock::new(#mode_name::Consumer),

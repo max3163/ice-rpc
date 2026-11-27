@@ -347,9 +347,9 @@ To call a **Rust** service instead, start a Rust provider in terminal 1 and keep
 cargo run -p ice-rpc --example provider-app --features tokio
 ```
 
-Both terminals must run from the same directory — or resolve the same
-`./config/iceoryx2.toml` — since that configuration _is_ the iceoryx2 domain two
-processes share.
+Both terminals must resolve the same iceoryx2 root path — the default when
+neither provides a config file, or the same `./config/iceoryx2.toml` — since
+that path _is_ the domain the two processes share.
 
 `provider.js` and `consumer.js` are the two files above, dropped in the addon
 directory. In this repository the reference addon is
@@ -364,8 +364,9 @@ cargo make gateway-e2e                # two-process Node ↔ Node round trip
 ```
 
 **Prerequisites at runtime**: the provider runs in a **separate process**, on the
-same machine, with a shared iceoryx2 root (the same `./config/iceoryx2.toml` on
-both sides). A process cannot consume a service it provides itself.
+same machine, with a shared iceoryx2 root (the default, or the same
+`./config/iceoryx2.toml` on both sides). A process cannot consume a service it
+provides itself.
 
 The complete contract (argument convention, event envelope, error codes,
 lifecycle) is in [`docs/nodejs-gateway-api-v3.md`](../docs/nodejs-gateway-api-v3.md).

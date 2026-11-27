@@ -62,9 +62,48 @@ use tuning::{
 };
 
 // Re-exported so the default is defined in `tuning.rs` alone.
+pub use tuning::DEFAULT_MAX_LOANED_SAMPLES;
+
 pub use tuning::DEFAULT_MAX_SLICE_LEN;
 
 pub use tuning::PAYLOAD_ALIGNMENT;
+
+/// How a channel's publishers react when a payload exceeds `max_slice_len`.
+///
+/// The policy is a property of the **channel**: the requests and responses of
+/// the same group must agree on it, so it is declared once by the service and
+/// read when the channel's ports open.
+///
+/// [`AllocationPolicy::Grow`] is the default because the transport cannot know
+/// the size of the messages an application will send. A deployment that needs
+/// deterministic memory can opt into [`AllocationPolicy::Fixed`], which makes
+/// `max_slice_len` a hard cap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AllocationPolicy {
+    /// Let the publisher grow past the initial slice length.
+    ///
+    /// Maps to iceoryx2's `AllocationStrategy::PowerOfTwo`: a larger sample is
+    /// accepted and the data segment grows by powers of two. The initial
+    /// `max_slice_len` remains a performance hint that limits reallocations.
+    #[default]
+    Grow,
+    /// Refuse any payload larger than the initial slice length.
+    ///
+    /// Maps to iceoryx2's `AllocationStrategy::Static`: the data segment is
+    /// allocated once, and a larger loan fails with an `RpcError`.
+    Fixed,
+}
+
+impl AllocationPolicy {
+    /// The iceoryx2 strategy this policy maps to.
+    const fn strategy(self) -> AllocationStrategy {
+        match self {
+            Self::Grow => AllocationStrategy::PowerOfTwo,
+            Self::Fixed => AllocationStrategy::Static,
+        }
+    }
+}
 
 /// Declared initial slice length of the channels this process opens, by channel.
 fn max_slice_len_registry() -> &'static Locked<HashMap<String, usize>> {
@@ -98,6 +137,77 @@ pub(super) fn channel_max_slice_len(channel: &str) -> usize {
     max_slice_len_registry()
         .with(|registry| registry.get(channel).copied())
         .unwrap_or(DEFAULT_MAX_SLICE_LEN)
+}
+
+/// Declared publisher loan limit of the channels this process opens, by channel.
+fn max_loaned_samples_registry() -> &'static Locked<HashMap<String, usize>> {
+    static REGISTRY: Locked<HashMap<String, usize>> = Locked::new();
+    &REGISTRY
+}
+
+/// Declares how many samples `channel`'s publishers may loan in parallel.
+///
+/// Like [`declare_channel_max_slice_len`], this is a property of the **channel**
+/// and must be declared before the channel's ports are opened. The first
+/// declaration wins; a later, different one is logged and ignored.
+pub fn declare_channel_max_loaned_samples(channel: &str, max_loaned_samples: usize) {
+    max_loaned_samples_registry().with(|registry| {
+        if let Some(&declared) = registry.get(channel) {
+            if declared != max_loaned_samples {
+                log::warn!(
+                    "[transport] channel '{channel}': max_loaned_samples {max_loaned_samples} \
+                     ignored, already declared as {declared}"
+                );
+            }
+            return;
+        }
+        registry.insert(channel.to_owned(), max_loaned_samples);
+    });
+}
+
+/// The publisher loan limit of `channel`'s publishers, read when its ports open.
+pub(super) fn channel_max_loaned_samples(channel: &str) -> usize {
+    max_loaned_samples_registry()
+        .with(|registry| registry.get(channel).copied())
+        .unwrap_or(DEFAULT_MAX_LOANED_SAMPLES)
+}
+
+/// Declared allocation policy of the channels this process opens, by channel.
+fn allocation_policy_registry() -> &'static Locked<HashMap<String, AllocationPolicy>> {
+    static REGISTRY: Locked<HashMap<String, AllocationPolicy>> = Locked::new();
+    &REGISTRY
+}
+
+/// Declares how `channel`'s publishers grow.
+///
+/// Like [`declare_channel_max_slice_len`], this is a property of the **channel**
+/// and must be declared before the channel's ports are opened. The first
+/// declaration wins; a later, different one is logged and ignored.
+pub fn declare_channel_allocation_policy(channel: &str, policy: AllocationPolicy) {
+    allocation_policy_registry().with(|registry| {
+        if let Some(&declared) = registry.get(channel) {
+            if declared != policy {
+                log::warn!(
+                    "[transport] channel '{channel}': allocation policy {policy:?} ignored, \
+                     already declared as {declared:?}"
+                );
+            }
+            return;
+        }
+        registry.insert(channel.to_owned(), policy);
+    });
+}
+
+/// The allocation policy of `channel`'s publishers, read when its ports open.
+fn channel_allocation_policy(channel: &str) -> AllocationPolicy {
+    allocation_policy_registry()
+        .with(|registry| registry.get(channel).copied())
+        .unwrap_or_default()
+}
+
+/// The iceoryx2 allocation strategy of `channel`'s publishers.
+pub(super) fn channel_allocation_strategy(channel: &str) -> AllocationStrategy {
+    channel_allocation_policy(channel).strategy()
 }
 
 /// Concrete iceoryx2 service flavour used by the transport.
@@ -171,7 +281,9 @@ pub(super) fn shared_node() -> Result<Arc<IoxNode>, RpcError> {
     node_slot()
         .with(|slot| {
             slot.get_or_insert_with(|| {
+                let config = crate::config::build_iceoryx2_config();
                 NodeBuilder::new()
+                    .config(&config)
                     .create::<Iox>()
                     .map(Arc::new)
                     .map_err(|e| format!("{e:?}"))
@@ -362,6 +474,25 @@ mod tests {
     }
 
     #[test]
+    fn an_undeclared_channel_uses_the_default_loan_limit() {
+        assert_eq!(
+            channel_max_loaned_samples("UnitTestLoansNeverDeclared"),
+            DEFAULT_MAX_LOANED_SAMPLES
+        );
+    }
+
+    #[test]
+    fn a_channel_declares_its_loan_limit_once() {
+        // The registry is process-wide: the name is unique to this test.
+        declare_channel_max_loaned_samples("UnitTestLoansDeclared", 8);
+        assert_eq!(channel_max_loaned_samples("UnitTestLoansDeclared"), 8);
+
+        // The first declaration wins: a different later value is ignored.
+        declare_channel_max_loaned_samples("UnitTestLoansDeclared", 16);
+        assert_eq!(channel_max_loaned_samples("UnitTestLoansDeclared"), 8);
+    }
+
+    #[test]
     fn a_channel_declares_its_slice_length_once() {
         // The registry is process-wide: the names are unique to this test.
         declare_channel_max_slice_len("UnitTestSliceDeclared", 4096);
@@ -381,6 +512,45 @@ mod tests {
         assert_eq!(
             channel_max_slice_len("UnitTestSliceNeverDeclared"),
             DEFAULT_MAX_SLICE_LEN
+        );
+    }
+
+    #[test]
+    fn an_undeclared_channel_grows_by_default() {
+        assert_eq!(
+            channel_allocation_policy("UnitTestPolicyNeverDeclared"),
+            AllocationPolicy::Grow
+        );
+    }
+
+    #[test]
+    fn a_channel_declares_its_allocation_policy_once() {
+        // The registry is process-wide: the name is unique to this test.
+        declare_channel_allocation_policy("UnitTestPolicyDeclared", AllocationPolicy::Fixed);
+        assert_eq!(
+            channel_allocation_policy("UnitTestPolicyDeclared"),
+            AllocationPolicy::Fixed
+        );
+
+        // The first declaration wins: a different later value is ignored.
+        declare_channel_allocation_policy("UnitTestPolicyDeclared", AllocationPolicy::Grow);
+        assert_eq!(
+            channel_allocation_policy("UnitTestPolicyDeclared"),
+            AllocationPolicy::Fixed
+        );
+    }
+
+    #[test]
+    fn the_allocation_policies_map_to_the_iceoryx2_strategies() {
+        assert_eq!(
+            AllocationPolicy::Grow.strategy(),
+            AllocationStrategy::PowerOfTwo,
+            "grow lets the publisher accept a payload larger than the initial slice"
+        );
+        assert_eq!(
+            AllocationPolicy::Fixed.strategy(),
+            AllocationStrategy::Static,
+            "fixed makes the initial slice length a hard cap"
         );
     }
 

@@ -15,7 +15,7 @@ fn init_global() {
     GUARD.get_or_init(ice_rpc::codegen::init_without_ctrl_c);
 }
 
-#[service("RoundtripService")]
+#[service("RoundtripService", max_loaned_samples = 64)]
 #[async_trait::async_trait]
 pub trait RoundtripService: Send + Sync + 'static {
     async fn echo(&self, value: i32) -> Observable<i32, String>;
@@ -168,4 +168,52 @@ fn consumer_started_before_provider_still_delivers() {
 
     let values = caller.join().expect("caller panicked").expect("collect");
     assert_eq!(values, vec![42], "the late provider must answer the call");
+}
+
+// ---------------------------------------------------------------------------
+// A payload larger than the initial slice length
+// ---------------------------------------------------------------------------
+
+#[service("LargePayloadService", group = "largepayload")]
+#[async_trait::async_trait]
+pub trait LargePayloadService: Send + Sync + 'static {
+    async fn echo(&self, body: Vec<u8>) -> Observable<Vec<u8>, String>;
+}
+
+struct LargeImpl;
+
+#[async_trait::async_trait]
+impl LargePayloadService for LargeImpl {
+    async fn echo(&self, body: Vec<u8>) -> Observable<Vec<u8>, String> {
+        Observable::from_events([Event::Next(body), Event::Complete])
+    }
+}
+
+/// A payload larger than `DEFAULT_MAX_SLICE_LEN` must travel without a
+/// configuration file: the channel's default allocation policy is `Grow`, so
+/// both publishers extend their data segment instead of refusing the loan.
+#[test]
+fn a_large_payload_travels_without_a_configuration_override() {
+    init_global();
+
+    let locator = ice_rpc::locator();
+    let provider = LargePayloadServiceProxy::provide(LargeImpl);
+    ice_rpc::rt::block_on(async {
+        locator.register(provider).await;
+        locator.initialize_all().await.expect("initialize_all");
+    });
+
+    // Let the native service thread create the iceoryx2 service.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let consumer = LargePayloadServiceProxy::consume();
+    // 4 KiB: above the 256-byte default initial slice, so the publisher must grow.
+    let body = vec![0x5a; 4096];
+    let stream = ice_rpc::rt::block_on(consumer.echo(body.clone()));
+    let echoed = ice_rpc::rt::block_on(stream.collect()).expect("collect");
+    assert_eq!(
+        echoed,
+        vec![body],
+        "the response must carry the whole payload"
+    );
 }

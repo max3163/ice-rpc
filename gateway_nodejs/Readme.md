@@ -213,9 +213,10 @@ Neither the gateway nor `ice-rpc` writes an iceoryx2 configuration file: the
 effective configuration is the one iceoryx2 resolves itself, looking for
 `./config/iceoryx2.toml` (relative to the current directory), then the user
 config directory, then the global one, and falling back to its compiled-in
-default. Two processes must agree on the root path to communicate; provide the
-same `./config/iceoryx2.toml` — or run on the same machine with the same default —
-so they do.
+default. No config file is required: `ice-rpc` raises the conservative
+compiled-in service limits to what its channels need. Two processes must agree on
+the root path to communicate; run on the same machine with the same default — or
+provide the same `./config/iceoryx2.toml` — so they do.
 
 ## Tests and benchmark
 

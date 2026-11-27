@@ -125,7 +125,7 @@ fn probe_events() -> Vec<ProbeEvent> {
 // Probe service
 // ---------------------------------------------------------------------------
 
-#[service("SerialProbe", group = "dispatch_probe_group")]
+#[service("SerialProbe", group = "dispatch_probe_group", max_loaned_samples = 64)]
 #[async_trait::async_trait]
 pub trait SerialProbe: Send + Sync + 'static {
     /// Holds the channel for `ms` — by **awaiting**, which is what a database or

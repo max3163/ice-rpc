@@ -14,10 +14,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# The demo provider/consumer examples live in the `ice-rpc` crate, but the
-# generated iceoryx2 config (`./config/iceoryx2.toml`) is resolved relative to
-# the working directory. Run from the workspace root so both processes share the
-# same config file, and select the crate explicitly with `-p ice-rpc`.
+# The demo provider/consumer examples live in the `ice-rpc` crate. The library
+# pins the iceoryx2 service limits and both processes default to the same root
+# path, so no config file is needed; select the crate explicitly with `-p ice-rpc`.
 cd "$ROOT"
 
 WORKERS="${WORKERS:-4}"

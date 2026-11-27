@@ -202,7 +202,7 @@ error travels inside the flux.
 
 - `version` (integer, default `1`) — service interface version carried in the RPC header. An incompatible peer is rejected with `RpcError::IncompatibleVersion`;
 - `group` (string or `&'static str` constant path, default: the service name) — the **channel** shared with the other services of the same group: one request channel, one response channel and one dispatch thread, with the samples routed by the service id. The declared name is also generated as `<Proxy>::GROUP`, next to `SERVICE_NAME`, so a caller can name the channel without repeating the literal. Writing `group = common::SHARED_CHANNEL` lets several crates share one channel from a single constant; a literal is validated at expansion time, a constant during constant evaluation;
-- `max_slice_len`, `blocking`, `no_tracing` and `no_monitoring` — see _Configuration_ below.
+- `max_slice_len`, `max_loaned_samples`, `allocation`, `blocking`, `no_tracing` and `no_monitoring` — see _Configuration_ below.
 
 ```rust,ignore
 #[service("MyService", version = 1, group = "db")]
@@ -428,11 +428,11 @@ Every variant the enum declares, in declaration order:
 | Variant               | Meaning                                                                                                                                                                                                                                                                                      | Retryable |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | `SerializationError`  | rkyv serialization/deserialization failure                                                                                                                                                                                                                                                   | no        |
-| `TransportError`      | iceoryx2 I/O failure (loan, send, receive, port creation)                                                                                                                                                                                                                                    | yes       |
+| `TransportError`      | iceoryx2 I/O failure (loan, send, receive, port creation), including publisher loan-limit saturation | yes       |
 | `Timeout`             | deadline exceeded                                                                                                                                                                                                                                                                            | yes       |
 | `Cancelled`           | cancelled by a global shutdown (SIGINT/SIGTERM or programmatic), a `take_until` token or a `timeout`; a remote Cancel published by a consumer that abandoned the call is handled by the provider and stays silent                                                                            | no        |
 | `Internal`            | unexpected internal error / invariant violation                                                                                                                                                                                                                                              | no        |
-| `ProtocolMismatch`    | the service on the bus was recorded with a different configuration — a peer resolving another `iceoryx2.toml`, or another build — or its state was left behind by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no        |
+| `ProtocolMismatch`    | the service on the bus was recorded with a different configuration — another build with different compiled-in service floors, a peer resolving another `iceoryx2.toml` — or its state was left behind by a process killed while it held it; no amount of retrying resolves it — see [`docs/wire-compat.md`](../docs/wire-compat.md) | no        |
 | `UnknownMethod`       | the provider has no method of that name on the requested service; answered at once, so a typo or a stale client is diagnosable instead of ending in a transport timeout                                                                                                                      | no        |
 | `UnknownService`      | no service is registered under the requested id on that channel; answered at once too, and it names the id in hexadecimal because a hash cannot be inverted                                                                                                                                  | no        |
 | `IncompatibleVersion` | the provider was built with another `#[service(version = N)]`; emitted before the payload is decoded, and no amount of retrying resolves it — both peers must be rebuilt with the same declared version                                                                                      | no        |
@@ -716,20 +716,29 @@ protocol, error codes, authorization hook and limits are documented in
 `ice-rpc` does not own the iceoryx2 configuration and never writes a config
 file: the effective configuration is the one iceoryx2 resolves itself. iceoryx2
 looks for `./config/iceoryx2.toml` first, then the user config directory, then
-the global config directory, and falls back to its compiled-in default when none
+the global config directory, and falls back to its compiled-in defaults when none
 exists.
 
+**No configuration file is required.** On top of the effective configuration,
+`ice-rpc` raises iceoryx2's conservative compiled-in **port counts** to the
+capacity its channels need: 16 publishers, 16 subscribers and 32 nodes. The
+subscriber buffer and the publisher loan limit keep iceoryx2's defaults: with
+safe overflow disabled, a full buffer is backpressure rather than loss, and
+raising `max_loaned_samples` is an explicit throughput/memory trade-off. A value
+a deployment chose differently is left untouched, so a config file is only needed
+to request more capacity or a custom root path.
+
 Two processes communicate only if they agree on the root path (the shared-memory
-domain). Provide a `./config/iceoryx2.toml` — or a user/global one — when the
-default is not what you want; every peer that discovers the same file shares the
-domain. A partial file is enough: iceoryx2 merges it over its defaults.
+domain). When the default is not what you want, provide a
+`./config/iceoryx2.toml` — or a user/global one; every peer that discovers the
+same file shares the domain. A partial file is enough: iceoryx2 merges it over
+its defaults.
 
 ### Every participant must share the same configuration
 
-The service limits — publishers, subscribers, nodes, subscriber buffer size and
-loaned samples — are **not** hard-coded by `ice-rpc`: they come from the iceoryx2
-configuration, so the deployment owns them. This widens the coherence rule above:
-**all participants of a channel must resolve the same iceoryx2 configuration.**
+The effective service limits combine the iceoryx2 configuration with the floors
+above. As iceoryx2 records a service's static configuration when it is created,
+**all participants of a channel must resolve the same effective configuration.**
 When they do not, `ice-rpc` reports a protocol mismatch that names the two cases
 — a divergent configuration, or leftover state from a killed process — each with
 its own remedy.
@@ -739,40 +748,51 @@ and a provider built from different revisions interoperate as long as they speak
 the same protocol version and resolve the same configuration, which is what lets
 one side be upgraded before the other.
 
-iceoryx2's compiled-in defaults are conservative (`max-publishers = 2`,
-`max-subscribers = 8`, `subscriber-max-buffer-size = 2`, …). When no
-configuration file is present they apply, so ship a baseline that restores the
-values `ice-rpc` used to pin. It must sit in `./config/iceoryx2.toml` relative to
-the **working directory of each process** — iceoryx2 resolves it from there, so
-`cargo test` and `cargo run` look in the package directory, not the workspace
-root. This workspace ships one for its own tests and examples under
-`ice-rpc/config/` and `ice-rpc-macros-tests/config/`:
-
-```toml
-[defaults.publish-subscribe]
-max-publishers = 16
-max-subscribers = 16
-max-nodes = 32
-subscriber-max-buffer-size = 1024
-publisher-max-loaned-samples = 1024
-```
-
-### Slice length
+### Slice length and allocation
 
 The one publisher setting iceoryx2 does not expose in its configuration is the
-initial slice length, and its builder default is `1` — with the default
-`publisher-allocation-strategy = "Static"` that is a hard cap, so a 1-element
-slice cannot carry an RPC payload. It is therefore declared by the service, per
-channel:
+initial slice length, and its builder default is `1`. `ice-rpc` declares it per
+channel with `max_slice_len`; an omitted value falls back to
+`DEFAULT_MAX_SLICE_LEN` (256).
+
+What happens when a payload exceeds that size is the channel's **allocation
+policy**, also declared per channel:
 
 ```rust,ignore
-#[service("DatabaseService", group = "db", max_slice_len = 4096)]
+#[service("DatabaseService", group = "db", max_slice_len = 4096, allocation = "fixed")]
 ```
 
-Every service of a group must declare the same `max_slice_len`; an omitted value
-falls back to `DEFAULT_MAX_SLICE_LEN` (256). Setting
-`publisher-allocation-strategy = "PowerOfTwo"` in the configuration lets a
-publisher grow past that initial size instead of refusing the sample.
+- `allocation = "grow"` (the default) lets the publisher grow past the initial
+  slice: `max_slice_len` is a performance hint that limits reallocations, not a
+  cap. A request or response larger than it still travels, without any
+  configuration file.
+- `allocation = "fixed"` makes `max_slice_len` a hard cap: a larger payload is
+  refused with an `RpcError`. Choose it when memory must be deterministic, or
+  when an executable cannot afford a dynamic data segment.
+
+Every service of a group must declare the same `max_slice_len` and `allocation`;
+the first declaration wins, and a different later one is logged and ignored.
+
+The allocation policy is controlled by the channel, not by
+`publisher-allocation-strategy` in an iceoryx2 config file. That setting remains
+the fallback for publishers `ice-rpc` does not create.
+
+### Publisher loan limit
+
+`max_loaned_samples` caps how many samples a publisher may loan in parallel. It
+defaults to iceoryx2's value, 2. A normal call retries a transient exhaustion
+with backoff until its deadline; if the limit stays exhausted, it fails with a
+`TransportError` that names it. The retry waits for a slot instead of adding one,
+so memory stays bounded. One-way calls report the limit immediately because they
+must not block. Raising the limit remains an explicit choice:
+
+```rust,ignore
+#[service("BenchService", max_loaned_samples = 64)]
+```
+
+A larger value lets more calls be in flight, but multiplies the size of a grown
+data segment: `rounded_payload_size x (max_subscribers x (buffer + borrowed) +
+max_loaned_samples)`. Size it to the channel's concurrency and message size.
 
 ### Per-service tracing
 

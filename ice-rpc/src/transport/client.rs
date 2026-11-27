@@ -236,12 +236,17 @@ fn open_consumer_ports(channel: &str) -> Result<Arc<ConsumerPorts>, RpcError> {
     )?;
 
     // Declared by the service before its ports were opened (see
-    // `declare_channel_max_slice_len`); other publisher settings come from the
-    // iceoryx2 configuration.
+    // `declare_channel_max_slice_len`, `declare_channel_max_loaned_samples` and
+    // `declare_channel_allocation_policy`); other publisher settings come from
+    // the iceoryx2 configuration.
     let max_slice_len = super::channel_max_slice_len(channel);
+    let max_loaned_samples = super::channel_max_loaned_samples(channel);
+    let allocation_strategy = super::channel_allocation_strategy(channel);
     let publisher = request_service
         .publisher_builder()
         .initial_max_slice_len(max_slice_len)
+        .max_loaned_samples(max_loaned_samples)
+        .allocation_strategy(allocation_strategy)
         .create()
         .map_err(|e| transport_error("request publisher", e))?;
     let request_notifier = request_notify

@@ -10,9 +10,6 @@ documentation = "https://docs.rs/ice-rpc"
 keywords = ["rpc", "ipc", "zerocopy", "iceoryx", "rkyv"]
 categories = ["network-programming", "concurrency"]
 readme = "Readme.md"
-# An application-provided iceoryx2 config may sit here during local development;
-# it is machine-specific and must not be shipped.
-exclude = ["config/iceoryx2.toml"]
 
 [lints]
 workspace = true

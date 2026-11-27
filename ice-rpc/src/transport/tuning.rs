@@ -16,6 +16,9 @@
 //! exception is the slice length, which iceoryx2 0.10 does not expose in its
 //! configuration and whose builder default is `1`; the developer declares it per
 //! channel with `#[service(max_slice_len = N)]`, see [`DEFAULT_MAX_SLICE_LEN`].
+//! The allocation policy of a channel's publishers is declared next to it with
+//! `#[service(allocation = "grow" | "fixed")]` and defaults to grow, so a payload
+//! larger than the initial slice still travels without a configuration file.
 //!
 //! | Setting | Value | Why |
 //! |---|---|---|
@@ -33,6 +36,12 @@ pub(super) const RESPONSE_SUFFIX: &str = "_resp";
 pub(super) const REQUEST_NOTIFY_SUFFIX: &str = "_req_notify";
 pub(super) const RESPONSE_NOTIFY_SUFFIX: &str = "_resp_notify";
 pub const DEFAULT_MAX_SLICE_LEN: usize = 256;
+
+/// Default number of samples a publisher may loan in parallel.
+///
+/// This is iceoryx2's own default. Raising it is an explicit throughput/memory
+/// trade-off a channel opts into with `#[service(max_loaned_samples = N)]`.
+pub const DEFAULT_MAX_LOANED_SAMPLES: usize = 2;
 
 /// Payload alignment requested from iceoryx2, the alignment `rkyv::to_bytes`
 /// produces, so a sample is decodable in place. It is also the alignment every
@@ -102,6 +111,7 @@ mod tests {
     #[test]
     fn tuning_values_match_the_documented_table() {
         assert_eq!(DEFAULT_MAX_SLICE_LEN, 256);
+        assert_eq!(DEFAULT_MAX_LOANED_SAMPLES, 2);
         assert_eq!(REQUEST_SCRATCH_CAPACITY, 256);
         assert_eq!(WAITSET_DEADLINE, Duration::from_millis(1));
         assert_eq!(IDLE_SPINS, 2_000);

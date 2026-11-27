@@ -47,7 +47,11 @@ impl std::fmt::Display for ContextError {
 ///
 /// Allows sharing metadata (tokens, environment variables, etc.)
 /// between the different services of an ice-rpc node.
-#[service("ContextService")]
+///
+/// `max_loaned_samples = 64` is explicit: the Node.js bridge benchmark keeps 32
+/// calls in flight, and the default of 2 would report saturation instead of
+/// measuring the bridge.
+#[service("ContextService", max_loaned_samples = 64)]
 pub trait ContextService {
     /// Returns the value associated with a key.
     ///

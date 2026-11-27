@@ -19,8 +19,8 @@
 //!
 //! # One pinned declaration, and one assertion
 //!
-//! A single declaration carries every shape the generators special-case: all four
-//! parameters of `#[service]`, a scalar argument, an owned `String`, a `Vec<u8>`
+//! A single declaration carries every shape the generators special-case: every
+//! parameter of `#[service]`, a scalar argument, an owned `String`, a `Vec<u8>`
 //! (which the Node.js bridge converts without a JSON round-trip), a value return,
 //! a unit return and a failure. Three files — one per feature set — are then
 //! enough, and that is what keeps the golden readable: it is what a reviewer opens
@@ -188,7 +188,10 @@ fn the_pinned_service_carries_every_shape_in_every_feature_set() {
             label,
             features,
             "database",
-            quote! { "Database", version = 2, group = "db", max_slice_len = 4096 },
+            quote! {
+                "Database", version = 2, group = "db", max_slice_len = 4096,
+                max_loaned_samples = 8, allocation = "fixed"
+            },
             item.clone(),
         );
     }
@@ -196,9 +199,9 @@ fn the_pinned_service_carries_every_shape_in_every_feature_set() {
 
 /// The default naming, which only a trait **without** attribute parameters can show.
 ///
-/// The declaration above carries all four, so the fallbacks cannot be read off its
-/// golden: they are asserted here, on the identifiers the expansion emits. The
-/// trade against the two-declaration version is deliberate — a substring check
+/// The declaration above carries every parameter, so the fallbacks cannot be read
+/// off its golden: they are asserted here, on the identifiers the expansion emits.
+/// The trade against the two-declaration version is deliberate — a substring check
 /// instead of a whole-expansion comparison, for three fewer files to review.
 #[test]
 fn the_default_naming_of_a_bare_trait_is_pinned() {
@@ -209,6 +212,18 @@ fn the_default_naming_of_a_bare_trait_is_pinned() {
     assert!(
         rendered.contains("\"calculator\""),
         "the logical name must fall back to the lowercased trait name: {rendered}"
+    );
+    // The allocation policy falls back to grow, so the channel is not capped by
+    // the default slice length.
+    assert!(
+        rendered.contains("AllocationPolicy::Grow"),
+        "the allocation policy must fall back to grow: {rendered}"
+    );
+    // The loan limit falls back to iceoryx2's default instead of being silently
+    // raised.
+    assert!(
+        rendered.contains("DEFAULT_MAX_LOANED_SAMPLES"),
+        "the loan limit must fall back to the runtime default: {rendered}"
     );
     // The channel constant carries the same fallback, so a caller reads it from
     // the proxy instead of repeating the literal.
@@ -283,6 +298,52 @@ fn every_optional_block_follows_its_own_flag() {
 /// feature: the codegen is expanded in the **consumer's** crate and reads no
 /// feature, so a service that declares `blocking` gets its twins whatever the
 /// build, and a service that does not pays nothing.
+/// The `max_loaned_samples` parameter decides the channel's publisher loan
+/// limit: iceoryx2's default when absent, the declared value otherwise.
+#[test]
+fn the_max_loaned_samples_parameter_selects_the_channel_limit() {
+    let default = compact(&render(NONE, quote! { "Calc" }, CALCULATOR()));
+    assert!(
+        default.contains(
+            "declare_channel_max_loaned_samples(\"Calc\",ice_rpc::codegen::DEFAULT_MAX_LOANED_SAMPLES,)"
+        ),
+        "a service without `max_loaned_samples` keeps the runtime default: {default}"
+    );
+
+    let explicit = compact(&render(
+        NONE,
+        quote! { "Calc", max_loaned_samples = 8 },
+        CALCULATOR(),
+    ));
+    assert!(
+        explicit.contains("declare_channel_max_loaned_samples(\"Calc\",8usize)"),
+        "an explicit loan limit reaches the channel declaration: {explicit}"
+    );
+}
+
+/// The `allocation` parameter decides the channel's publisher policy: `grow` by
+/// default, `fixed` when the initial slice length must be a hard cap.
+#[test]
+fn the_allocation_parameter_selects_the_channel_policy() {
+    let grow = compact(&render(NONE, quote! { "Calc" }, CALCULATOR()));
+    assert!(
+        grow.contains(
+            "declare_channel_allocation_policy(\"Calc\",ice_rpc::codegen::AllocationPolicy::Grow,)"
+        ),
+        "a service without `allocation` grows by default: {grow}"
+    );
+
+    let fixed = compact(&render(
+        NONE,
+        quote! { "Calc", allocation = "fixed" },
+        CALCULATOR(),
+    ));
+    assert!(
+        fixed.contains("ice_rpc::codegen::AllocationPolicy::Fixed"),
+        "an explicit `fixed` reaches the channel declaration: {fixed}"
+    );
+}
+
 #[test]
 fn the_blocking_parameter_generates_the_sync_twin_only_when_asked() {
     let without = render(NONE, quote! { "Calc" }, CALCULATOR());

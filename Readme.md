@@ -1230,10 +1230,16 @@ the configuration iceoryx2 resolves itself (`Config::global_config()`):
 `./config/iceoryx2.toml` first, then the user config directory, then the global
 config directory, and finally the compiled-in default.
 
-An application that needs a shared, non-default root path provides that TOML
-file once; every process that discovers it then shares the same shared-memory
-domain. `ice-rpc` only overrides the dead-node cleanup policy locally, which
-changes the reaping behaviour but never which entities are visible on the bus.
+No configuration file is required. On top of that effective configuration,
+`ice-rpc` raises iceoryx2's conservative compiled-in port counts to the capacity
+its channels need. The subscriber buffer and the publisher loan limit keep their
+defaults: a full buffer is backpressure, not loss, and raising the loan limit is
+an explicit throughput/memory trade-off.
+A deployment that needs a shared, non-default root path, or more capacity,
+provides a TOML file once; every process that discovers it then shares the same
+configuration and the same shared-memory domain. `ice-rpc` only overrides the
+dead-node cleanup policy locally, which changes the reaping behaviour but never
+which entities are visible on the bus.
 
 The `shm/` directory is created automatically by iceoryx2 for its shared-memory resources.
 

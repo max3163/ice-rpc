@@ -57,7 +57,7 @@ const SINGLE_CALLS: usize = 2_000;
 /// Calls spent warming the channel up before a measured phase.
 const WARMUP: usize = 32;
 
-#[service("LoadProbe")]
+#[service("LoadProbe", max_loaned_samples = 64)]
 #[async_trait::async_trait]
 pub trait LoadProbe: Send + Sync + 'static {
     /// Answers without ever yielding: the hot path.

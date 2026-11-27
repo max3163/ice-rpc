@@ -16,7 +16,9 @@ fn gen_facade_symbols_resolve() {
     #[allow(unused_imports)]
     use ice_rpc::codegen::{
         _ProviderService,
+        AllocationPolicy,
         CollectEmitter,
+        DEFAULT_MAX_LOANED_SAMPLES,
         DEFAULT_MAX_SLICE_LEN,
         DecodeFailure,
         EventKind,
@@ -47,6 +49,8 @@ fn gen_facade_symbols_resolve() {
         channel,
         clear_ipc_cleanup,
         collect_values,
+        declare_channel_allocation_policy,
+        declare_channel_max_loaned_samples,
         declare_channel_max_slice_len,
         decode_aligned,
         first_event,
